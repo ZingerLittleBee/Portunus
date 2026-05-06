@@ -64,28 +64,34 @@ working dir at `target/criterion/.../v0.1.0/`. Re-capture with:
 cargo bench -p forward-client --bench data_plane -- --save-baseline v0.1.0
 ```
 
-### SC-001 dry-run
+### SC-001 verification
 
-Local-loopback walkthrough of `quickstart.md` (two terminals on macOS,
-single host) completed end-to-end in **8.1 seconds** post-build:
+Two passes of `quickstart.md`:
 
-| Step                                 | Δ vs prev |
-| ------------------------------------ | --------- |
-| `serve` start → `server.listening`   | 0.16 s    |
-| `provision-client` via HTTP API      | 0.05 s    |
-| Client TLS connect + Welcome         | 0.72 s    |
-| Rule push → Active                   | 0.32 s    |
-| 100 MB `/dev/urandom` payload prep   | 0.54 s    |
-| Stream 100 MB through proxy          | 0.19 s    |
-| `/metrics` reports 100 MB cumulative | 6.05 s    |
-| `remove-rule` returns 204            | 0.03 s    |
+**1. Local-loopback (macOS, single host):** end-to-end in 8.1 s
+post-build. The 6 s spike before `/metrics` reflects one StatsReport
+tick at the default 5 s `--stats-report-interval-secs`. Hash equality
+and the `rule-stats` / `/metrics` byte counters all matched the
+104 857 600 byte payload.
 
-The 6 s spike before `/metrics` reflects one StatsReport tick at the
-default 5 s `--stats-report-interval-secs`. Hash equality and the
-`rule-stats` / `/metrics` byte counters all matched the 104 857 600 byte
-input. Two-real-Linux-hosts validation (T068) remains pending; the
-loopback timing strongly suggests the < 5 min SC-001 target will hold
-once the cross-host hop is added.
+**2. Real Linux host (Debian 13 trixie, x86_64, musl static binaries
+cross-compiled from macOS via `cargo zigbuild`):** time-from-zero to
+first byte through a pushed rule (`8080 → example.com:80`) measured
+**1.262 s** post-binaries-on-disk:
+
+| Step                            | t since T0 |
+| ------------------------------- | ---------- |
+| `server.listening`              | 0.224 s    |
+| `POST /v1/clients` provisioned  | 0.473 s    |
+| Client TLS connect + Welcome    | 0.968 s    |
+| Rule push → Active              | 1.026 s    |
+| First byte through proxy (200)  | 1.262 s    |
+
+After driving 5×`curl` through the rule and waiting one StatsReport
+tick: `bytes_in=450, bytes_out=5052` from `rule-stats`, and the same
+numbers materialised on `/metrics` under
+`forward_rule_bytes_{in,out}_total{client="edge-01",rule="0"}`.
+Both well under the 300 s SC-001 target.
 
 ### Out of scope (deferred)
 

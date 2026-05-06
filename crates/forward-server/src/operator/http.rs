@@ -44,7 +44,7 @@ async fn post_clients(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ProvisionBody>,
 ) -> Result<(StatusCode, Json<CredentialBundle>), ApiError> {
-    let (_path, bundle) = cli::provision_client(&state, &body.name, None)?;
+    let (_name, bundle) = cli::issue_bundle(&state, &body.name)?;
     Ok((StatusCode::CREATED, Json(bundle)))
 }
 

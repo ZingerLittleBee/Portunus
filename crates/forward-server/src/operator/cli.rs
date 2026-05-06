@@ -97,15 +97,16 @@ impl From<RuleStoreError> for OperatorError {
     }
 }
 
-/// `provision-client <name> [--out path]`.
+/// Issue a fresh bearer token for `raw_name` and assemble the credential
+/// bundle, without touching the filesystem.
 ///
-/// Returns the `(bundle_path, bundle)` pair on success. The bundle file is
-/// written atomically with mode 0600.
-pub fn provision_client(
+/// Used directly by the HTTP `POST /v1/clients` handler, which only needs
+/// the bundle in the response body. The CLI path goes through
+/// [`provision_client`] which additionally writes the bundle to disk.
+pub fn issue_bundle(
     state: &AppState,
     raw_name: &str,
-    out: Option<PathBuf>,
-) -> Result<(PathBuf, CredentialBundle), OperatorError> {
+) -> Result<(ClientName, CredentialBundle), OperatorError> {
     let name = ClientName::from_str(raw_name)?;
     let token = match state.tokens.issue(name.clone()) {
         Ok(t) => t,
@@ -121,6 +122,25 @@ pub fn provision_client(
         state.server_cert_pem.clone(),
         token,
     );
+    info!(
+        event = "audit.provision",
+        outcome = "success",
+        client_name = %name,
+    );
+    Ok((name, bundle))
+}
+
+/// `provision-client <name> [--out path]`.
+///
+/// Returns the `(bundle_path, bundle)` pair on success. The bundle file is
+/// written atomically with mode 0600. When `out` is `None`, the file is
+/// written to `<cwd>/<name>.bundle.json`.
+pub fn provision_client(
+    state: &AppState,
+    raw_name: &str,
+    out: Option<PathBuf>,
+) -> Result<(PathBuf, CredentialBundle), OperatorError> {
+    let (name, bundle) = issue_bundle(state, raw_name)?;
     let path = out.unwrap_or_else(|| {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
@@ -128,8 +148,7 @@ pub fn provision_client(
     });
     bundle.write_to(&path)?;
     info!(
-        event = "audit.provision",
-        outcome = "success",
+        event = "audit.provision_written",
         client_name = %name,
         bundle_path = %path.display(),
     );
