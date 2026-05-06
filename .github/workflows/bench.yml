@@ -1,0 +1,54 @@
+name: bench
+
+# Runs the criterion data-plane benchmark and fails if median performance
+# regressed >25% versus the committed baseline. Triggered on:
+#  - PRs that touch hot-path code or the bench harness itself
+#  - manual `workflow_dispatch` from the Actions UI
+#
+# Note: bench numbers are CI-runner-dependent. The baseline in
+# `crates/forward-client/benches/baselines/v0.1.0.json` was captured on
+# macOS; we run the gate on the same OS to keep noise comparable.
+# Update the baseline with `cargo bench -- --save-baseline v0.1.0` and
+# regenerate the JSON when an intentional perf change lands.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/forward-client/src/forwarder/**"
+      - "crates/forward-client/benches/**"
+      - "crates/forward-client/Cargo.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/bench_regression_gate.py"
+      - ".github/workflows/bench.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  bench:
+    name: criterion regression gate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo bench
+        run: cargo bench -p forward-client --bench data_plane
+
+      - name: regression gate
+        run: python3 scripts/bench_regression_gate.py --max-regression-pct 25

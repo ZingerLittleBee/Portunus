@@ -120,7 +120,14 @@ mod tests {
         let cancel_proxy = cancel.clone();
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
-            proxy(sock, &echo.ip().to_string(), echo.port(), cancel_proxy, None).await
+            proxy(
+                sock,
+                &echo.ip().to_string(),
+                echo.port(),
+                cancel_proxy,
+                None,
+            )
+            .await
         });
 
         // Client side: connect, write, read echoed back.
@@ -147,7 +154,14 @@ mod tests {
         let cancel_proxy = cancel.clone();
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
-            proxy(sock, &echo.ip().to_string(), echo.port(), cancel_proxy, None).await
+            proxy(
+                sock,
+                &echo.ip().to_string(),
+                echo.port(),
+                cancel_proxy,
+                None,
+            )
+            .await
         });
 
         let _client = TcpStream::connect(proxy_addr).await.unwrap();

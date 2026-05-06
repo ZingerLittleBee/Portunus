@@ -56,7 +56,13 @@ fn pick_free_port() -> u16 {
 
 /// Push a rule and drive `payload_size` bytes through it round-trip via the
 /// echo target. Returns `(rule_id, listen_port)`.
-fn push_and_drive(http: &str, listen_port: u16, echo_host: &str, echo_port: u16, payload_size: usize) -> u64 {
+fn push_and_drive(
+    http: &str,
+    listen_port: u16,
+    echo_host: &str,
+    echo_port: u16,
+    payload_size: usize,
+) -> u64 {
     let (status, body) =
         common::push_rule_http(http, "edge-01", listen_port, echo_host, echo_port, Some(2));
     assert!(status.is_success(), "push must succeed: {status} {body}");
@@ -230,8 +236,14 @@ fn test_user_story_3_acceptance() {
 
     // ---- Scenario 2: /metrics exposes Prometheus collectors ----
     let body = common::fetch_metrics_text(&metrics);
-    assert!(body.contains("forward_rule_bytes_in_total"), "metrics body: {body}");
-    assert!(body.contains("forward_clients_connected"), "metrics body: {body}");
+    assert!(
+        body.contains("forward_rule_bytes_in_total"),
+        "metrics body: {body}"
+    );
+    assert!(
+        body.contains("forward_clients_connected"),
+        "metrics body: {body}"
+    );
 
     // ---- Scenario 3: structured logs include required fields ----
     // Every line emitted to stderr should be valid JSON when not blank, and

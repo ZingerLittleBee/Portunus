@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "client_name": "ghost-edge",
-  "server_endpoint": "127.0.0.1:53539",
-  "server_cert_sha256": "b0a48309ca954177689e266f7cda892e13826978d0dd4131333123b63ce350d4",
-  "server_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBnzCCAUSgAwIBAgIUPonOdQ51Xa4X6LbKj9sYuwp2iBgwCgYIKoZIzj0EAwIw\nJzElMCMGA1UEAwwcWmluZ2VyQmVlcy1NYWNCb29rLVByby5sb2NhbDAeFw0yNjA1\nMDYxNDIwMzhaFw0zNjA1MDMxNDIwMzhaMCcxJTAjBgNVBAMMHFppbmdlckJlZXMt\nTWFjQm9vay1Qcm8ubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARI24Mo\nrmFPhZdR1oMnjL5Ubjc/HoGvUViUurNSiQT/m6EnTYOZzek726lHdhCfb7O7VUb1\nsepTRnNttgoY/7Ejo04wTDBKBgNVHREEQzBBghxaaW5nZXJCZWVzLU1hY0Jvb2st\nUHJvLmxvY2Fsgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYI\nKoZIzj0EAwIDSQAwRgIhAJmdYtBG/SRt9IBifqWKJYzPQBZmEHfrX9q01kQ4cftZ\nAiEAjuB5XK2r4UAVH3sTl/BjpwOJXHrAIr0UxznFBxwI5EE=\n-----END CERTIFICATE-----\n",
-  "token": "KRtyaw_WSbmxlG502WvpZWHcP50X2ig3jUfcoZ-qsao"
-}

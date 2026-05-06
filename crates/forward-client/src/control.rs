@@ -196,7 +196,13 @@ pub async fn run_with_reconnect(
         match connect_once(&bundle, &cancel).await {
             Ok(session) => {
                 attempt = 0;
-                pump(session, &cancel, cfg.drain_timeout, cfg.stats_report_interval).await;
+                pump(
+                    session,
+                    &cancel,
+                    cfg.drain_timeout,
+                    cfg.stats_report_interval,
+                )
+                .await;
                 info!(event = "control.disconnected");
             }
             Err(e) if e.is_terminal() => {

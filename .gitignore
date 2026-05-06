@@ -23,3 +23,6 @@
 
 # macOS
 .DS_Store
+
+# E2E test artifacts (bundles get re-issued on every run; not source of truth)
+crates/forward-e2e/*.bundle.json

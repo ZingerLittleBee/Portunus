@@ -99,6 +99,16 @@ The criterion baseline lives at
 `crates/forward-client/benches/baselines/v0.1.0.json`. Re-running
 `cargo bench` without `--save-baseline` compares against it.
 
+CI runs a regression gate (`.github/workflows/bench.yml`) on PRs touching
+the data-plane code: `scripts/bench_regression_gate.py` fails if any
+benchmark's median is >25% slower than the committed baseline. When an
+intentional perf change lands, recapture and commit the new numbers:
+
+```sh
+cargo bench -p forward-client --bench data_plane -- --save-baseline v0.1.0
+# regenerate the JSON summary (see CHANGELOG for the snippet that built it)
+```
+
 ## License
 
 Apache-2.0. See workspace `Cargo.toml`.

@@ -182,7 +182,11 @@ impl RuleStatsCache {
     }
 
     pub async fn get(&self, rule_id: RuleId) -> Option<RuleStatsSnapshot> {
-        self.inner.read().await.get(&rule_id).map(|e| e.snapshot.clone())
+        self.inner
+            .read()
+            .await
+            .get(&rule_id)
+            .map(|e| e.snapshot.clone())
     }
 
     pub async fn drop_rule(&self, rule_id: RuleId, client_name: &ClientName, metrics: &Metrics) {
