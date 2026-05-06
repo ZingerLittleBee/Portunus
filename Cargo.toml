@@ -24,6 +24,7 @@ missing_panics_doc = "allow"
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros", "io-util", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 
 # gRPC stack (tonic 0.14 split: codegen → tonic-prost-build, runtime → tonic-prost)
 tonic = { version = "0.14", features = ["transport", "tls-aws-lc"] }

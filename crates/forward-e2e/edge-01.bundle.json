@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "client_name": "edge-01",
+  "server_endpoint": "127.0.0.1:58509",
+  "server_cert_sha256": "9a175a39d9df1eb69615beaab6a6031f42f923e7c0964b1edd6280d15f3fda35",
+  "server_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBnTCCAUSgAwIBAgIUALUWTybsrDruA3hbOymBK6oEww8wCgYIKoZIzj0EAwIw\nJzElMCMGA1UEAwwcWmluZ2VyQmVlcy1NYWNCb29rLVByby5sb2NhbDAeFw0yNjA1\nMDYxMTE2MTdaFw0zNjA1MDMxMTE2MTdaMCcxJTAjBgNVBAMMHFppbmdlckJlZXMt\nTWFjQm9vay1Qcm8ubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATFoEMK\nl1kXoktf46sbgInW1/ZaxKQyKT7o6OpDMBNNF65JGSTbAmf1R0xio11+RCEF32SZ\npDkr0qQdFmqhqwYIo04wTDBKBgNVHREEQzBBghxaaW5nZXJCZWVzLU1hY0Jvb2st\nUHJvLmxvY2Fsgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYI\nKoZIzj0EAwIDRwAwRAIgW/Rn1/17sKBiWjhd6x01PxobyYsvCJj/rNHFfI7bwLQC\nIElHHETDCvV2l36wEppshncOefo6nU7mKJJKyYvv6Ym7\n-----END CERTIFICATE-----\n",
+  "token": "qCVqKZz6jOtzXb-JAXfcbX0PLd-ad8DPHlyLqTTi9bM"
+}

@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use forward_core::ForwardError;
 use forward_core::fingerprint;
-use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
+use rcgen::{
+    CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256, SanType,
+};
 
 /// Material loaded (or freshly generated) for the TLS listener.
 #[derive(Debug, Clone)]
@@ -92,6 +94,8 @@ fn enforce_key_perms(_: &Path) -> Result<(), ForwardError> {
 }
 
 fn generate_self_signed() -> Result<ServerTlsMaterial, ForwardError> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
     let hostname = hostname().unwrap_or_else(|| "forward-rs-server".to_string());
     let mut params = CertificateParams::default();
     params.not_before = time::OffsetDateTime::now_utc();
@@ -100,6 +104,21 @@ fn generate_self_signed() -> Result<ServerTlsMaterial, ForwardError> {
     params
         .distinguished_name
         .push(DnType::CommonName, hostname.clone());
+    // SANs: webpki refuses certs with no SAN, so we ship a minimal set covering
+    // the hostname and loopback addresses (devs and tests dial `127.0.0.1`).
+    // Operators with a routable hostname can override the cert in
+    // `<config_dir>/server.crt`.
+    params.subject_alt_names = vec![
+        SanType::DnsName(
+            hostname
+                .clone()
+                .try_into()
+                .map_err(|e| ForwardError::Tls(format!("hostname not valid for SAN: {e}")))?,
+        ),
+        SanType::DnsName("localhost".try_into().unwrap()),
+        SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        SanType::IpAddress(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+    ];
 
     let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
         .map_err(|e| ForwardError::Tls(e.to_string()))?;

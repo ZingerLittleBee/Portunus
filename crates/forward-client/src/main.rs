@@ -1,16 +1,18 @@
 //! `forward-client` binary entry point.
-//!
-//! Real connect/forward logic lands in Phase 3+. This skeleton just parses
-//! flags and exits with `unimplemented!` so other crates can depend on the
-//! workspace member.
 
-mod pinned_verifier;
+mod bundle;
+mod control;
 mod shutdown;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
+use tracing::{error, info};
+
+use crate::bundle::CredentialBundle;
+use crate::shutdown::Shutdown;
 
 #[derive(Parser, Debug)]
 #[command(name = "forward-client", version, about = "forward-rs edge client")]
@@ -37,9 +39,55 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
     init_tracing();
-    unimplemented!("client main loop — implemented in T038 (US1 wiring)");
+
+    // Install rustls crypto provider for TLS dialing.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let bundle = match CredentialBundle::read_from(&cli.bundle) {
+        Ok(b) => Arc::new(b),
+        Err(e) => {
+            error!(event = "client.bundle_load_failed", error = %e, path = %cli.bundle.display());
+            return ExitCode::from(1);
+        }
+    };
+    info!(
+        event = "client.bundle_loaded",
+        client_name = %bundle.client_name,
+        endpoint = %bundle.server_endpoint,
+    );
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            error!(event = "client.runtime_failed", error = %e);
+            return ExitCode::from(1);
+        }
+    };
+
+    let shutdown = Shutdown::new();
+    runtime.block_on(async {
+        let signal_task = tokio::spawn({
+            let s = shutdown.clone();
+            async move { s.signal_handler().await }
+        });
+        let cancel = shutdown.token();
+        control::run_with_reconnect(
+            bundle,
+            cli.reconnect_initial_delay_ms,
+            cli.reconnect_max_delay_secs,
+            cancel,
+        )
+        .await;
+        let _ = signal_task.await;
+    });
+
+    info!(event = "client.stopped");
+    ExitCode::SUCCESS
 }
 
 fn init_tracing() {

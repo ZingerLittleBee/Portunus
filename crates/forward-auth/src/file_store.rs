@@ -41,7 +41,6 @@ struct TokenRecordWire {
 struct TokenRecord {
     client_name: ClientName,
     token_hash: [u8; 32],
-    #[allow(dead_code)]
     issued_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
 }
@@ -176,6 +175,29 @@ impl FileTokenStore {
         write_tmp_then_rename(&tmp, &self.path, parent, &body)?;
         Ok(())
     }
+
+    /// Snapshot of provisioned clients (for `list-clients`). The token hash
+    /// is intentionally NOT exposed.
+    pub fn list(&self) -> Vec<ProvisionedClient> {
+        let state = self.state.read().expect("poisoned");
+        let mut out: Vec<ProvisionedClient> = state
+            .values()
+            .map(|r| ProvisionedClient {
+                client_name: r.client_name.clone(),
+                issued_at: r.issued_at,
+                revoked_at: r.revoked_at,
+            })
+            .collect();
+        out.sort_by(|a, b| a.client_name.as_str().cmp(b.client_name.as_str()));
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProvisionedClient {
+    pub client_name: ClientName,
+    pub issued_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 fn nano_random_tag() -> u64 {
