@@ -1,0 +1,25 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock: commit for binaries, ignore for libraries.
+# Default here assumes binary; remove the next line if this becomes a library crate.
+# Cargo.lock
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.local
+
+# Claude Code local-only files
+.claude/settings.local.json
+.claude/local/
+.claude/.credentials*
+
+# macOS
+.DS_Store
