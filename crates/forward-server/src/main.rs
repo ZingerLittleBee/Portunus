@@ -3,6 +3,7 @@
 mod bundle;
 mod clients;
 mod grpc;
+mod metrics;
 mod operator;
 mod rules;
 mod serve;
@@ -90,6 +91,8 @@ enum Cmd {
         rule_id: u64,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
     },
 }
 
@@ -199,10 +202,11 @@ fn run(cli: Cli) -> Result<(), u8> {
             format,
             http_endpoint,
         } => rule_cli::list(&http_endpoint, client.as_deref(), format),
-        Cmd::RuleStats { .. } => {
-            eprintln!("rule-stats is implemented in US3 (Phase 5)");
-            Err(1)
-        }
+        Cmd::RuleStats {
+            rule_id,
+            format,
+            http_endpoint,
+        } => rule_cli::stats(&http_endpoint, rule_id, format),
     }
 }
 
@@ -240,22 +244,30 @@ fn build_offline_state(
         1u8
     })?);
     let endpoint = advertised_endpoint.unwrap_or_else(|| "127.0.0.1:7443".to_string());
-    Ok(AppState::new(
+    AppState::new(
         tokens,
         ConnectedClients::default(),
         endpoint,
         tls.leaf_fingerprint_hex,
         tls.cert_pem,
-    ))
+    )
+    .map_err(|e| {
+        eprintln!("metrics: {e}");
+        1u8
+    })
 }
 
 fn init_tracing() {
+    use forward_core::log_redact::RedactionLayer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, fmt};
-    let _ = fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let json_layer = fmt::layer().json().with_writer(std::io::stderr);
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(json_layer)
+        .with(RedactionLayer::new())
         .try_init();
 }

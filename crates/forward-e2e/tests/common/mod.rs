@@ -110,6 +110,17 @@ impl ServerHandle {
             Some((grpc, http))
         })
     }
+
+    /// Same as [`Self::wait_listening`] but additionally returns the
+    /// `metrics` endpoint advertised in the `server.listening` event.
+    pub fn wait_listening_full(&self, timeout: Duration) -> Option<(String, String, String)> {
+        wait_for(timeout, || {
+            let grpc = self.read_field("server.listening", "grpc")?;
+            let http = self.read_field("server.listening", "operator_http")?;
+            let metrics = self.read_field("server.listening", "metrics")?;
+            Some((grpc, http, metrics))
+        })
+    }
 }
 
 impl Drop for ServerHandle {
@@ -319,6 +330,28 @@ pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode 
         .send()
         .expect("POST revoke");
     resp.status()
+}
+
+/// Fetch the rule-stats snapshot for `rule_id`. Returns `None` if the server
+/// answers 404 (no StatsReport observed yet) so callers can spin in
+/// `wait_for`.
+pub fn rule_stats_http(operator_http_addr: &str, rule_id: u64) -> Option<serde_json::Value> {
+    let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}/stats");
+    let resp = reqwest::blocking::get(&url).expect("GET /v1/rules/{rule_id}/stats");
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return None;
+    }
+    assert!(resp.status().is_success(), "rule-stats failed: {resp:?}");
+    Some(resp.json().expect("parse JSON body"))
+}
+
+/// Fetch raw `/metrics` body from the metrics endpoint. Used by the
+/// observability tests to assert collector shapes.
+pub fn fetch_metrics_text(metrics_addr: &str) -> String {
+    let url = format!("http://{metrics_addr}/metrics");
+    let resp = reqwest::blocking::get(&url).expect("GET /metrics");
+    assert!(resp.status().is_success(), "/metrics failed: {resp:?}");
+    resp.text().expect("metrics body")
 }
 
 /// Run `forward-server revoke <name>`. Returns the exit status.

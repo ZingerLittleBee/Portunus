@@ -73,6 +73,7 @@ impl Control for ControlService {
                 status_waiters.clone(),
             )
             .await;
+        state.metrics.clients_connected.inc();
         info!(
             event = "client.connected",
             client_name = %identity.client_name,
@@ -93,6 +94,7 @@ impl Control for ControlService {
                 .clients
                 .unregister(&identity.client_name, session_id)
                 .await;
+            state.metrics.clients_connected.dec();
             return Err(Status::cancelled("client_dropped_before_welcome"));
         }
 
@@ -140,6 +142,7 @@ impl Control for ControlService {
                 .clients
                 .unregister(&pump_identity.client_name, session_id)
                 .await;
+            pump_state.metrics.clients_connected.dec();
             info!(
                 event = "client.disconnected",
                 client_name = %pump_identity.client_name,
@@ -153,11 +156,12 @@ impl Control for ControlService {
 }
 
 async fn handle_client_message(
-    _state: &AppState,
+    state: &AppState,
     identity: &ClientIdentity,
     waiters: &StatusWaiters,
     msg: ClientMessage,
 ) {
+    use forward_core::RuleId;
     use forward_proto::v1::client_message::Payload;
     match msg.payload {
         Some(Payload::Hello(h)) => {
@@ -186,9 +190,32 @@ async fn handle_client_message(
                 );
             }
         }
-        Some(Payload::StatsReport(_)) | None => {
-            // US3 (StatsReport) / no payload — currently no-op.
+        Some(Payload::StatsReport(report)) => {
+            // T060: fold each per-rule entry into the cache + Prometheus
+            // counters. `observe` handles delta computation and rebaseline on
+            // client restart.
+            let entries = report.stats.len();
+            for entry in report.stats {
+                state
+                    .stats_cache
+                    .observe(
+                        &identity.client_name,
+                        RuleId(entry.rule_id),
+                        entry.bytes_in,
+                        entry.bytes_out,
+                        entry.active_connections,
+                        &state.metrics,
+                    )
+                    .await;
+            }
+            info!(
+                event = "client.stats_report",
+                client_name = %identity.client_name,
+                rule_count = entries,
+                sent_at_unix_ms = report.sent_at_unix_ms,
+            );
         }
+        None => {}
     }
 }
 

@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::OutputFormat;
@@ -146,6 +147,57 @@ pub fn list(endpoint: &str, client_filter: Option<&str>, format: OutputFormat) -
         }
         OutputFormat::Text => {
             print!("{}", render_rules_text(&rules));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct StatsResponse {
+    rule_id: u64,
+    client_name: String,
+    bytes_in: u64,
+    bytes_out: u64,
+    active_connections: u32,
+    updated_at: DateTime<Utc>,
+}
+
+pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat) -> Result<(), u8> {
+    let url = format!("http://{endpoint}/v1/rules/{rule_id}/stats");
+    let resp = client()?.get(&url).send().map_err(|e| {
+        eprintln!("error: http: {e}");
+        1
+    })?;
+    if !resp.status().is_success() {
+        return Err(extract_error(resp));
+    }
+    let body: StatsResponse = resp.json().map_err(|e| {
+        eprintln!("error: parse: {e}");
+        1
+    })?;
+    match format {
+        OutputFormat::Json => {
+            let s = serde_json::to_string_pretty(&serde_json::json!({
+                "rule_id": body.rule_id,
+                "client_name": body.client_name,
+                "bytes_in": body.bytes_in,
+                "bytes_out": body.bytes_out,
+                "active_connections": body.active_connections,
+                "updated_at": body.updated_at,
+            }))
+            .map_err(|_| 1u8)?;
+            println!("{s}");
+        }
+        OutputFormat::Text => {
+            println!(
+                "rule_id={} client={} bytes_in={} bytes_out={} active={} updated_at={}",
+                body.rule_id,
+                body.client_name,
+                body.bytes_in,
+                body.bytes_out,
+                body.active_connections,
+                body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            );
         }
     }
     Ok(())

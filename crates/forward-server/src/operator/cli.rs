@@ -370,6 +370,10 @@ pub async fn push_rule(
 /// from the store", not "client confirmed teardown".
 pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, OperatorError> {
     let removed = state.rules.remove(rule_id).await?;
+    state
+        .stats_cache
+        .drop_rule(rule_id, &removed.client_name, &state.metrics)
+        .await;
     let request_id = RequestId::new().to_string();
     if let Some((outbound, _waiters)) = state.clients.handles(&removed.client_name).await {
         let update = ServerMessage {
@@ -403,6 +407,20 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
         client_name = %removed.client_name,
     );
     Ok(removed)
+}
+
+/// `rule-stats <rule_id>` (FR-024). Returns the latest cached snapshot fed by
+/// the client's StatsReport stream. Returns `RuleNotFound` if either the rule
+/// store has no record of this id OR no StatsReport has arrived yet.
+pub async fn rule_stats(
+    state: &AppState,
+    rule_id: RuleId,
+) -> Result<crate::metrics::RuleStatsSnapshot, OperatorError> {
+    state
+        .stats_cache
+        .get(rule_id)
+        .await
+        .ok_or(OperatorError::RuleNotFound)
 }
 
 /// `list-rules [--client <name>]`.

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bundle::CredentialBundle;
+use crate::metrics::RuleStatsSnapshot;
 use crate::operator::ClientView;
 use crate::operator::cli::{self, OperatorError};
 use crate::rules::Rule;
@@ -30,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/rules", get(get_rules).post(post_rules))
         .route("/v1/rules/{rule_id}", delete(delete_rule))
+        .route("/v1/rules/{rule_id}/stats", get(get_rule_stats))
         .with_state(state)
 }
 
@@ -118,6 +120,14 @@ async fn get_rules(
     let client = params.get("client").map(String::as_str);
     let rules = cli::list_rules(&state, client).await?;
     Ok(Json(rules))
+}
+
+async fn get_rule_stats(
+    State(state): State<Arc<AppState>>,
+    Path(rule_id): Path<u64>,
+) -> Result<Json<RuleStatsSnapshot>, ApiError> {
+    let snap = cli::rule_stats(&state, RuleId(rule_id)).await?;
+    Ok(Json(snap))
 }
 
 #[derive(Debug, Serialize)]

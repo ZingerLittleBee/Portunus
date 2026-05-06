@@ -83,6 +83,7 @@ fn main() -> ExitCode {
             initial_delay_ms: cli.reconnect_initial_delay_ms,
             max_delay_secs: cli.reconnect_max_delay_secs,
             drain_timeout: Duration::from_secs(cli.shutdown_drain_timeout_secs),
+            stats_report_interval: Duration::from_secs(cli.stats_report_interval_secs),
         };
         control::run_with_reconnect(bundle, reconnect, cancel).await;
         let _ = signal_task.await;
@@ -93,12 +94,16 @@ fn main() -> ExitCode {
 }
 
 fn init_tracing() {
+    use forward_core::log_redact::RedactionLayer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, fmt};
-    let _ = fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let json_layer = fmt::layer().json().with_writer(std::io::stderr);
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(json_layer)
+        .with(RedactionLayer::new())
         .try_init();
 }

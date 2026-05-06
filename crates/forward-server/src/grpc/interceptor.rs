@@ -12,43 +12,53 @@ use forward_auth::{AuthError, AuthFailureReason, Authenticator, ClientIdentity};
 use tonic::{Request, Status};
 use tracing::warn;
 
+use crate::metrics::Metrics;
+
 #[derive(Clone)]
 pub struct AuthInterceptor {
     pub auth: Arc<dyn Authenticator>,
+    pub metrics: Arc<Metrics>,
 }
 
 impl AuthInterceptor {
     #[must_use]
-    pub fn new(auth: Arc<dyn Authenticator>) -> Self {
-        Self { auth }
+    pub fn new(auth: Arc<dyn Authenticator>, metrics: Arc<Metrics>) -> Self {
+        Self { auth, metrics }
+    }
+
+    fn record_failure(&self, reason: &AuthFailureReason) {
+        self.metrics
+            .auth_failures_total
+            .with_label_values(&[&reason.to_string()])
+            .inc();
     }
 
     pub fn intercept<T>(&self, mut req: Request<T>) -> Result<Request<T>, Status> {
         let token = match req.metadata().get("authorization") {
             None => {
-                warn!(event = "auth.failure", reason = %AuthFailureReason::Missing);
-                return Err(Status::unauthenticated(
-                    AuthFailureReason::Missing.to_string(),
-                ));
+                let reason = AuthFailureReason::Missing;
+                warn!(event = "auth.failure", reason = %reason);
+                self.record_failure(&reason);
+                return Err(Status::unauthenticated(reason.to_string()));
             }
             Some(v) => {
                 if let Ok(s) = v.to_str() {
                     s.to_owned()
                 } else {
-                    warn!(event = "auth.failure", reason = %AuthFailureReason::Malformed);
-                    return Err(Status::unauthenticated(
-                        AuthFailureReason::Malformed.to_string(),
-                    ));
+                    let reason = AuthFailureReason::Malformed;
+                    warn!(event = "auth.failure", reason = %reason);
+                    self.record_failure(&reason);
+                    return Err(Status::unauthenticated(reason.to_string()));
                 }
             }
         };
         let token = if let Some(rest) = token.strip_prefix("Bearer ") {
             rest.trim()
         } else {
-            warn!(event = "auth.failure", reason = %AuthFailureReason::Malformed);
-            return Err(Status::unauthenticated(
-                AuthFailureReason::Malformed.to_string(),
-            ));
+            let reason = AuthFailureReason::Malformed;
+            warn!(event = "auth.failure", reason = %reason);
+            self.record_failure(&reason);
+            return Err(Status::unauthenticated(reason.to_string()));
         };
         match self.auth.verify(token) {
             Ok(identity) => {
@@ -57,10 +67,16 @@ impl AuthInterceptor {
             }
             Err(AuthError::Failed(reason)) => {
                 warn!(event = "auth.failure", reason = %reason);
+                self.record_failure(&reason);
                 Err(Status::unauthenticated(reason.to_string()))
             }
             Err(other) => {
                 warn!(event = "auth.failure", reason = %other);
+                // Emit under a stable bucket so alerting groups consistently.
+                self.metrics
+                    .auth_failures_total
+                    .with_label_values(&["internal_error"])
+                    .inc();
                 Err(Status::unauthenticated("token_verify_error"))
             }
         }

@@ -10,8 +10,10 @@
 //!   `Removed` per rule lifetime.
 
 pub mod proxy;
+pub mod stats;
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use forward_core::RuleId;
@@ -20,6 +22,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+use crate::forwarder::stats::RuleStats;
 
 /// Outcome the forwarder reports back to the control loop. The control loop
 /// translates each into a `RuleStatus` message on the bidi gRPC stream.
@@ -53,6 +57,7 @@ pub async fn run(
     status_tx: mpsc::Sender<RuleStatusEvent>,
     cancel: CancellationToken,
     drain_timeout: Duration,
+    stats: Arc<RuleStats>,
 ) {
     let bind_addr = (Ipv4Addr::UNSPECIFIED, rule.listen_port);
     let listener = match TcpListener::bind(bind_addr).await {
@@ -106,8 +111,9 @@ pub async fn run(
                     let target_port = rule.target_port;
                     let rule_id = rule.rule_id;
                     let conn_cancel = proxy_cancel.clone();
+                    let conn_stats = Arc::clone(&stats);
                     in_flight.spawn(async move {
-                        match proxy::proxy(sock, &target_host, target_port, conn_cancel).await {
+                        match proxy::proxy(sock, &target_host, target_port, conn_cancel, Some(conn_stats)).await {
                             Ok((bin, bout)) => {
                                 info!(
                                     event = "rule.conn_closed",
@@ -243,6 +249,7 @@ mod tests {
                 tx,
                 cancel_run,
                 Duration::from_secs(2),
+                RuleStats::new(),
             )
             .await;
         });
@@ -291,6 +298,7 @@ mod tests {
             tx,
             cancel,
             Duration::from_millis(100),
+            RuleStats::new(),
         )
         .await;
         let evt = rx.recv().await.unwrap();
@@ -324,6 +332,7 @@ mod tests {
                 tx,
                 cancel_run,
                 Duration::from_millis(500),
+                RuleStats::new(),
             )
             .await;
         });
@@ -381,6 +390,7 @@ mod tests {
                 tx,
                 cancel_run,
                 Duration::from_secs(5),
+                RuleStats::new(),
             )
             .await;
         });
@@ -456,6 +466,7 @@ mod tests {
                     tx,
                     cancel_run,
                     Duration::from_secs(5),
+                    RuleStats::new(),
                 )
                 .await;
             }));
@@ -530,6 +541,7 @@ mod tests {
                 // Generous drain timeout — we'll keep the connection alive
                 // by trickling data and assert it can still echo after cancel.
                 Duration::from_secs(3),
+                RuleStats::new(),
             )
             .await;
         });

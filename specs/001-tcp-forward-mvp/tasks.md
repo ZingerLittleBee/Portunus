@@ -140,19 +140,19 @@ Cargo workspace at repo root with crates under `crates/`:
 
 ### Tests for User Story 3 (write FIRST, observe FAILING)
 
-- [ ] T055 [P] [US3] Integration test: per-rule `bytes_in`/`bytes_out` from `rule-stats` is within ±1KB of actual after 5s settle — `crates/forward-e2e/tests/observability.rs::test_stats_within_tolerance`
-- [ ] T056 [P] [US3] Integration test: `GET /metrics` returns valid Prometheus text including `forward_rule_bytes_in_total`, `forward_rule_bytes_out_total`, `forward_rule_active_connections`, `forward_clients_connected`, `forward_auth_failures_total` — `crates/forward-e2e/tests/observability.rs::test_prometheus_endpoint`
-- [ ] T057 [P] [US3] E2E test covering all 3 acceptance scenarios of US3, including log-shape assertions (every event has timestamp / event / client_name / rule_id where applicable) — `crates/forward-e2e/tests/observability.rs::test_user_story_3_acceptance`
+- [X] T055 [P] [US3] Integration test: per-rule `bytes_in`/`bytes_out` from `rule-stats` is within ±1KB of actual after 5s settle — `crates/forward-e2e/tests/observability.rs::test_stats_within_tolerance`
+- [X] T056 [P] [US3] Integration test: `GET /metrics` returns valid Prometheus text including `forward_rule_bytes_in_total`, `forward_rule_bytes_out_total`, `forward_rule_active_connections`, `forward_clients_connected`, `forward_auth_failures_total` — `crates/forward-e2e/tests/observability.rs::test_prometheus_endpoint`
+- [X] T057 [P] [US3] E2E test covering all 3 acceptance scenarios of US3, including log-shape assertions (every event has timestamp / event / client_name / rule_id where applicable) — `crates/forward-e2e/tests/observability.rs::test_user_story_3_acceptance`
 
 ### Implementation for User Story 3
 
-- [ ] T058 [US3] Create `crates/forward-client/src/forwarder/stats.rs` with `pub struct RuleStats { bytes_in: AtomicU64, bytes_out: AtomicU64, active_connections: AtomicU32 }`; modify `proxy()` from T050 to increment counters on accept/close and after `copy_bidirectional` returns
-- [ ] T059 [US3] In `crates/forward-client/src/control.rs`, spawn a periodic task (interval = `stats_report_interval_secs`, default 5s) that walks all active rules and sends `ClientMessage::StatsReport { stats: [...] }` over the bidi stream
-- [ ] T060 [US3] In `crates/forward-server/src/grpc/service.rs`, on inbound `StatsReport`, update a `RuleStatsCache: Arc<RwLock<HashMap<RuleId, RuleStats>>>` and feed deltas into the Prometheus collectors (T062)
-- [ ] T061 [US3] In `crates/forward-server/src/operator/cli.rs` and `http.rs`, implement `rule-stats <rule_id>` returning current cache values
-- [ ] T062 [US3] Create `crates/forward-server/src/metrics.rs` registering Prometheus collectors per Decision 9: `forward_clients_connected` (gauge), `forward_rule_bytes_in_total{client,rule}` (counter), `forward_rule_bytes_out_total{client,rule}` (counter), `forward_rule_active_connections{client,rule}` (gauge), `forward_auth_failures_total{reason}` (counter)
-- [ ] T063 [US3] Spawn an axum service on `metrics_listen` (default `127.0.0.1:7081`) serving `GET /metrics` via `prometheus::TextEncoder`; wire shutdown token; replace the placeholder reserved in T035 with this real handler. Add an inline test asserting `listener.local_addr()?.ip().is_loopback()` — second half of FR-022 verification
-- [ ] T064 [US3] Audit every `tracing::info!`/`warn!`/`error!` call across both binaries to ensure: (a) JSON layer is enabled by default, (b) correlation `request_id` is propagated through `RuleUpdate`/`RuleStatus` and into client logs, (c) the redaction layer elides any field whose name matches `token|secret|private_key`. Add a tiny `tracing_layer` test confirming redaction
+- [X] T058 [US3] Create `crates/forward-client/src/forwarder/stats.rs` with `pub struct RuleStats { bytes_in: AtomicU64, bytes_out: AtomicU64, active_connections: AtomicU32 }`; modify `proxy()` from T050 to increment counters on accept/close and after `copy_bidirectional` returns
+- [X] T059 [US3] In `crates/forward-client/src/control.rs`, spawn a periodic task (interval = `stats_report_interval_secs`, default 5s) that walks all active rules and sends `ClientMessage::StatsReport { stats: [...] }` over the bidi stream
+- [X] T060 [US3] In `crates/forward-server/src/grpc/service.rs`, on inbound `StatsReport`, update a `RuleStatsCache: Arc<RwLock<HashMap<RuleId, RuleStats>>>` and feed deltas into the Prometheus collectors (T062)
+- [X] T061 [US3] In `crates/forward-server/src/operator/cli.rs` and `http.rs`, implement `rule-stats <rule_id>` returning current cache values
+- [X] T062 [US3] Create `crates/forward-server/src/metrics.rs` registering Prometheus collectors per Decision 9: `forward_clients_connected` (gauge), `forward_rule_bytes_in_total{client,rule}` (counter), `forward_rule_bytes_out_total{client,rule}` (counter), `forward_rule_active_connections{client,rule}` (gauge), `forward_auth_failures_total{reason}` (counter)
+- [X] T063 [US3] Spawn an axum service on `metrics_listen` (default `127.0.0.1:7081`) serving `GET /metrics` via `prometheus::TextEncoder`; wire shutdown token; replace the placeholder reserved in T035 with this real handler. Add an inline test asserting `listener.local_addr()?.ip().is_loopback()` — second half of FR-022 verification
+- [X] T064 [US3] Audit every `tracing::info!`/`warn!`/`error!` call across both binaries to ensure: (a) JSON layer is enabled by default, (b) correlation `request_id` is propagated through `RuleUpdate`/`RuleStatus` and into client logs, (c) the redaction layer elides any field whose name matches `token|secret|private_key`. Add a tiny `tracing_layer` test confirming redaction
 
 **Checkpoint**: All three user stories pass independently. SC-006 + SC-007 verified.
 

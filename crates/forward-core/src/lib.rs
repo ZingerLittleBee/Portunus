@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 pub mod fingerprint;
 pub mod id;
+pub mod log_redact;
 
 pub use error::ForwardError;
 pub use id::{ClientName, ClientNameError, RequestId, RuleId};

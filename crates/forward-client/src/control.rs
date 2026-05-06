@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use forward_core::RuleId;
 use forward_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, RuleAction, RuleStatus as ProtoRuleStatus,
-    ServerMessage, client_message, control_client::ControlClient, server_message,
+    ActivationOutcome, ClientMessage, Hello, RuleAction, RuleStats as ProtoRuleStats,
+    RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport, client_message,
+    control_client::ControlClient, server_message,
 };
 use rand::Rng;
 use thiserror::Error;
@@ -23,6 +24,7 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{info, warn};
 
 use crate::bundle::CredentialBundle;
+use crate::forwarder::stats::RuleStats;
 use crate::forwarder::{self, ClientRule, RuleStatusEvent};
 
 const PROTOCOL_VERSION: &str = "1.0.0";
@@ -174,6 +176,8 @@ pub struct ReconnectConfig {
     pub initial_delay_ms: u64,
     pub max_delay_secs: u64,
     pub drain_timeout: Duration,
+    /// Period between `StatsReport` messages sent on the bidi stream.
+    pub stats_report_interval: Duration,
 }
 
 /// Reconnect loop with full-jitter exponential backoff.
@@ -192,7 +196,7 @@ pub async fn run_with_reconnect(
         match connect_once(&bundle, &cancel).await {
             Ok(session) => {
                 attempt = 0;
-                pump(session, &cancel, cfg.drain_timeout).await;
+                pump(session, &cancel, cfg.drain_timeout, cfg.stats_report_interval).await;
                 info!(event = "control.disconnected");
             }
             Err(e) if e.is_terminal() => {
@@ -230,11 +234,23 @@ struct RuleSlot {
     cancel: CancellationToken,
     push_request_id: String,
     remove_request_id: Option<String>,
+    /// Shared with the forwarder; the periodic stats task reads snapshots
+    /// from this for `StatsReport`.
+    stats: Arc<RuleStats>,
 }
 
-async fn pump(mut session: LiveSession, cancel: &CancellationToken, drain_timeout: Duration) {
+async fn pump(
+    mut session: LiveSession,
+    cancel: &CancellationToken,
+    drain_timeout: Duration,
+    stats_report_interval: Duration,
+) {
     let mut rules: HashMap<RuleId, RuleSlot> = HashMap::new();
     let (status_tx, mut status_rx) = mpsc::channel::<RuleStatusEvent>(64);
+    let mut stats_tick = tokio::time::interval(stats_report_interval);
+    // Skip the immediate first tick (interval fires at t=0).
+    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let _ = stats_tick.tick().await;
 
     loop {
         tokio::select! {
@@ -253,6 +269,9 @@ async fn pump(mut session: LiveSession, cancel: &CancellationToken, drain_timeou
                 if let Some(evt) = event {
                     forward_status(evt, &mut rules, &session.outbound).await;
                 }
+            }
+            _ = stats_tick.tick() => {
+                send_stats_report(&rules, &session.outbound).await;
             }
         }
     }
@@ -320,8 +339,17 @@ fn handle_server_message(
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
+            let stats = RuleStats::new();
+            let task_stats = Arc::clone(&stats);
             tokio::spawn(async move {
-                forwarder::run(client_rule, task_status_tx, task_cancel, drain_timeout).await;
+                forwarder::run(
+                    client_rule,
+                    task_status_tx,
+                    task_cancel,
+                    drain_timeout,
+                    task_stats,
+                )
+                .await;
             });
             rules.insert(
                 rule_id,
@@ -329,6 +357,7 @@ fn handle_server_message(
                     cancel,
                     push_request_id: request_id,
                     remove_request_id: None,
+                    stats,
                 },
             );
         }
@@ -416,5 +445,42 @@ async fn forward_status(
             rule_id = %rule_id,
             error = %e,
         );
+    }
+}
+
+/// Snapshot every active rule's counters and emit a single `StatsReport` on
+/// the bidi stream. Sends only when at least one rule exists; an empty report
+/// would be wasteful chatter.
+async fn send_stats_report(
+    rules: &HashMap<RuleId, RuleSlot>,
+    outbound: &mpsc::Sender<ClientMessage>,
+) {
+    if rules.is_empty() {
+        return;
+    }
+    let stats: Vec<ProtoRuleStats> = rules
+        .iter()
+        .map(|(rule_id, slot)| {
+            let (bin, bout, active) = slot.stats.snapshot();
+            ProtoRuleStats {
+                rule_id: rule_id.0,
+                bytes_in: bin,
+                bytes_out: bout,
+                active_connections: active,
+            }
+        })
+        .collect();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let msg = ClientMessage {
+        payload: Some(client_message::Payload::StatsReport(StatsReport {
+            sent_at_unix_ms: now_ms,
+            stats,
+        })),
+    };
+    if let Err(e) = outbound.send(msg).await {
+        warn!(event = "control.stats_send_failed", error = %e);
     }
 }
