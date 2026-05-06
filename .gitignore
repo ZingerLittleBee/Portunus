@@ -24,5 +24,6 @@
 # macOS
 .DS_Store
 
-# E2E test artifacts (bundles get re-issued on every run; not source of truth)
-crates/forward-e2e/*.bundle.json
+# Credential bundles — issued by `provision-client` and contain bearer
+# tokens; never source of truth, never check in. Match anywhere in the tree.
+*.bundle.json
