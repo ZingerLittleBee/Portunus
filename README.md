@@ -60,6 +60,24 @@ The full step-by-step walkthrough — including key fingerprint pinning,
 revocation, and the SC-001 5-minute target — is in
 [`specs/001-tcp-forward-mvp/quickstart.md`](specs/001-tcp-forward-mvp/quickstart.md).
 
+## Deploy
+
+Production scaffolding lives under [`deploy/`](deploy):
+
+- [`deploy/systemd/`](deploy/systemd) — `forward-server.service` and
+  `forward-client.service` with hardened defaults (`User=` + `ProtectSystem=`
+  + `CapabilityBoundingSet=` etc.) plus an `install.sh` that creates the
+  service users and lays out `/etc/forward/` + `/var/lib/forward/`.
+- [`deploy/docker/`](deploy/docker) — `Dockerfile.server` and
+  `Dockerfile.client` (multi-stage `rust:1.88` → `distroless/cc:nonroot`)
+  and a local-only `docker-compose.yml` for kicking the tires.
+- [`deploy/server.toml.example`](deploy/server.toml.example) —
+  documented sample config matching the systemd unit layout.
+
+Day-1 install, day-2 operations (provision, revoke, replace cert,
+backup), observability, and an honest list of v0.1.0 limitations are
+in [`docs/runbook.md`](docs/runbook.md).
+
 ## Operator API
 
 The CLI subcommands and the loopback HTTP API
@@ -77,6 +95,12 @@ crates/
   forward-server/   Control-plane binary: gRPC + operator HTTP + Prometheus
   forward-client/   Edge binary: bidi gRPC stream + TCP forwarding listeners
   forward-e2e/      Process-level integration tests
+deploy/
+  systemd/          forward-{server,client}.service + install.sh
+  docker/           Dockerfile.{server,client} + local docker-compose.yml
+  server.toml.example
+docs/
+  runbook.md        Day-1 install, day-2 ops, troubleshooting
 specs/001-tcp-forward-mvp/
   spec.md           User stories + acceptance criteria
   plan.md           Architecture, dependencies, technical context

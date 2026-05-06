@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+.idea/
+.vscode/
+.specify/
+.claude/
+specs/
+docs/
+deploy/
+crates/forward-e2e/*.bundle.json
+*.bundle.json
+*.log
+.DS_Store

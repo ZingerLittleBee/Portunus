@@ -1,0 +1,42 @@
+# forward-rs server configuration (v0.1.0).
+# Used by `forward-server --config /etc/forward/server.toml serve`.
+# Defaults match the deploy/systemd/forward-server.service layout.
+# Schema: see crates/forward-core/src/config.rs (ServerConfig).
+
+# gRPC control-plane listener — clients dial this address.
+# Bind to 0.0.0.0 for cross-host clients, or to a specific interface
+# (e.g. "10.0.0.5:7443") to restrict reachability. Loopback is fine for
+# co-located server+client testing.
+control_listen = "0.0.0.0:7443"
+
+# Operator HTTP API (provision-client / push-rule / list-rules / rule-stats).
+# MUST stay on loopback: there is no per-request auth — the API trusts
+# anyone with shell access to the server host. Enforced at startup.
+operator_http_listen = "127.0.0.1:7080"
+
+# Prometheus /metrics endpoint. Same loopback constraint.
+# Scrape by running prometheus on the same host (or a sidecar).
+metrics_listen = "127.0.0.1:7081"
+
+# Self-signed TLS material. Both files are auto-generated on first run
+# if missing. The cert SAN includes hostname + "localhost" + 127.0.0.1
+# only — for routable deployments, replace these with operator-managed
+# materials whose SAN covers the address(es) clients will dial.
+# server.key MUST be mode 0600 (the loader rejects looser perms).
+tls_cert_path = "/var/lib/forward/server.crt"
+tls_key_path = "/var/lib/forward/server.key"
+
+# Bearer-token store. Created on first `provision-client`. Mode 0600.
+# Tokens are 256-bit random secrets; keep this file backed up.
+token_store_path = "/var/lib/forward/tokens.json"
+
+# Graceful drain timeout for forwarded connections on SIGINT/SIGTERM.
+# In-flight rules get up to this many seconds to finish before the
+# kernel reaps remaining sockets. Match the systemd unit's
+# TimeoutStopSec to avoid kill -9 mid-drain.
+shutdown_drain_timeout_secs = 30
+
+# Log format: "json" (default — structured) or "compact".
+# Production: keep "json" so logs ship cleanly to a collector.
+# Local dev: switch to "compact" for human readability.
+log_format = "json"
