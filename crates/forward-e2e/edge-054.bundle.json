@@ -1,8 +1,8 @@
 {
   "version": 1,
   "client_name": "edge-054",
-  "server_endpoint": "127.0.0.1:58526",
-  "server_cert_sha256": "a7737bcdab5746e2eae771a7e3d07ed2b3a10fecdf2293dd83c979f519d37d23",
-  "server_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBnTCCAUSgAwIBAgIUBPiUl43A72j+8P1sQ41/GCQgfYQwCgYIKoZIzj0EAwIw\nJzElMCMGA1UEAwwcWmluZ2VyQmVlcy1NYWNCb29rLVByby5sb2NhbDAeFw0yNjA1\nMDYxMTE2MThaFw0zNjA1MDMxMTE2MThaMCcxJTAjBgNVBAMMHFppbmdlckJlZXMt\nTWFjQm9vay1Qcm8ubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQgTbhS\nWJBea5aLop2WCgq4X0KMP+6ToIh69/jvUcArZMOGFOOIZlcvoyQLAAobiATbg1zt\nKjldg57bJusUPcS/o04wTDBKBgNVHREEQzBBghxaaW5nZXJCZWVzLU1hY0Jvb2st\nUHJvLmxvY2Fsgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYI\nKoZIzj0EAwIDRwAwRAIgAVcXTjnTfdgnBst2Bxrx2Lb+s3v+havLMJ1H5Eg7+XoC\nIFNOVvnZhI0mcsNmKU5cDMZp0jlk/uBS/xDTA/E/K3fJ\n-----END CERTIFICATE-----\n",
-  "token": "tOpyHKvoeLF5NSWtD3OWTOStfycqBUdqf3pvSQll-9s"
+  "server_endpoint": "127.0.0.1:52966",
+  "server_cert_sha256": "fcda01aca6d9dcdda095ff3529dcf8975719ded8991a0149e1c3845dd0422903",
+  "server_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBnzCCAUSgAwIBAgIUdKYbDjxdF6YT+PIx6lNpmg1+ebYwCgYIKoZIzj0EAwIw\nJzElMCMGA1UEAwwcWmluZ2VyQmVlcy1NYWNCb29rLVByby5sb2NhbDAeFw0yNjA1\nMDYxMjE2MjdaFw0zNjA1MDMxMjE2MjdaMCcxJTAjBgNVBAMMHFppbmdlckJlZXMt\nTWFjQm9vay1Qcm8ubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARSP+6c\nz8glx+CkY8rpkw8ESw98f3yooq6jxHqSPkM8Obh1N8Ka5lwp6ie2Z1s/wxiyCRWl\nRRzEmfpTtncKTr8so04wTDBKBgNVHREEQzBBghxaaW5nZXJCZWVzLU1hY0Jvb2st\nUHJvLmxvY2Fsgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYI\nKoZIzj0EAwIDSQAwRgIhAJh7IsEWjuaeCQTJ5ml53iPlDokKx1Q6a14exm13uWzB\nAiEA36D3bcoczsf/+uzEgEP1KlrdmtbE1J5s2G/LrWi9EMk=\n-----END CERTIFICATE-----\n",
+  "token": "x7m9YsBBhSGhi8ue2gkJCqxZfN5i3mxutLTqDbTov4M"
 }

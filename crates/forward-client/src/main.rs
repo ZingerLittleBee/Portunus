@@ -2,16 +2,19 @@
 
 mod bundle;
 mod control;
+mod forwarder;
 mod shutdown;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use tracing::{error, info};
 
 use crate::bundle::CredentialBundle;
+use crate::control::ReconnectConfig;
 use crate::shutdown::Shutdown;
 
 #[derive(Parser, Debug)]
@@ -76,13 +79,12 @@ fn main() -> ExitCode {
             async move { s.signal_handler().await }
         });
         let cancel = shutdown.token();
-        control::run_with_reconnect(
-            bundle,
-            cli.reconnect_initial_delay_ms,
-            cli.reconnect_max_delay_secs,
-            cancel,
-        )
-        .await;
+        let reconnect = ReconnectConfig {
+            initial_delay_ms: cli.reconnect_initial_delay_ms,
+            max_delay_secs: cli.reconnect_max_delay_secs,
+            drain_timeout: Duration::from_secs(cli.shutdown_drain_timeout_secs),
+        };
+        control::run_with_reconnect(bundle, reconnect, cancel).await;
         let _ = signal_task.await;
     });
 

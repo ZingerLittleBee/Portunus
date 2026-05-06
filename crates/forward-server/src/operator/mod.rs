@@ -7,6 +7,7 @@
 
 pub mod cli;
 pub mod http;
+pub mod rule_cli;
 
 use serde::Serialize;
 

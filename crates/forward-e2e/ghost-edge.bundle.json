@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "client_name": "ghost-edge",
+  "server_endpoint": "127.0.0.1:52946",
+  "server_cert_sha256": "106ec3d65c75f756f8df86e0dc3048173e470b03ac5fd1575e5a0497b10c46cd",
+  "server_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBnzCCAUSgAwIBAgIUWWqKvxqVkCkwvFc3kwHBY4vz2hwwCgYIKoZIzj0EAwIw\nJzElMCMGA1UEAwwcWmluZ2VyQmVlcy1NYWNCb29rLVByby5sb2NhbDAeFw0yNjA1\nMDYxMjE2MjZaFw0zNjA1MDMxMjE2MjZaMCcxJTAjBgNVBAMMHFppbmdlckJlZXMt\nTWFjQm9vay1Qcm8ubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATpDDka\nHw7G47yxuMRkWq3Wp09Hrzrynpqz+f17qNqO9Mho+UfNezTsQGiJkwLBDiVzZvGI\nN4+aPjLzm43vtaxio04wTDBKBgNVHREEQzBBghxaaW5nZXJCZWVzLU1hY0Jvb2st\nUHJvLmxvY2Fsgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYI\nKoZIzj0EAwIDSQAwRgIhANese8yZ0a7IVBnlWkMLc62GVsO4ixaO0dRPgsxxSXX9\nAiEArOlqrUnWesVs644ip37WWb0LBuknKSLqd62yxsHJLBs=\n-----END CERTIFICATE-----\n",
+  "token": "sBVC91BranUU_CI50SbGDKpMyTLg_fSN3mV4Wql-UqA"
+}

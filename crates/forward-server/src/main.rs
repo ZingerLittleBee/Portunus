@@ -4,6 +4,7 @@ mod bundle;
 mod clients;
 mod grpc;
 mod operator;
+mod rules;
 mod serve;
 mod shutdown;
 mod state;
@@ -18,6 +19,7 @@ use forward_auth::file_store::FileTokenStore;
 
 use crate::clients::ConnectedClients;
 use crate::operator::cli::{self, OperatorError};
+use crate::operator::rule_cli;
 use crate::state::AppState;
 use crate::tls::ServerTlsMaterial;
 
@@ -52,9 +54,7 @@ enum Cmd {
         out: Option<PathBuf>,
     },
     /// Revoke a previously-provisioned client.
-    Revoke {
-        name: String,
-    },
+    Revoke { name: String },
     /// List provisioned + connected clients.
     ListClients {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -69,15 +69,22 @@ enum Cmd {
         protocol: String,
         #[arg(long, default_value_t = 2)]
         ack_timeout: u64,
+        /// Operator HTTP endpoint of the running server.
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
     },
     RemoveRule {
         rule_id: u64,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
     },
     ListRules {
         #[arg(long)]
         client: Option<String>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
     },
     RuleStats {
         rule_id: u64,
@@ -168,10 +175,30 @@ fn run(cli: Cli) -> Result<(), u8> {
             }
             Ok(())
         }
-        Cmd::PushRule { .. } | Cmd::RemoveRule { .. } | Cmd::ListRules { .. } => {
-            eprintln!("rule subcommands are implemented in US2 (Phase 4)");
-            Err(1)
-        }
+        Cmd::PushRule {
+            client,
+            listen_port,
+            target,
+            protocol,
+            ack_timeout,
+            http_endpoint,
+        } => rule_cli::push(
+            &http_endpoint,
+            &client,
+            listen_port,
+            &target,
+            &protocol,
+            ack_timeout,
+        ),
+        Cmd::RemoveRule {
+            rule_id,
+            http_endpoint,
+        } => rule_cli::remove(&http_endpoint, rule_id),
+        Cmd::ListRules {
+            client,
+            format,
+            http_endpoint,
+        } => rule_cli::list(&http_endpoint, client.as_deref(), format),
         Cmd::RuleStats { .. } => {
             eprintln!("rule-stats is implemented in US3 (Phase 5)");
             Err(1)

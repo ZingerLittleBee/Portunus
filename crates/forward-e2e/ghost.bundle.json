@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "client_name": "ghost",
+  "server_endpoint": "127.0.0.1:52867",
+  "server_cert_sha256": "49f074a560a0a0a24f804f349d7a155584f5aff0e78862ff7aa691e99e7d369e",
+  "server_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBnjCCAUSgAwIBAgIUE4PWCywdCViNI/hMMnrRQtpKqSIwCgYIKoZIzj0EAwIw\nJzElMCMGA1UEAwwcWmluZ2VyQmVlcy1NYWNCb29rLVByby5sb2NhbDAeFw0yNjA1\nMDYxMjE2MjRaFw0zNjA1MDMxMjE2MjRaMCcxJTAjBgNVBAMMHFppbmdlckJlZXMt\nTWFjQm9vay1Qcm8ubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARvYLha\nW1sK244geCMRAibaStee6YFIsgKUJX7f4lIsop195QcSqzMvIGTLCDOMq8NlVxnl\nDnTivf/55GS7pViVo04wTDBKBgNVHREEQzBBghxaaW5nZXJCZWVzLU1hY0Jvb2st\nUHJvLmxvY2Fsgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYI\nKoZIzj0EAwIDSAAwRQIgaB+m5wTdpXlawc22usvHg/xthdg4p0U9tvU9NzUUr3IC\nIQCuZnvHHZCmBMKHfiyaBFufVA0buYIWS+TWjbCn11u6uQ==\n-----END CERTIFICATE-----\n",
+  "token": "nC-LVppJ5ge7alOSC-plWDjB-3RGtjshFtlEtpiNAUY"
+}

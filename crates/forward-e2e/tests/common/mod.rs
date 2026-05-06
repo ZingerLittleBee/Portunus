@@ -258,6 +258,59 @@ pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
     path
 }
 
+/// Push a rule via the running server's HTTP API. Returns the
+/// `(http_status, parsed_body)` so the caller can assert specifics.
+pub fn push_rule_http(
+    operator_http_addr: &str,
+    client: &str,
+    listen_port: u16,
+    target_host: &str,
+    target_port: u16,
+    ack_timeout_secs: Option<u64>,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("http://{operator_http_addr}/v1/rules");
+    let mut body = serde_json::json!({
+        "client": client,
+        "listen_port": listen_port,
+        "target_host": target_host,
+        "target_port": target_port,
+        "protocol": "tcp",
+    });
+    if let Some(secs) = ack_timeout_secs {
+        body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
+    }
+    let resp = reqwest::blocking::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .expect("POST /v1/rules");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+pub fn remove_rule_http(operator_http_addr: &str, rule_id: u64) -> reqwest::StatusCode {
+    let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}");
+    reqwest::blocking::Client::new()
+        .delete(&url)
+        .send()
+        .expect("DELETE /v1/rules/{rule_id}")
+        .status()
+}
+
+pub fn list_rules_http(operator_http_addr: &str, client_filter: Option<&str>) -> serde_json::Value {
+    let mut url = format!("http://{operator_http_addr}/v1/rules");
+    if let Some(c) = client_filter {
+        url = format!("{url}?client={c}");
+    }
+    let resp = reqwest::blocking::get(&url).expect("GET /v1/rules");
+    assert!(
+        resp.status().is_success(),
+        "list-rules HTTP failed: {resp:?}"
+    );
+    resp.json().expect("parse JSON body")
+}
+
 /// Revoke a client via the running server's HTTP API.
 pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode {
     let url = format!("http://{operator_http_addr}/v1/clients/{name}/revoke");

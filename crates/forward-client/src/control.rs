@@ -1,10 +1,16 @@
 //! Control-plane connection lifecycle: TLS dial, Welcome handshake,
-//! reconnect with full-jitter exponential backoff.
+//! reconnect with full-jitter exponential backoff, `RuleUpdate` dispatch
+//! into the forwarder, and `RuleStatus` echoing on the outbound channel.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forward_proto::v1::{ClientMessage, Hello, ServerMessage, control_client::ControlClient};
+use forward_core::RuleId;
+use forward_proto::v1::{
+    ActivationOutcome, ClientMessage, Hello, RuleAction, RuleStatus as ProtoRuleStatus,
+    ServerMessage, client_message, control_client::ControlClient, server_message,
+};
 use rand::Rng;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -17,6 +23,7 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{info, warn};
 
 use crate::bundle::CredentialBundle;
+use crate::forwarder::{self, ClientRule, RuleStatusEvent};
 
 const PROTOCOL_VERSION: &str = "1.0.0";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -156,23 +163,27 @@ fn status_to_error(status: &tonic::Status) -> ControlError {
 }
 
 pub struct LiveSession {
-    // Used by US2 (RuleStatus acks) and US3 (StatsReport).
-    #[allow(dead_code)]
     pub outbound: mpsc::Sender<ClientMessage>,
     pub inbound: std::pin::Pin<
         Box<dyn tokio_stream::Stream<Item = Result<ServerMessage, tonic::Status>> + Send + 'static>,
     >,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReconnectConfig {
+    pub initial_delay_ms: u64,
+    pub max_delay_secs: u64,
+    pub drain_timeout: Duration,
+}
+
 /// Reconnect loop with full-jitter exponential backoff.
 pub async fn run_with_reconnect(
     bundle: Arc<CredentialBundle>,
-    initial_delay_ms: u64,
-    max_delay_secs: u64,
+    cfg: ReconnectConfig,
     cancel: CancellationToken,
 ) {
     let mut attempt: u32 = 0;
-    let max_delay = Duration::from_secs(max_delay_secs);
+    let max_delay = Duration::from_secs(cfg.max_delay_secs);
     loop {
         if cancel.is_cancelled() {
             return;
@@ -181,7 +192,7 @@ pub async fn run_with_reconnect(
         match connect_once(&bundle, &cancel).await {
             Ok(session) => {
                 attempt = 0;
-                pump(session, &cancel).await;
+                pump(session, &cancel, cfg.drain_timeout).await;
                 info!(event = "control.disconnected");
             }
             Err(e) if e.is_terminal() => {
@@ -192,7 +203,7 @@ pub async fn run_with_reconnect(
                 warn!(event = "control.connect_failed", error = %e);
             }
         }
-        let delay = jittered_backoff(attempt, initial_delay_ms, max_delay);
+        let delay = jittered_backoff(attempt, cfg.initial_delay_ms, max_delay);
         attempt = attempt.saturating_add(1);
         tokio::select! {
             () = cancel.cancelled() => return,
@@ -209,23 +220,201 @@ fn jittered_backoff(attempt: u32, base_ms: u64, max: Duration) -> Duration {
     Duration::from_millis(chosen)
 }
 
-async fn pump(mut session: LiveSession, cancel: &CancellationToken) {
+/// Per-rule forwarder bookkeeping. We keep the cancel token so we can stop the
+/// listener on REMOVE (or process shutdown), and the `request_id` of the last
+/// action so `RuleStatus` echoes carry the right correlation ID:
+/// - PUSH's `request_id` is used for Activated/Failed
+/// - REMOVE's `request_id` (if set) is used for Removed; otherwise the original
+///   push's `request_id` is reused (covers pump-initiated drain on shutdown)
+struct RuleSlot {
+    cancel: CancellationToken,
+    push_request_id: String,
+    remove_request_id: Option<String>,
+}
+
+async fn pump(mut session: LiveSession, cancel: &CancellationToken, drain_timeout: Duration) {
+    let mut rules: HashMap<RuleId, RuleSlot> = HashMap::new();
+    let (status_tx, mut status_rx) = mpsc::channel::<RuleStatusEvent>(64);
+
     loop {
         tokio::select! {
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
-                Some(Ok(server_msg)) => handle_server_message(server_msg),
+                Some(Ok(server_msg)) => {
+                    handle_server_message(server_msg, &mut rules, &status_tx, drain_timeout);
+                }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
                     break;
                 }
+                None => break,
+            },
+            event = status_rx.recv() => {
+                if let Some(evt) = event {
+                    forward_status(evt, &mut rules, &session.outbound).await;
+                }
+            }
+        }
+    }
+
+    // Process shutdown / stream loss: cancel every forwarder and drain their
+    // Removed events for `drain_timeout` so the operator gets a final
+    // RuleStatus before we go off-air. Forwarders will tear down their own
+    // listeners and finish their own drain loops; we're just collecting the
+    // tail end of the status echoes.
+    for slot in rules.values() {
+        slot.cancel.cancel();
+    }
+    let drain_deadline = tokio::time::sleep(drain_timeout);
+    tokio::pin!(drain_deadline);
+    while !rules.is_empty() {
+        tokio::select! {
+            () = &mut drain_deadline => break,
+            event = status_rx.recv() => match event {
+                Some(evt) => forward_status(evt, &mut rules, &session.outbound).await,
                 None => break,
             }
         }
     }
 }
 
-fn handle_server_message(_msg: ServerMessage) {
-    // US2 wires RuleUpdate into the forwarder; for US1 we accept and drop
-    // every payload. Welcome is consumed before pump starts.
+fn handle_server_message(
+    msg: ServerMessage,
+    rules: &mut HashMap<RuleId, RuleSlot>,
+    status_tx: &mpsc::Sender<RuleStatusEvent>,
+    drain_timeout: Duration,
+) {
+    let Some(server_message::Payload::RuleUpdate(update)) = msg.payload else {
+        // Welcome is consumed before pump; any other variant is ignored.
+        return;
+    };
+    let request_id = update.request_id;
+    let action = RuleAction::try_from(update.action).unwrap_or(RuleAction::Unspecified);
+    let Some(rule) = update.rule else {
+        warn!(
+            event = "control.rule_update_missing_rule",
+            request_id = %request_id,
+        );
+        return;
+    };
+    let rule_id = RuleId(rule.rule_id);
+
+    match action {
+        RuleAction::Push => {
+            if rules.contains_key(&rule_id) {
+                warn!(
+                    event = "control.rule_push_duplicate",
+                    request_id = %request_id,
+                    rule_id = %rule_id,
+                );
+                return;
+            }
+            let listen_port = u16::try_from(rule.listen_port).unwrap_or(0);
+            let target_port = u16::try_from(rule.target_port).unwrap_or(0);
+            let cancel = CancellationToken::new();
+            let client_rule = ClientRule {
+                rule_id,
+                listen_port,
+                target_host: rule.target_host,
+                target_port,
+            };
+            let task_cancel = cancel.clone();
+            let task_status_tx = status_tx.clone();
+            tokio::spawn(async move {
+                forwarder::run(client_rule, task_status_tx, task_cancel, drain_timeout).await;
+            });
+            rules.insert(
+                rule_id,
+                RuleSlot {
+                    cancel,
+                    push_request_id: request_id,
+                    remove_request_id: None,
+                },
+            );
+        }
+        RuleAction::Remove => {
+            if let Some(slot) = rules.get_mut(&rule_id) {
+                slot.remove_request_id = Some(request_id);
+                slot.cancel.cancel();
+            } else {
+                warn!(
+                    event = "control.rule_remove_unknown",
+                    request_id = %request_id,
+                    rule_id = %rule_id,
+                );
+            }
+        }
+        RuleAction::Unspecified => warn!(
+            event = "control.rule_update_unspecified_action",
+            request_id = %request_id,
+            rule_id = %rule_id,
+        ),
+    }
+}
+
+async fn forward_status(
+    evt: RuleStatusEvent,
+    rules: &mut HashMap<RuleId, RuleSlot>,
+    outbound: &mpsc::Sender<ClientMessage>,
+) {
+    let (rule_id, outcome, reason, request_id, drop_slot) = match &evt {
+        RuleStatusEvent::Activated { rule_id } => {
+            let req = rules
+                .get(rule_id)
+                .map(|s| s.push_request_id.clone())
+                .unwrap_or_default();
+            (
+                *rule_id,
+                ActivationOutcome::Activated,
+                String::new(),
+                req,
+                false,
+            )
+        }
+        RuleStatusEvent::Failed { rule_id, reason } => {
+            // Failed is terminal — the forwarder never emitted Activated, so
+            // there is no listener to keep tracking. Drop the slot.
+            let req = rules
+                .remove(rule_id)
+                .map(|s| s.push_request_id)
+                .unwrap_or_default();
+            (
+                *rule_id,
+                ActivationOutcome::Failed,
+                reason.clone(),
+                req,
+                false,
+            )
+        }
+        RuleStatusEvent::Removed { rule_id } => {
+            let slot = rules.remove(rule_id);
+            let req = slot
+                .and_then(|s| s.remove_request_id.or(Some(s.push_request_id)))
+                .unwrap_or_default();
+            (
+                *rule_id,
+                ActivationOutcome::Removed,
+                String::new(),
+                req,
+                true,
+            )
+        }
+    };
+    let _ = drop_slot; // already handled above
+
+    let status_msg = ClientMessage {
+        payload: Some(client_message::Payload::RuleStatus(ProtoRuleStatus {
+            request_id,
+            rule_id: rule_id.0,
+            outcome: outcome as i32,
+            reason,
+        })),
+    };
+    if let Err(e) = outbound.send(status_msg).await {
+        warn!(
+            event = "control.status_send_failed",
+            rule_id = %rule_id,
+            error = %e,
+        );
+    }
 }

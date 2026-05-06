@@ -9,8 +9,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use forward_core::ClientName;
-use tokio::sync::RwLock;
+use forward_proto::v1::{RuleStatus as ProtoRuleStatus, ServerMessage};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
+use tonic::Status;
+
+/// Channel used by the operator path to push `ServerMessage`s into a connected
+/// session's outbound stream.
+pub type OutboundSender = tokio::sync::mpsc::Sender<Result<ServerMessage, Status>>;
+
+/// Per-session map of `request_id` → oneshot waiter for the matching client
+/// `RuleStatus` echo. Cleared when the session ends (waiters get dropped,
+/// callers see `await` return `Err`, which they translate to `ack_timeout`
+/// or `client_not_connected` depending on phase).
+pub type StatusWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<ProtoRuleStatus>>>>;
 
 #[derive(Debug, Clone)]
 pub struct ConnectedClient {
@@ -22,6 +34,8 @@ pub struct ConnectedClient {
     pub connected_at: DateTime<Utc>,
     pub cancel_token: CancellationToken,
     pub session_id: u64,
+    pub outbound: OutboundSender,
+    pub status_waiters: StatusWaiters,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +70,8 @@ impl ConnectedClients {
         client_name: ClientName,
         remote_addr: Option<SocketAddr>,
         cancel_token: CancellationToken,
+        outbound: OutboundSender,
+        status_waiters: StatusWaiters,
     ) -> u64 {
         let session_id = self.next_session.fetch_add(1, Ordering::Relaxed);
         let entry = ConnectedClient {
@@ -64,12 +80,27 @@ impl ConnectedClients {
             connected_at: Utc::now(),
             cancel_token,
             session_id,
+            outbound,
+            status_waiters,
         };
         let mut guard = self.inner.write().await;
         if let Some(prev) = guard.insert(client_name, entry) {
             prev.cancel_token.cancel();
         }
         session_id
+    }
+
+    /// Snapshot the (outbound, waiters) handles for a connected client, used
+    /// by the operator path to push a `RuleUpdate` and await the matching
+    /// `RuleStatus`.
+    pub async fn handles(
+        &self,
+        client_name: &ClientName,
+    ) -> Option<(OutboundSender, StatusWaiters)> {
+        let guard = self.inner.read().await;
+        guard
+            .get(client_name)
+            .map(|c| (c.outbound.clone(), c.status_waiters.clone()))
     }
 
     /// Remove the named client iff `session_id` matches the value seen at

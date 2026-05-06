@@ -42,3 +42,7 @@ tempfile = { workspace = true }
 tokio-test = { workspace = true }
 assert_cmd = { workspace = true }
 criterion = { workspace = true }
+
+[[bench]]
+name = "data_plane"
+harness = false
