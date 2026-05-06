@@ -1,0 +1,73 @@
+# Local-only "kick the tires" compose for forward-rs.
+#
+# Usage:
+#   1. Build:    docker compose -f deploy/docker/docker-compose.yml build
+#   2. Start:    docker compose -f deploy/docker/docker-compose.yml up -d server
+#   3. Provision a client (writes bundle into shared volume):
+#        docker compose -f deploy/docker/docker-compose.yml \
+#          run --rm operator provision-client edge-01 \
+#          --out /shared/edge-01.bundle.json
+#      Then copy /shared/edge-01.bundle.json out of the server volume to give
+#      to the client (or mount the same volume into the client container).
+#   4. Start the client (with the bundle baked in or volume-mounted)
+#   5. Push a rule (8080 → echo:9000):
+#        docker compose -f deploy/docker/docker-compose.yml \
+#          run --rm operator push-rule edge-01 8080 echo 9000
+#   6. Drive traffic from inside the network:
+#        docker compose -f deploy/docker/docker-compose.yml \
+#          run --rm --entrypoint sh client -c \
+#          'echo hello | nc -q1 client 8080'
+#
+# Notes:
+# - Operator HTTP (7080) and metrics (7081) are loopback-only by design.
+#   To inspect /metrics from the host: `docker compose exec server` won't
+#   work (distroless has no shell), so use `docker run --rm --network
+#   container:forward-server-1 curlimages/curl -s 127.0.0.1:7081/metrics`.
+# - This compose is for local exploration only. For production use the
+#   systemd units in deploy/systemd/ or roll the images into your
+#   orchestrator with a real config + secret management story.
+
+services:
+  server:
+    container_name: forward-server
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    image: forward-rs/server:dev
+    ports:
+      - "7443:7443"
+    volumes:
+      - server-data:/var/lib/forward
+      - server-config:/etc/forward
+      - shared-bundles:/shared
+    restart: unless-stopped
+
+  # One-shot operator: same image, override the entrypoint command.
+  # `docker compose run --rm operator <subcommand>` runs against the same
+  # data volume as the server.
+  operator:
+    profiles: ["cli"]
+    image: forward-rs/server:dev
+    volumes:
+      - server-data:/var/lib/forward
+      - server-config:/etc/forward
+      - shared-bundles:/shared
+    network_mode: "service:server"
+    entrypoint: ["/usr/local/bin/forward-server"]
+    command: ["--config-dir", "/var/lib/forward", "--config", "/etc/forward/server.toml", "list-clients"]
+
+  # Echo target: any TCP that gets bytes echoes them back. Used by the
+  # quickstart push-rule example so you can curl/`nc` through a real rule
+  # without depending on outbound internet.
+  echo:
+    container_name: forward-echo
+    image: alpine:3.20
+    command: ["sh", "-c", "apk add --no-cache socat && socat TCP-LISTEN:9000,fork,reuseaddr EXEC:cat"]
+    expose:
+      - "9000"
+    restart: unless-stopped
+
+volumes:
+  server-data:
+  server-config:
+  shared-bundles:

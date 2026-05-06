@@ -1,0 +1,41 @@
+[Unit]
+Description=forward-rs control plane
+Documentation=https://github.com/ZingerLittleBee/forward-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=forward-server
+Group=forward-server
+ExecStart=/usr/local/bin/forward-server --config-dir /var/lib/forward --config /etc/forward/server.toml serve
+Restart=on-failure
+RestartSec=5
+
+# Drain in-flight forwarded connections before SIGKILL. Keep this larger
+# than the server.toml `shutdown_drain_timeout_secs` (default 30 s) so the
+# server's own drain logic gets to run.
+TimeoutStopSec=60
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Writable: cert/key (auto-generated on first run), tokens.json, rules.json.
+ReadWritePaths=/var/lib/forward
+
+[Install]
+WantedBy=multi-user.target

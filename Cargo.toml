@@ -1,0 +1,91 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/ZingerLittleBee/forward-rs"
+authors = ["forward-rs contributors"]
+version = "0.1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros", "io-util", "fs", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+
+# gRPC stack (tonic 0.14 split: codegen → tonic-prost-build, runtime → tonic-prost)
+tonic = { version = "0.14", features = ["transport", "tls-aws-lc"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+
+# TLS
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
+
+# Operator HTTP
+axum = { version = "0.8", features = ["tokio", "macros"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Serde stack
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Crypto / IDs
+rand = { version = "0.8", features = ["std", "std_rng"] }
+blake3 = "1"
+sha2 = "0.10"
+ulid = { version = "1", features = ["serde"] }
+
+# Errors
+thiserror = "1"
+
+# Encoding / time
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
+
+# Metrics
+prometheus = "0.13"
+
+# Forward workspace crates
+forward-proto = { path = "crates/forward-proto" }
+forward-core = { path = "crates/forward-core" }
+forward-auth = { path = "crates/forward-auth" }
+
+# Dev dependencies
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+tempfile = "3"
+assert_cmd = "2"
+tokio-test = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+panic = "abort"
+
+[profile.bench]
+debug = true

@@ -1,0 +1,28 @@
+# forward-client runtime image. Same build pattern as the server.
+# Build context expects the repo root: `docker build -f deploy/docker/Dockerfile.client .`
+
+FROM rust:1.88-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        protobuf-compiler \
+        cmake \
+        perl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p forward-client
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+COPY --from=builder /src/target/release/forward-client /usr/local/bin/forward-client
+
+# Bundle is mounted read-only at /etc/forward/client.bundle.json.
+# Forwarding rules pushed by the operator may bind any port the kernel allows;
+# host networking (or explicit `-p` per rule) is required for traffic to reach
+# the listener from outside the container.
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/forward-client"]
+CMD ["--bundle", "/etc/forward/client.bundle.json"]

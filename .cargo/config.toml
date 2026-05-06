@@ -1,0 +1,19 @@
+[build]
+# Keep the workspace target dir in the repo so IDEs and CI agree.
+# (Default already, but stated explicitly so contributors don't drift.)
+target-dir = "target"
+
+# Linker overrides go in target-specific blocks below; do not put rustflags
+# at [build] root because that re-keys the cache and forces full rebuilds
+# whenever the value changes.
+
+[target.x86_64-unknown-linux-gnu]
+# Prefer lld when present; falls back gracefully (cargo just emits a warning
+# at link time if the linker is unavailable).
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[net]
+git-fetch-with-cli = true
