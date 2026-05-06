@@ -54,7 +54,16 @@ toml = "0.8"
 # Crypto / IDs
 rand = { version = "0.8", features = ["std", "std_rng"] }
 blake3 = "1"
+sha2 = "0.10"
 ulid = { version = "1", features = ["serde"] }
+
+# Errors
+thiserror = "1"
+
+# Encoding / time
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
 
 # Metrics
 prometheus = "0.13"

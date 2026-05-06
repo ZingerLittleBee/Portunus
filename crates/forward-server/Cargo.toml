@@ -1,0 +1,44 @@
+[package]
+name = "forward-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "forward-rs control-plane server binary."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "forward-server"
+path = "src/main.rs"
+
+[dependencies]
+forward-core = { workspace = true }
+forward-auth = { workspace = true }
+forward-proto = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+prometheus = { workspace = true }
+chrono = { workspace = true }
+time = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+assert_cmd = { workspace = true }
