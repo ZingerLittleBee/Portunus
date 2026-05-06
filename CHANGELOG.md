@@ -64,6 +64,29 @@ working dir at `target/criterion/.../v0.1.0/`. Re-capture with:
 cargo bench -p forward-client --bench data_plane -- --save-baseline v0.1.0
 ```
 
+### SC-001 dry-run
+
+Local-loopback walkthrough of `quickstart.md` (two terminals on macOS,
+single host) completed end-to-end in **8.1 seconds** post-build:
+
+| Step                                 | Δ vs prev |
+| ------------------------------------ | --------- |
+| `serve` start → `server.listening`   | 0.16 s    |
+| `provision-client` via HTTP API      | 0.05 s    |
+| Client TLS connect + Welcome         | 0.72 s    |
+| Rule push → Active                   | 0.32 s    |
+| 100 MB `/dev/urandom` payload prep   | 0.54 s    |
+| Stream 100 MB through proxy          | 0.19 s    |
+| `/metrics` reports 100 MB cumulative | 6.05 s    |
+| `remove-rule` returns 204            | 0.03 s    |
+
+The 6 s spike before `/metrics` reflects one StatsReport tick at the
+default 5 s `--stats-report-interval-secs`. Hash equality and the
+`rule-stats` / `/metrics` byte counters all matched the 104 857 600 byte
+input. Two-real-Linux-hosts validation (T068) remains pending; the
+loopback timing strongly suggests the < 5 min SC-001 target will hold
+once the cross-host hop is added.
+
 ### Out of scope (deferred)
 
 - mTLS (Constitution v2.0.0 deliberately replaced cert-based client auth
