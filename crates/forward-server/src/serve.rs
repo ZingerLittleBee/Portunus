@@ -46,6 +46,10 @@ pub struct ServeOptions {
     pub advertised_endpoint: Option<String>,
 }
 
+// Wires every subsystem (TLS, gRPC, operator HTTP, metrics, shutdown). Splitting
+// would scatter the dependency graph across helpers without making it easier to
+// reason about, so we accept the line count.
+#[allow(clippy::too_many_lines)]
 pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
     let cfg = load_config(&opts)?;
     std::fs::create_dir_all(&opts.config_dir)?;

@@ -25,7 +25,7 @@ use super::stats::RuleStats;
 /// entry and decremented on exit (RAII via the guard); byte counters get the
 /// final tally from `copy_bidirectional` once it returns. Per-direction
 /// updates would require `tokio_util::io::InspectReader` shims — overkill for
-/// the 5-second sample window the StatsReport uses.
+/// the 5-second sample window the `StatsReport` uses.
 pub async fn proxy(
     mut inbound: TcpStream,
     target_host: &str,

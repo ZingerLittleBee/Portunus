@@ -22,7 +22,7 @@ pub struct AppState {
     pub server_cert_pem: String,
     /// Process-wide Prometheus collectors. Cheap to clone (`Arc` internal).
     pub metrics: Arc<Metrics>,
-    /// Latest per-rule StatsReport snapshots, fed by US3 stream and read by
+    /// Latest per-rule `StatsReport` snapshots, fed by US3 stream and read by
     /// the operator `rule-stats` view.
     pub stats_cache: RuleStatsCache,
 }

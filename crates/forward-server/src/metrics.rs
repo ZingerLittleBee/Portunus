@@ -54,31 +54,28 @@ impl Metrics {
         let clients_connected =
             IntGauge::new("forward_clients_connected", "Currently-connected clients")?;
         let auth_failures_total = IntCounterVec::new(
-            opts!("forward_auth_failures_total", "Auth failures by reason").into(),
+            opts!("forward_auth_failures_total", "Auth failures by reason"),
             &["reason"],
         )?;
         let rule_bytes_in_total = CounterVec::new(
             opts!(
                 "forward_rule_bytes_in_total",
                 "Cumulative bytes ingressing each rule"
-            )
-            .into(),
+            ),
             &["client", "rule"],
         )?;
         let rule_bytes_out_total = CounterVec::new(
             opts!(
                 "forward_rule_bytes_out_total",
                 "Cumulative bytes egressing each rule"
-            )
-            .into(),
+            ),
             &["client", "rule"],
         )?;
         let rule_active_connections = GaugeVec::new(
             opts!(
                 "forward_rule_active_connections",
                 "Active forwarded connections per rule"
-            )
-            .into(),
+            ),
             &["client", "rule"],
         )?;
         registry.register(Box::new(clients_connected.clone()))?;
@@ -108,7 +105,7 @@ impl Metrics {
     }
 }
 
-/// Cache the latest StatsReport per rule. Cheap to clone (`Arc` internal).
+/// Cache the latest `StatsReport` per rule. Cheap to clone (`Arc` internal).
 #[derive(Debug, Clone, Default)]
 pub struct RuleStatsCache {
     inner: Arc<RwLock<HashMap<RuleId, CachedEntry>>>,

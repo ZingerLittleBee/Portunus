@@ -333,7 +333,7 @@ pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode 
 }
 
 /// Fetch the rule-stats snapshot for `rule_id`. Returns `None` if the server
-/// answers 404 (no StatsReport observed yet) so callers can spin in
+/// answers 404 (no `StatsReport` observed yet) so callers can spin in
 /// `wait_for`.
 pub fn rule_stats_http(operator_http_addr: &str, rule_id: u64) -> Option<serde_json::Value> {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}/stats");

@@ -9,7 +9,7 @@
 //!    plus the right id fields (`client_name` for client events, `rule_id`
 //!    for rule events).
 //!
-//! These are wall-clock tests: they wait up to 10 s for a StatsReport (the
+//! These are wall-clock tests: they wait up to 10 s for a `StatsReport` (the
 //! client emits one every 5 s by default) and assert tolerances against the
 //! ±1 KB target from spec.md.
 
@@ -68,7 +68,9 @@ fn push_and_drive(http: &str, listen_port: u16, echo_host: &str, echo_port: u16,
     // Echo the payload — bytes_in == bytes_out == payload_size.
     let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port)).expect("connect proxy");
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let payload: Vec<u8> = (0..payload_size).map(|i| (i % 251) as u8).collect();
+    let payload: Vec<u8> = (0..payload_size)
+        .map(|i| u8::try_from(i % 251).unwrap_or(0))
+        .collect();
     conn.write_all(&payload).unwrap();
     conn.shutdown(std::net::Shutdown::Write).unwrap();
     let mut received = Vec::with_capacity(payload_size);
@@ -78,7 +80,7 @@ fn push_and_drive(http: &str, listen_port: u16, echo_host: &str, echo_port: u16,
 }
 
 /// T055: per-rule byte counters land within ±1KB tolerance after a 5 s
-/// settle (client emits StatsReport on a 5 s interval by default).
+/// settle (client emits `StatsReport` on a 5 s interval by default).
 #[test]
 fn test_stats_within_tolerance() {
     let server = common::spawn_server(&[]);

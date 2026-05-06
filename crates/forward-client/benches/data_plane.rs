@@ -86,24 +86,24 @@ fn bench_throughput(c: &mut Criterion) {
     for &size in &[64 * 1024usize, 1024 * 1024] {
         let payload = vec![0xa5u8; size];
         group.throughput(Throughput::Bytes(size as u64));
+        // Reuse a single long-lived connection across iterations so the bench
+        // measures the data path, not TCP handshake + TIME_WAIT churn.
+        // macOS ephemeral ports exhaust quickly with per-iter connect/close.
         group.bench_function(format!("{}KiB_echo", size / 1024), |b| {
-            b.iter(|| {
+            b.iter_custom(|iters| {
                 runtime.block_on(async {
                     let mut sock = TcpStream::connect(proxy_addr).await.unwrap();
                     sock.set_nodelay(true).unwrap();
                     let (mut rd, mut wr) = sock.split();
-                    let payload_clone = payload.clone();
-                    let writer = async {
-                        wr.write_all(&payload_clone).await.unwrap();
-                        wr.shutdown().await.unwrap();
-                    };
-                    let mut got = Vec::with_capacity(size);
-                    let reader = async {
-                        rd.read_to_end(&mut got).await.unwrap();
-                    };
-                    tokio::join!(writer, reader);
-                    assert_eq!(got.len(), size);
-                });
+                    let mut got = vec![0u8; size];
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        let writer = async { wr.write_all(&payload).await.unwrap() };
+                        let reader = async { rd.read_exact(&mut got).await.unwrap() };
+                        tokio::join!(writer, reader);
+                    }
+                    start.elapsed()
+                })
             });
         });
     }

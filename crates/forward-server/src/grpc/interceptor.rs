@@ -26,7 +26,7 @@ impl AuthInterceptor {
         Self { auth, metrics }
     }
 
-    fn record_failure(&self, reason: &AuthFailureReason) {
+    fn record_failure(&self, reason: AuthFailureReason) {
         self.metrics
             .auth_failures_total
             .with_label_values(&[&reason.to_string()])
@@ -38,7 +38,7 @@ impl AuthInterceptor {
             None => {
                 let reason = AuthFailureReason::Missing;
                 warn!(event = "auth.failure", reason = %reason);
-                self.record_failure(&reason);
+                self.record_failure(reason);
                 return Err(Status::unauthenticated(reason.to_string()));
             }
             Some(v) => {
@@ -47,7 +47,7 @@ impl AuthInterceptor {
                 } else {
                     let reason = AuthFailureReason::Malformed;
                     warn!(event = "auth.failure", reason = %reason);
-                    self.record_failure(&reason);
+                    self.record_failure(reason);
                     return Err(Status::unauthenticated(reason.to_string()));
                 }
             }
@@ -57,7 +57,7 @@ impl AuthInterceptor {
         } else {
             let reason = AuthFailureReason::Malformed;
             warn!(event = "auth.failure", reason = %reason);
-            self.record_failure(&reason);
+            self.record_failure(reason);
             return Err(Status::unauthenticated(reason.to_string()));
         };
         match self.auth.verify(token) {
@@ -67,7 +67,7 @@ impl AuthInterceptor {
             }
             Err(AuthError::Failed(reason)) => {
                 warn!(event = "auth.failure", reason = %reason);
-                self.record_failure(&reason);
+                self.record_failure(reason);
                 Err(Status::unauthenticated(reason.to_string()))
             }
             Err(other) => {

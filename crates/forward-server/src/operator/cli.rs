@@ -410,8 +410,8 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
 }
 
 /// `rule-stats <rule_id>` (FR-024). Returns the latest cached snapshot fed by
-/// the client's StatsReport stream. Returns `RuleNotFound` if either the rule
-/// store has no record of this id OR no StatsReport has arrived yet.
+/// the client's `StatsReport` stream. Returns `RuleNotFound` if either the rule
+/// store has no record of this id OR no `StatsReport` has arrived yet.
 pub async fn rule_stats(
     state: &AppState,
     rule_id: RuleId,
