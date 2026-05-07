@@ -8,7 +8,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/ZingerLittleBee/forward-rs"
 authors = ["forward-rs contributors"]
-version = "0.5.0"
+version = "0.6.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -50,7 +50,7 @@ format_push_string = "allow"
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros", "io-util", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-tokio-stream = { version = "0.1", features = ["net"] }
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
 
 # gRPC stack (tonic 0.14 split: codegen → tonic-prost-build, runtime → tonic-prost)
 tonic = { version = "0.14", features = ["transport", "tls-aws-lc"] }

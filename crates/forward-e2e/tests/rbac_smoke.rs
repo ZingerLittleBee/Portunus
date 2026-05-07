@@ -202,11 +202,7 @@ fn rbac_walkthrough_happy_and_violation_paths() {
     );
 
     // alice viewing her own credentials: allowed.
-    let (st, body) = get(
-        &http_addr,
-        "/v1/users/alice/credentials",
-        &alice_token,
-    );
+    let (st, body) = get(&http_addr, "/v1/users/alice/credentials", &alice_token);
     assert_eq!(st, StatusCode::OK, "alice owns alice; body={body}");
 
     // alice viewing bob's credentials: forbidden.
@@ -226,10 +222,7 @@ fn rbac_walkthrough_happy_and_violation_paths() {
         json!({}),
     );
     assert_eq!(st, StatusCode::OK, "rotate; body={body}");
-    let alice_token_new = body["token"]
-        .as_str()
-        .expect("rotated token")
-        .to_string();
+    let alice_token_new = body["token"].as_str().expect("rotated token").to_string();
     assert_ne!(alice_token, alice_token_new, "new token must differ");
 
     // Old alice_token now invalid.
@@ -240,21 +233,13 @@ fn rbac_walkthrough_happy_and_violation_paths() {
         "rotated-out token MUST be rejected"
     );
     // New alice_token works.
-    let (st, _) = get(
-        &http_addr,
-        "/v1/users/alice/credentials",
-        &alice_token_new,
-    );
+    let (st, _) = get(&http_addr, "/v1/users/alice/credentials", &alice_token_new);
     assert_eq!(st, StatusCode::OK);
 
     // § 6 — grant revoke cascade. No rules to actually cascade in this
     // fixture (no client connected), but the response shape MUST
     // include `removed_rule_ids` (empty here).
-    let (st, body) = delete(
-        &http_addr,
-        &format!("/v1/grants/{alice_grant_id}"),
-        SUPER,
-    );
+    let (st, body) = delete(&http_addr, &format!("/v1/grants/{alice_grant_id}"), SUPER);
     assert_eq!(st, StatusCode::OK, "revoke; body={body}");
     assert_eq!(body["grant_id"], alice_grant_id);
     assert!(
@@ -276,11 +261,7 @@ fn rbac_walkthrough_happy_and_violation_paths() {
         "expected credentials to cascade; body={body}"
     );
     // After removal, alice's tokens MUST be rejected.
-    let (st, _) = get(
-        &http_addr,
-        "/v1/users/alice/credentials",
-        &alice_token_new,
-    );
+    let (st, _) = get(&http_addr, "/v1/users/alice/credentials", &alice_token_new);
     assert_eq!(
         st,
         StatusCode::UNAUTHORIZED,

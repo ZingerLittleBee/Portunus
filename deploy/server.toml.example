@@ -1,4 +1,4 @@
-# forward-rs server configuration (v0.5.0).
+# forward-rs server configuration (v0.6.0).
 # Used by `forward-server --config /etc/forward/server.toml serve`.
 # Defaults match the deploy/systemd/forward-server.service layout.
 # Schema: see crates/forward-core/src/config.rs (ServerConfig).
@@ -13,6 +13,11 @@ control_listen = "0.0.0.0:7443"
 # user-* / credential-* / grant-*). MUST stay on loopback: every /v1/* request
 # also requires `Authorization: Bearer <token>` (v0.5.0+) — see the bootstrap
 # section below — so the loopback bind is defence-in-depth, not the sole gate.
+#
+# v0.6.0+ ALSO serves the operator Web UI (006-management-web-ui) on this same
+# listener at `/`. Browser-side access uses the same bearer token; remote
+# access stays an operator concern (SSH tunnel / reverse proxy that adds its
+# own auth). No new config knob — the UI rides the existing listener.
 operator_http_listen = "127.0.0.1:7080"
 
 # Prometheus /metrics endpoint. Same loopback constraint.

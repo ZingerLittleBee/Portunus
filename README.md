@@ -193,6 +193,37 @@ The CLI subcommands and the loopback HTTP API
 [`specs/001-tcp-forward-mvp/contracts/operator-api.md`](specs/001-tcp-forward-mvp/contracts/operator-api.md).
 Exit codes and HTTP status mappings are frozen at v1.
 
+## Web UI
+
+`forward-server` ships a single-page React UI on the operator HTTP
+listener (loopback by default). Open the listener address in a modern
+browser (Chrome / Firefox / Safari / Edge — latest two releases),
+paste your operator bearer token at the login screen, and you get:
+
+- Dashboard, Users, Credentials, Grants, Rules, Clients, Audit log,
+  Metrics, Settings.
+- Live per-rule stats over Server-Sent Events (5 s cadence; falls back
+  to plain polling if SSE is blocked).
+- English + 简体中文 (toggle in Settings; remembered across reloads).
+- Light / dark / `prefers-color-scheme` themes.
+
+The UI never stores tokens in `localStorage` or cookies — the bearer
+lives in `sessionStorage` only and is flushed on browser close. Every
+SPA request flows through the same `auth_layer` middleware the CLI
+uses; tenants see only their own rules / credentials, superadmins see
+everything.
+
+Remote access stays an operator concern (the listener is loopback-pinned
+at startup): SSH-tunnel `127.0.0.1:7080` from your workstation, or sit
+the listener behind a reverse proxy that adds its own auth.
+
+Build instructions for the SPA live in
+[`webui/README.md`](webui/README.md). Release pipelines run
+`pnpm install --frozen-lockfile && pnpm build` before
+`cargo build --release -p forward-server` so the bundle is embedded
+into the binary at compile time. There is **no** runtime Node
+dependency on the deployment host.
+
 ## Layout
 
 ```

@@ -650,6 +650,7 @@ mod tests {
     /// round-robin within a family, and we don't want family
     /// preference to scramble that.
     #[test]
+    #[allow(clippy::similar_names)] // v4a/v4b/v6a/v6b read clearly in pairs.
     fn order_by_family_covers_all_fr_007_cases() {
         let v4a: IpAddr = "127.0.0.1".parse().unwrap();
         let v4b: IpAddr = "127.0.0.2".parse().unwrap();

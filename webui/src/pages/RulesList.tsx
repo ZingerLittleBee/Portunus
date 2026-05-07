@@ -1,0 +1,155 @@
+import { useTranslation } from "react-i18next";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
+
+import { useRulesList, useRemoveRule } from "@/api/rules";
+import { useUsersList } from "@/api/users";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { isSuperadmin } from "@/lib/permissions";
+import { DataTable, type Column } from "@/components/DataTable";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/EmptyState";
+import { parseRuleState, type Rule } from "@/api/types";
+
+export function RulesList() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const clientFilter = params.get("client") ?? undefined;
+  const ownerFilter = params.get("owner") ?? undefined;
+
+  const { data: identity } = useQuery({
+    queryKey: ME_QUERY_KEY,
+    queryFn: fetchIdentity,
+    staleTime: 60_000,
+  });
+  const isAdmin = isSuperadmin(identity);
+  const rules = useRulesList({ ...(clientFilter ? { client: clientFilter } : {}), ...(ownerFilter ? { owner: ownerFilter } : {}) });
+  const users = useUsersList();
+  const remove = useRemoveRule();
+
+  const columns: Column<Rule>[] = [
+    {
+      key: "id",
+      header: t("rules.id"),
+      width: "100px",
+      render: (r) => (
+        <Link to={`/rules/${r.id}`} className="font-mono text-primary hover:underline">
+          #{r.id}
+        </Link>
+      ),
+      sortable: true,
+      sortValue: (r) => r.id,
+    },
+    {
+      key: "owner",
+      header: t("rules.owner"),
+      render: (r) => (
+        <Badge variant={r.owner_user_id === "_superadmin" ? "default" : "secondary"}>
+          {r.owner_user_id}
+        </Badge>
+      ),
+    },
+    { key: "client", header: t("rules.client"), render: (r) => r.client_name },
+    {
+      key: "listen",
+      header: t("rules.listenPort"),
+      render: (r) =>
+        r.listen_port_end && r.listen_port_end !== r.listen_port
+          ? `${r.listen_port}–${r.listen_port_end}`
+          : `${r.listen_port}`,
+    },
+    {
+      key: "target",
+      header: t("rules.target"),
+      render: (r) =>
+        r.target_port_end && r.target_port_end !== r.target_port
+          ? `${r.target_host}:${r.target_port}–${r.target_port_end}`
+          : `${r.target_host}:${r.target_port}`,
+    },
+    {
+      key: "protocol",
+      header: t("rules.protocol"),
+      width: "100px",
+      render: (r) => <Badge variant="outline">{r.protocol}</Badge>,
+    },
+    {
+      key: "state",
+      header: t("rules.state"),
+      width: "120px",
+      render: (r) => {
+        const state = parseRuleState(r.state);
+        const variant =
+          state.kind === "Active"
+            ? "success"
+            : state.kind === "Failed"
+              ? "destructive"
+              : "secondary";
+        return <Badge variant={variant as never}>{state.kind}</Badge>;
+      },
+    },
+    {
+      key: "actions",
+      header: "",
+      width: "80px",
+      render: (r) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            remove.mutate(r.id);
+          }}
+        >
+          {t("rules.remove")}
+        </Button>
+      ),
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">{t("rules.title")}</h1>
+        <Button asChild>
+          <Link to="/rules/new">
+            <Plus className="mr-1 h-4 w-4" />
+            {t("rules.newRule")}
+          </Link>
+        </Button>
+      </div>
+      {isAdmin && (
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-muted-foreground">{t("rules.ownerFilter")}</label>
+          <select
+            className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+            value={ownerFilter ?? ""}
+            onChange={(e) => {
+              const next = new URLSearchParams(params);
+              if (e.target.value) next.set("owner", e.target.value);
+              else next.delete("owner");
+              setParams(next);
+            }}
+          >
+            <option value="">—</option>
+            {(users.data ?? []).map((u) => (
+              <option key={u.user_id} value={u.user_id}>
+                {u.user_id}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <DataTable
+        rows={rules.data ?? []}
+        columns={columns}
+        rowKey={(r) => String(r.id)}
+        onRowClick={(r) => navigate(`/rules/${r.id}`)}
+        emptyState={<EmptyState title={t("rules.emptyTitle")} description={t("rules.emptyBody")} />}
+        ariaLabel={t("rules.title")}
+      />
+    </div>
+  );
+}

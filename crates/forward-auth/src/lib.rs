@@ -442,9 +442,9 @@ impl ProtocolSet {
 }
 
 impl Serialize for ProtocolSet {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
-        let mut seq = ser.serialize_seq(None)?;
+        let mut seq = serializer.serialize_seq(None)?;
         if self.contains(Self::TCP) {
             seq.serialize_element("tcp")?;
         }

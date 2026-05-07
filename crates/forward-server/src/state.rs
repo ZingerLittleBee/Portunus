@@ -9,6 +9,7 @@ use forward_core::config::ServerConfig;
 
 use crate::clients::ConnectedClients;
 use crate::metrics::{Metrics, RuleStatsCache};
+use crate::operator::audit::AuditRing;
 use crate::operator::per_port_stats::PerPortStatsCache;
 use crate::rules::ServerRuleStore;
 
@@ -51,6 +52,10 @@ pub struct AppState {
     /// seam). In v0.5.0 this is just `Arc::clone`-cast of the store
     /// above; future impls (e.g., OIDC) can swap it.
     pub operator_auth: Arc<dyn OperatorAuthenticator>,
+    /// 006-management-web-ui T009: in-memory audit ring buffer fed by
+    /// the auth_layer's allow/deny emit sites and read by
+    /// `GET /v1/audit`. Capacity 1000; ≈ 200 KB resident.
+    pub audit: Arc<AuditRing>,
 }
 
 impl AppState {
@@ -69,6 +74,11 @@ impl AppState {
         range_rule_max_ports: u32,
     ) -> Result<Self, prometheus::Error> {
         let operator_auth: Arc<dyn OperatorAuthenticator> = operator_store.clone();
+        let audit = Arc::new(AuditRing::new());
+        let metrics = Arc::new(Metrics::new()?);
+        // T009: stitch the audit ring's drop counter into Prometheus so
+        // an oversaturated buffer becomes visible without grepping logs.
+        audit.bind_drops_metric(metrics.audit_buffer_drops_total.clone());
         Ok(Self {
             tokens,
             clients,
@@ -76,13 +86,14 @@ impl AppState {
             server_endpoint: server_endpoint.into(),
             server_cert_sha256: server_cert_sha256.into(),
             server_cert_pem: server_cert_pem.into(),
-            metrics: Arc::new(Metrics::new()?),
+            metrics,
             stats_cache: RuleStatsCache::new(),
             per_port_stats: PerPortStatsCache::new(),
             range_rule_max_ports,
             server_config: None,
             operator_store,
             operator_auth,
+            audit,
         })
     }
 

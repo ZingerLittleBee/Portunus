@@ -5,6 +5,8 @@
 //! - [`http`] mounts a thin axum wrapper exposing the same operations on
 //!   `operator_http_listen` (default `127.0.0.1:7080`).
 
+pub mod audit;
+pub mod audit_http;
 pub mod auth_layer;
 pub mod bootstrap;
 pub mod cli;
@@ -15,7 +17,10 @@ pub mod identity_cli;
 pub mod per_port_stats;
 pub mod rbac;
 pub mod rule_cli;
+pub mod stats_stream;
 pub mod users;
+pub mod users_me;
+pub mod webui;
 
 use serde::Serialize;
 

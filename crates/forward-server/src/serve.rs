@@ -207,7 +207,10 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
         Ok::<_, ForwardError>(())
     });
 
-    let operator_router = http::router(Arc::clone(&state));
+    // 006-management-web-ui T063: SPA fallback. The fallback runs only
+    // when no `/v1/*` route matches, so the operator API always wins.
+    let operator_router =
+        http::router(Arc::clone(&state)).fallback(crate::operator::webui::serve_webui);
     let http_shutdown = shutdown.token();
     let http_task = tokio::spawn(async move {
         let res = axum::serve(http_listener, operator_router)

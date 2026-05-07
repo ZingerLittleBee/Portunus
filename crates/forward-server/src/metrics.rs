@@ -25,10 +25,10 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use forward_core::{ClientName, RuleId};
 use prometheus::{
-    CounterVec, Encoder, GaugeVec, IntCounterVec, IntGauge, Registry, TextEncoder, opts,
+    CounterVec, Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder, opts,
 };
 use serde::Serialize;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 
 /// One client's report for one rule, plus the server-side wall-clock time
 /// we last received it. Operators consume this via `rule-stats`.
@@ -88,6 +88,10 @@ pub struct Metrics {
     /// label set (≤ enum size + 1) keeps cardinality predictable
     /// regardless of traffic shape (R-009).
     pub operator_requests_total: IntCounterVec,
+    /// 006-management-web-ui T009: cumulative count of audit-ring
+    /// evictions. Bumped by `AuditRing::push` when the ring is at
+    /// capacity and the oldest entry is dropped to make room.
+    pub audit_buffer_drops_total: IntCounter,
 }
 
 impl Metrics {
@@ -166,6 +170,10 @@ impl Metrics {
             ),
             &["outcome", "reason"],
         )?;
+        let audit_buffer_drops_total = IntCounter::new(
+            "forward_audit_buffer_drops_total",
+            "Cumulative count of audit-ring entries evicted because the buffer was at capacity (006-management-web-ui T009)",
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
@@ -177,6 +185,7 @@ impl Metrics {
         registry.register(Box::new(rule_udp_datagrams_out_total.clone()))?;
         registry.register(Box::new(rule_flows_dropped_overflow_total.clone()))?;
         registry.register(Box::new(operator_requests_total.clone()))?;
+        registry.register(Box::new(audit_buffer_drops_total.clone()))?;
 
         Ok(Self {
             registry,
@@ -191,6 +200,7 @@ impl Metrics {
             rule_udp_datagrams_out_total,
             rule_flows_dropped_overflow_total,
             operator_requests_total,
+            audit_buffer_drops_total,
         })
     }
 
@@ -205,10 +215,26 @@ impl Metrics {
     }
 }
 
+/// 006-management-web-ui T011: per-rule broadcast capacity. A new
+/// subscriber gets the latest snapshot via `subscribe(...)`'s
+/// initial-replay handling on the receiver side; runtime updates fan
+/// out through this `tokio::sync::broadcast` channel. Capacity 16 is
+/// generous for a 5-second cadence — slow consumers receive `Lagged`
+/// errors and are logged, never blocking fast subscribers (R-008).
+const STATS_BROADCAST_CAPACITY: usize = 16;
+
 /// Cache the latest `StatsReport` per rule. Cheap to clone (`Arc` internal).
+///
+/// 006-management-web-ui T011: also fans out new snapshots over
+/// `tokio::sync::broadcast` so the SSE endpoint can serve N concurrent
+/// subscribers at O(rules) cost.
 #[derive(Debug, Clone, Default)]
 pub struct RuleStatsCache {
     inner: Arc<RwLock<HashMap<RuleId, CachedEntry>>>,
+    /// Per-rule broadcast senders; lazy-initialized on first
+    /// `subscribe(rule_id)`. Removed when `drop_rule` runs so a removed
+    /// rule's broadcast resources don't accumulate.
+    broadcasts: Arc<RwLock<HashMap<RuleId, broadcast::Sender<RuleStatsSnapshot>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +383,40 @@ impl RuleStatsCache {
         entry.snapshot.flows_dropped_overflow = flows_dropped_overflow;
         entry.snapshot.updated_at = Utc::now();
         entry.snapshot.client_name = client_name.clone();
+        let snap_clone = entry.snapshot.clone();
+        drop(guard);
+        // 006-management-web-ui T011: fan out the snapshot to any SSE
+        // subscribers. Non-blocking: a slow consumer receives
+        // `RecvError::Lagged` on its receiver side; the send itself
+        // never awaits.
+        let bcast_guard = self.broadcasts.read().await;
+        if let Some(tx) = bcast_guard.get(&rule_id) {
+            // `send` returns Err only when there are zero receivers;
+            // ignoring is correct — no subscribers means no fan-out.
+            let _ = tx.send(snap_clone);
+        }
+    }
+
+    /// 006-management-web-ui T011: subscribe to live snapshots for a
+    /// single rule. Lazily creates the broadcast sender on first call;
+    /// returns a fresh receiver for each subscriber. The caller is
+    /// responsible for the initial replay (the SSE handler reads
+    /// `get(rule_id)` once after subscribing to seed the stream).
+    pub async fn subscribe(&self, rule_id: RuleId) -> broadcast::Receiver<RuleStatsSnapshot> {
+        let mut guard = self.broadcasts.write().await;
+        let tx = guard
+            .entry(rule_id)
+            .or_insert_with(|| broadcast::channel(STATS_BROADCAST_CAPACITY).0);
+        tx.subscribe()
+    }
+
+    /// 006-management-web-ui T011: drop a rule's broadcast sender. When
+    /// the sender is dropped, every active receiver gets
+    /// `RecvError::Closed` and the SSE handler terminates the stream
+    /// naturally. Called from `drop_rule`.
+    pub async fn drop_rule_broadcasts(&self, rule_id: RuleId) {
+        let mut guard = self.broadcasts.write().await;
+        guard.remove(&rule_id);
     }
 
     pub async fn get(&self, rule_id: RuleId) -> Option<RuleStatsSnapshot> {
@@ -377,6 +437,10 @@ impl RuleStatsCache {
         owner: &str,
         metrics: &Metrics,
     ) {
+        // 006-management-web-ui T011: drop the broadcast sender first
+        // so any in-flight subscriber sees end-of-stream before the
+        // cache slot disappears.
+        self.drop_rule_broadcasts(rule_id).await;
         let mut guard = self.inner.write().await;
         if guard.remove(&rule_id).is_some() {
             // Strip the rule's labels from the gauges AND the

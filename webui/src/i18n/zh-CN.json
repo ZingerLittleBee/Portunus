@@ -1,0 +1,218 @@
+{
+  "appTitle": "forward-server",
+  "language": {
+    "en": "English",
+    "zh-CN": "中文"
+  },
+  "theme": {
+    "light": "浅色",
+    "dark": "深色",
+    "system": "跟随系统"
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "users": "用户",
+    "grants": "授权",
+    "rules": "转发规则",
+    "clients": "客户端",
+    "audit": "审计日志",
+    "metrics": "指标",
+    "settings": "设置",
+    "signOut": "登出"
+  },
+  "login": {
+    "title": "登录",
+    "subtitle": "粘贴你的 operator bearer token 以继续。",
+    "bearerLabel": "Bearer 令牌",
+    "tokenRequired": "请填写令牌",
+    "invalidToken": "令牌被拒绝（{{code}}），请重试。",
+    "signIn": "登录",
+    "signingIn": "登录中…",
+    "sessionExpired": "会话已过期或令牌已被撤销,请重新登录。"
+  },
+  "permissionDenied": {
+    "title": "无权限",
+    "body": "此页面仅对超级管理员可见。",
+    "back": "返回仪表盘"
+  },
+  "confirm": {
+    "cancel": "取消",
+    "confirm": "确认",
+    "busy": "处理中…",
+    "cascadePreview": "以下资源也会被一并删除："
+  },
+  "tokenReveal": {
+    "title": "新 Bearer 令牌",
+    "description": "请立即复制——之后将不会再显示。",
+    "copy": "复制",
+    "copied": "已复制",
+    "dismiss": "关闭",
+    "tokenLabel": "Bearer 令牌（仅显示一次）"
+  },
+  "errorBanner": {
+    "label": "请求失败",
+    "dismiss": "关闭"
+  },
+  "table": {
+    "noRows": "暂无数据。",
+    "loading": "加载中…"
+  },
+  "dashboard": {
+    "greeting": "欢迎",
+    "connectedClients": "已连接客户端",
+    "activeRules": "生效规则"
+  },
+  "users": {
+    "title": "用户",
+    "id": "用户 ID",
+    "displayName": "显示名",
+    "role": "角色",
+    "credentials": "凭证",
+    "grants": "授权",
+    "newUser": "新建用户",
+    "filterPlaceholder": "按 ID 或名称筛选",
+    "emptyTitle": "暂无用户",
+    "emptyBody": "创建第一个用户以开始使用。"
+  },
+  "userCreate": {
+    "title": "新建用户",
+    "submit": "创建用户",
+    "invalidId": "ID 必须以小写字母开头,可包含 a-z、0-9、连字符或下划线。",
+    "idHint": "小写字母、数字、连字符和下划线;必须以字母开头。"
+  },
+  "userDetail": {
+    "credentials": "凭证",
+    "grants": "授权",
+    "noCredentials": "暂未签发凭证。",
+    "noGrants": "暂未分配授权。",
+    "issueCredential": "签发凭证",
+    "rotate": "轮换",
+    "revoke": "撤销",
+    "revokeGrant": "撤销授权",
+    "delete": "删除用户",
+    "deleteTitle": "删除用户?",
+    "deleteBody": "用户 {{id}} 将被删除,以下从属资源也会被一并清理。此操作不可撤销。",
+    "rotateTitle": "轮换该凭证?",
+    "rotateBody": "将签发新的 bearer 令牌,旧令牌将立即失效。",
+    "rotateConfirm": "轮换"
+  },
+  "grants": {
+    "title": "授权",
+    "user": "用户",
+    "client": "客户端",
+    "ports": "端口",
+    "protocols": "协议",
+    "newGrant": "新建授权",
+    "revoke": "撤销",
+    "emptyTitle": "暂无授权",
+    "emptyBody": "授权决定租户可以使用哪些端口和协议。"
+  },
+  "grantCreate": {
+    "title": "新建授权",
+    "submit": "创建授权",
+    "selectUser": "请选择用户…",
+    "startPort": "起始端口",
+    "endPort": "结束端口",
+    "protocolRequired": "至少选择一种协议。"
+  },
+  "rules": {
+    "title": "转发规则",
+    "id": "ID",
+    "owner": "所有者",
+    "client": "客户端",
+    "listenPort": "监听端口",
+    "target": "目标",
+    "protocol": "协议",
+    "state": "状态",
+    "newRule": "下发规则",
+    "remove": "删除",
+    "ownerFilter": "所有者",
+    "emptyTitle": "暂无规则",
+    "emptyBody": "下发第一条规则以开始转发流量。"
+  },
+  "rulePush": {
+    "title": "下发规则",
+    "submit": "下发规则",
+    "listenStart": "监听端口(起)",
+    "listenEnd": "监听端口(止)",
+    "targetHost": "目标主机或 IP",
+    "targetStart": "目标端口(起)",
+    "targetEnd": "目标端口(止)",
+    "optional": "可选"
+  },
+  "ruleDetail": {
+    "title": "规则",
+    "notFound": "规则不存在或已被删除。",
+    "backToRules": "返回规则列表",
+    "liveStats": "实时统计",
+    "streaming": "流式",
+    "polling": "轮询",
+    "reconnects": "重连次数:{{count}}",
+    "waiting": "等待首次统计上报…",
+    "bytesIn": "入向字节",
+    "bytesOut": "出向字节",
+    "activeConns": "活跃连接",
+    "dnsFailures": "DNS 失败",
+    "activeFlows": "活跃 UDP 流",
+    "flowsDropped": "丢弃的新流(溢出)",
+    "datagramsIn": "入向数据报",
+    "datagramsOut": "出向数据报",
+    "updatedAt": "更新时间"
+  },
+  "clients": {
+    "title": "客户端",
+    "name": "名称",
+    "remote": "远端地址",
+    "since": "连接时间",
+    "status": "状态",
+    "connected": "已连接",
+    "disconnected": "离线",
+    "revoked": "已撤销",
+    "provision": "签发客户端",
+    "revoke": "撤销",
+    "emptyTitle": "暂无客户端",
+    "emptyBody": "签发一个客户端凭证包以便转发器接入。"
+  },
+  "clientProvision": {
+    "title": "签发客户端",
+    "submit": "签发凭证包",
+    "bundleHeading": "凭证包",
+    "bundleHint": "凭证包内含 bearer 令牌,请立即保存到本地,并通过安全渠道传给客户端。",
+    "download": "下载凭证包",
+    "copy": "复制 JSON",
+    "reveal": "显示",
+    "hide": "隐藏",
+    "backToList": "返回客户端列表"
+  },
+  "audit": {
+    "title": "审计日志",
+    "timestamp": "时间",
+    "outcome": "结果",
+    "actor": "操作者",
+    "role": "角色",
+    "method": "方法",
+    "path": "路径",
+    "reason": "原因",
+    "allow": "通过",
+    "deny": "拒绝",
+    "outcomeAll": "全部结果",
+    "outcomeFilterLabel": "按结果筛选",
+    "download": "下载为 JSON",
+    "emptyTitle": "暂无审计记录",
+    "emptyBody": "operator 的 allow / deny 事件会在发生时实时出现在这里。"
+  },
+  "metrics": {
+    "title": "指标",
+    "rawHeading": "原始 /metrics",
+    "copyAll": "复制全部"
+  },
+  "settings": {
+    "title": "设置",
+    "themeHeading": "主题",
+    "languageHeading": "语言"
+  },
+  "notFound": {
+    "title": "页面不存在",
+    "back": "返回仪表盘"
+  }
+}

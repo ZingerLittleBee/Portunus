@@ -11,8 +11,47 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  webui:
+    name: webui (lint + test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: webui/pnpm-lock.yaml
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm lint
+        run: pnpm lint
+
+      - name: pnpm test (Vitest)
+        run: pnpm test
+
+      - name: pnpm build (size-limit gate)
+        run: pnpm build
+
+      - name: Upload webui/dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+          retention-days: 1
+
   test:
     name: cargo test (${{ matrix.os }})
+    needs: webui
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -34,6 +73,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Download webui/dist
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
@@ -45,3 +90,55 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-targets
+
+  e2e:
+    name: Playwright e2e
+    needs: webui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: webui/pnpm-lock.yaml
+
+      - name: Download webui/dist
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+
+      - name: cargo build --release -p forward-server
+        run: cargo build --release -p forward-server
+
+      - name: pnpm install
+        working-directory: webui
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: webui
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Playwright test
+        working-directory: webui
+        env:
+          FORWARD_SERVER_BIN: ${{ github.workspace }}/target/release/forward-server
+        run: pnpm exec playwright test

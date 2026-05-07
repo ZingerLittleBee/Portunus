@@ -96,9 +96,7 @@ async fn operator_requests_counter_registered_and_renderable() {
         .inc_by(2);
     let body = String::from_utf8(metrics.render()).expect("utf8");
     assert!(
-        body.contains(
-            "forward_operator_requests_total{outcome=\"allow\",reason=\"ok\"} 1"
-        ),
+        body.contains("forward_operator_requests_total{outcome=\"allow\",reason=\"ok\"} 1"),
         "missing allow row\n--- body ---\n{body}"
     );
     assert!(

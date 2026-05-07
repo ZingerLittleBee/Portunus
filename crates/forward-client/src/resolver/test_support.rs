@@ -2,11 +2,10 @@
 //! resolver layer — `MockResolver` (configurable answers/errors,
 //! optional delay) and `MockClock` (advanceable time source).
 //!
-//! These live in a non-test module guarded by `#[cfg(test)]` so both
+//! These live in a non-test module guarded by `#[cfg(test)]` (at the
+//! parent module's `mod test_support;` line) so both
 //! `resolver::cache::tests` and `resolver::tests` can pull them in
 //! without re-implementing the same scaffolding.
-
-#![cfg(test)]
 
 use std::collections::VecDeque;
 use std::net::IpAddr;

@@ -616,7 +616,12 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
     let owner = removed.owner_user_id.to_string();
     state
         .stats_cache
-        .drop_rule(rule_id, &removed.client_name, owner.as_str(), &state.metrics)
+        .drop_rule(
+            rule_id,
+            &removed.client_name,
+            owner.as_str(),
+            &state.metrics,
+        )
         .await;
     // T046 (002-port-range-forward): a removed rule's per-port detail
     // is no longer meaningful — clear it so a subsequent `rule-stats

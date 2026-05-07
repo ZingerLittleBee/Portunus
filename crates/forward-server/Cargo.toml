@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "forward-rs control-plane server binary."
+build = "build.rs"
 
 [lints]
 workspace = true
@@ -41,6 +42,13 @@ thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tower = { version = "0.5", features = ["util"] }
 ulid = { workspace = true }
+# 006-management-web-ui T005: compile-time embed of webui/dist/.
+rust-embed = { version = "8", features = ["compression", "include-exclude"] }
+# 006-management-web-ui T025: SSE plumbing for /v1/rules/{id}/stats/stream.
+futures = "0.3"
+# 006-management-web-ui T063: serve embedded assets with correct
+# Content-Type without hand-coding a MIME table.
+mime_guess = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

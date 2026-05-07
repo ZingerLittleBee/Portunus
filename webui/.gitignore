@@ -1,0 +1,9 @@
+node_modules/
+dist/*
+!dist/.gitkeep
+.eslintcache
+playwright-report/
+test-results/
+*.log
+.DS_Store
+tsconfig.tsbuildinfo

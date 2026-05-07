@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     middleware::from_fn_with_state,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
 use forward_auth::OperatorIdentity;
@@ -28,16 +28,33 @@ use crate::state::AppState;
 const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn router(state: Arc<AppState>) -> Router {
-    use crate::operator::{credentials, grants, users};
+    use crate::operator::{audit_http, credentials, grants, stats_stream, users, users_me};
     Router::new()
         .route("/v1/clients", get(get_clients).post(post_clients))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/rules", get(get_rules).post(post_rules))
         .route("/v1/rules/{rule_id}", delete(delete_rule))
         .route("/v1/rules/{rule_id}/stats", get(get_rule_stats))
+        // 006-management-web-ui T025: SSE live stats stream.
+        .route(
+            "/v1/rules/{rule_id}/stats/stream",
+            get(stats_stream::get_rule_stats_stream),
+        )
+        // 006-management-web-ui T024: superadmin-only audit log read.
+        .route("/v1/audit", get(audit_http::get_audit))
+        // 006-management-web-ui follow-up: same Prometheus payload as the
+        // standalone `/metrics` listener, but RBAC-gated so the embedded
+        // SPA (loaded same-origin from operator_http_listen) can render
+        // it. The standalone loopback listener stays for prometheus
+        // scrapers that don't carry a bearer token.
+        .route("/v1/metrics", get(get_v1_metrics))
         // 005-multi-user-rbac T038: identity-management routes. All
         // superadmin-only (enforced inside each handler).
         .route("/v1/users", get(users::get_users).post(users::post_users))
+        // 006-management-web-ui T012: caller's own identity projection.
+        // Mounted BEFORE `/v1/users/{user_id}` so axum's path matcher
+        // routes `/v1/users/me` here and never to `get_user("me")`.
+        .route("/v1/users/me", get(users_me::get_users_me))
         .route(
             "/v1/users/{user_id}",
             get(users::get_user).delete(users::delete_user),
@@ -86,6 +103,27 @@ async fn post_revoke(
 
 async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>> {
     Json(cli::list_clients(&state).await)
+}
+
+/// Superadmin-only mirror of the loopback `/metrics` endpoint.
+/// Lets the embedded SPA render Prometheus output without crossing
+/// listeners. Same payload as the scraper-facing endpoint.
+async fn get_v1_metrics(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+) -> Result<Response, ApiError> {
+    crate::operator::rbac::require_role(&identity, forward_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let body = state.metrics.render();
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response())
 }
 
 #[derive(Debug, Deserialize)]

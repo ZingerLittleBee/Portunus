@@ -1,0 +1,218 @@
+{
+  "appTitle": "forward-server",
+  "language": {
+    "en": "English",
+    "zh-CN": "中文"
+  },
+  "theme": {
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "users": "Users",
+    "grants": "Grants",
+    "rules": "Rules",
+    "clients": "Clients",
+    "audit": "Audit log",
+    "metrics": "Metrics",
+    "settings": "Settings",
+    "signOut": "Sign out"
+  },
+  "login": {
+    "title": "Sign in",
+    "subtitle": "Paste your operator bearer token to continue.",
+    "bearerLabel": "Bearer token",
+    "tokenRequired": "Token is required",
+    "invalidToken": "Token rejected ({{code}}). Try again.",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "sessionExpired": "Session expired or token revoked. Please sign in again."
+  },
+  "permissionDenied": {
+    "title": "Permission denied",
+    "body": "This page is only available to superadmins.",
+    "back": "Back to dashboard"
+  },
+  "confirm": {
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "busy": "Working…",
+    "cascadePreview": "These resources will also be removed:"
+  },
+  "tokenReveal": {
+    "title": "Bearer token issued",
+    "description": "Copy this token now — it will not be shown again.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "dismiss": "Dismiss",
+    "tokenLabel": "Bearer token (one-time)"
+  },
+  "errorBanner": {
+    "label": "Request failed",
+    "dismiss": "Dismiss"
+  },
+  "table": {
+    "noRows": "No rows yet.",
+    "loading": "Loading…"
+  },
+  "dashboard": {
+    "greeting": "Welcome",
+    "connectedClients": "Connected clients",
+    "activeRules": "Active rules"
+  },
+  "users": {
+    "title": "Users",
+    "id": "ID",
+    "displayName": "Display name",
+    "role": "Role",
+    "credentials": "Credentials",
+    "grants": "Grants",
+    "newUser": "New user",
+    "filterPlaceholder": "Filter by id or name",
+    "emptyTitle": "No users yet",
+    "emptyBody": "Create your first user to get started."
+  },
+  "userCreate": {
+    "title": "New user",
+    "submit": "Create user",
+    "invalidId": "ID must start with a lowercase letter and use a-z, 0-9, dash or underscore.",
+    "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter."
+  },
+  "userDetail": {
+    "credentials": "Credentials",
+    "grants": "Grants",
+    "noCredentials": "No credentials issued.",
+    "noGrants": "No grants assigned.",
+    "issueCredential": "Issue credential",
+    "rotate": "Rotate",
+    "revoke": "Revoke",
+    "revokeGrant": "Revoke grant",
+    "delete": "Delete user",
+    "deleteTitle": "Delete user?",
+    "deleteBody": "User {{id}} will be removed along with the dependents listed below. This cannot be undone.",
+    "rotateTitle": "Rotate this credential?",
+    "rotateBody": "A new bearer token will be issued and the current one will stop working.",
+    "rotateConfirm": "Rotate"
+  },
+  "grants": {
+    "title": "Grants",
+    "user": "User",
+    "client": "Client",
+    "ports": "Ports",
+    "protocols": "Protocols",
+    "newGrant": "New grant",
+    "revoke": "Revoke",
+    "emptyTitle": "No grants yet",
+    "emptyBody": "Grants control which ports and protocols a tenant may use."
+  },
+  "grantCreate": {
+    "title": "New grant",
+    "submit": "Create grant",
+    "selectUser": "Select a user…",
+    "startPort": "Listen port (start)",
+    "endPort": "Listen port (end)",
+    "protocolRequired": "Pick at least one protocol."
+  },
+  "rules": {
+    "title": "Rules",
+    "id": "ID",
+    "owner": "Owner",
+    "client": "Client",
+    "listenPort": "Listen",
+    "target": "Target",
+    "protocol": "Protocol",
+    "state": "State",
+    "newRule": "Push rule",
+    "remove": "Remove",
+    "ownerFilter": "Owner",
+    "emptyTitle": "No rules yet",
+    "emptyBody": "Push your first rule to start forwarding traffic."
+  },
+  "rulePush": {
+    "title": "Push rule",
+    "submit": "Push rule",
+    "listenStart": "Listen port (start)",
+    "listenEnd": "Listen port (end)",
+    "targetHost": "Target host or IP",
+    "targetStart": "Target port (start)",
+    "targetEnd": "Target port (end)",
+    "optional": "optional"
+  },
+  "ruleDetail": {
+    "title": "Rule",
+    "notFound": "Rule not found or removed.",
+    "backToRules": "Back to rules",
+    "liveStats": "Live stats",
+    "streaming": "Streaming",
+    "polling": "Polling",
+    "reconnects": "Reconnect attempts: {{count}}",
+    "waiting": "Waiting for first stats report…",
+    "bytesIn": "Bytes in",
+    "bytesOut": "Bytes out",
+    "activeConns": "Active connections",
+    "dnsFailures": "DNS failures",
+    "activeFlows": "Active UDP flows",
+    "flowsDropped": "Flows dropped (overflow)",
+    "datagramsIn": "Datagrams in",
+    "datagramsOut": "Datagrams out",
+    "updatedAt": "Updated"
+  },
+  "clients": {
+    "title": "Clients",
+    "name": "Name",
+    "remote": "Remote address",
+    "since": "Connected since",
+    "status": "Status",
+    "connected": "Connected",
+    "disconnected": "Offline",
+    "revoked": "Revoked",
+    "provision": "Provision client",
+    "revoke": "Revoke",
+    "emptyTitle": "No clients yet",
+    "emptyBody": "Provision a client bundle so a forwarder can connect."
+  },
+  "clientProvision": {
+    "title": "Provision client",
+    "submit": "Issue bundle",
+    "bundleHeading": "Credential bundle",
+    "bundleHint": "This bundle contains the bearer token. Save it to disk now and share it with the client over a secure channel.",
+    "download": "Download bundle",
+    "copy": "Copy JSON",
+    "reveal": "Reveal",
+    "hide": "Hide",
+    "backToList": "Back to clients"
+  },
+  "audit": {
+    "title": "Audit log",
+    "timestamp": "Timestamp",
+    "outcome": "Outcome",
+    "actor": "Actor",
+    "role": "Role",
+    "method": "Method",
+    "path": "Path",
+    "reason": "Reason",
+    "allow": "allow",
+    "deny": "deny",
+    "outcomeAll": "All outcomes",
+    "outcomeFilterLabel": "Filter by outcome",
+    "download": "Download as JSON",
+    "emptyTitle": "No audit entries",
+    "emptyBody": "Operator allow / deny events will appear here as soon as they happen."
+  },
+  "metrics": {
+    "title": "Metrics",
+    "rawHeading": "Raw /metrics",
+    "copyAll": "Copy all"
+  },
+  "settings": {
+    "title": "Settings",
+    "themeHeading": "Theme",
+    "languageHeading": "Language"
+  },
+  "notFound": {
+    "title": "Page not found",
+    "back": "Back to dashboard"
+  }
+}

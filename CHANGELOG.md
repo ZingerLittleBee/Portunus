@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-08
+
+Operator Web UI release. Closes the long-deferred `TODO(WEB_UI)` from
+the constitution. The forwarding data plane (TCP + UDP + DNS resolver +
+port-range rules) is **byte-identical** to v0.5.0; this release adds a
+React + Vite SPA embedded into `forward-server` via `rust-embed`, plus
+two additive operator HTTP endpoints (`GET /v1/audit`, `GET
+/v1/rules/{id}/stats/stream`) and a small `GET /v1/users/me`
+projection. RBAC, identity store, audit-log emit sites, and every
+existing CLI subcommand are unchanged.
+
+### Added (006-management-web-ui)
+
+- **Operator Web UI** — a single-page React + Vite + TypeScript app
+  embedded into `forward-server` via `rust-embed` and served at the
+  existing operator HTTP listener's root path `/`. Login by pasting a
+  bearer token (kept in `sessionStorage` only). Covers users,
+  credentials, grants, rules (with per-rule live stats over SSE),
+  clients, audit log, raw `/metrics`, theme + language settings.
+  Single-binary distribution preserved — no Node runtime on the host.
+- **`GET /v1/users/me`** — returns `{ user_id, role, display_name }`
+  for the caller. Used by the SPA's `<AuthGate>` to probe the cached
+  bearer once and decide what to render.
+- **`GET /v1/audit?limit=N&outcome=allow|deny`** (superadmin-only) —
+  reads the new in-memory audit ring buffer (capacity 1000) populated
+  by every `auth_layer` allow/deny emit site. Newest-first JSON array.
+  Server-side `outcome` filter mirrors the SPA's client-side dropdown
+  to keep responses small for bandwidth-constrained tabs.
+- **`GET /v1/rules/{id}/stats/stream`** (SSE, ownership-checked) —
+  text/event-stream of `RuleStatsSnapshot` events fed by a per-rule
+  `tokio::sync::broadcast`. Subscribers cost O(rules) not
+  O(rules × subscribers); slow consumers receive `Lagged` and are
+  logged once per minute per rule, never blocking fast subscribers.
+- **`forward_audit_buffer_drops_total`** Prometheus counter — bumped
+  whenever the audit ring drops an entry on overflow.
+- **`GET /v1/metrics`** (superadmin-only) — same Prometheus payload as
+  the standalone `metrics_listen` endpoint, but RBAC-gated so the
+  embedded SPA (loaded same-origin from `operator_http_listen`) can
+  render the dashboard gauges and `/metrics` page without crossing
+  listeners. The standalone scraper-facing endpoint is unchanged
+  (Prometheus continues scraping it without bearer tokens).
+- **English + 简体中文 i18n** for every UI string, with a coverage
+  unit test that fails CI if a key drifts between bundles.
+
+### Build & tooling
+
+- New top-level `webui/` Vite project (sibling of `crates/`). Build
+  with `pnpm install --frozen-lockfile && pnpm build`; output lands in
+  `webui/dist/` and is consumed by `cargo build -p forward-server`
+  via the new `crates/forward-server/build.rs` gate. Backend-only
+  iteration: `FORWARD_SKIP_WEBUI=1 cargo build -p forward-server`
+  emits a stub UI so `rust-embed` always has something to embed —
+  release pipelines never set this env var.
+- Bundle-size budget: gzipped main chunk ≤ 500 KB, enforced by
+  `size-limit` at `pnpm build` time.
+
+### Fixed
+
+- **Self-rotation 401 race** in `useRotateCredential` — the post-mutation
+  cache invalidation refetched the credentials list with the
+  now-revoked old bearer, bouncing the operator to `/login` before the
+  one-shot issuance modal could render the new token. The hook no
+  longer auto-invalidates; `UserDetail.tsx` swaps the new bearer into
+  `sessionStorage` first, then invalidates. The non-self path (a
+  superadmin rotating someone else's credential) is unaffected.
+
+### Constitution
+
+- Closes the long-deferred `TODO(WEB_UI)` from constitution v1.x. No
+  data-plane code paths touched (Principle II); SPA never bypasses the
+  auth_layer (Principle I); both new endpoints get contract tests
+  before implementation (Principle III); audit buffer never carries
+  raw bearer tokens (Principle IV); RBAC isolation enforced server-
+  side; the SPA renders whatever the server returns (Principle V).
+
 ## [0.5.0] — 2026-05-07
 
 Multi-user RBAC for the operator API. The forwarding data plane (TCP +

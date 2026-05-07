@@ -23,14 +23,16 @@ use axum::{
     Json,
     body::Body,
     extract::{Request, State},
-    http::{StatusCode, header},
+    http::{Method, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use forward_auth::RbacError;
+use chrono::Utc;
+use forward_auth::{OperatorRole, RbacError};
 use serde::Serialize;
 use tracing::{info, warn};
 
+use crate::operator::audit::{AuditEntry, AuditOutcome};
 use crate::state::AppState;
 
 /// Axum middleware fn: authenticate + inject identity + audit-log.
@@ -57,6 +59,14 @@ pub async fn auth_middleware(
             outcome = "deny",
             reason = "bootstrap_required",
         );
+        record_deny(
+            &state,
+            "_anonymous",
+            None,
+            &method,
+            &path,
+            "bootstrap_required",
+        );
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             RbacError::BootstrapRequired,
@@ -77,6 +87,7 @@ pub async fn auth_middleware(
                 outcome = "deny",
                 reason = reason.code(),
             );
+            record_deny(&state, "_anonymous", None, &method, &path, reason.code());
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 reason,
@@ -99,6 +110,7 @@ pub async fn auth_middleware(
                 outcome = "deny",
                 reason = e.code(),
             );
+            record_deny(&state, "_anonymous", None, &method, &path, e.code());
             return error_response(status, e, "invalid or revoked credential");
         }
     };
@@ -113,9 +125,53 @@ pub async fn auth_middleware(
         path = %path,
         outcome = "allow",
     );
+    record_allow(
+        &state,
+        identity.user_id.as_str(),
+        identity.role,
+        &method,
+        &path,
+    );
     req.extensions_mut().insert(identity);
 
     next.run(req).await
+}
+
+/// 006-management-web-ui T010: push an `allow` row into the ring.
+/// Tokens NEVER appear here — `actor` / `role` are post-verify.
+fn record_allow(state: &AppState, actor: &str, role: OperatorRole, method: &Method, path: &str) {
+    state.audit.push(AuditEntry {
+        timestamp: Utc::now(),
+        actor: actor.to_string(),
+        role: Some(role),
+        method: method.to_string(),
+        path: path.to_string(),
+        outcome: AuditOutcome::Allow,
+        reason: None,
+    });
+}
+
+/// 006-management-web-ui T010: push a `deny` row. `role` is `None`
+/// for pre-verify denies (`_anonymous`), `Some` once we know who
+/// the caller was meant to be (the v0.5 auth_layer never reaches
+/// that branch — it always denies anonymously).
+fn record_deny(
+    state: &AppState,
+    actor: &str,
+    role: Option<OperatorRole>,
+    method: &Method,
+    path: &str,
+    reason: &str,
+) {
+    state.audit.push(AuditEntry {
+        timestamp: Utc::now(),
+        actor: actor.to_string(),
+        role,
+        method: method.to_string(),
+        path: path.to_string(),
+        outcome: AuditOutcome::Deny,
+        reason: Some(reason.to_string()),
+    });
 }
 
 /// 005-multi-user-rbac T045: bump the auth-layer's outcome/reason

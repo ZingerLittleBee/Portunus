@@ -202,8 +202,9 @@ fn test_udp_us1_happy_path() {
     // SC-004: exactly one row per rule for the UDP collectors. Fetch
     // /metrics directly and grep for the rule's label.
     let metrics_body = common::fetch_metrics_text(&metrics_addr);
-    let pat =
-        format!("forward_rule_udp_datagrams_in_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}");
+    let pat = format!(
+        "forward_rule_udp_datagrams_in_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}"
+    );
     let matching = metrics_body.lines().filter(|l| l.starts_with(&pat)).count();
     assert_eq!(
         matching, 1,
@@ -475,8 +476,9 @@ fn test_udp_us2_dns_target() {
     // first observe() call.
     let saw_failure = common::wait_for(Duration::from_secs(8), || {
         let body = common::fetch_metrics_text(&metrics_addr);
-        let pat =
-            format!("forward_rule_dns_failures_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{bad_rule_id}\"}}");
+        let pat = format!(
+            "forward_rule_dns_failures_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{bad_rule_id}\"}}"
+        );
         body.lines().find_map(|l| {
             if !l.starts_with(&pat) {
                 return None;
@@ -866,7 +868,9 @@ fn test_udp_us4_idle_eviction() {
     // active_flows MUST be 0 (visible via /metrics).
     let drained = common::wait_for(Duration::from_secs(10), || {
         let body = common::fetch_metrics_text(&metrics_addr);
-        let pat = format!("forward_rule_active_flows{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}");
+        let pat = format!(
+            "forward_rule_active_flows{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}"
+        );
         body.lines().find_map(|l| {
             if !l.starts_with(&pat) {
                 return None;
@@ -951,8 +955,9 @@ fn test_udp_us3_metric_cardinality() {
     // Wait for stats to flush, then assert /metrics has exactly one row.
     let saw = common::wait_for(Duration::from_secs(8), || {
         let body = common::fetch_metrics_text(&metrics_addr);
-        let pat =
-            format!("forward_rule_udp_datagrams_in_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}");
+        let pat = format!(
+            "forward_rule_udp_datagrams_in_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}"
+        );
         let count = body.lines().filter(|l| l.starts_with(&pat)).count();
         if count == 0 {
             return None;
