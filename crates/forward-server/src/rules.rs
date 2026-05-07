@@ -23,6 +23,17 @@ use forward_core::{ClientName, PortRange, PortRangeError, RuleId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+/// Flatten `Option<bool>` to a wire `bool` so HTTP responses
+/// always emit `prefer_ipv6` even when the operator did not set it
+/// (003-domain-name-forward / `contracts/operator-api.md` §
+/// "Response (additive)").
+fn serialize_prefer_ipv6_as_bool<S: serde::Serializer>(
+    v: &Option<bool>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_bool(v.unwrap_or(false))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Protocol {
     Tcp,
@@ -66,9 +77,15 @@ pub struct Rule {
     /// Address-family preference for DNS-target rules
     /// (003-domain-name-forward, FR-007). Absent → IPv4-first.
     /// `Some(true)` → IPv6-first. Silently ignored for IP-literal
-    /// targets. Skipped on serialize when absent so v0.2.0 rule
-    /// payloads stay byte-identical (FR-009 / FR-010).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// targets.
+    ///
+    /// Wire form per `contracts/operator-api.md`: HTTP responses
+    /// ALWAYS include the field as a flat `bool` (None → `false`)
+    /// so generic operator tooling can rely on it being present.
+    /// Internally we keep `Option<bool>` to distinguish
+    /// operator-explicit-false from default-because-absent — needed
+    /// later for persistence migrations and for log diagnostics.
+    #[serde(default, serialize_with = "serialize_prefer_ipv6_as_bool")]
     pub prefer_ipv6: Option<bool>,
     pub protocol: Protocol,
     pub state: RuleState,

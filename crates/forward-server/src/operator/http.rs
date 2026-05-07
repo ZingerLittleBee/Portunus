@@ -91,9 +91,16 @@ fn default_protocol() -> String {
     "tcp".to_string()
 }
 
+/// 003-domain-name-forward T042 / `contracts/operator-api.md`
+/// § "Response (additive)": always include `target_host` and
+/// `prefer_ipv6` so generic operator tooling can rely on the
+/// fields' presence without branching on rule type.
 #[derive(Debug, Serialize)]
 struct PushRuleResponse {
     rule_id: u64,
+    status: String,
+    target_host: String,
+    prefer_ipv6: bool,
 }
 
 async fn post_rules(
@@ -128,9 +135,20 @@ async fn post_rules(
         timeout,
     )
     .await?;
+    let status = match &rule.state {
+        crate::rules::RuleState::Pending => "Pending".to_string(),
+        crate::rules::RuleState::Active => "Active".to_string(),
+        crate::rules::RuleState::Failed { reason } => format!("Failed:{reason}"),
+        crate::rules::RuleState::Removed => "Removed".to_string(),
+    };
     Ok((
         StatusCode::CREATED,
-        Json(PushRuleResponse { rule_id: rule.id.0 }),
+        Json(PushRuleResponse {
+            rule_id: rule.id.0,
+            status,
+            target_host: rule.target_host.clone(),
+            prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
+        }),
     ))
 }
 

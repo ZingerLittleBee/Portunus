@@ -288,3 +288,195 @@ fn test_dns_us2_failure_active_rule_and_event() {
         "T034: client MUST emit rule.dns_failed for broken.invalid"
     );
 }
+
+/// T037 (US3) — HTTP round-trip for `prefer_ipv6`.
+///
+/// Three sub-cases per `contracts/operator-api.md`:
+///   1. POST `{ "prefer_ipv6": true }` → response echoes `true`.
+///   2. POST without the field → response echoes `false` (default).
+///   3. GET `/v1/rules` lists both rules with `prefer_ipv6` always
+///      present as a flat bool.
+///
+/// Doesn't drive bytes through the proxy — wire-shape only.
+#[test]
+fn test_dns_us3_http_prefer_ipv6_round_trip() {
+    let server = common::spawn_server(&[]);
+    let (_grpc, http) = server
+        .wait_listening(Duration::from_secs(5))
+        .expect("server listening");
+
+    let bundle = common::provision_client_http(&http, "edge-01");
+    let _client = common::spawn_client(&bundle, &[]);
+    let connected = common::wait_for(Duration::from_secs(5), || {
+        let arr = common::list_clients_http(&http);
+        arr.as_array()?
+            .iter()
+            .find(|v| {
+                v.get("client_name").and_then(|n| n.as_str()) == Some("edge-01")
+                    && v.get("connected").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .cloned()
+    });
+    assert!(connected.is_some(), "edge-01 must connect within 5s");
+
+    let (_echo_ip, echo_port_a) = spawn_echo();
+    let (_echo_ip2, echo_port_b) = spawn_echo();
+    let listen_a = pick_free_port();
+    let listen_b = pick_free_port();
+
+    // Case 1: explicit prefer_ipv6 = true.
+    let (status, body_a) = common::push_rule_http_with_prefer_ipv6(
+        &http,
+        "edge-01",
+        listen_a,
+        "localhost",
+        echo_port_a,
+        Some(true),
+        Some(3),
+    );
+    assert!(status.is_success(), "POST with prefer_ipv6=true: {status} {body_a}");
+    assert_eq!(
+        body_a.get("prefer_ipv6").and_then(Value::as_bool),
+        Some(true),
+        "response must echo prefer_ipv6=true: {body_a}"
+    );
+    assert_eq!(
+        body_a.get("target_host").and_then(Value::as_str),
+        Some("localhost"),
+        "response must echo target_host: {body_a}"
+    );
+
+    // Case 2: omit prefer_ipv6 → response echoes false.
+    let (status, body_b) = common::push_rule_http_with_prefer_ipv6(
+        &http,
+        "edge-01",
+        listen_b,
+        "localhost",
+        echo_port_b,
+        None,
+        Some(3),
+    );
+    assert!(status.is_success(), "POST without prefer_ipv6: {status} {body_b}");
+    assert_eq!(
+        body_b.get("prefer_ipv6").and_then(Value::as_bool),
+        Some(false),
+        "absent prefer_ipv6 must default to false in response: {body_b}"
+    );
+
+    // Case 3: list both rules — both entries carry the flat bool.
+    let rules = common::list_rules_http(&http, Some("edge-01"));
+    let arr = rules.as_array().expect("rules array");
+    assert!(arr.len() >= 2, "expected >=2 rules: {rules}");
+    for r in arr {
+        assert!(
+            r.get("prefer_ipv6").is_some(),
+            "every list entry MUST include prefer_ipv6: {r}"
+        );
+        assert!(
+            r.get("prefer_ipv6").unwrap().is_boolean(),
+            "prefer_ipv6 MUST serialize as flat bool, not Option: {r}"
+        );
+    }
+    let pref_a = arr
+        .iter()
+        .find(|r| r.get("listen_port").and_then(Value::as_u64) == Some(u64::from(listen_a)))
+        .and_then(|r| r.get("prefer_ipv6"))
+        .and_then(Value::as_bool);
+    let pref_b = arr
+        .iter()
+        .find(|r| r.get("listen_port").and_then(Value::as_u64) == Some(u64::from(listen_b)))
+        .and_then(|r| r.get("prefer_ipv6"))
+        .and_then(Value::as_bool);
+    assert_eq!(pref_a, Some(true), "rule A must list prefer_ipv6=true");
+    assert_eq!(pref_b, Some(false), "rule B must list prefer_ipv6=false");
+}
+
+/// T038 (US3) — e2e: `prefer_ipv6=true` against a hostname that only
+/// resolves to A (no AAAA) MUST fall back to IPv4 and succeed
+/// (FR-007 acceptance scenario 3 — "prefer is not only").
+///
+/// The full dual-stack split-comparison from the spec ("two rules
+/// to the same hostname, one default, one prefer-ipv6, parse the
+/// chosen_addr log") requires injecting a controlled resolver into
+/// the live client process — same blocker that pushed T024 out of
+/// scope. The family-ordering itself is exhaustively covered by the
+/// pure unit test `order_by_family_covers_all_fr_007_cases`. This
+/// e2e covers the most-bug-prone fallback case end-to-end:
+/// requesting v6 preference must NOT break v4-only targets.
+#[test]
+fn test_dns_us3_ipv6_optin_falls_back_to_ipv4_only_target() {
+    let server = common::spawn_server(&[]);
+    let (_grpc, http) = server
+        .wait_listening(Duration::from_secs(5))
+        .expect("server listening");
+
+    let bundle = common::provision_client_http(&http, "edge-01");
+    let client = common::spawn_client(&bundle, &[]);
+    let connected = common::wait_for(Duration::from_secs(5), || {
+        let arr = common::list_clients_http(&http);
+        arr.as_array()?
+            .iter()
+            .find(|v| {
+                v.get("client_name").and_then(|n| n.as_str()) == Some("edge-01")
+                    && v.get("connected").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .cloned()
+    });
+    assert!(connected.is_some(), "edge-01 must connect within 5s");
+
+    let (_echo_ip, echo_port) = spawn_echo();
+    let listen = pick_free_port();
+    let (status, body) = common::push_rule_http_with_prefer_ipv6(
+        &http,
+        "edge-01",
+        listen,
+        // `localhost` resolves to 127.0.0.1 (and ::1 on dual-stack
+        // boxes); when only the v4 echo is bound, prefer_ipv6=true
+        // MUST still reach the v4 listener via family fallback.
+        "localhost",
+        echo_port,
+        Some(true),
+        Some(3),
+    );
+    assert!(
+        status.is_success(),
+        "push with prefer_ipv6=true MUST succeed: {status} {body}"
+    );
+    assert_eq!(
+        body.get("prefer_ipv6").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let mut conn = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, listen))
+        .expect("connect to prefer_ipv6 proxy");
+    conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    conn.write_all(b"v6-pref-falls-back-to-v4").unwrap();
+    let mut buf = [0u8; 24];
+    conn.read_exact(&mut buf).unwrap();
+    assert_eq!(
+        &buf, b"v6-pref-falls-back-to-v4",
+        "prefer_ipv6=true MUST reach v4-only target via fallback (FR-007 scenario 3)"
+    );
+
+    // Sanity: client should have logged a rule.dns_resolved with
+    // prefer_ipv6=true so operators can confirm the toggle took effect.
+    let saw = common::wait_for(Duration::from_secs(2), || {
+        client
+            .stderr_lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("rule.dns_resolved") && l.contains("prefer_ipv6"))
+            .then_some(())
+    });
+    if saw.is_none() {
+        eprintln!("--- client stderr (no rule.dns_resolved seen) ---");
+        for l in client.stderr_lines.lock().unwrap().iter() {
+            eprintln!("{l}");
+        }
+    }
+    assert!(
+        saw.is_some(),
+        "client MUST log rule.dns_resolved with prefer_ipv6 field"
+    );
+}

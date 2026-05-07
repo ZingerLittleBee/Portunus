@@ -155,16 +155,16 @@ to confirm the first dials the IPv4 address, the second the IPv6.
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T036 [P] [US3] Family-ordering unit test in `crates/forward-client/src/resolver/mod.rs`: MockResolver returns mixed A+AAAA; `connect_target(_, _, prefer_ipv6=false)` dials the A first; with `prefer_ipv6=true` dials the AAAA first; only-A dataset works under both flags; only-AAAA dataset works under both flags (FR-007 acceptance scenarios)
-- [ ] T037 [P] [US3] HTTP round-trip test in `crates/forward-server/tests/http_push_rule.rs` (NEW or extend): POST `{ "prefer_ipv6": true }` returns the field in the response body; GET `/v1/rules` lists it; absent in body decodes as default `false`
-- [ ] T038 [P] [US3] e2e test `test_dns_us3_ipv6_optin` in `crates/forward-e2e/tests/dns_smoke.rs`: dual-stack hosts mapping; two rules to same hostname (one default, one `--prefer-ipv6`); for each rule open an end-user connection and parse the structured `rule.dns_resolved.chosen_addr` log line to confirm v4 vs v6 family; cover the "only-A available + prefer_ipv6=true falls back to A" case from US3 acceptance scenario 3
+- [X] T036 [P] [US3] Family-ordering unit test in `crates/forward-client/src/resolver/mod.rs`: MockResolver returns mixed A+AAAA; `connect_target(_, _, prefer_ipv6=false)` dials the A first; with `prefer_ipv6=true` dials the AAAA first; only-A dataset works under both flags; only-AAAA dataset works under both flags (FR-007 acceptance scenarios)
+- [X] T037 [P] [US3] HTTP round-trip test in `crates/forward-server/tests/http_push_rule.rs` (NEW or extend): POST `{ "prefer_ipv6": true }` returns the field in the response body; GET `/v1/rules` lists it; absent in body decodes as default `false`
+- [X] T038 [P] [US3] e2e test `test_dns_us3_ipv6_optin` in `crates/forward-e2e/tests/dns_smoke.rs`: dual-stack hosts mapping; two rules to same hostname (one default, one `--prefer-ipv6`); for each rule open an end-user connection and parse the structured `rule.dns_resolved.chosen_addr` log line to confirm v4 vs v6 family; cover the "only-A available + prefer_ipv6=true falls back to A" case from US3 acceptance scenario 3
 
 ### Implementation for User Story 3
 
-- [ ] T039 [US3] `ClientRule` in `crates/forward-client/src/forwarder/mod.rs` grows `prefer_ipv6: bool` populated from the proto `Option<bool>` in `crates/forward-client/src/control.rs` (default `false` when absent)
-- [ ] T040 [US3] `LiveResolver` family-preference logic in `crates/forward-client/src/resolver/mod.rs`: split addrs into A-list + AAAA-list, concatenate preferred-first per `prefer_ipv6` (R-003); pass per-rule `prefer_ipv6` from proxy through `connect_target` (depends on T039)
-- [ ] T041 [P] [US3] Server CLI: add `--prefer-ipv6` boolean flag to `push-rule` in `crates/forward-server/src/operator/cli.rs` and route it through to the rule struct in `crates/forward-server/src/operator/rule_cli.rs`
-- [ ] T042 [P] [US3] Server HTTP: `PushRuleBody` accepts optional `prefer_ipv6: Option<bool>` in `crates/forward-server/src/operator/http.rs`; response body always echoes the field (per `contracts/operator-api.md`); `list-rules` JSON includes it; `--wide` text mode adds a column
+- [X] T039 [US3] `ClientRule` in `crates/forward-client/src/forwarder/mod.rs` grows `prefer_ipv6: bool` populated from the proto `Option<bool>` in `crates/forward-client/src/control.rs` (default `false` when absent)
+- [X] T040 [US3] `LiveResolver` family-preference logic in `crates/forward-client/src/resolver/mod.rs`: split addrs into A-list + AAAA-list, concatenate preferred-first per `prefer_ipv6` (R-003); pass per-rule `prefer_ipv6` from proxy through `connect_target` (depends on T039)
+- [X] T041 [P] [US3] Server CLI: add `--prefer-ipv6` boolean flag to `push-rule` in `crates/forward-server/src/operator/cli.rs` and route it through to the rule struct in `crates/forward-server/src/operator/rule_cli.rs`
+- [X] T042 [P] [US3] Server HTTP: `PushRuleBody` accepts optional `prefer_ipv6: Option<bool>` in `crates/forward-server/src/operator/http.rs`; response body always echoes the field (per `contracts/operator-api.md`); `list-rules` JSON includes it; `--wide` text mode adds a column
 
 **Checkpoint**: US3 done — IPv6 opt-in works end-to-end with per-rule
 isolation; T038 passes.

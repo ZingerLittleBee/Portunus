@@ -334,6 +334,43 @@ pub fn push_rule_http_full(
     (status, body)
 }
 
+/// 003-domain-name-forward T037 helper: push with explicit
+/// `prefer_ipv6` field. Single-port shape only (DNS rules in US3
+/// don't exercise port ranges).
+#[allow(dead_code)]
+pub fn push_rule_http_with_prefer_ipv6(
+    operator_http_addr: &str,
+    client: &str,
+    listen_port: u16,
+    target_host: &str,
+    target_port: u16,
+    prefer_ipv6: Option<bool>,
+    ack_timeout_secs: Option<u64>,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("http://{operator_http_addr}/v1/rules");
+    let mut body = serde_json::json!({
+        "client": client,
+        "listen_port": listen_port,
+        "target_host": target_host,
+        "target_port": target_port,
+        "protocol": "tcp",
+    });
+    if let Some(v) = prefer_ipv6 {
+        body["prefer_ipv6"] = serde_json::Value::Bool(v);
+    }
+    if let Some(secs) = ack_timeout_secs {
+        body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
+    }
+    let resp = reqwest::blocking::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .expect("POST /v1/rules");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
 pub fn remove_rule_http(operator_http_addr: &str, rule_id: u64) -> reqwest::StatusCode {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}");
     reqwest::blocking::Client::new()

@@ -75,6 +75,12 @@ enum Cmd {
         protocol: String,
         #[arg(long, default_value_t = 2)]
         ack_timeout: u64,
+        /// Prefer IPv6 (AAAA) addresses over IPv4 when the resolver
+        /// returns both families for the target hostname (FR-007 /
+        /// 003-domain-name-forward US3). Falls back to IPv4 if no
+        /// AAAA is available — "prefer" is not "only".
+        #[arg(long, default_value_t = false)]
+        prefer_ipv6: bool,
         /// Operator HTTP endpoint of the running server.
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
@@ -195,6 +201,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             target,
             protocol,
             ack_timeout,
+            prefer_ipv6,
             http_endpoint,
         } => rule_cli::push(
             &http_endpoint,
@@ -203,6 +210,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             &target,
             &protocol,
             ack_timeout,
+            prefer_ipv6,
         ),
         Cmd::RemoveRule {
             rule_id,

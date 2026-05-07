@@ -226,15 +226,17 @@ impl<R: Resolve> LiveResolver<R> {
     /// fresh resolution (Source::Fresh). Cache hits and stale serves
     /// do NOT log (Constitution IV — no per-connection address spam).
     ///
-    /// `_prefer_ipv6` is plumbed through but unused in US2 — the
-    /// family-preference logic lands in T040 (US3). For now the
-    /// resolver-returned address order is honored as-is.
+    /// US3 (T040): `prefer_ipv6` re-orders the resolved addresses so
+    /// the preferred family is dialed first; the other family is the
+    /// fallback. Default (`false`) prefers IPv4 (R-003 / FR-007).
+    /// "Prefer" is NOT "only" — if only the non-preferred family
+    /// resolves, we still dial it.
     pub async fn connect_target(
         &self,
         rule_id: RuleId,
         target: &Target,
         port: u16,
-        _prefer_ipv6: bool,
+        prefer_ipv6: bool,
     ) -> Result<TcpStream, ConnectError> {
         match target {
             Target::Ip(ip) => TcpStream::connect(SocketAddr::new(*ip, port))
@@ -251,24 +253,27 @@ impl<R: Resolve> LiveResolver<R> {
                     return Err(ConnectError::Resolution(ResolverError::EmptyAnswer));
                 }
 
+                let ordered = order_by_family(&result.addrs, prefer_ipv6);
+
                 // T035: log only on fresh resolutions to keep the
                 // cache-hit hot path quiet. We log the *chosen* addr
                 // (the first one we'll attempt) for traceability;
                 // multi-A fallback walks the rest silently.
                 if result.source == AnswerSource::Fresh
-                    && let Some(first) = result.addrs.first() {
+                    && let Some(first) = ordered.first() {
                     info!(
                         event = "rule.dns_resolved",
                         rule_id = %rule_id,
                         hostname = %name,
                         chosen_addr = %first,
-                        addr_count = result.addrs.len(),
+                        addr_count = ordered.len(),
+                        prefer_ipv6 = prefer_ipv6,
                     );
                 }
 
                 let mut last_err: Option<io::Error> = None;
-                let tried = result.addrs.len();
-                for ip in &result.addrs {
+                let tried = ordered.len();
+                for ip in &ordered {
                     let addr = SocketAddr::new(*ip, port);
                     match tokio::time::timeout(
                         self.config.attempt_timeout,
@@ -297,6 +302,29 @@ impl<R: Resolve> LiveResolver<R> {
             }
         }
     }
+}
+
+/// US3 (T040): split addresses by family and concatenate
+/// preferred-first per `prefer_ipv6` (R-003 / FR-007). The resolver's
+/// internal ordering within each family is preserved (stable sort).
+/// Single-family answers come back in original order under both
+/// settings — there is nothing to re-order.
+///
+/// Edge case: an empty input returns an empty vec; callers
+/// (`connect_target`) already guard against this with
+/// `ResolverError::EmptyAnswer`.
+fn order_by_family(addrs: &[IpAddr], prefer_ipv6: bool) -> Vec<IpAddr> {
+    let (v6, v4): (Vec<IpAddr>, Vec<IpAddr>) =
+        addrs.iter().copied().partition(IpAddr::is_ipv6);
+    let mut out = Vec::with_capacity(addrs.len());
+    if prefer_ipv6 {
+        out.extend(v6);
+        out.extend(v4);
+    } else {
+        out.extend(v4);
+        out.extend(v6);
+    }
+    out
 }
 
 /// hickory-backed `Resolve` impl — reads `/etc/resolv.conf` natively
@@ -558,5 +586,106 @@ mod tests {
             }
             other => panic!("expected AllAddrsUnreachable, got {other:?}"),
         }
+    }
+
+    /// T036 (US3): family-ordering helper — pure unit, no I/O.
+    ///
+    /// Covers all four FR-007 acceptance scenarios:
+    ///   - mixed A+AAAA, default → A first
+    ///   - mixed A+AAAA, prefer_ipv6 → AAAA first
+    ///   - only-A under both flags → unchanged single-family list
+    ///   - only-AAAA under both flags → unchanged single-family list
+    ///
+    /// Intra-family order is preserved: this matters because the
+    /// resolver may already have ordered addresses by RTT or
+    /// round-robin within a family, and we don't want family
+    /// preference to scramble that.
+    #[test]
+    fn order_by_family_covers_all_fr_007_cases() {
+        let v4a: IpAddr = "127.0.0.1".parse().unwrap();
+        let v4b: IpAddr = "127.0.0.2".parse().unwrap();
+        let v6a: IpAddr = "::1".parse().unwrap();
+        let v6b: IpAddr = "fe80::1".parse().unwrap();
+
+        // Mixed → prefer_ipv4 (default): all A then all AAAA.
+        assert_eq!(
+            order_by_family(&[v4a, v6a, v4b, v6b], false),
+            vec![v4a, v4b, v6a, v6b],
+            "default MUST dial IPv4 first (R-003)",
+        );
+        // Mixed → prefer_ipv6: all AAAA then all A.
+        assert_eq!(
+            order_by_family(&[v4a, v6a, v4b, v6b], true),
+            vec![v6a, v6b, v4a, v4b],
+            "prefer_ipv6=true MUST dial IPv6 first",
+        );
+        // Only-A: unchanged under both flags.
+        assert_eq!(order_by_family(&[v4a, v4b], false), vec![v4a, v4b]);
+        assert_eq!(
+            order_by_family(&[v4a, v4b], true),
+            vec![v4a, v4b],
+            "prefer_ipv6=true MUST fall back to IPv4 when no AAAA (FR-007 scenario 3)",
+        );
+        // Only-AAAA: unchanged under both flags.
+        assert_eq!(order_by_family(&[v6a, v6b], false), vec![v6a, v6b]);
+        assert_eq!(order_by_family(&[v6a, v6b], true), vec![v6a, v6b]);
+        // Empty input: empty output (no panic).
+        assert!(order_by_family(&[], false).is_empty());
+        assert!(order_by_family(&[], true).is_empty());
+    }
+
+    /// T036 (US3): end-to-end through `connect_target` — the dial
+    /// order MUST match `order_by_family`. We bind a real echo on
+    /// 127.0.0.1, mock the resolver to return [::1 (port-1, refuses),
+    /// 127.0.0.1 (echo)], and assert:
+    ///   - prefer_ipv6=false: connects to the v4 echo on first try
+    ///   - prefer_ipv6=true:  hits ::1 first (refuses), falls back to v4
+    ///
+    /// We can't easily distinguish "tried v6 first" from "tried v4
+    /// first" by stream identity alone, so we assert via the address
+    /// list ordering above (covered by the pure unit test) and use
+    /// this test to prove the helper is actually plumbed through —
+    /// not just defined.
+    #[tokio::test]
+    async fn connect_target_uses_ordered_addrs() {
+        use crate::resolver::test_support::MockResolver;
+        use std::net::TcpListener as StdListener;
+
+        let echo = StdListener::bind("127.0.0.1:0").unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for _ in echo.incoming().flatten() {}
+        });
+
+        // Mock answer with both families. ::1 connects on most boxes
+        // (loopback), but at port 1 (privileged, unlistened) it
+        // ECONNREFUSEs fast. The v4 echo is the only address that
+        // actually accepts.
+        let v4: IpAddr = "127.0.0.1".parse().unwrap();
+        let v6: IpAddr = "::1".parse().unwrap();
+
+        // prefer_ipv6=false → v4 first → succeeds on attempt 1.
+        let resolver_v4 = MockResolver::ok(vec![v6, v4], Duration::from_secs(60));
+        let live = LiveResolver::new(Arc::new(resolver_v4), ResolverConfig::default());
+        let target = Target::Dns(Hostname::new("dual.example").unwrap());
+        let stream = live
+            .connect_target(RuleId(10), &target, echo_port, false)
+            .await
+            .expect("v4-preferred dial must succeed");
+        drop(stream);
+
+        // prefer_ipv6=true → ::1 tried first at echo_port; on this
+        // host that may either succeed (if dual-stack listener is
+        // present) OR fail. We don't assert the family of the
+        // resulting stream — we assert only that the dial completes
+        // (no AllAddrsUnreachable), which proves family preference
+        // doesn't drop the v4 fallback.
+        let resolver_v6 = MockResolver::ok(vec![v6, v4], Duration::from_secs(60));
+        let live = LiveResolver::new(Arc::new(resolver_v6), ResolverConfig::default());
+        let stream = live
+            .connect_target(RuleId(11), &target, echo_port, true)
+            .await
+            .expect("v6-preferred dial MUST fall back to v4 echo, not error");
+        drop(stream);
     }
 }

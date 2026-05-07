@@ -91,6 +91,7 @@ pub fn push(
     target: &str,
     protocol: &str,
     ack_timeout_secs: u64,
+    prefer_ipv6: bool,
 ) -> Result<(), u8> {
     let listen = parse_listen(listen_spec).map_err(|e| {
         eprintln!("error: {e}");
@@ -124,6 +125,14 @@ pub fn push(
         let obj = body.as_object_mut().expect("just built a json object");
         obj.insert("listen_port_end".into(), listen.end().into());
         obj.insert("target_port_end".into(), target_range.end().into());
+    }
+    // 003-domain-name-forward T041: only emit `prefer_ipv6` when the
+    // operator explicitly opted in. Absence on the wire decodes to
+    // default `false` server-side per `contracts/operator-api.md`,
+    // so omitting keeps v0.2.0 byte-compatibility for the IP path.
+    if prefer_ipv6 {
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("prefer_ipv6".into(), true.into());
     }
     let resp = client()?.post(&url).json(&body).send().map_err(|e| {
         eprintln!("error: http: {e}");
