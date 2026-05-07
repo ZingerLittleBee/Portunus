@@ -3,6 +3,7 @@
 mod bundle;
 mod control;
 mod forwarder;
+mod resolver;
 mod shutdown;
 
 use std::path::PathBuf;

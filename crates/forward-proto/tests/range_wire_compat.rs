@@ -31,6 +31,7 @@ fn legacy_rule_wire_compat() {
         protocol: Protocol::Tcp as i32,
         listen_port_end: 0,
         target_port_end: 0,
+        prefer_ipv6: None,
     };
     let mut without_ends = with_zero_ends.clone();
     without_ends.listen_port_end = 0;
@@ -66,6 +67,7 @@ fn range_rule_roundtrips() {
         protocol: Protocol::Tcp as i32,
         listen_port_end: 30050,
         target_port_end: 30050,
+        prefer_ipv6: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -82,6 +84,7 @@ fn legacy_rule_stats_encodes_without_per_port_tag() {
         bytes_out: 5678,
         active_connections: 3,
         per_port: vec![],
+        dns_failures: 0,
     };
     let bytes = s.encode_to_vec();
     // tag 5 wire-type 2 (length-delimited) = 0x2a. Empty repeated
@@ -116,6 +119,7 @@ fn rule_stats_with_per_port_roundtrips() {
                 active_connections: 1,
             },
         ],
+        dns_failures: 0,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

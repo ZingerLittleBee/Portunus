@@ -210,6 +210,11 @@ async fn handle_client_message(
                         entry.bytes_in,
                         entry.bytes_out,
                         entry.active_connections,
+                        // 003-domain-name-forward T050: per-rule
+                        // DNS-failure counter (FR-008). Always
+                        // present in the proto; 0 for IP-target
+                        // rules where the resolver layer is bypassed.
+                        entry.dns_failures,
                         &state.metrics,
                     )
                     .await;

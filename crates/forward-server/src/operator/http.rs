@@ -76,6 +76,12 @@ struct PushRuleBody {
     target_port_end: Option<u16>,
     #[serde(default = "default_protocol")]
     protocol: String,
+    /// 003-domain-name-forward: per-rule address-family preference
+    /// for DNS-target rules. Absent → IPv4-first (default).
+    /// `true` → prefer IPv6 (AAAA-first). Silently ignored for
+    /// IP-literal targets.
+    #[serde(default)]
+    prefer_ipv6: Option<bool>,
     /// Optional override of the per-request ack timeout in seconds.
     #[serde(default)]
     ack_timeout_secs: Option<u64>,
@@ -85,9 +91,16 @@ fn default_protocol() -> String {
     "tcp".to_string()
 }
 
+/// 003-domain-name-forward T042 / `contracts/operator-api.md`
+/// § "Response (additive)": always include `target_host` and
+/// `prefer_ipv6` so generic operator tooling can rely on the
+/// fields' presence without branching on rule type.
 #[derive(Debug, Serialize)]
 struct PushRuleResponse {
     rule_id: u64,
+    status: String,
+    target_host: String,
+    prefer_ipv6: bool,
 }
 
 async fn post_rules(
@@ -117,13 +130,25 @@ async fn post_rules(
         &body.target_host,
         target,
         &body.protocol,
+        body.prefer_ipv6,
         state.range_rule_max_ports,
         timeout,
     )
     .await?;
+    let status = match &rule.state {
+        crate::rules::RuleState::Pending => "Pending".to_string(),
+        crate::rules::RuleState::Active => "Active".to_string(),
+        crate::rules::RuleState::Failed { reason } => format!("Failed:{reason}"),
+        crate::rules::RuleState::Removed => "Removed".to_string(),
+    };
     Ok((
         StatusCode::CREATED,
-        Json(PushRuleResponse { rule_id: rule.id.0 }),
+        Json(PushRuleResponse {
+            rule_id: rule.id.0,
+            status,
+            target_host: rule.target_host.clone(),
+            prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
+        }),
     ))
 }
 
@@ -212,6 +237,7 @@ impl From<OperatorError> for ApiError {
             OperatorError::InvalidName(_)
             | OperatorError::InvalidProtocol(_)
             | OperatorError::InvalidTarget(_)
+            | OperatorError::InvalidTargetHost { .. }
             | OperatorError::ExceedsCap { .. }
             | OperatorError::RangeInvalid(_) => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_) | OperatorError::ActivationFailed(_) => {

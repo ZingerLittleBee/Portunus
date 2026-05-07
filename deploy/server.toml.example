@@ -47,3 +47,16 @@ log_format = "json"
 # RLIMIT_NOFILE. Raise only after raising LimitNOFILE in the systemd unit
 # accordingly (see deploy/systemd/forward-{server,client}.service).
 # range_rule_max_ports = 1024
+
+# DNS resolver tunables (003-domain-name-forward, v0.3.0+).
+# Reserved for future operator overrides. The current release bakes
+# the spec-fixed defaults into ResolverConfig (client-side):
+#   - cache_floor              = 5 s     (TTL clamp lower bound)
+#   - cache_ceiling            = 5 min   (TTL clamp upper bound)
+#   - stale_while_error_grace  = 30 s    (RFC 8767-style grace)
+#   - attempt_timeout          = 3 s     (per-resolver-attempt budget)
+#   - negative_cache_retry     = 3 s     (gap after grace expiry)
+#   - max_concurrent_resolves  = 64      (Pending-state ceiling)
+# No keys land in this file in v0.3.0; if a future release exposes
+# any of the above as operator-tunable, expect them under a
+# `[resolver]` table here.

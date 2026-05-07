@@ -24,7 +24,7 @@ pub mod stats;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forward_core::{PortRange, RuleId};
+use forward_core::{PortRange, RuleId, Target};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -33,6 +33,7 @@ use tracing::{info, warn};
 
 use crate::forwarder::range::BindFailure;
 use crate::forwarder::stats::RuleStats;
+use crate::resolver::{LiveResolver, Resolve};
 
 /// Outcome the forwarder reports back to the control loop. The control loop
 /// translates each into a `RuleStatus` message on the bidi gRPC stream.
@@ -46,12 +47,20 @@ pub enum RuleStatusEvent {
 /// One forwarding rule the client should run. Range-aware: single-port
 /// rules construct both `listen_range` and `target_range` via
 /// [`PortRange::single`].
+///
+/// 003-domain-name-forward (T020 / T039): `target` is the parsed
+/// classification of the rule's `target_host` string (IP literal or
+/// validated DNS hostname); the proxy hot path passes it directly to
+/// the resolver layer. `prefer_ipv6` is plumbed through to the
+/// resolver but only honored in US3 (T040).
 #[derive(Debug, Clone)]
 pub struct ClientRule {
     pub rule_id: RuleId,
     pub listen_range: PortRange,
     pub target_host: String,
+    pub target: Target,
     pub target_range: PortRange,
+    pub prefer_ipv6: bool,
 }
 
 /// Run the forwarder until `cancel` fires. Sends exactly one
@@ -62,9 +71,10 @@ pub struct ClientRule {
 /// it (this is the data plane — `data-model.md` does not require
 /// loopback-only as the operator HTTP API does). Operators with stricter
 /// requirements can run the client behind a host firewall.
-#[allow(clippy::too_many_lines)]
-pub async fn run(
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn run<R: Resolve + 'static>(
     rule: ClientRule,
+    resolver: Arc<LiveResolver<R>>,
     status_tx: mpsc::Sender<RuleStatusEvent>,
     cancel: CancellationToken,
     drain_timeout: Duration,
@@ -136,6 +146,7 @@ pub async fn run(
     let in_flight = run_accept_loops(
         listeners,
         &rule,
+        Arc::clone(&resolver),
         Arc::clone(&stats),
         cancel.clone(),
         proxy_cancel.clone(),
@@ -159,10 +170,11 @@ pub async fn run(
 /// accept) and `proxy_cancel` (kills in-flight after drain). Returns
 /// the `JoinSet` populated with the accept tasks; per-connection proxy
 /// tasks are added by each accept loop as they fire.
-#[allow(clippy::needless_pass_by_value)]
-fn run_accept_loops(
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn run_accept_loops<R: Resolve + 'static>(
     listeners: Vec<(u16, TcpListener)>,
     rule: &ClientRule,
+    resolver: Arc<LiveResolver<R>>,
     stats: Arc<RuleStats>,
     cancel: CancellationToken,
     proxy_cancel: CancellationToken,
@@ -181,17 +193,21 @@ fn run_accept_loops(
             );
             continue;
         };
-        let target_host = rule.target_host.clone();
+        let target = rule.target.clone();
+        let prefer_ipv6 = rule.prefer_ipv6;
         let rule_id = rule.rule_id;
         let accept_cancel = cancel.clone();
         let conn_proxy_cancel = proxy_cancel.clone();
         let accept_stats = Arc::clone(&stats);
+        let accept_resolver = Arc::clone(&resolver);
         in_flight.spawn(async move {
             accept_loop(
                 listener,
                 listen_port,
-                target_host,
+                accept_resolver,
+                target,
                 target_port,
+                prefer_ipv6,
                 rule_id,
                 accept_cancel,
                 conn_proxy_cancel,
@@ -204,11 +220,13 @@ fn run_accept_loops(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn accept_loop(
+async fn accept_loop<R: Resolve + 'static>(
     listener: TcpListener,
     listen_port: u16,
-    target_host: String,
+    resolver: Arc<LiveResolver<R>>,
+    target: Target,
     target_port: u16,
+    prefer_ipv6: bool,
     rule_id: RuleId,
     cancel: CancellationToken,
     proxy_cancel: CancellationToken,
@@ -225,14 +243,18 @@ async fn accept_loop(
             }
             accept = listener.accept() => match accept {
                 Ok((sock, peer)) => {
-                    let target_host = target_host.clone();
+                    let target = target.clone();
                     let conn_cancel = proxy_cancel.clone();
                     let conn_stats = Arc::clone(&stats);
+                    let conn_resolver = Arc::clone(&resolver);
                     local.spawn(async move {
                         match proxy::proxy(
                             sock,
-                            &target_host,
+                            conn_resolver.as_ref(),
+                            rule_id,
+                            &target,
                             target_port,
+                            prefer_ipv6,
                             conn_cancel,
                             Some(conn_stats),
                             listen_port,
@@ -308,13 +330,34 @@ async fn drain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use crate::resolver::{ResolveAnswer, ResolverConfig, ResolverError};
+    use forward_core::Hostname;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
     fn port_pool_lock() -> &'static tokio::sync::Mutex<()> {
         super::range::test_port_pool_lock()
+    }
+
+    /// Resolver that panics if invoked. All forwarder tests below use
+    /// IP-target rules (`Target::Ip`) so the resolver MUST be skipped.
+    #[derive(Debug, Default)]
+    struct PanickingResolver;
+
+    #[async_trait::async_trait]
+    impl Resolve for PanickingResolver {
+        async fn resolve(&self, name: &Hostname) -> Result<ResolveAnswer, ResolverError> {
+            panic!("PanickingResolver::resolve was called for {name}");
+        }
+    }
+
+    fn ip_resolver() -> Arc<LiveResolver<PanickingResolver>> {
+        Arc::new(LiveResolver::new(
+            Arc::new(PanickingResolver),
+            ResolverConfig::default(),
+        ))
     }
 
     async fn spawn_echo() -> std::net::SocketAddr {
@@ -400,7 +443,9 @@ mod tests {
             rule_id: RuleId(rule_id),
             listen_range: PortRange::single(port),
             target_host: target.ip().to_string(),
+            target: Target::Ip(target.ip()),
             target_range: PortRange::single(target.port()),
+            prefer_ipv6: false,
         }
     }
 
@@ -415,6 +460,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run(
                 single_rule(7, port, echo),
+                ip_resolver(),
                 tx,
                 cancel_run,
                 Duration::from_secs(2),
@@ -462,9 +508,12 @@ mod tests {
             ClientRule {
                 rule_id: RuleId(1),
                 listen_range: PortRange::single(busy_port),
+                target: Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                prefer_ipv6: false,
                 target_host: "127.0.0.1".into(),
                 target_range: PortRange::single(1),
             },
+            ip_resolver(),
             tx,
             cancel,
             Duration::from_millis(100),
@@ -497,6 +546,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run(
                 single_rule(3, port, echo),
+                ip_resolver(),
                 tx,
                 cancel_run,
                 Duration::from_millis(500),
@@ -553,6 +603,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run(
                 single_rule(41, port, echo),
+                ip_resolver(),
                 tx,
                 cancel_run,
                 Duration::from_secs(5),
@@ -613,6 +664,7 @@ mod tests {
             tasks.push(tokio::spawn(async move {
                 run(
                     single_rule(u64::from(i + 100), port, echo),
+                    ip_resolver(),
                     tx,
                     cancel_run,
                     Duration::from_secs(5),
@@ -676,6 +728,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run(
                 single_rule(42, port, echo),
+                ip_resolver(),
                 tx,
                 cancel_run,
                 Duration::from_secs(3),
@@ -734,14 +787,18 @@ mod tests {
         let cancel_run = cancel.clone();
         let target_host = echo.ip().to_string();
         let target_port = echo.port();
+        let echo_ip = echo.ip();
         let task = tokio::spawn(async move {
             run(
                 ClientRule {
                     rule_id: RuleId(31),
                     listen_range: listen,
                     target_host,
+                    target: Target::Ip(echo_ip),
                     target_range: PortRange::new(target_port, target_port + 9).unwrap(),
+                    prefer_ipv6: false,
                 },
+                ip_resolver(),
                 tx,
                 cancel_run,
                 Duration::from_millis(500),
@@ -804,14 +861,18 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_run = cancel.clone();
         let target_host = echo.ip().to_string();
+        let echo_ip = echo.ip();
         let task = tokio::spawn(async move {
             run(
                 ClientRule {
                     rule_id: RuleId(32),
                     listen_range: listen,
                     target_host,
+                    target: Target::Ip(echo_ip),
                     target_range: target,
+                    prefer_ipv6: false,
                 },
+                ip_resolver(),
                 tx,
                 cancel_run,
                 Duration::from_secs(3),
@@ -866,6 +927,171 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        task.await.unwrap();
+    }
+
+    // ---- T021a (003-domain-name-forward, FR-011): port-range × DNS
+    // cache sharing — a single rule with a 4-port listen range pointed at
+    // a DNS hostname MUST share one resolution across all listen ports.
+    // The Hostname-keyed cache in `resolver/cache.rs` is the load-bearing
+    // piece; a future refactor that accidentally keyed by `host:port`
+    // would fail here.
+    //
+    // Sequence: one warmup connect populates the cache, then 4 concurrent
+    // connects (one per listen port) MUST all hit cache → resolver call
+    // count stays at 1. Strict "exactly once" under fully-concurrent
+    // first-connects requires US2's single-flight (FR-012, T030); that
+    // tighter property gets its own test in the US2 phase.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct CountingResolver {
+        calls: AtomicUsize,
+        addrs: Vec<IpAddr>,
+    }
+
+    impl CountingResolver {
+        fn new(addrs: Vec<IpAddr>) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                addrs,
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Resolve for CountingResolver {
+        async fn resolve(&self, _name: &Hostname) -> Result<ResolveAnswer, ResolverError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            // 60 s TTL — well above the 5 s cache floor — so the
+            // four concurrent connects all hit the cache.
+            Ok(ResolveAnswer {
+                addrs: self.addrs.clone(),
+                ttl: Duration::from_secs(60),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn port_range_dns_target_resolves_hostname_exactly_once() {
+        let _guard = port_pool_lock().lock().await;
+
+        // Pick 4 consecutive free target ports and stand up an echo
+        // server on each. The 4-port listen range maps 1:1 to these
+        // upstream ports, so every listen port has a real upstream.
+        let target_range = pick_consecutive_free(4).await;
+        let mut target_listeners = Vec::new();
+        for p in target_range.start()..=target_range.end() {
+            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, p)).await.unwrap();
+            target_listeners.push(l);
+        }
+        for l in target_listeners {
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = l.accept().await else {
+                        break;
+                    };
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        while let Ok(n) = sock.read(&mut buf).await {
+                            if n == 0 {
+                                break;
+                            }
+                            if sock.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+
+        // 4-port listen range. The hostname "echo.test" is purely
+        // symbolic — the CountingResolver returns 127.0.0.1 unconditionally.
+        let listen_range = pick_consecutive_free(4).await;
+        let host = Hostname::new("echo.test").unwrap();
+        let counting = Arc::new(CountingResolver::new(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]));
+        let resolver = Arc::new(LiveResolver::new(
+            Arc::clone(&counting),
+            ResolverConfig::default(),
+        ));
+
+        let rule = ClientRule {
+            rule_id: RuleId(2_021),
+            listen_range,
+            target_host: "echo.test".to_string(),
+            target: Target::Dns(host),
+            target_range,
+            prefer_ipv6: false,
+        };
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let task = tokio::spawn(async move {
+            run(
+                rule,
+                resolver,
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { .. }));
+
+        // Warmup connect on the first listen port — populates the cache.
+        {
+            let mut sock = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_range.start()))
+                .await
+                .unwrap();
+            sock.write_all(b"warmup").await.unwrap();
+            let mut buf = [0u8; 6];
+            sock.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"warmup");
+        }
+        assert_eq!(
+            counting.calls(),
+            1,
+            "warmup should produce exactly one resolver call"
+        );
+
+        // Now drive 4 concurrent connects across every listen port. With
+        // the cache populated, the Hostname-keyed entry serves all four —
+        // proving FR-011's "share one resolution per range" claim.
+        let mut handles = Vec::new();
+        for p in listen_range.start()..=listen_range.end() {
+            handles.push(tokio::spawn(async move {
+                let mut sock = TcpStream::connect((Ipv4Addr::LOCALHOST, p)).await.unwrap();
+                let payload = format!("hello-{p}");
+                sock.write_all(payload.as_bytes()).await.unwrap();
+                let mut buf = vec![0u8; payload.len()];
+                sock.read_exact(&mut buf).await.unwrap();
+                assert_eq!(buf, payload.as_bytes());
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            counting.calls(),
+            1,
+            "FR-011: post-warmup, the 4-port range MUST share the cached \
+             resolution; got {} resolver calls",
+            counting.calls()
+        );
+
+        cancel.cancel();
         task.await.unwrap();
     }
 }

@@ -10,8 +10,10 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use forward_core::Target;
+
 use crate::OutputFormat;
-use crate::operator::cli::{parse_listen, parse_target};
+use crate::operator::cli::{OperatorError, parse_listen, parse_target};
 use crate::rules::{Rule, RuleState};
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -49,8 +51,21 @@ fn client() -> Result<reqwest::blocking::Client, u8> {
 fn code_to_exit(code: &str) -> u8 {
     match code {
         "client_already_exists" => 2,
-        "invalid_name" | "invalid_protocol" | "invalid_target" | "exceeds_cap"
-        | "range_invalid" | "range_inverted" | "mismatched_range" => 3,
+        // 003-domain-name-forward: target_host validator codes
+        // (`invalid_target_host*`) share the exit-3 family (input
+        // validation) with v0.2.0 codes per the stability guarantee
+        // in `contracts/operator-api.md`.
+        "invalid_name"
+        | "invalid_protocol"
+        | "invalid_target"
+        | "exceeds_cap"
+        | "range_invalid"
+        | "range_inverted"
+        | "mismatched_range"
+        | "invalid_target_host"
+        | "invalid_target_host_too_long"
+        | "invalid_target_host_label_too_long"
+        | "invalid_target_host_label_hyphen" => 3,
         "client_not_connected" => 4,
         "port_in_use" => 5,
         "activation_failed" => 6,
@@ -83,6 +98,7 @@ pub fn push(
     target: &str,
     protocol: &str,
     ack_timeout_secs: u64,
+    prefer_ipv6: bool,
 ) -> Result<(), u8> {
     let listen = parse_listen(listen_spec).map_err(|e| {
         eprintln!("error: {e}");
@@ -92,6 +108,15 @@ pub fn push(
         eprintln!("error: {e}");
         e.exit_code()
     })?;
+    // 003-domain-name-forward T021: validate the host before we open
+    // the HTTP socket so the operator gets exit-3 immediately on
+    // malformed input, instead of a round-trip and a server-side
+    // 400. The HTTP path validates again as a backstop.
+    if let Err(e) = Target::parse(&target_host) {
+        let op_err: OperatorError = e.into();
+        eprintln!("error: {op_err}");
+        return Err(op_err.exit_code());
+    }
     let url = format!("http://{endpoint}/v1/rules");
     let mut body = serde_json::json!({
         "client": raw_client,
@@ -107,6 +132,14 @@ pub fn push(
         let obj = body.as_object_mut().expect("just built a json object");
         obj.insert("listen_port_end".into(), listen.end().into());
         obj.insert("target_port_end".into(), target_range.end().into());
+    }
+    // 003-domain-name-forward T041: only emit `prefer_ipv6` when the
+    // operator explicitly opted in. Absence on the wire decodes to
+    // default `false` server-side per `contracts/operator-api.md`,
+    // so omitting keeps v0.2.0 byte-compatibility for the IP path.
+    if prefer_ipv6 {
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("prefer_ipv6".into(), true.into());
     }
     let resp = client()?.post(&url).json(&body).send().map_err(|e| {
         eprintln!("error: http: {e}");
@@ -173,6 +206,11 @@ struct StatsResponse {
     bytes_in: u64,
     bytes_out: u64,
     active_connections: u32,
+    /// 003-domain-name-forward T052: per-rule DNS-failure counter.
+    /// Always present in the body per `contracts/operator-api.md`;
+    /// 0 for IP-target rules.
+    #[serde(default)]
+    dns_failures: u64,
     updated_at: DateTime<Utc>,
     /// Optional per-port detail; populated only when `?per_port=true`
     /// was requested AND the rule is a range rule with cached samples
@@ -212,12 +250,13 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool)
         }
         OutputFormat::Text => {
             println!(
-                "rule_id={} client={} bytes_in={} bytes_out={} active={} updated_at={}",
+                "rule_id={} client={} bytes_in={} bytes_out={} active={} dns_failures={} updated_at={}",
                 body.rule_id,
                 body.client_name,
                 body.bytes_in,
                 body.bytes_out,
                 body.active_connections,
+                body.dns_failures,
                 body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
             );
             if let Some(rows) = body.per_port.as_ref() {
@@ -249,6 +288,7 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
         "bytes_in": body.bytes_in,
         "bytes_out": body.bytes_out,
         "active_connections": body.active_connections,
+        "dns_failures": body.dns_failures,
         "updated_at": body.updated_at,
     });
     if let Some(rows) = body.per_port.as_ref() {
