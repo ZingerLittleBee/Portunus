@@ -1,0 +1,227 @@
+---
+description: "Task list for 005-multi-user-rbac"
+---
+
+# Tasks: Multi-User RBAC for the Forward Server
+
+**Input**: Design documents from `/specs/005-multi-user-rbac/`
+**Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
+
+**Tests**: Constitution Principle III makes TDD non-negotiable for production code paths. Test tasks are mandatory and land **before** the implementation tasks they cover (per-story).
+
+**Organization**: Tasks are grouped by user story to enable independent implementation and testing. US1 + US2 are both P1 (US2 is the admin lifecycle that operationalises US1's enforcement); they share Phase 2 foundation. US3 (P2) is read filtering on top of US1's owner stamp. US4 (P3) is self-service rotation on top of US2's credential primitives.
+
+## Format: `[ID] [P?] [Story] Description`
+
+- **[P]**: Can run in parallel (different files, no dependencies on incomplete tasks)
+- **[Story]**: US1 / US2 / US3 / US4 — required for tasks in a story phase, omitted in Setup / Foundational / Polish.
+- Exact file paths included in every description.
+
+## Path Conventions
+
+Multi-crate Cargo workspace (unchanged since v0.1.0). All paths are repository-relative:
+
+- `crates/forward-auth/src/` — operator identity types + store
+- `crates/forward-server/src/` — axum middleware, HTTP handlers, CLI
+- `crates/forward-server/tests/` — integration tests against an in-process axum router
+- `crates/forward-e2e/tests/` — full server + client end-to-end
+- `deploy/`, `docs/`, `README.md`, `CHANGELOG.md` — operator-visible documentation
+
+---
+
+## Phase 1: Setup (Shared Infrastructure)
+
+**Purpose**: Bring `forward-auth` to the dependency baseline needed by Phase 2 and lay down the empty module skeleton so Phase 2 + 3+ tasks can land without import-graph rework. No production behaviour changes in this phase.
+
+- [ ] T001 Add `ulid = { workspace = true }` and `chrono = { workspace = true, features = ["serde"] }` to `crates/forward-auth/Cargo.toml` `[dependencies]` (workspace already pins both per `Cargo.toml` `[workspace.dependencies]`). Verify `cargo build -p forward-auth` succeeds with no behavioural change.
+- [ ] T002 [P] Add `tower = { version = "0.5", features = ["util"] }` to `crates/forward-server/Cargo.toml` `[dependencies]` (already transitively present via `axum`; making it direct lets the new auth_layer take a `tower::Layer`). Verify `cargo build -p forward-server` still passes.
+- [ ] T003 [P] Create empty module skeletons with `//! TODO(005)` doc-comments so subsequent tasks can `mod` them without touching git history twice: `crates/forward-auth/src/operator_store.rs`, `crates/forward-server/src/operator/auth_layer.rs`, `crates/forward-server/src/operator/rbac.rs`, `crates/forward-server/src/operator/users.rs`, `crates/forward-server/src/operator/grants.rs`, `crates/forward-server/src/operator/credentials.rs`, `crates/forward-server/src/operator/bootstrap.rs`. Wire each into its parent `mod.rs` / `lib.rs` behind `#[allow(dead_code)]` so the build stays green.
+
+---
+
+## Phase 2: Foundational (Blocking Prerequisites)
+
+**Purpose**: Operator identity data model + persistent store + the `OperatorAuthenticator` seam. Every user story below consumes these. Per Constitution III, every type lands with its tests in the same task or in a paired test task that ships **first**.
+
+**⚠️ CRITICAL**: No user story work can begin until Phase 2 completes (specifically, T013).
+
+- [ ] T004 [P] In `crates/forward-auth/src/lib.rs`, add public types from `data-model.md` § Entities: `UserId` (newtype `String` with `Display` + `FromStr` validating the regex `^[a-z][a-z0-9_-]{0,31}$` for non-reserved IDs and accepting reserved `_*` only via a private constructor), `CredentialId` (wrapper around `ulid::Ulid` with `Display` rendering to Crockford base32), `GrantId` (same shape as `CredentialId`), `OperatorRole` (enum with `Superadmin`, `User`; `serde(rename_all = "lowercase")`), `RbacError` (enum with one variant per FR-008 reason: `Unauthenticated`, `CredentialInvalid`, `UserDisabled`, `ClientNotGranted`, `PortOutsideGrant`, `ProtocolNotGranted`, `NotOwner`, `RoleRequired`, plus `BootstrapRequired`, `ReservedUserId`, `LastSuperadmin`, `CannotRemoveSelf`, `AlreadyBootstrapped` — each carries a `&'static str` reason code matching `contracts/operator-api.md` § Authentication / Authorization tables). Unit-test `UserId::from_str` against the regex (accept `alice`, `a1`, `a-_z`; reject `Alice`, `1alice`, `_admin`, `a` × 33, empty).
+- [ ] T005 [P] In the same file, add `User`, `Credential`, `CredentialStatus`, `Grant`, `ClientScope`, `PortRange` (re-export `forward_core::PortRange` if assignable; else local newtype with the same shape — verify by checking `crates/forward-core/src/lib.rs`), and `ProtocolSet` (a `bitflags::bitflags!` block on `u8` with `TCP = 0b01`, `UDP = 0b10`; `non_empty()` constructor that returns `Result<Self, RbacError>`). All `serde(rename_all = "snake_case")` for tagged enums; untagged for `CredentialStatus` to match `data-model.md`'s `"active" | { "revoked": { … } }` shape. Unit-test serde round-trip for each new type with a fixture lifted from `data-model.md` § Storage layout.
+- [ ] T006 [P] In `crates/forward-auth/src/lib.rs`, add the `OperatorIdentity { user_id: UserId, role: OperatorRole }` struct and the `OperatorAuthenticator` trait with three methods: `verify(&self, token: &str) -> Result<OperatorIdentity, RbacError>`, `grants_for(&self, user_id: &UserId) -> Vec<Grant>`, `is_disabled(&self, user_id: &UserId) -> bool`. The trait MUST be `Send + Sync + 'static` (mirrors existing `Authenticator`). Document at the trait level that this is the "single seam" required by Constitution Principle I. No impl yet — that's T009.
+- [ ] T007 In `crates/forward-auth/src/operator_store.rs`, define the on-disk wire types `IdentityFile { version: u32, users: Vec<UserWire>, credentials: Vec<CredentialWire>, grants: Vec<GrantWire> }` matching the JSON schema in `contracts/persistence.md` § Schema (version 1) verbatim. `token_hash` is hex-encoded via the same `forward_core::fingerprint::hex` / `hex_decode` helpers `file_store.rs` already uses. Write `from_wire` / `to_wire` conversions that fail loudly on bad hex / unknown variant. No I/O yet — this task only nails down the (de)serialisation surface.
+- [ ] T008 [P] In `crates/forward-auth/src/operator_store.rs` `#[cfg(test)] mod tests`, write the schema golden tests: a known good `identity.json` blob (from `data-model.md` § Storage layout) round-trips through `from_str → IdentityFile → to_wire → to_string` byte-identically; each `loader invariant` listed in `contracts/persistence.md` § "Invariants enforced at load time" (10 cases) is exercised with a fixture and asserts the expected `RbacError` variant or a typed `IdentityStoreError` to be defined inside this file (`UnsupportedSchemaVersion`, `DuplicateUserId`, `DuplicateCredentialId`, `DuplicateGrantId`, `OrphanCredential`, `OrphanGrant`, `BadHash`, `EmptyProtocols`, `InvalidPortRange`, `HashCollision`).
+- [ ] T009 In `crates/forward-auth/src/operator_store.rs`, implement `FileOperatorStore` mirroring `FileTokenStore` shape: `Arc`-cheap, `RwLock<Inner>` where `Inner` holds three `HashMap`s (`users`, `credentials_by_hash`, `grants_by_user`) plus the source `path`. Public methods: `load(path) -> Result<Self, IdentityStoreError>` (reads and validates per T008's invariants), `flush(&self) -> Result<(), IdentityStoreError>` (atomic write per `contracts/persistence.md` § "Atomic write protocol" steps 1-8 — write tmp + fsync + rename + fsync(parent), all using `std::fs` + `std::os::unix::fs::OpenOptionsExt` to set 0600 mode; on non-Unix the mode setter is `#[cfg(unix)]`-gated to keep CI green on macOS dev), `add_user`, `remove_user`, `add_credential`, `revoke_credential`, `rotate_credential` (atomic two-step in one flush), `add_grant`, `revoke_grant`, `disable_user` (writes only the disabled flag). Each mutating method takes the write lock, mutates `Inner`, flushes, and returns the result; on flush failure the in-memory state is rolled back by re-loading from disk before returning `Err`.
+- [ ] T010 [P] In `crates/forward-auth/src/operator_store.rs` `#[cfg(test)] mod tests`, write the atomic-write tests using `tempfile::TempDir`: round-trip add-user → flush → load → assert; concurrent reads during a write don't observe the partial write (`std::thread::scope` with one writer + 50 readers, assert no reader sees `tmp` extension or partial JSON); flush failure (set tmpdir to read-only mid-write via `set_permissions`) leaves the prior on-disk file untouched and returns `IdentityStoreError::WriteFailed`; orphan `identity.json.tmp` from a previous interrupted flush is ignored on `load` (it's not the target path).
+- [ ] T011 [P] In `crates/forward-auth/src/operator_store.rs`, implement `OperatorAuthenticator` for `FileOperatorStore`: `verify` hashes the presented token with `token::hash_token`, looks it up in `credentials_by_hash`, checks the credential is `Active` and the user is not `disabled`, updates `last_used_at` (best-effort: in-memory only; the next regular flush picks it up; do NOT flush per request — see plan.md "last_used_at is best-effort"), returns `OperatorIdentity { user_id, role }`. `grants_for` returns a clone of the grants for the named user (cheap because we expect O(10)). `is_disabled` is a single map lookup.
+- [ ] T012 [P] In `crates/forward-auth/src/operator_store.rs` `#[cfg(test)] mod tests`, write the `OperatorAuthenticator` tests: verify accepts a freshly-issued credential and returns the right identity; verify rejects an unknown token with `CredentialInvalid`; verify rejects a revoked credential with `CredentialInvalid`; verify rejects a credential whose user has been `disabled` with `UserDisabled`; `grants_for` returns the user's grants in insertion order (use a `Vec`, not a `HashSet`); `last_used_at` is updated on the next read after a verify (no fsync race — assertion after a manual `flush()`).
+- [ ] T013 In `crates/forward-server/src/state.rs` and `crates/forward-server/src/serve.rs`, wire `Arc<FileOperatorStore>` into `AppState` (load from `operator_store_path` on startup; default `<config_dir>/identity.json`); on load failure, exit non-zero with the error from T009. Add a startup banner line at INFO when the store loads cleanly: `event = "operator.store_loaded"`, `path`, `users`, `credentials_active`, `credentials_revoked`, `grants`. **Do NOT yet wire the auth_layer onto `/v1/*`** — Phase 3 owns that. **Checkpoint**: `cargo test --workspace` is green; the server still runs identically to v0.4.0 because no operator endpoint consults the store yet.
+
+**Checkpoint**: Foundation ready — Phases 3, 4, 5, 6 can now execute (US1 + US2 in parallel; US3 + US4 sequenced after their P1 prerequisites).
+
+---
+
+## Phase 3: User Story 1 - Constrained user pushes a rule within their grants (Priority: P1) 🎯 MVP
+
+**Goal**: Make the `OperatorAuthenticator` from Phase 2 actually gate `/v1/rules` push. After this phase, a non-superadmin presenting a token can push rules that fit their grants and is rejected (with a categorised reason) for any violation. Superadmin (a built-in `_superadmin` user provisioned ad-hoc by the test fixtures, not yet by the bootstrap subcommand — Phase 4 adds that) sees no behavioural change.
+
+**Independent Test**: With Phase 3 alone (no Phase 4 admin CLI yet), the `forward-server/tests/rbac_push_rule.rs` integration test seeds a `FileOperatorStore` over a temp dir with one superadmin + one constrained user + one grant programmatically (using `FileOperatorStore` API directly, not HTTP), then drives real HTTP `POST /v1/rules` calls against an in-process `axum::Router` and asserts the four FR-008 rejection reasons + the happy path. Demonstrates US1's full acceptance scenario set (1-5) end-to-end without touching Phase 4 surfaces.
+
+### Phase 3 Tests (TDD — written first, fail until implementation lands)
+
+- [ ] T014 [P] [US1] In `crates/forward-server/tests/rbac_push_rule.rs` (NEW), write the integration test seeding 1 superadmin + 1 constrained user (`alice` with grant `client-a, 30000..=30010, [tcp]`) via direct `FileOperatorStore` API. Test cases (each = one `#[tokio::test]`): superadmin push succeeds; alice push within grant succeeds and response includes `"owner": "alice"`; alice push port 30099 → 403 `port_outside_grant`; alice push UDP on granted-TCP port → 403 `protocol_not_granted`; alice push to `client-b` → 403 `client_not_granted`; request without `Authorization` header → 401 `unauthenticated`; request with garbage token → 401 `credential_invalid`. Assertions: HTTP status, `error.code` from JSON body, no rule appears in `/v1/rules` after a denial.
+- [ ] T015 [P] [US1] In `crates/forward-server/tests/audit_log_redaction.rs` (NEW), write a test that captures `tracing` JSON output via `tracing_subscriber::fmt::TestWriter`-style sink, runs a credential-issue + verify + revoke flow against `FileOperatorStore` (programmatic, no HTTP), and asserts: (a) at least one INFO line for the verify with `event = "operator.allow"`, `actor = <user_id>`, no `token` or `token_hash` or the literal raw token string anywhere in the captured output; (b) at least one WARN line for a deliberately-invalid token with `event = "operator.deny"`, `reason = "credential_invalid"`, no token leak. The test fails if the literal raw 43-char token appears in any captured record.
+- [ ] T016 [P] [US1] In `crates/forward-server/tests/legacy_no_auth_rejected.rs` (NEW), pin the v0.4 → v0.5 breaking change: an HTTP `GET /v1/rules` with no `Authorization` header against a v0.5 router with at least one superadmin in the store returns 401, `error.code = "unauthenticated"`. This test is what catches a future regression that silently re-enables unauthenticated mode.
+- [ ] T017 [P] [US1] In `crates/forward-server/src/operator/rbac.rs` `#[cfg(test)] mod tests`, write the pure-function tests for the authorisation predicate (no HTTP, no store): for each of (superadmin always allows, single grant covers single-port rule, single grant covers same-bound range rule, range straddling two grants is rejected per R-004 closed-set, `Any` client matches any name, `Named(n)` only matches `n`, empty grants list rejects everything for non-superadmin), assert the right `Result<(), RbacError>` is returned. Lift fixtures from `data-model.md` § Authorization predicate verbatim.
+
+### Phase 3 Implementation
+
+- [ ] T018 [US1] In `crates/forward-server/src/operator/rbac.rs`, implement the pure functions: `enforce_push(identity: &OperatorIdentity, push: &PushRequest, grants: &[Grant]) -> Result<(), RbacError>` (returns the FIRST applicable failure reason in priority `client_not_granted` → `protocol_not_granted` → `port_outside_grant`; Superadmin short-circuits to `Ok`); `enforce_read(identity: &OperatorIdentity, rule_owner: &UserId) -> Result<(), RbacError>` (returns `NotOwner` unless caller is the owner or Superadmin); `filter_visible<'a>(identity: &OperatorIdentity, rules: impl IntoIterator<Item=&'a Rule>) -> Vec<&'a Rule>` (Superadmin sees all; everyone else gets only their owned). The `PushRequest` struct is a thin in-module type (`client: ClientName`, `listen_port_start: u16`, `listen_port_end: u16`, `protocol: Protocol`) constructed by the HTTP handler from the validated `PushRuleBody`. Make T017's tests pass.
+- [ ] T019 [US1] In `crates/forward-server/src/operator/auth_layer.rs`, implement an `axum::middleware::from_fn_with_state` style fn `auth_middleware(State(store): State<Arc<FileOperatorStore>>, mut req: Request, next: Next) -> Result<Response, ApiError>` that: extracts the bearer from the `Authorization` header (returns 401 `unauthenticated` if missing/malformed); calls `store.verify(token)` (returns 401 with the matching reason on failure); inserts `OperatorIdentity` into `req.extensions_mut()`; emits one structured INFO log line per the `AuthDecision` schema in `data-model.md` § AuthDecision (action will be filled in later by the handler — the middleware logs only `event = "operator.allow"` with the action `"http_request"` for now; T029 adds per-route action labelling). On the failure path, emit WARN with `outcome = "deny"` + the specific `reason`. **No raw token MAY traverse the audit code path** — the middleware passes only the post-verify `OperatorIdentity` plus the URI to the audit emitter.
+- [ ] T020 [US1] In `crates/forward-server/src/operator/auth_layer.rs`, also handle the bootstrap-required state: if `store.has_any_superadmin()` returns false AND no `operator_token` config shortcut applies (Phase 4 owns the shortcut), return 503 with `error.code = "bootstrap_required"`. Add `has_any_superadmin` to `FileOperatorStore` in T009's file as a one-line `inner.users.values().any(|u| u.role == OperatorRole::Superadmin)`.
+- [ ] T021 [US1] In `crates/forward-server/src/rules.rs`, add `pub owner_user_id: UserId` to the `Rule` struct (required, non-optional per R-003). Update every existing struct-literal site flagged by `cargo build` (let the compiler enumerate them) to take an explicit owner. Add a new constructor `Rule::new_owned(owner: UserId, …existing args…)` and migrate the existing in-tree call sites to use it.
+- [ ] T022 [US1] In `crates/forward-server/src/rules.rs`, modify `push_rule` (or whichever fn the operator HTTP handler calls — confirm by grepping `crates/forward-server/src/operator/cli.rs::push_rule`) to take `&OperatorIdentity` as a new first parameter. Inside, BEFORE any state mutation, call `rbac::enforce_push(identity, &push_req, &store.grants_for(&identity.user_id))`. On `Err(RbacError)`, return a typed error that the HTTP handler maps to the right HTTP code (403 for grant-related; 401 only for auth failures which never reach this fn). On `Ok`, proceed with the existing push logic, stamping `owner_user_id = identity.user_id.clone()` on the `Rule` it creates.
+- [ ] T023 [US1] In `crates/forward-server/src/operator/http.rs`, wire `auth_middleware` onto the `/v1/*` Router (`Router::new().route(...).route_layer(from_fn_with_state(state.clone(), auth_middleware))`). In `post_rules`, extract `OperatorIdentity` from `req.extensions().get::<OperatorIdentity>()` (panic-safe — middleware guarantees presence on success), pass it through to `cli::push_rule`. Augment `PushRuleResponse` with `owner: String` (the owner user id). Add the `RbacError` → `ApiError` mapping (each variant → HTTP status + JSON body per `contracts/operator-api.md`).
+- [ ] T024 [US1] In `crates/forward-server/src/state.rs`, also store a `Arc<dyn OperatorAuthenticator>` next to the existing `Arc<FileOperatorStore>` — the latter implements the trait (T011), the former is the abstraction the auth_layer takes so future implementations (e.g., OIDC) can swap in without `state.rs` edits.
+- [ ] T025 [US1] Run `cargo test -p forward-server --test rbac_push_rule --test audit_log_redaction --test legacy_no_auth_rejected` and `cargo test -p forward-server --lib operator::rbac` — all green. Update existing v0.4 server tests that called `/v1/rules` without auth: in `crates/forward-server/tests/cli_push_rule.rs` and any peer using the same router fixture, add a setup helper `bootstrap_test_superadmin(store) -> token: String` that programmatically inserts a superadmin + credential into the test `FileOperatorStore`, and have every existing test set `Authorization: Bearer <token>` on its request. Goal: the existing v0.4 test suite passes against the v0.5 router with the smallest possible diff.
+
+**Checkpoint**: US1 complete and shippable as MVP. A non-superadmin user provisioned out-of-band can push rules within grants and is rejected for violations; superadmin behaviour and the data plane are unchanged.
+
+---
+
+## Phase 4: User Story 2 - Superadmin manages users and grants (Priority: P1)
+
+**Goal**: Replace the "out-of-band programmatic provisioning" used by US1 tests with the operator-facing CLI + HTTP surface. After this phase, an operator can run `forward-server bootstrap-superadmin`, `user-add`, `credential-issue`, `grant-add`, `grant-revoke`, `user-remove`, etc. against a fresh deployment and reach the same state as US1's test fixtures.
+
+**Independent Test**: `crates/forward-server/tests/http_users_contract.rs` + `http_grants_contract.rs` + `http_credentials_contract.rs` + `bootstrap_superadmin.rs` + `identity_persistence.rs` collectively cover every endpoint in `contracts/operator-api.md` and verify both happy and rejection paths. The `forward-e2e/tests/rbac_smoke.rs` end-to-end harness then runs the quickstart.md walkthrough verbatim.
+
+### Phase 4 Tests (TDD)
+
+- [ ] T026 [P] [US2] In `crates/forward-server/tests/http_users_contract.rs` (NEW), write contract tests for `POST /v1/users` (201 happy; 422 `invalid_user_id` for `Alice`, `1alice`, `_admin`, empty, 33-chars; 422 `invalid_display_name` for control chars; 409 `user_already_exists` on duplicate; 403 `role_required` when caller is non-superadmin), `GET /v1/users` (returns all users with `credential_count` / `grant_count`), `GET /v1/users/{id}` (404 `user_not_found`; 200 with embedded grants + credential metadata, no `token_hash`), `DELETE /v1/users/{id}` (200 with cascade summary; 404; 409 `cannot_remove_self`; 409 `last_superadmin`).
+- [ ] T027 [P] [US2] In `crates/forward-server/tests/http_credentials_contract.rs` (NEW), write contract tests for `POST /v1/users/{id}/credentials` (201, `token` field present and a 43-char URL-safe-base64 string, subsequent `GET` does NOT include `token`; 404 user; 403 `not_owner` for cross-user issuance by a non-superadmin), `POST /v1/users/{id}/credentials/{cred_id}/rotate` (200, new `token` field, old credential's `verify` returns `credential_invalid`), `DELETE /v1/users/{id}/credentials/{cred_id}` (204; subsequent verify of the revoked token returns `credential_invalid`), `GET /v1/users/{id}/credentials` (token never appears; revoked entries appear with `revoked_at`).
+- [ ] T028 [P] [US2] In `crates/forward-server/tests/http_grants_contract.rs` (NEW), write contract tests for `POST /v1/grants` (201 happy with `client = "client-a"`; 201 happy with `client = "*"` (wildcard); 422 `empty_protocol_set` for `protocols: []`; 422 `invalid_port_range` for start > end and for port 0; 404 `user_not_found`; 403 `role_required`), `GET /v1/grants[?user_id=]` (filter param honoured; superadmin sees all), `DELETE /v1/grants/{id}` (200 with `removed_rules` populated when the grant covered live rules; 200 with `removed_rules: []` when the grant covered no rules; 404 `grant_not_found`; cascade verified by re-listing rules and asserting the dependent rule is gone).
+- [ ] T029 [P] [US2] In `crates/forward-server/tests/bootstrap_superadmin.rs` (NEW), write tests for the `bootstrap-superadmin` subcommand executed as a child process via `assert_cmd::Command::cargo_bin("forward-server")`. Cases: empty store + `--name "ops"` → exit 0, stdout matches `superadmin user_id=_superadmin token=<43 chars>`, `identity.json` now contains the superadmin + credential; second invocation against the now-non-empty store → exit 2, stderr contains `already_bootstrapped`; `operator_token` shortcut: write `operator_token = "<43-char>"` to a tmp `server.toml`, start server (or just run a short-lived `forward-server bootstrap-from-config` helper if we expose one — otherwise verify the startup path via the `serve.rs` integration test), assert the same superadmin appears with the supplied token's hash.
+- [ ] T030 [P] [US2] In `crates/forward-server/tests/identity_persistence.rs` (NEW), write the restart roundtrip: bootstrap superadmin, user-add, credential-issue, grant-add, then drop the `FileOperatorStore` instance and `load` from the same path. Assert all entities present, all credentials still verifiable (Active state preserved), all grants intact. Then add a Revoked credential, drop, re-load, assert the revoked credential is still on disk (audit retention) and `verify` still returns `credential_invalid` for it.
+- [ ] T031 [P] [US2] In `crates/forward-server/src/operator/users.rs` `#[cfg(test)] mod tests`, write the cascade unit tests: insert user `alice` with 2 credentials + 3 grants + 5 rules (rules pushed via the post-Phase-3 push path). `remove_user("alice")` → all credentials revoked, all grants gone, all 5 rules removed, response counts match. Assert that the cascade is committed to `identity.json` BEFORE the rule-removals are visible (write a timing test: pause rule-removal via a `tokio::sync::Notify` after the identity flush returns, then `load` from disk and verify alice is gone — proves R-006's "commit identity then cascade rules" ordering).
+
+### Phase 4 Implementation
+
+- [ ] T032 [US2] In `crates/forward-server/src/operator/bootstrap.rs`, implement: (a) the `bootstrap-superadmin --name <display>` CLI subcommand: call `FileOperatorStore::has_any_superadmin`; if true, exit 2 with `already_bootstrapped`; otherwise call `token::generate_token`, `add_user(_superadmin, Superadmin, name)`, `add_credential(_superadmin, hash_token(token), label="bootstrap")`, print `superadmin user_id=_superadmin token=<token>` to stdout, exit 0. Token is NEVER logged via `tracing` (stdout only); enforce by emitting only an INFO line `event = "operator.bootstrap"` with `actor = "_anonymous"`, no token field. (b) the `operator_token` config shortcut: in `serve.rs` startup, after `FileOperatorStore::load`, if `config.operator_token.is_some()` AND `!store.has_any_superadmin()`, mint the same superadmin entry with the config-supplied token (hash and store; do NOT keep the raw token in memory after the hashing call returns).
+- [ ] T033 [P] [US2] In `crates/forward-server/src/operator/users.rs`, implement HTTP handlers (`post_users`, `get_users`, `get_user`, `delete_user`) and the corresponding CLI subcommand parsers + dispatchers (`user-add`, `user-list`, `user-get`, `user-remove`). Each handler reads `OperatorIdentity` from the extension and calls `rbac::require_role(identity, OperatorRole::Superadmin)?`. Cascade in `delete_user`: serialise `revoke_all_credentials → revoke_all_grants → flush_identity → remove_owned_rules` per R-006; return the cascade summary. Self-removal protection: if `identity.user_id == path_id`, return 409 `cannot_remove_self`. Last-superadmin protection: count remaining superadmins after the would-be remove; if 0, return 409 `last_superadmin`.
+- [ ] T034 [P] [US2] In `crates/forward-server/src/operator/credentials.rs`, implement HTTP handlers (`post_credential`, `delete_credential`, `get_credentials`) and CLI dispatchers (`credential-issue`, `credential-revoke`, `credential-list`). Cross-user check in `post_credential` and `delete_credential`: if `identity.role != Superadmin && identity.user_id != path_user_id`, return 403 `not_owner`. The issue handler returns the response body with the `token` field populated; this is the ONLY place where a raw token leaves the process via HTTP; the handler MUST NOT log the token. The list handler iterates `credentials_for_user` and projects each to a public DTO that omits `token_hash`.
+- [ ] T035 [US2] In `crates/forward-server/src/operator/credentials.rs`, ALSO implement `post_credential_rotate` (the rotation endpoint shared with US4 — see T046). For US2 it lands behind `Superadmin OR same-user` gating; T046 in Phase 6 reuses the same handler with the same gating but is exercised from the `credential-rotate` CLI by a non-superadmin user. The rotate body MUST be one `FileOperatorStore::rotate_credential` call (atomic per T009).
+- [ ] T036 [P] [US2] In `crates/forward-server/src/operator/grants.rs`, implement HTTP handlers (`post_grants`, `get_grants`, `delete_grant`) and CLI dispatchers (`grant-add`, `grant-list`, `grant-revoke`). The cascade in `delete_grant`: read all rules owned by `grant.user_id` from `rules.rs::list_owned_by(user_id)`, recompute `enforce_push` against `store.grants_for(user_id) - this_grant`; remove every rule whose check now fails. Synchronous: the HTTP response returns after all removals. The response body's `removed_rules` field is the list of removed rule IDs.
+- [ ] T037 [P] [US2] In `crates/forward-server/src/operator/cli.rs`, parse the new subcommand tree under `clap`: `user-add | user-list | user-get | user-remove`, `credential-issue | credential-rotate | credential-revoke | credential-list`, `grant-add | grant-list | grant-revoke`, `bootstrap-superadmin`. Each subcommand: read the operator token from `--token` flag (highest precedence) → `FORWARD_OPERATOR_TOKEN` env (next) → exit 4 `unauthenticated` if neither (except `bootstrap-superadmin` which doesn't require a token). Map the response `error.code` onto the exit-code table from `contracts/operator-api.md` § CLI Exit Codes (4 for auth failures, 5 for RBAC denials, 6 for `bootstrap_required`, 2 for `already_bootstrapped`, 3 for input validation, 1 for everything else, 0 for success).
+- [ ] T038 [US2] In `crates/forward-server/src/operator/http.rs`, wire the new routes onto the same `Router` already protected by the auth middleware from T023: `/v1/users` (POST/GET), `/v1/users/{id}` (GET/DELETE), `/v1/users/{id}/credentials` (POST/GET), `/v1/users/{id}/credentials/{cred_id}` (DELETE), `/v1/users/{id}/credentials/{cred_id}/rotate` (POST), `/v1/grants` (POST/GET), `/v1/grants/{id}` (DELETE).
+- [ ] T039 [P] [US2] In `crates/forward-server/src/config.rs`, add `operator_store_path: Option<PathBuf>` (default `<config_dir>/identity.json`) and `operator_token: Option<String>` (the bootstrap shortcut). Validate at startup: if `operator_token` is set, it MUST be a 43-char URL-safe-base64 string; reject and exit otherwise.
+- [ ] T040 [US2] Run the Phase 4 test suite (`cargo test -p forward-server --test http_users_contract --test http_credentials_contract --test http_grants_contract --test bootstrap_superadmin --test identity_persistence`) and the Phase 4 unit tests (`cargo test -p forward-server --lib operator::users -- --include-ignored`) — all green.
+
+**Checkpoint**: US2 complete. Phase 3's "out-of-band fixture provisioning" can now be replaced with real CLI calls in any test; the v0.5 quickstart steps 1-2 are runnable end-to-end.
+
+---
+
+## Phase 5: User Story 3 - Tenant inspects only their own rules and stats (Priority: P2)
+
+**Goal**: Read-side filtering + per-rule `owner` field on responses + `owner` label on the existing per-rule Prometheus collectors. After this phase, every operator can see their own rules' state and metrics, nothing else; superadmin sees all with the owner attribution.
+
+**Independent Test**: `crates/forward-server/tests/rbac_read_filtering.rs` seeds 2 users + 1 rule each, asserts each user's `GET /v1/rules` response contains exactly their rule, and `GET /v1/rules/{other_user_rule_id}/stats` returns 403 `not_owner`. `crates/forward-server/tests/rbac_metric_cardinality.rs` pushes N rules from M users and asserts the `forward_rule_bytes_in_total` collector emits exactly N rows.
+
+### Phase 5 Tests (TDD)
+
+- [ ] T041 [P] [US3] In `crates/forward-server/tests/rbac_read_filtering.rs` (NEW), write the test: bootstrap superadmin + alice + bob; alice pushes one rule (via Phase 3 path), bob pushes one rule; superadmin's `GET /v1/rules` → 2 rules each with `owner` populated; alice's `GET /v1/rules` → 1 rule (hers); bob's `GET /v1/rules` → 1 rule (his); superadmin's `GET /v1/rules?owner=alice` → 1 rule; alice's `GET /v1/rules?owner=bob` → 1 rule (alice's own — query param is honoured only for superadmin per `contracts/operator-api.md` § GET /v1/rules); alice's `GET /v1/rules/{bob_rule_id}/stats` → 403 `not_owner`; alice's `DELETE /v1/rules/{bob_rule_id}` → 403 `not_owner` and the rule still exists when superadmin re-lists.
+- [ ] T042 [P] [US3] In `crates/forward-server/tests/rbac_metric_cardinality.rs` (NEW), write the cardinality test: push 5 rules across 3 users (mixed protocols), scrape `/metrics`, parse the `# TYPE forward_rule_bytes_in_total counter` block, assert exactly 5 row lines (one per rule_id) and each carries `owner = "<user_id>"` matching the rule's owner. Repeat for `forward_rule_bytes_out_total`, `forward_rule_active_connections`, and (if UDP rules pushed) `forward_rule_udp_datagrams_in_total` etc. — the v0.4 cardinality (one row per rule per collector) MUST be preserved (R-005).
+
+### Phase 5 Implementation
+
+- [ ] T043 [US3] In `crates/forward-server/src/operator/http.rs`, modify `get_rules`: pull `OperatorIdentity` from extensions; call `rbac::filter_visible(identity, all_rules)`; on `?owner=<id>` query param, additionally filter to that owner BUT only honour the param when `identity.role == Superadmin` (else silently ignore — equivalent to "filter to self"). Each returned rule object includes `"owner": "<user_id>"`. Modify `get_rule_stats` and `delete_rule` to call `rbac::enforce_read(identity, &rule.owner_user_id)?` before any work.
+- [ ] T044 [US3] In `crates/forward-server/src/operator/rule_cli.rs`, plumb the `owner` field onto the table renderer (new column between `protocol` and `target`) and onto the JSON output (a top-level `owner` key on each entry). Existing v0.4 callers see one extra column — backward-compat acceptable per spec FR-016 (additive on response shape).
+- [ ] T045 [US3] In `crates/forward-server/src/metrics.rs`, add `"owner"` to the label set of every per-rule collector (`forward_rule_bytes_in_total`, `forward_rule_bytes_out_total`, `forward_rule_active_connections`, all four v0.4 UDP collectors). Where the collector is updated (in the stats-report ingestion path in `grpc/service.rs::observe()` and the `/metrics` rendering path in `metrics.rs::render`), the owner value is read from `state.rules.get(rule_id).owner_user_id`. Cardinality stays at one row per rule (R-005). ALSO add a new collector `forward_operator_requests_total` with labels `{outcome ∈ {"allow","deny"}, reason ∈ FR-008-codes ∪ {""}}` incremented by the auth_layer (T019) on every operator request.
+
+**Checkpoint**: US3 complete. Multi-tenant visibility works end-to-end; metrics are owner-attributable for dashboards.
+
+---
+
+## Phase 6: User Story 4 - Tenant rotates their own credential (Priority: P3)
+
+**Goal**: Self-service credential rotation. The handler already exists from T035 (Phase 4 reuses it); this phase adds the CLI surface and the test that exercises the same-user path.
+
+**Independent Test**: `crates/forward-server/tests/credential_rotate_self_service.rs` issues alice a credential, calls `forward-server credential-rotate <cred_id>` as alice (presenting her own token), asserts the new token works and the old one fails.
+
+### Phase 6 Tests (TDD)
+
+- [ ] T046 [P] [US4] In `crates/forward-server/tests/credential_rotate_self_service.rs` (NEW), write the test: bootstrap superadmin, user-add alice, credential-issue alice → token T_old; spawn HTTP request `POST /v1/users/alice/credentials/<cred_id>/rotate` with `Authorization: Bearer T_old` (alice authenticating with the credential she's rotating); response includes `token: T_new`; `GET /v1/users/alice` with `Authorization: Bearer T_old` → 401 `credential_invalid`; same call with `Bearer T_new` → 200; the credential list shows the rotated entry as Revoked with a `revoked_at` and the new entry as Active.
+
+### Phase 6 Implementation
+
+- [ ] T047 [US4] In `crates/forward-server/src/operator/credentials.rs`, ensure `post_credential_rotate` (already implemented in T035) handles the same-user case: identity.role is `User` and `identity.user_id == path_user_id` AND the credential being rotated belongs to that user. The atomic transaction (revoke old + issue new) is one `FileOperatorStore::rotate_credential` call from T009 — both writes commit in one `identity.json` flush, so a crash mid-transaction either leaves the old credential Active OR the new one Active, never both nor neither.
+- [ ] T048 [US4] In `crates/forward-server/src/operator/cli.rs`, add the `credential-rotate <cred_id>` subcommand dispatcher (already partly added in T037; this task ensures the same-user path works without superadmin context — no special flag required, the bearer is the credential being rotated).
+
+**Checkpoint**: US4 complete. All four user stories are shippable.
+
+---
+
+## Phase 7: Polish & Cross-Cutting Concerns
+
+**Purpose**: SIGHUP reload, e2e harness, docs, performance attestation, final fmt + clippy + test gate.
+
+- [ ] T049 [P] In `crates/forward-server/src/serve.rs`, register a SIGHUP handler that calls `FileOperatorStore::reload_from_disk` (a new method on the store): re-parses `identity.json`, validates per Phase 2's loader, swaps the in-memory snapshot under the write lock if validation passed, emits one INFO `event = "operator.store_reloaded"` with `users / credentials / grants` counts; on validation failure, keeps the prior snapshot, emits one WARN `event = "operator.store_reload_failed"` with `reason`. Add a unit test in `operator_store.rs` `#[cfg(test)] mod tests` covering both the successful and the validation-failed reload paths.
+- [ ] T050 [P] In `crates/forward-e2e/tests/common/mod.rs`, add helpers: `bootstrap_test_superadmin(server_handle) -> token: String` (calls the `bootstrap-superadmin` subcommand via assert_cmd against the running server's config dir), `issue_user_with_grant(superadmin_token, user_id, client, ports, protocols) -> user_token: String`. Update existing v0.4 e2e tests in `forward-e2e/tests/` to invoke `bootstrap_test_superadmin` in their setup and pass the resulting token via the existing reqwest helpers; the simplest mechanical change is to add a `with_operator_token: Option<String>` field to the existing fixture struct and have the existing helpers append the `Authorization` header when set.
+- [ ] T051 [P] In `crates/forward-e2e/tests/rbac_smoke.rs` (NEW), implement the end-to-end walkthrough that mirrors `quickstart.md` § 1-7 (skip § 8 — that's the curl wire-shape check, exercised by the `http_*_contract.rs` tests). Each numbered quickstart step is one `#[tokio::test]` function or one section of a single big test (your call — the latter is faster because it shares one server). Assertions: SC-001 wall-clock under 60 s for steps 1-2; SC-005 wall-clock under 5 s for the revoke-cascade in step 6; SC-006 verified by step 7's restart roundtrip.
+- [ ] T052 [P] In `deploy/server.toml.example`, add commented-out `operator_store_path = "/etc/forward-server/identity.json"` and `operator_token = "<43-char URL-safe-base64 token>"` (with a doc-comment block explaining: this is a one-shot bootstrap shortcut; remove after first start; alternative is `bootstrap-superadmin` CLI). Update the file's header comment from v0.4.0 → v0.5.0 banner.
+- [ ] T053 [P] In `README.md`, add a v0.5.0 RBAC walkthrough block under the existing v0.4 examples: bootstrap → user-add → grant-add → push-rule. Mention the `FORWARD_OPERATOR_TOKEN` env var. Reframe the "operator API" section to note the auth requirement.
+- [ ] T054 [P] In `docs/runbook.md`, add a "Multi-user RBAC (v0.5.0+)" section: bootstrap procedure, the two paths (config + CLI), credential rotation flow, the cascade behaviour on grant revoke / user remove, the SIGHUP reload semantics, the `v0.5 → v0.4 downgrade is permitted but discouraged` note, and the "where to look" table mapping each FR-008 code to a likely operator action.
+- [ ] T055 [P] In `CHANGELOG.md`, replace the empty `[Unreleased]` block with a `## [0.5.0] - <date>` block per existing convention. Sections: `### Added` (multi-user identity, RBAC enforcement, bootstrap subcommand, owner labels on metrics, audit log), `### Changed` (operator HTTP API now requires `Authorization: Bearer`; rule responses gain `owner` field), `### Migration notes` (the two bootstrap paths, the `v0.5 → v0.4` downgrade caveat). End with a `### Verified` block citing SC-001, SC-002, SC-003, SC-004, SC-005, SC-006, SC-007 measurement results from running quickstart.md.
+- [ ] T056 Run `quickstart.md` walkthrough end-to-end on a Linux host (or single-host loopback). Capture wall-clock for SC-001, the cascade timing for SC-005, the restart roundtrip for SC-006. Capture v0.4-baseline-vs-v0.5 push-rule median latency to attest SC-002 (≤ +5 ms; expected delta ~0 because the auth check is sub-millisecond). Record measurements in `CHANGELOG.md` `### Verified` block.
+- [ ] T057 Final gate: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --release`. All green. The v0.4 pedantic-allow set is expected to cover most lints; new violations (likely `doc_markdown` false positives on RBAC-jargon strings, `items_after_statements` in the new test scaffolds, `too_many_lines` on the cascade orchestrator) get either targeted `#[allow]` or inline fixes. The bench gate (`data_plane.rs`, `udp_data_plane.rs` no >5% regression vs v0.4 baseline) is a re-run of the existing v0.4 commands; expected delta is 0% because `forwarder/` is untouched.
+
+---
+
+## Dependencies & Story Order
+
+Phase 1 (Setup) is sequential within itself but blocks Phase 2.
+
+Phase 2 (Foundational) is sequential because each task builds on the previous (T004 types → T005 entities → T006 trait → T007 wire types → T008 schema tests → T009 store impl → T010 store tests → T011 trait impl → T012 trait tests → T013 wiring). It blocks Phase 3, 4, 5, 6.
+
+Phase 3 (US1) and Phase 4 (US2) are both **P1** and may run in parallel after Phase 2 completes. Phase 4 has a soft dependency on Phase 3's auth_layer (T019) being wired so its tests can hit a real router; if both are scheduled in parallel, Phase 4 tests should be written against a manually-instantiated `auth_middleware` fixture until T023 lands. The pragmatic single-developer order is **Phase 3 first** (delivers the MVP enforcement), then Phase 4 (replaces the MVP's out-of-band fixture provisioning with operator CLI).
+
+Phase 5 (US3) requires Phase 3's `Rule.owner_user_id` field (T021) and Phase 4's `users.json` to have at least 2 users for the filtering tests to be meaningful. Sequential after Phase 4.
+
+Phase 6 (US4) requires Phase 4's `post_credential_rotate` handler (T035). Sequential after Phase 4.
+
+Phase 7 (Polish) requires all stories complete because T056 attests the SC measurements.
+
+```text
+Phase 1 (Setup)
+   ↓
+Phase 2 (Foundational, sequential T004→T013)
+   ↓
+   ├─→ Phase 3 (US1, MVP enforcement)
+   ↓        ↓
+   └─→ Phase 4 (US2, admin lifecycle)
+            ↓
+            ├─→ Phase 5 (US3, read filtering)
+            └─→ Phase 6 (US4, self-rotate)
+                  ↓
+            Phase 7 (Polish)
+```
+
+## Parallel Execution Examples
+
+Within Phase 3: `T014, T015, T016, T017` are all in different files with no inter-task dependencies (each is a test or a pure-function module) and can be written in parallel. Then `T018` (rbac.rs impl, makes T017 pass) and `T021` (Rule struct field, mechanical) are independent → parallel. `T019, T020, T024` touch different files → parallel. `T022, T023, T025` are sequential because each depends on the previous (T022 modifies push_rule signature → T023 wires the new push_rule into HTTP → T025 updates existing tests to call the new HTTP shape).
+
+Within Phase 4: `T026, T027, T028, T029, T030, T031` are all in different test files → parallel. `T032 (bootstrap), T033 (users), T034 (credentials), T036 (grants), T037 (cli), T039 (config)` are in different files → parallel. `T035` modifies the same file as T034 → sequential after T034. `T038, T040` are sequential (T038 wires the routes T033/T034/T036 expose; T040 validates).
+
+Within Phase 5: `T041, T042` are different test files → parallel. `T043, T044, T045` are different impl files → parallel.
+
+Within Phase 7: `T049, T050, T051, T052, T053, T054, T055` are all in different files → parallel. `T056, T057` are sequential gates.
+
+## Implementation Strategy
+
+**MVP scope** (suggested if shipping early): **Phase 1 + Phase 2 + Phase 3 + minimal slice of Phase 4 (T032 bootstrap + T033 user-add + T034 credential-issue + T036 grant-add)**. This is enough to onboard a tenant and have them push a constrained rule end-to-end via the CLI. Phases 5/6/7 follow as two separate increments.
+
+**Incremental delivery cadence**:
+- Increment A = MVP (above) — visible to operators within 1 sprint.
+- Increment B = Phase 4 completion (user-list/get/remove, credential lifecycle, grant lifecycle, identity persistence) — operator surface complete.
+- Increment C = Phase 5 (read filtering + owner attribution on metrics) — multi-tenant observability.
+- Increment D = Phase 6 + Phase 7 (self-rotation, e2e, docs, gate) — feature complete.
+
+The constitution's "second reviewer with security context" requirement (Dev Workflow § Reviews, triggered by credential / token handling) applies to **every PR in increments A and B**; Phases 5/6/7 typically don't need the second reviewer because they don't touch the auth seam.
