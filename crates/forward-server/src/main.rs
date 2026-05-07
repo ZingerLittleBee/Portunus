@@ -61,10 +61,15 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
-    /// Push a forwarding rule to a connected client.
+    /// Push a forwarding rule to a connected client. `<listen>` and the
+    /// port portion of `<target>` accept either a single port (`18080`)
+    /// or a contiguous range (`30000-30050`); when one side is a range
+    /// the other side MUST be a same-length range (002-port-range-forward).
     PushRule {
         client: String,
-        listen_port: u16,
+        /// Listen port or `start-end` range.
+        listen: String,
+        /// `host:port` or `host:start-end`.
         target: String,
         #[arg(long, default_value = "tcp")]
         protocol: String,
@@ -91,6 +96,12 @@ enum Cmd {
         rule_id: u64,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+        /// Include per-port detail for range rules
+        /// (002-port-range-forward, US3). Adds `?per_port=true` to the
+        /// HTTP request and renders the per-port table in text mode.
+        /// No-op for single-port rules.
+        #[arg(long, default_value_t = false)]
+        per_port: bool,
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
@@ -180,7 +191,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         }
         Cmd::PushRule {
             client,
-            listen_port,
+            listen,
             target,
             protocol,
             ack_timeout,
@@ -188,7 +199,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         } => rule_cli::push(
             &http_endpoint,
             &client,
-            listen_port,
+            &listen,
             &target,
             &protocol,
             ack_timeout,
@@ -205,8 +216,9 @@ fn run(cli: Cli) -> Result<(), u8> {
         Cmd::RuleStats {
             rule_id,
             format,
+            per_port,
             http_endpoint,
-        } => rule_cli::stats(&http_endpoint, rule_id, format),
+        } => rule_cli::stats(&http_endpoint, rule_id, format, per_port),
     }
 }
 
@@ -250,6 +262,11 @@ fn build_offline_state(
         endpoint,
         tls.leaf_fingerprint_hex,
         tls.cert_pem,
+        // Offline operator commands (provision-client, revoke,
+        // list-clients) never push range rules, so the cap is
+        // effectively unused. Use the default to stay close to the
+        // serve-path config.
+        forward_core::config::default_range_rule_max_ports(),
     )
     .map_err(|e| {
         eprintln!("metrics: {e}");

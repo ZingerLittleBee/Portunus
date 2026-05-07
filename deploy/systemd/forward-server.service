@@ -17,6 +17,14 @@ RestartSec=5
 # server's own drain logic gets to run.
 TimeoutStopSec=60
 
+# File-descriptor headroom for port-range rules (002-port-range-forward).
+# The server itself does NOT bind range ports (the client does), so the
+# server only needs fds for: gRPC streams (1 per connected client) +
+# operator HTTP + metrics + persistence + headroom. 4096 is comfortable
+# for ~hundreds of clients. Bumped from the soft default (1024) so a
+# rule.list rendering doesn't run into a transient fd limit.
+LimitNOFILE=4096
+
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict

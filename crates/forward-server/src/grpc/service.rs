@@ -194,19 +194,42 @@ async fn handle_client_message(
             // T060: fold each per-rule entry into the cache + Prometheus
             // counters. `observe` handles delta computation and rebaseline on
             // client restart.
+            // T045 (002-port-range-forward): the same report carries
+            // optional `per_port` detail for range rules; route those
+            // into `state.per_port_stats` for the operator's `--per-port`
+            // view. Aggregate counters keep their existing path so the
+            // Prometheus cardinality budget (SC-002) is unaffected.
             let entries = report.stats.len();
             for entry in report.stats {
+                let rule_id = RuleId(entry.rule_id);
                 state
                     .stats_cache
                     .observe(
                         &identity.client_name,
-                        RuleId(entry.rule_id),
+                        rule_id,
                         entry.bytes_in,
                         entry.bytes_out,
                         entry.active_connections,
                         &state.metrics,
                     )
                     .await;
+                if !entry.per_port.is_empty() {
+                    let snapshots = entry
+                        .per_port
+                        .into_iter()
+                        .filter_map(|p| {
+                            let port = u16::try_from(p.listen_port).ok()?;
+                            Some(crate::operator::per_port_stats::PerPortSnapshot {
+                                listen_port: port,
+                                bytes_in: p.bytes_in,
+                                bytes_out: p.bytes_out,
+                                active_connections: p.active_connections,
+                                updated_at: chrono::Utc::now(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    state.per_port_stats.update(rule_id, snapshots).await;
+                }
             }
             info!(
                 event = "client.stats_report",

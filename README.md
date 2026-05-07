@@ -51,10 +51,24 @@ cargo build --release -p forward-server -p forward-client
 # Operator — push a rule (8080 on edge-01 → example.com:80)
 ./target/release/forward-server push-rule edge-01 8080 example.com:80
 
+# Operator — push a port-range rule (30000-30050 → upstream.local:30000-30050)
+./target/release/forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+
 # Operator — observe traffic
 ./target/release/forward-server rule-stats <rule_id>
+./target/release/forward-server rule-stats <rule_id> --per-port  # range rules only
 curl -s 127.0.0.1:7081/metrics | grep forward_rule_bytes
 ```
+
+Range rules (v0.2.0,
+[`002-port-range-forward`](specs/002-port-range-forward/quickstart.md))
+collapse a contiguous listen-port window onto the same-offset target
+window with a single push: `30000-30050 → host:30000-30050` binds 51
+ports atomically and forwards each port to its same-offset target. The
+default cap is 1024 ports per range (`range_rule_max_ports` in
+`server.toml`). Per-port byte counters surface only via `--per-port`,
+so the Prometheus cardinality budget stays one row per rule regardless
+of range size.
 
 The full step-by-step walkthrough — including key fingerprint pinning,
 revocation, and the SC-001 5-minute target — is in

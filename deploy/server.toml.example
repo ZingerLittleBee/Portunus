@@ -40,3 +40,10 @@ shutdown_drain_timeout_secs = 30
 # Production: keep "json" so logs ship cleanly to a collector.
 # Local dev: switch to "compact" for human readability.
 log_format = "json"
+
+# Maximum ports a single port-range rule may span (002-port-range-forward).
+# Default: 1024. Each port in a range consumes one TCP listener (one fd) on
+# the client; the cap exists so an operator typo can't burst the client's
+# RLIMIT_NOFILE. Raise only after raising LimitNOFILE in the systemd unit
+# accordingly (see deploy/systemd/forward-{server,client}.service).
+# range_rule_max_ports = 1024

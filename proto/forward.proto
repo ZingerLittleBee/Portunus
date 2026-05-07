@@ -81,10 +81,22 @@ enum Protocol {
 
 message Rule {
   uint64 rule_id = 1;
-  uint32 listen_port = 2;       // 1-65535 range enforced by server before push
+  uint32 listen_port = 2;       // 1-65535; for ranges this is the start (inclusive)
   string target_host = 3;
-  uint32 target_port = 4;
+  uint32 target_port = 4;       // for ranges this is the start (inclusive)
   Protocol protocol = 5;
+
+  // Additive in v1.1 (spec 002-port-range-forward).
+  // Absent (== 0 on the wire) → single-port rule (v1.0 shape).
+  // Present → range from listen_port..=listen_port_end.
+  // Server enforces:
+  //   listen_port_end >= listen_port,
+  //   target_port_end >= target_port,
+  //   (listen_port_end - listen_port) == (target_port_end - target_port),
+  //   range size <= server config range_rule_max_ports (default 1024).
+  // Each listen port `p` forwards to target_port + (p - listen_port).
+  uint32 listen_port_end = 6;
+  uint32 target_port_end = 7;
 }
 
 enum RuleAction {
@@ -122,8 +134,22 @@ message RuleStatus {
 
 message RuleStats {
   uint64 rule_id = 1;
-  uint64 bytes_in = 2;          // cumulative
-  uint64 bytes_out = 3;         // cumulative
+  uint64 bytes_in = 2;          // cumulative, aggregate across all ports
+  uint64 bytes_out = 3;         // cumulative, aggregate across all ports
+  uint32 active_connections = 4;// aggregate across all ports
+
+  // Additive in v1.1 (spec 002-port-range-forward).
+  // Per-port detail for range rules. Empty for single-port rules.
+  // Consumed only when an operator requests `--per-port`; never re-
+  // exported as Prometheus time series (cardinality budget — SC-002).
+  repeated PerPortStats per_port = 5;
+}
+
+// New in v1.1 (spec 002-port-range-forward).
+message PerPortStats {
+  uint32 listen_port = 1;
+  uint64 bytes_in = 2;
+  uint64 bytes_out = 3;
   uint32 active_connections = 4;
 }
 

@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::OutputFormat;
-use crate::operator::cli::parse_target;
+use crate::operator::cli::{parse_listen, parse_target};
 use crate::rules::{Rule, RuleState};
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -43,11 +43,14 @@ fn client() -> Result<reqwest::blocking::Client, u8> {
 }
 
 /// Translate the HTTP API's frozen `error.code` strings into the frozen CLI
-/// exit codes from `operator-api.md`.
+/// exit codes from `operator-api.md`. New v1.1 codes (`exceeds_cap`,
+/// `range_invalid`, `mismatched_range`) reuse the existing exit-3 family
+/// per the stability guarantee in `contracts/operator-api.md`.
 fn code_to_exit(code: &str) -> u8 {
     match code {
         "client_already_exists" => 2,
-        "invalid_name" | "invalid_protocol" | "invalid_target" => 3,
+        "invalid_name" | "invalid_protocol" | "invalid_target" | "exceeds_cap"
+        | "range_invalid" | "range_inverted" | "mismatched_range" => 3,
         "client_not_connected" => 4,
         "port_in_use" => 5,
         "activation_failed" => 6,
@@ -76,24 +79,35 @@ struct PushResponse {
 pub fn push(
     endpoint: &str,
     raw_client: &str,
-    listen_port: u16,
+    listen_spec: &str,
     target: &str,
     protocol: &str,
     ack_timeout_secs: u64,
 ) -> Result<(), u8> {
-    let (target_host, target_port) = parse_target(target).map_err(|e| {
+    let listen = parse_listen(listen_spec).map_err(|e| {
+        eprintln!("error: {e}");
+        e.exit_code()
+    })?;
+    let (target_host, target_range) = parse_target(target).map_err(|e| {
         eprintln!("error: {e}");
         e.exit_code()
     })?;
     let url = format!("http://{endpoint}/v1/rules");
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "client": raw_client,
-        "listen_port": listen_port,
+        "listen_port": listen.start(),
         "target_host": target_host,
-        "target_port": target_port,
+        "target_port": target_range.start(),
         "protocol": protocol,
         "ack_timeout_secs": ack_timeout_secs,
     });
+    // Co-presence enforced by the server: send both `*_port_end` fields
+    // together, only when the user actually requested a range.
+    if listen.len() > 1 || target_range.len() > 1 {
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("listen_port_end".into(), listen.end().into());
+        obj.insert("target_port_end".into(), target_range.end().into());
+    }
     let resp = client()?.post(&url).json(&body).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
@@ -160,10 +174,26 @@ struct StatsResponse {
     bytes_out: u64,
     active_connections: u32,
     updated_at: DateTime<Utc>,
+    /// Optional per-port detail; populated only when `?per_port=true`
+    /// was requested AND the rule is a range rule with cached samples
+    /// (002-port-range-forward, T046).
+    #[serde(default)]
+    per_port: Option<Vec<PerPortStat>>,
 }
 
-pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat) -> Result<(), u8> {
-    let url = format!("http://{endpoint}/v1/rules/{rule_id}/stats");
+#[derive(Debug, Deserialize)]
+struct PerPortStat {
+    listen_port: u16,
+    bytes_in: u64,
+    bytes_out: u64,
+    active_connections: u32,
+}
+
+pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool) -> Result<(), u8> {
+    let mut url = format!("http://{endpoint}/v1/rules/{rule_id}/stats");
+    if per_port {
+        url.push_str("?per_port=true");
+    }
     let resp = client()?.get(&url).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
@@ -177,15 +207,7 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat) -> Result<(), u
     })?;
     match format {
         OutputFormat::Json => {
-            let s = serde_json::to_string_pretty(&serde_json::json!({
-                "rule_id": body.rule_id,
-                "client_name": body.client_name,
-                "bytes_in": body.bytes_in,
-                "bytes_out": body.bytes_out,
-                "active_connections": body.active_connections,
-                "updated_at": body.updated_at,
-            }))
-            .map_err(|_| 1u8)?;
+            let s = serde_json::to_string_pretty(&body_as_json(&body)).map_err(|_| 1u8)?;
             println!("{s}");
         }
         OutputFormat::Text => {
@@ -198,9 +220,52 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat) -> Result<(), u
                 body.active_connections,
                 body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
             );
+            if let Some(rows) = body.per_port.as_ref() {
+                use std::fmt::Write as _;
+                let mut buf = String::new();
+                let _ = writeln!(
+                    buf,
+                    "{:<8} {:<14} {:<14} {:<8}",
+                    "PORT", "BYTES_IN", "BYTES_OUT", "ACTIVE"
+                );
+                for r in rows {
+                    let _ = writeln!(
+                        buf,
+                        "{:<8} {:<14} {:<14} {:<8}",
+                        r.listen_port, r.bytes_in, r.bytes_out, r.active_connections
+                    );
+                }
+                print!("{buf}");
+            }
         }
     }
     Ok(())
+}
+
+fn body_as_json(body: &StatsResponse) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "rule_id": body.rule_id,
+        "client_name": body.client_name,
+        "bytes_in": body.bytes_in,
+        "bytes_out": body.bytes_out,
+        "active_connections": body.active_connections,
+        "updated_at": body.updated_at,
+    });
+    if let Some(rows) = body.per_port.as_ref() {
+        v["per_port"] = serde_json::Value::Array(
+            rows.iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "listen_port": r.listen_port,
+                        "bytes_in": r.bytes_in,
+                        "bytes_out": r.bytes_out,
+                        "active_connections": r.active_connections,
+                    })
+                })
+                .collect(),
+        );
+    }
+    v
 }
 
 fn render_rules_text(rules: &[Rule]) -> String {

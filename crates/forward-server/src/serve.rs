@@ -86,6 +86,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
             advertised,
             tls.leaf_fingerprint_hex.clone(),
             tls.cert_pem.clone(),
+            cfg.range_rule_max_ports,
         )
         .map_err(|e| ForwardError::Tls(format!("metrics: {e}")))?,
     );
@@ -204,6 +205,7 @@ fn default_config(config_dir: &std::path::Path) -> ServerConfig {
         token_store_path: config_dir.join("tokens.json"),
         shutdown_drain_timeout_secs: 30,
         log_format: LogFormat::Json,
+        range_rule_max_ports: 1024,
     }
 }
 

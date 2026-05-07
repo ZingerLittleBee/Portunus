@@ -10,14 +10,13 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
-use forward_core::RuleId;
+use forward_core::{PortRange, RuleId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bundle::CredentialBundle;
-use crate::metrics::RuleStatsSnapshot;
 use crate::operator::ClientView;
 use crate::operator::cli::{self, OperatorError};
 use crate::rules::Rule;
@@ -64,8 +63,17 @@ async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>
 struct PushRuleBody {
     client: String,
     listen_port: u16,
+    /// Inclusive listen-range end. Absent (or equal to `listen_port`)
+    /// → single-port rule (v0.1.0 shape preserved). Present and
+    /// greater than `listen_port` → range rule (002-port-range-forward).
+    #[serde(default)]
+    listen_port_end: Option<u16>,
     target_host: String,
     target_port: u16,
+    /// Inclusive target-range end. MUST be present iff `listen_port_end`
+    /// is present (the server enforces co-presence and equal length).
+    #[serde(default)]
+    target_port_end: Option<u16>,
     #[serde(default = "default_protocol")]
     protocol: String,
     /// Optional override of the per-request ack timeout in seconds.
@@ -86,16 +94,30 @@ async fn post_rules(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PushRuleBody>,
 ) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
-    let target = format!("{}:{}", body.target_host, body.target_port);
+    // Co-presence check (FR-005 / contracts/operator-api.md):
+    // listen_port_end / target_port_end MUST appear together.
+    let listen =
+        build_range(body.listen_port, body.listen_port_end).map_err(OperatorError::RangeInvalid)?;
+    let target =
+        build_range(body.target_port, body.target_port_end).map_err(OperatorError::RangeInvalid)?;
+    if body.listen_port_end.is_some() != body.target_port_end.is_some() {
+        return Err(OperatorError::RangeInvalid(
+            "mismatched_range: listen_port_end and target_port_end must be present together".into(),
+        )
+        .into());
+    }
+
     let timeout = body
         .ack_timeout_secs
         .map_or(DEFAULT_ACK_TIMEOUT, Duration::from_secs);
     let rule = cli::push_rule(
         &state,
         &body.client,
-        body.listen_port,
-        &target,
+        listen,
+        &body.target_host,
+        target,
         &body.protocol,
+        state.range_rule_max_ports,
         timeout,
     )
     .await?;
@@ -103,6 +125,14 @@ async fn post_rules(
         StatusCode::CREATED,
         Json(PushRuleResponse { rule_id: rule.id.0 }),
     ))
+}
+
+/// Build a `PortRange` from a `(start, optional end)` pair. Returns
+/// the range or a human-readable error string used in the
+/// `range_invalid` HTTP response message.
+fn build_range(start: u16, end: Option<u16>) -> Result<PortRange, String> {
+    let end = end.unwrap_or(start);
+    PortRange::new(start, end).map_err(|e| e.to_string())
 }
 
 async fn delete_rule(
@@ -125,9 +155,35 @@ async fn get_rules(
 async fn get_rule_stats(
     State(state): State<Arc<AppState>>,
     Path(rule_id): Path<u64>,
-) -> Result<Json<RuleStatsSnapshot>, ApiError> {
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let snap = cli::rule_stats(&state, RuleId(rule_id)).await?;
-    Ok(Json(snap))
+    let mut body = serde_json::to_value(&snap).map_err(|e| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        code: "internal".into(),
+        message: e.to_string(),
+    })?;
+    // T046 (002-port-range-forward): when `?per_port=true`, append a
+    // `per_port` array sourced from the per-port cache. Default
+    // behavior (no query param) is unchanged so v0.1.0 callers see the
+    // identical body shape.
+    let per_port_requested = params
+        .get("per_port")
+        .is_some_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+    if per_port_requested
+        && let Some(per_port) = state.per_port_stats.get(RuleId(rule_id)).await
+        && let serde_json::Value::Object(ref mut map) = body
+    {
+        map.insert(
+            "per_port".to_string(),
+            serde_json::to_value(&per_port).map_err(|e| ApiError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "internal".into(),
+                message: e.to_string(),
+            })?,
+        );
+    }
+    Ok(Json(body))
 }
 
 #[derive(Debug, Serialize)]
@@ -152,10 +208,12 @@ impl From<OperatorError> for ApiError {
         let status = match &e {
             OperatorError::ClientAlreadyExists(_)
             | OperatorError::Auth(forward_auth::AuthError::ClientAlreadyExists(_))
-            | OperatorError::PortInUse => StatusCode::CONFLICT,
+            | OperatorError::PortInUse { .. } => StatusCode::CONFLICT,
             OperatorError::InvalidName(_)
             | OperatorError::InvalidProtocol(_)
-            | OperatorError::InvalidTarget(_) => StatusCode::BAD_REQUEST,
+            | OperatorError::InvalidTarget(_)
+            | OperatorError::ExceedsCap { .. }
+            | OperatorError::RangeInvalid(_) => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_) | OperatorError::ActivationFailed(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
@@ -189,6 +247,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
 
@@ -198,5 +257,39 @@ mod tests {
         let addr: SocketAddr = listener.local_addr().unwrap();
         // Per FR-022: operator HTTP must bind to loopback only.
         assert!(addr.ip().is_loopback(), "got {addr}");
+    }
+
+    // ---- T017 (US1): structural body validation in `post_rules` ----
+    //
+    // We don't spin up a real client here — the structural checks
+    // (range_inverted, mismatched_range, build_range failures) live in
+    // `post_rules` BEFORE the ClientNotConnected gate, so they can be
+    // exercised against a synthetic `AppState`.
+
+    #[test]
+    fn build_range_accepts_single_port() {
+        let r = build_range(18080, None).unwrap();
+        assert_eq!(r.start(), 18080);
+        assert_eq!(r.end(), 18080);
+    }
+
+    #[test]
+    fn build_range_accepts_explicit_range() {
+        let r = build_range(30000, Some(30050)).unwrap();
+        assert_eq!(r.start(), 30000);
+        assert_eq!(r.end(), 30050);
+    }
+
+    #[test]
+    fn build_range_rejects_inverted() {
+        let err = build_range(30050, Some(30000)).unwrap_err();
+        assert!(err.contains("inverted"), "got: {err}");
+    }
+
+    #[test]
+    fn build_range_rejects_zero_port() {
+        // OutOfBounds — port 0 is not a real listening port.
+        let err = build_range(0, Some(10)).unwrap_err();
+        assert!(err.contains("out_of_bounds"), "got: {err}");
     }
 }

@@ -7,9 +7,15 @@ name: bench
 #
 # Note: bench numbers are CI-runner-dependent. The baseline in
 # `crates/forward-client/benches/baselines/v0.1.0.json` was captured on
-# macOS; we run the gate on the same OS to keep noise comparable.
-# Update the baseline with `cargo bench -- --save-baseline v0.1.0` and
-# regenerate the JSON when an intentional perf change lands.
+# the maintainer's macOS dev box; we run the gate on macos-latest to
+# keep noise *roughly* comparable, but GH-Actions runners are slower
+# and noisier than dev hardware — particularly on the 1-byte RTT
+# bench, which is dominated by scheduler jitter. The gate threshold
+# is therefore set to 50%: tight enough to catch a real 2-3x
+# regression (the spec-relevant signal), loose enough not to flake on
+# every PR. Update the baseline with `cargo bench -- --save-baseline
+# v0.1.0` and regenerate the JSON when an intentional perf change
+# lands.
 
 on:
   workflow_dispatch:
@@ -51,4 +57,4 @@ jobs:
         run: cargo bench -p forward-client --bench data_plane
 
       - name: regression gate
-        run: python3 scripts/bench_regression_gate.py --max-regression-pct 25
+        run: python3 scripts/bench_regression_gate.py --max-regression-pct 50

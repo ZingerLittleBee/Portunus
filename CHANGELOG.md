@@ -5,6 +5,44 @@ All notable changes to `forward-rs` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Port-range forwarding rules** (additive, spec
+  `002-port-range-forward`). Operators can now push a single forwarding
+  rule that maps a contiguous listen-port range to a same-offset
+  contiguous target-port range on one upstream host. The wire,
+  persistence, HTTP, and CLI surfaces extend additively: existing
+  single-port rules behave unchanged; range rules add optional
+  `listen_port_end` / `target_port_end` fields. New server config
+  `range_rule_max_ports` (default `1024`) caps any single range. New
+  CLI flag `rule-stats <id> --per-port` exposes per-port counters
+  on-demand (not via Prometheus — cardinality budget preserved).
+  Range conflicts reuse the v1 `port_in_use` error code with the
+  offending port named in the message.
+
+### Verified
+
+- **SC-001 (100-port range, fresh deploy)** — ran the recipe in
+  `specs/002-port-range-forward/quickstart.md` § "Verifying SC-001 on
+  a fresh host pair" against a Debian 13 (trixie) x86_64 host, glibc
+  2.41, kernel 6.12.74, with both `forward-server` and `forward-client`
+  on the same box talking loopback. Numbers (median of 3 fresh runs):
+  - **Total wall clock** (server start → bundle issue → client connect
+    → push 100-port range → traffic round-trip on 3 sample ports):
+    **0.93 s** — well under the 5-minute SC-001 budget (≈300×).
+  - **Range-push wall clock** (just the `push-rule edge-01
+    30000-30099 127.0.0.1:41000-41099` invocation): **18 ms** — sub-second
+    per quickstart prediction; the bind fan-out across 100 OS-assigned
+    ports is comfortably linear.
+  - **`list-rules`** returns one entry for the 100-port range
+    (range collapses, FR-006).
+  - **SC-002** — `/metrics` exposes exactly **1** row of
+    `forward_rule_bytes_in_total{rule="…"}` for the 100-port rule.
+    Per-port detail surfaces only via the `?per_port=true` HTTP query,
+    which returns a 100-element `per_port` array.
+
 ## [0.1.0] — 2026-05-06
 
 Initial MVP release of the `001-tcp-forward-mvp` feature. Two binaries

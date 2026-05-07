@@ -27,6 +27,13 @@ pub struct ServerConfig {
     pub shutdown_drain_timeout_secs: u64,
     #[serde(default)]
     pub log_format: LogFormat,
+    /// Maximum ports any single range rule may span (FR-008,
+    /// 002-port-range-forward). Default `1024` matches the Linux
+    /// default soft `RLIMIT_NOFILE`. Operators on hosts with raised
+    /// `LimitNOFILE` may raise this; on stricter hosts they should
+    /// lower it. A value of `0` is rejected at load time.
+    #[serde(default = "default_range_rule_max_ports")]
+    pub range_rule_max_ports: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -74,11 +81,25 @@ fn default_reconnect_max_delay_secs() -> u64 {
 fn default_stats_report_interval_secs() -> u64 {
     5
 }
+/// Default cap for `range_rule_max_ports` (1024). Public so the offline
+/// CLI paths can stay aligned with the served config without needing to
+/// instantiate a `ServerConfig`.
+#[must_use]
+pub fn default_range_rule_max_ports() -> u32 {
+    1024
+}
 
 impl ServerConfig {
     pub fn from_toml_path(path: &Path) -> Result<Self, ForwardError> {
         let raw = std::fs::read_to_string(path)?;
-        toml::from_str(&raw).map_err(|e| ForwardError::ConfigInvalid(e.to_string()))
+        let cfg: Self =
+            toml::from_str(&raw).map_err(|e| ForwardError::ConfigInvalid(e.to_string()))?;
+        if cfg.range_rule_max_ports == 0 {
+            return Err(ForwardError::ConfigInvalid(
+                "range_rule_max_ports must be >= 1 (a cap of 0 rejects every range push, almost certainly a misconfiguration)".into(),
+            ));
+        }
+        Ok(cfg)
     }
 }
 
@@ -115,6 +136,39 @@ mod tests {
         assert_eq!(cfg.metrics_listen.port(), 7081);
         assert_eq!(cfg.shutdown_drain_timeout_secs, 30);
         assert_eq!(cfg.log_format, LogFormat::Json);
+        // T011: default cap is 1024.
+        assert_eq!(cfg.range_rule_max_ports, 1024);
+    }
+
+    #[test]
+    fn server_config_range_cap_override() {
+        let toml = r#"
+            tls_cert_path = "/a"
+            tls_key_path = "/a"
+            token_store_path = "/a"
+            range_rule_max_ports = 256
+        "#;
+        let dir = write_tmp("server.toml", toml);
+        let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+        assert_eq!(cfg.range_rule_max_ports, 256);
+    }
+
+    #[test]
+    fn server_config_range_cap_zero_rejected() {
+        let toml = r#"
+            tls_cert_path = "/a"
+            tls_key_path = "/a"
+            token_store_path = "/a"
+            range_rule_max_ports = 0
+        "#;
+        let dir = write_tmp("server.toml", toml);
+        let err = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap_err();
+        match err {
+            ForwardError::ConfigInvalid(msg) => {
+                assert!(msg.contains("range_rule_max_ports"), "msg: {msg}");
+            }
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
     }
 
     #[test]

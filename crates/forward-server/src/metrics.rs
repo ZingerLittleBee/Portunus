@@ -10,6 +10,14 @@
 //! `prev` lives in the cache so a missed report just delays the increment;
 //! a smaller-than-prev value (client restart) resets the baseline rather
 //! than emitting a negative delta.
+//!
+//! Range rules (002-port-range-forward) deliberately reuse the
+//! `(client, rule)` labels — per-port detail is tracked separately in
+//! `operator::per_port_stats` and surfaced via the loopback HTTP API
+//! when an operator passes `--per-port`. See SC-002 in
+//! `specs/002-port-range-forward/contracts/operator-api.md`: the
+//! Prometheus cardinality budget MUST stay invariant of range size,
+//! otherwise a 1024-port range would burst the registry.
 
 use std::collections::HashMap;
 use std::sync::Arc;

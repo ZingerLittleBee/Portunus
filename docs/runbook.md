@@ -168,6 +168,47 @@ forward-server --config-dir /var/lib/forward remove-rule <rule_id>
 acknowledge `Active`. Failure modes: client offline, port already in use,
 target unreachable from the client. See Troubleshooting.
 
+### Managing port-range rules (v0.2.0+)
+
+A range rule maps a contiguous listen-port window onto the same-offset
+target window with one push:
+
+```sh
+# Listen 30000-30050 on edge-01, forward to upstream.local:30000-30050.
+# The mapping is same-offset: listen 30007 → target 30007.
+forward-server --config-dir /var/lib/forward \
+  push-rule edge-01 30000-30050 upstream.local:30000-30050
+
+# Per-port byte counters (range rules only):
+forward-server --config-dir /var/lib/forward \
+  rule-stats <rule_id> --per-port
+```
+
+Operational notes:
+
+- **Cap.** `range_rule_max_ports` in `server.toml` (default `1024`)
+  limits any single range. Pushing a larger range is rejected with HTTP
+  400 `exceeds_cap`. Raising the cap requires raising
+  `LimitNOFILE` in `forward-client.service` proportionally — each
+  port consumes one TCP listener fd plus per-connection overhead.
+- **Conflicts.** Overlapping ranges on the same client are rejected
+  with HTTP 409 `port_in_use` and the offending port named in the
+  message; the existing rule is unaffected. Different clients can
+  bind the same port range without conflict.
+- **All-or-nothing bind.** The client binds every port in the range
+  before activating; if any single bind fails (port in use on the
+  edge host, permission denied), all previously-bound listeners are
+  released and the rule is reported `Failed` with the offending port.
+- **Cardinality.** Prometheus collectors stay aggregate — one row per
+  rule regardless of range size. `rule-stats --per-port` sources its
+  per-port detail from a separate in-memory cache; that cache is
+  not exported as Prometheus series. A 1024-port range adds one
+  Prometheus row, not 1024.
+- **Downgrade safety.** Range rules use additive proto fields; the
+  v0.1.0 wire shape for single-port rules is byte-identical. A v0.2.0
+  client paired with a v0.1.0 server still works for single-port
+  rules.
+
 ### Replace the TLS cert (routable hostname)
 
 The auto-generated cert SAN only covers `localhost`, `127.0.0.1`, and
@@ -337,8 +378,11 @@ looking for it:
   host can provision clients and push rules. There's a single token
   store and no per-operator audit beyond the user that ran the systemd
   unit.
-- **No port-range rules, no domain-name forwarding, no UDP.** Each rule
-  is a single TCP listen port → single `host:port` target.
+- **No domain-name forwarding, no UDP.** Each rule's target host
+  resolves once at push time; subsequent DNS changes don't propagate
+  until the rule is re-pushed. Only TCP is forwarded. Port-range
+  rules ARE supported as of v0.2.0 — see "Managing port-range rules"
+  above.
 - **No hot reload of `server.toml`.** Config changes require a
   service restart.
 - **No external secret management integration.** Bundles and tokens

@@ -26,12 +26,19 @@ use super::stats::RuleStats;
 /// final tally from `copy_bidirectional` once it returns. Per-direction
 /// updates would require `tokio_util::io::InspectReader` shims — overkill for
 /// the 5-second sample window the `StatsReport` uses.
+///
+/// `listen_port` identifies which port in the rule's range this
+/// connection arrived on (002-port-range-forward, T041). Per-port
+/// counters in `stats.per_port` are updated alongside the aggregate;
+/// for single-port rules `listen_port` equals the rule's only port and
+/// the per-port slot may be empty (graceful degradation).
 pub async fn proxy(
     mut inbound: TcpStream,
     target_host: &str,
     target_port: u16,
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
+    listen_port: u16,
 ) -> io::Result<(u64, u64)> {
     let target = format!("{target_host}:{target_port}");
     let mut outbound = TcpStream::connect(&target).await?;
@@ -40,7 +47,9 @@ pub async fn proxy(
     let _ = inbound.set_nodelay(true);
     let _ = outbound.set_nodelay(true);
 
-    let _guard = stats.as_ref().map(|s| ActiveGuard::new(Arc::clone(s)));
+    let _guard = stats
+        .as_ref()
+        .map(|s| ActiveGuard::new(Arc::clone(s), listen_port));
 
     let result = tokio::select! {
         () = shutdown.cancelled() => {
@@ -54,26 +63,27 @@ pub async fn proxy(
         }
     };
     if let (Some(s), Ok((bin, bout))) = (stats.as_ref(), result.as_ref()) {
-        s.add_in(*bin);
-        s.add_out(*bout);
+        s.record_in(listen_port, *bin);
+        s.record_out(listen_port, *bout);
     }
     result
 }
 
 struct ActiveGuard {
     stats: Arc<RuleStats>,
+    listen_port: u16,
 }
 
 impl ActiveGuard {
-    fn new(stats: Arc<RuleStats>) -> Self {
-        stats.inc_active();
-        Self { stats }
+    fn new(stats: Arc<RuleStats>, listen_port: u16) -> Self {
+        stats.inc_active(listen_port);
+        Self { stats, listen_port }
     }
 }
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        self.stats.dec_active();
+        self.stats.dec_active(self.listen_port);
     }
 }
 
@@ -126,6 +136,7 @@ mod tests {
                 echo.port(),
                 cancel_proxy,
                 None,
+                0,
             )
             .await
         });
@@ -160,6 +171,7 @@ mod tests {
                 echo.port(),
                 cancel_proxy,
                 None,
+                0,
             )
             .await
         });
@@ -183,7 +195,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
-            proxy(sock, "127.0.0.1", 1, cancel, None).await
+            proxy(sock, "127.0.0.1", 1, cancel, None, 0).await
         });
         let _client = TcpStream::connect(proxy_addr).await.unwrap();
         let err = proxy_task.await.unwrap().unwrap_err();

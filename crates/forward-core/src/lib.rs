@@ -9,6 +9,8 @@ pub mod error;
 pub mod fingerprint;
 pub mod id;
 pub mod log_redact;
+pub mod port_range;
 
 pub use error::ForwardError;
 pub use id::{ClientName, ClientNameError, RequestId, RuleId};
+pub use port_range::{PortRange, PortRangeError};

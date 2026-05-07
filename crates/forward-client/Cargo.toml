@@ -46,3 +46,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "data_plane"
 harness = false
+
+[[bench]]
+name = "range_install"
+harness = false

@@ -279,6 +279,34 @@ pub fn push_rule_http(
     target_port: u16,
     ack_timeout_secs: Option<u64>,
 ) -> (reqwest::StatusCode, serde_json::Value) {
+    push_rule_http_full(
+        operator_http_addr,
+        client,
+        listen_port,
+        None,
+        target_host,
+        target_port,
+        None,
+        ack_timeout_secs,
+    )
+}
+
+/// Range-aware push (002-port-range-forward). When `listen_port_end` and
+/// `target_port_end` are `Some`, both fields are sent — the server
+/// enforces co-presence and equal length. Backwards-compatible with
+/// the pre-002 `push_rule_http` shape: pass `None` for both ends to
+/// get the v0.1.0 single-port body.
+#[allow(clippy::too_many_arguments)]
+pub fn push_rule_http_full(
+    operator_http_addr: &str,
+    client: &str,
+    listen_port: u16,
+    listen_port_end: Option<u16>,
+    target_host: &str,
+    target_port: u16,
+    target_port_end: Option<u16>,
+    ack_timeout_secs: Option<u64>,
+) -> (reqwest::StatusCode, serde_json::Value) {
     let url = format!("http://{operator_http_addr}/v1/rules");
     let mut body = serde_json::json!({
         "client": client,
@@ -287,6 +315,12 @@ pub fn push_rule_http(
         "target_port": target_port,
         "protocol": "tcp",
     });
+    if let Some(end) = listen_port_end {
+        body["listen_port_end"] = serde_json::Value::Number(end.into());
+    }
+    if let Some(end) = target_port_end {
+        body["target_port_end"] = serde_json::Value::Number(end.into());
+    }
     if let Some(secs) = ack_timeout_secs {
         body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
     }
@@ -338,6 +372,22 @@ pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode 
 pub fn rule_stats_http(operator_http_addr: &str, rule_id: u64) -> Option<serde_json::Value> {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}/stats");
     let resp = reqwest::blocking::get(&url).expect("GET /v1/rules/{rule_id}/stats");
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return None;
+    }
+    assert!(resp.status().is_success(), "rule-stats failed: {resp:?}");
+    Some(resp.json().expect("parse JSON body"))
+}
+
+/// Same as [`rule_stats_http`] but appends `?per_port=true` to opt into
+/// the per-port detail surfaced for range rules (002-port-range-forward,
+/// T046). Returns `None` if the server has no cached stats yet.
+pub fn rule_stats_http_per_port(
+    operator_http_addr: &str,
+    rule_id: u64,
+) -> Option<serde_json::Value> {
+    let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}/stats?per_port=true");
+    let resp = reqwest::blocking::get(&url).expect("GET /v1/rules/{rule_id}/stats?per_port=true");
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return None;
     }

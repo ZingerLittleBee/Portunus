@@ -16,6 +16,15 @@ RestartSec=5
 # --shutdown-drain-timeout-secs (default 30 s).
 TimeoutStopSec=60
 
+# File-descriptor headroom for port-range rules (002-port-range-forward).
+# Each port in a range rule consumes one TcpListener fd; each in-flight
+# forwarded connection consumes two fds (inbound + outbound). With the
+# default range cap of 1024 ports plus modest concurrency headroom:
+#   1024 listeners + (1024 ports * 4 conns/port * 2 fds) + control plane ≈ 9216
+# Round up to 16384 for comfort. Operators raising `range_rule_max_ports`
+# in server.toml MUST scale this proportionally.
+LimitNOFILE=16384
+
 # Forwarding rules can listen on privileged ports (<1024). The client
 # would normally need root, but with the capability we can bind those
 # ports as an unprivileged user.

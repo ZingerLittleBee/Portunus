@@ -6,11 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forward_core::RuleId;
+use forward_core::{PortRange, RuleId};
 use forward_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, RuleAction, RuleStats as ProtoRuleStats,
-    RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport, client_message,
-    control_client::ControlClient, server_message,
+    ActivationOutcome, ClientMessage, Hello, PerPortStats as ProtoPerPortStats, RuleAction,
+    RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
+    client_message, control_client::ControlClient, server_message,
 };
 use rand::Rng;
 use thiserror::Error;
@@ -243,6 +243,11 @@ struct RuleSlot {
     /// Shared with the forwarder; the periodic stats task reads snapshots
     /// from this for `StatsReport`.
     stats: Arc<RuleStats>,
+    /// `true` iff this rule's listen range spans more than one port.
+    /// Used by `send_stats_report` to decide whether to emit the
+    /// `per_port` proto field — single-port rules always send empty
+    /// per-port to preserve the v0.1.0 wire shape.
+    is_range: bool,
 }
 
 async fn pump(
@@ -303,6 +308,7 @@ async fn pump(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
@@ -336,16 +342,64 @@ fn handle_server_message(
             }
             let listen_port = u16::try_from(rule.listen_port).unwrap_or(0);
             let target_port = u16::try_from(rule.target_port).unwrap_or(0);
+            // Lift single-port rules into the range path. The server
+            // sends `0` (proto3 default) for the *_port_end fields when
+            // the rule is single-port; treat that as "no end" and
+            // collapse to a `PortRange::single`.
+            let listen_end = u16::try_from(rule.listen_port_end)
+                .ok()
+                .filter(|e| *e != 0)
+                .unwrap_or(listen_port);
+            let target_end = u16::try_from(rule.target_port_end)
+                .ok()
+                .filter(|e| *e != 0)
+                .unwrap_or(target_port);
+            let listen_range = match PortRange::new(listen_port, listen_end) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(
+                        event = "control.rule_push_invalid_range",
+                        request_id = %request_id,
+                        rule_id = %rule_id,
+                        error = %e,
+                    );
+                    let _ = status_tx.try_send(RuleStatusEvent::Failed {
+                        rule_id,
+                        reason: "range_invalid".into(),
+                    });
+                    return;
+                }
+            };
+            let target_range = match PortRange::new(target_port, target_end) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(
+                        event = "control.rule_push_invalid_range",
+                        request_id = %request_id,
+                        rule_id = %rule_id,
+                        error = %e,
+                    );
+                    let _ = status_tx.try_send(RuleStatusEvent::Failed {
+                        rule_id,
+                        reason: "range_invalid".into(),
+                    });
+                    return;
+                }
+            };
             let cancel = CancellationToken::new();
             let client_rule = ClientRule {
                 rule_id,
-                listen_port,
+                listen_range,
                 target_host: rule.target_host,
-                target_port,
+                target_range,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
-            let stats = RuleStats::new();
+            // Range-aware stats: one per-port slot per port in
+            // `listen_range`. Single-port rules get a single-element
+            // per-port slot — the wire emit logic in
+            // `send_stats_report` strips it for backwards compat.
+            let stats = RuleStats::for_range(listen_range);
             let task_stats = Arc::clone(&stats);
             tokio::spawn(async move {
                 forwarder::run(
@@ -364,6 +418,7 @@ fn handle_server_message(
                     push_request_id: request_id,
                     remove_request_id: None,
                     stats,
+                    is_range: listen_end > listen_port,
                 },
             );
         }
@@ -468,11 +523,29 @@ async fn send_stats_report(
         .iter()
         .map(|(rule_id, slot)| {
             let (bin, bout, active) = slot.stats.snapshot();
+            // Per-port detail (002-port-range-forward, T042). Range
+            // rules emit one slot per listen port; single-port rules
+            // emit empty for wire-shape stability with v0.1.0.
+            let per_port = if slot.is_range {
+                slot.stats
+                    .snapshot_per_port()
+                    .into_iter()
+                    .map(|(port, bin, bout, active)| ProtoPerPortStats {
+                        listen_port: u32::from(port),
+                        bytes_in: bin,
+                        bytes_out: bout,
+                        active_connections: active,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             ProtoRuleStats {
                 rule_id: rule_id.0,
                 bytes_in: bin,
                 bytes_out: bout,
                 active_connections: active,
+                per_port,
             }
         })
         .collect();
