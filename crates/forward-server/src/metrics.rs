@@ -160,6 +160,7 @@ impl RuleStatsCache {
     /// Apply one client-reported reading. Updates the cache and feeds deltas
     /// into the Prometheus collectors. A baseline reset (new < prev) is
     /// treated as a fresh window — counters are NOT decremented.
+    #[allow(clippy::too_many_arguments)]
     pub async fn observe(
         &self,
         client_name: &ClientName,
@@ -242,12 +243,8 @@ impl RuleStatsCache {
             // kept per Prometheus convention; SC-002 already accepts
             // their unbounded retention.
             let labels = [client_name.as_str(), &rule_id.0.to_string()];
-            let _ = metrics
-                .rule_active_connections
-                .remove_label_values(&labels);
-            let _ = metrics
-                .rule_dns_failures_total
-                .remove_label_values(&labels);
+            let _ = metrics.rule_active_connections.remove_label_values(&labels);
+            let _ = metrics.rule_dns_failures_total.remove_label_values(&labels);
         }
     }
 }

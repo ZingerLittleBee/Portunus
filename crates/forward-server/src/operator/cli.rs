@@ -62,10 +62,7 @@ pub enum OperatorError {
     /// and CLI exit-mapper can route on it without reparsing the
     /// message.
     #[error("{code}: {message}")]
-    InvalidTargetHost {
-        code: &'static str,
-        message: String,
-    },
+    InvalidTargetHost { code: &'static str, message: String },
     /// Range size > server-configured cap (FR-008, 002-port-range-forward).
     #[error("exceeds_cap: requested={requested} cap={cap}")]
     ExceedsCap { requested: u32, cap: u32 },
@@ -138,9 +135,7 @@ impl From<TargetError> for OperatorError {
         // other validator failure folds into the bare
         // `invalid_target_host`.
         let code = match &e {
-            TargetError::Hostname(HostnameError::TotalTooLong(_)) => {
-                "invalid_target_host_too_long"
-            }
+            TargetError::Hostname(HostnameError::TotalTooLong(_)) => "invalid_target_host_too_long",
             TargetError::Hostname(HostnameError::LabelTooLong { .. }) => {
                 "invalid_target_host_label_too_long"
             }

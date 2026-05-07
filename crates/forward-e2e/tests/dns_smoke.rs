@@ -104,8 +104,8 @@ fn test_dns_us1_happy_path() {
         "DNS-target push must succeed: status={status} body={body}"
     );
 
-    let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, dns_listen))
-        .expect("connect to DNS-target proxy");
+    let mut conn =
+        TcpStream::connect((Ipv4Addr::LOCALHOST, dns_listen)).expect("connect to DNS-target proxy");
     conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     conn.write_all(b"dns-roundtrip").unwrap();
     let mut buf = [0u8; 13];
@@ -129,8 +129,8 @@ fn test_dns_us1_happy_path() {
         "IP-target push must succeed: status={status} body={body}"
     );
 
-    let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, ip_listen))
-        .expect("connect to IP-target proxy");
+    let mut conn =
+        TcpStream::connect((Ipv4Addr::LOCALHOST, ip_listen)).expect("connect to IP-target proxy");
     conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     conn.write_all(b"ip-roundtrip-still-works").unwrap();
     let mut buf = [0u8; 24];
@@ -334,7 +334,10 @@ fn test_dns_us3_http_prefer_ipv6_round_trip() {
         Some(true),
         Some(3),
     );
-    assert!(status.is_success(), "POST with prefer_ipv6=true: {status} {body_a}");
+    assert!(
+        status.is_success(),
+        "POST with prefer_ipv6=true: {status} {body_a}"
+    );
     assert_eq!(
         body_a.get("prefer_ipv6").and_then(Value::as_bool),
         Some(true),
@@ -356,7 +359,10 @@ fn test_dns_us3_http_prefer_ipv6_round_trip() {
         None,
         Some(3),
     );
-    assert!(status.is_success(), "POST without prefer_ipv6: {status} {body_b}");
+    assert!(
+        status.is_success(),
+        "POST without prefer_ipv6: {status} {body_b}"
+    );
     assert_eq!(
         body_b.get("prefer_ipv6").and_then(Value::as_bool),
         Some(false),
@@ -442,10 +448,7 @@ fn test_dns_us3_ipv6_optin_falls_back_to_ipv4_only_target() {
         status.is_success(),
         "push with prefer_ipv6=true MUST succeed: {status} {body}"
     );
-    assert_eq!(
-        body.get("prefer_ipv6").and_then(Value::as_bool),
-        Some(true)
-    );
+    assert_eq!(body.get("prefer_ipv6").and_then(Value::as_bool), Some(true));
 
     let mut conn = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, listen))
         .expect("connect to prefer_ipv6 proxy");
@@ -525,14 +528,8 @@ fn test_dns_us4_metric_cardinality() {
     let mut rules: Vec<(u64, u16)> = Vec::with_capacity(N);
     for _ in 0..N {
         let listen = pick_free_port();
-        let (status, body) = common::push_rule_http(
-            &http,
-            "edge-01",
-            listen,
-            "broken.invalid",
-            443,
-            Some(3),
-        );
+        let (status, body) =
+            common::push_rule_http(&http, "edge-01", listen, "broken.invalid", 443, Some(3));
         assert!(status.is_success(), "push: {status} {body}");
         let rule_id = body
             .get("rule_id")
@@ -547,9 +544,7 @@ fn test_dns_us4_metric_cardinality() {
         for _ in 0..K {
             // Best-effort connect: kernel may RST or proxy may close
             // mid-handshake — both satisfy "DNS-failure path taken".
-            if let Ok(mut sock) =
-                std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, *port))
-            {
+            if let Ok(mut sock) = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, *port)) {
                 sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
                 let _ = sock.write_all(b"ping");
                 let mut b = [0u8; 1];

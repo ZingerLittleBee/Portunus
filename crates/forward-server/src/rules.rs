@@ -219,6 +219,7 @@ impl ServerRuleStore {
     /// Push a (potentially range) rule. Validates structure, enforces
     /// the configured cap, and rejects overlaps with any existing
     /// `Active`/`Failed` rule on the same client.
+    #[allow(clippy::too_many_arguments)]
     pub async fn push_range(
         &self,
         client_name: ClientName,

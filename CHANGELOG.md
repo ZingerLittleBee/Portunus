@@ -10,8 +10,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Domain-name forwarding targets** (additive, spec
-  `003-domain-name-forward`). _In progress — body filled at quickstart
-  verification (T058)._
+  `003-domain-name-forward`). The target host in any push-rule
+  invocation may now be a DNS name (e.g. `api.example.com:443`) instead
+  of an IP literal. Resolution happens lazily on first connect through
+  `hickory-resolver` reading `/etc/resolv.conf`; results cache per the
+  resolver-reported TTL clamped to `[5 s, 5 min]`. On refresh failure
+  the rule stays Active and the last-known answer continues serving for
+  up to 30 s of grace (RFC 8767 stale-while-error), then a fresh
+  attempt is allowed every 3 s (`negative_cache_retry`). Per-rule
+  single-flight (FR-012) collapses concurrent first-connects to ONE
+  upstream resolver call. Multi-A/AAAA fallback (FR-006) tries each
+  returned address in family-preference order, so a single dead IP
+  doesn't fail the connection. Address-family preference defaults to
+  IPv4-first; operators flip per-rule with the new
+  `--prefer-ipv6 / preferIpv6=true` flag (CLI + HTTP). DNS resolution
+  failures surface as a per-rule counter in `rule-stats` and as
+  `forward_rule_dns_failures_total{client,rule}` on `/metrics` (one
+  row per rule — SC-006 cardinality budget preserved; the row is
+  removed alongside `rule_active_connections` on `remove-rule`). The
+  hot path stays byte-identical for IP-literal targets (FR-010): the
+  resolver layer short-circuits when `target_host` parses as an
+  `IpAddr` and goes straight to `TcpStream::connect`.
+
+### Verified
+
+- **SC-004 (cache-hit hot path)** — criterion bench
+  `dns_resolver_cache_hit` in `crates/forward-client/benches/dns_resolver.rs`
+  reports a median of **~75 ns** per warm-cache lookup
+  (one async-mutex acquire + HashMap get + Vec clone). Three orders of
+  magnitude under the loopback `connect()` budget, so adding a DNS
+  rule does not regress the per-connection path.
+- **FR-012 (single-flight under burst)** — criterion bench
+  `dns_resolver_singleflight_100x` spawns 100 concurrent first-connects
+  to the same unresolved hostname and asserts the resolver is invoked
+  exactly **1** time; reported median wakeup latency ≈ **1.4 ms** for
+  the full 100-task burst. Bench panics on any regression to >1 call.
+- **SC-006 (per-rule metric cardinality)** — covered by
+  `metrics::tests::dns_failures_cardinality_is_one_row_per_rule` and
+  end-to-end test `test_dns_us4_metric_cardinality` in
+  `crates/forward-e2e/tests/dns_smoke.rs`. Driving 6 failed connections
+  through 2 rules pointing at `broken.invalid` produces exactly 2 rows
+  of `forward_rule_dns_failures_total`, each with value 3. Removing a
+  rule drops the corresponding row.
+- **Constitution II (hot-path inspection)** — IP-literal targets bypass
+  the resolver entirely at
+  `crates/forward-client/src/resolver/mod.rs` (`connect_target`'s
+  `IpAddr::from_str` short-circuit). The data-plane criterion baseline
+  (`v0.1.0` numbers above) is unchanged for IP-only rules; the regression
+  gate at `.github/workflows/bench.yml` continues to enforce ±25 %.
 
 ## [0.2.0] — 2026-05-07
 

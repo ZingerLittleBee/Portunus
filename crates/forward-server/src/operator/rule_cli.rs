@@ -51,11 +51,18 @@ fn client() -> Result<reqwest::blocking::Client, u8> {
 fn code_to_exit(code: &str) -> u8 {
     match code {
         "client_already_exists" => 2,
-        "invalid_name" | "invalid_protocol" | "invalid_target" | "exceeds_cap"
-        | "range_invalid" | "range_inverted" | "mismatched_range" => 3,
-        // 003-domain-name-forward: target_host validator codes share
-        // the exit-3 family (input validation).
-        "invalid_target_host"
+        // 003-domain-name-forward: target_host validator codes
+        // (`invalid_target_host*`) share the exit-3 family (input
+        // validation) with v0.2.0 codes per the stability guarantee
+        // in `contracts/operator-api.md`.
+        "invalid_name"
+        | "invalid_protocol"
+        | "invalid_target"
+        | "exceeds_cap"
+        | "range_invalid"
+        | "range_inverted"
+        | "mismatched_range"
+        | "invalid_target_host"
         | "invalid_target_host_too_long"
         | "invalid_target_host_label_too_long"
         | "invalid_target_host_label_hyphen" => 3,

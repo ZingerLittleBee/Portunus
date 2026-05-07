@@ -87,11 +87,7 @@ impl MockResolver {
     /// returns `err`. Used for stale-while-error tests where the
     /// cache primes on success then refreshes against a broken
     /// resolver.
-    pub(crate) fn ok_then_fail(
-        addrs: Vec<IpAddr>,
-        ttl: Duration,
-        err: ResolverError,
-    ) -> Self {
+    pub(crate) fn ok_then_fail(addrs: Vec<IpAddr>, ttl: Duration, err: ResolverError) -> Self {
         let mut q: VecDeque<Result<ResolveAnswer, ResolverError>> = VecDeque::new();
         q.push_back(Ok(ResolveAnswer { addrs, ttl }));
         Self {

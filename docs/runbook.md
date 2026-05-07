@@ -209,6 +209,48 @@ Operational notes:
   client paired with a v0.1.0 server still works for single-port
   rules.
 
+### Domain-name forwarding (v0.3.0+)
+
+The target host in any rule may be a DNS name instead of an IP literal:
+
+```sh
+# IPv4-first (default): tries A records before AAAA on the first connect.
+forward-server --config-dir /var/lib/forward \
+  push-rule edge-01 8443 api.example.com:443
+
+# IPv6-first: tries AAAA before A; falls back to A if no AAAA exists.
+forward-server --config-dir /var/lib/forward \
+  push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+```
+
+Operational notes:
+
+- **TTL clamps.** The client honours the resolver-reported TTL,
+  clamped to `[5 s, 5 min]`. Operators expecting a faster
+  cut-over after a DNS change should size their TTLs accordingly;
+  the upper bound is the worst-case staleness window for an
+  operational record. The lower bound prevents a TTL=0 record
+  from bursting the upstream resolver.
+- **Stale-while-error grace (RFC 8767-style).** If a refresh fails
+  after the cached entry expires, the client serves the last
+  known good answer for up to **30 s** of grace before opening
+  connections start failing. The rule itself stays Active —
+  individual connections fail fast with a recorded reason. This
+  smooths over brief resolver outages without flapping rule state.
+- **DNS failure surface.** Per-rule cumulative failures show up
+  in `forward-server rule-stats <id>` as `dns_failures=N` and as
+  `forward_rule_dns_failures_total{client,rule}` on `/metrics`. One
+  Prometheus row per rule (cardinality budget preserved); the row
+  is removed alongside `rule_active_connections` on `remove-rule`.
+- **IP targets unchanged.** The resolver layer is short-circuited
+  for IP-literal targets — the data-plane hot path is byte-identical
+  to v0.2.0.
+- **Downgrade safety.** Both `prefer_ipv6` (Rule field 8) and
+  `dns_failures` (RuleStats field 6) are additive proto3 fields;
+  v0.2.0 peers reading them follow proto3 semantics (decode as
+  default, drop on emit). A v0.3.0 client + v0.2.0 server pair
+  still works for IP-target rules.
+
 ### Replace the TLS cert (routable hostname)
 
 The auto-generated cert SAN only covers `localhost`, `127.0.0.1`, and
@@ -378,11 +420,10 @@ looking for it:
   host can provision clients and push rules. There's a single token
   store and no per-operator audit beyond the user that ran the systemd
   unit.
-- **No domain-name forwarding, no UDP.** Each rule's target host
-  resolves once at push time; subsequent DNS changes don't propagate
-  until the rule is re-pushed. Only TCP is forwarded. Port-range
-  rules ARE supported as of v0.2.0 — see "Managing port-range rules"
-  above.
+- **No UDP.** Only TCP is forwarded. Port-range rules ARE supported
+  as of v0.2.0 — see "Managing port-range rules" above; domain-name
+  targets are supported as of v0.3.0 — see "Domain-name forwarding"
+  below.
 - **No hot reload of `server.toml`.** Config changes require a
   service restart.
 - **No external secret management integration.** Bundles and tokens

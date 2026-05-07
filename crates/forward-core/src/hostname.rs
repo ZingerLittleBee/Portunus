@@ -115,6 +115,7 @@ impl Hash for Hostname {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::DefaultHasher;
 
     #[test]
     fn accepts_simple_fqdn() {
@@ -145,7 +146,6 @@ mod tests {
         assert_eq!(lower, upper);
         assert_eq!(upper.as_str(), "api.example.com");
 
-        use std::collections::hash_map::DefaultHasher;
         let mut a = DefaultHasher::new();
         let mut b = DefaultHasher::new();
         lower.hash(&mut a);

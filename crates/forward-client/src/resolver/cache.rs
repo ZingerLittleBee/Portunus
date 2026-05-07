@@ -206,8 +206,7 @@ impl Cache {
             match action {
                 Action::Wait { notify } => {
                     notify.notified().await;
-                    // Re-read the cache below.
-                    continue;
+                    // Re-read the cache on the next loop iteration.
                 }
                 Action::Refresh { stale_addrs } => {
                     let outcome = resolver.resolve(name).await;
@@ -232,14 +231,8 @@ impl Cache {
         match outcome {
             Ok(answer) if answer.addrs.is_empty() => {
                 // Empty-answer set is a failure per data-model invariant.
-                self.commit_failure(
-                    name,
-                    ResolverError::EmptyAnswer,
-                    stale_addrs,
-                    config,
-                    now,
-                )
-                .await
+                self.commit_failure(name, ResolverError::EmptyAnswer, stale_addrs, config, now)
+                    .await
             }
             Ok(answer) => {
                 let clamped = clamp_ttl(answer.ttl, config);
@@ -303,7 +296,6 @@ impl Cache {
             Err(err)
         }
     }
-
 }
 
 enum Action {
@@ -436,7 +428,6 @@ mod tests {
             let cache = cache.clone();
             let host = host.clone();
             let resolver = Arc::clone(&resolver);
-            let cfg = cfg;
             handles.push(tokio::spawn(async move {
                 cache
                     .get_or_resolve(&host, resolver.as_ref(), &cfg)
@@ -539,6 +530,10 @@ mod tests {
             .get_or_resolve(&host, &resolver, &cfg)
             .await
             .unwrap_err();
-        assert_eq!(resolver.calls(), 2, "post-retry_after lookup MUST re-attempt");
+        assert_eq!(
+            resolver.calls(),
+            2,
+            "post-retry_after lookup MUST re-attempt"
+        );
     }
 }

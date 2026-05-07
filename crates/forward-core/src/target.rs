@@ -81,7 +81,9 @@ mod tests {
         let t = Target::parse("[2001:db8::1]").unwrap();
         match t {
             Target::Ip(IpAddr::V6(_)) => {}
-            other => panic!("expected IPv6, got {other:?}"),
+            other @ (Target::Ip(IpAddr::V4(_)) | Target::Dns(_)) => {
+                panic!("expected IPv6, got {other:?}")
+            }
         }
     }
 
@@ -90,7 +92,7 @@ mod tests {
         let t = Target::parse("api.example.com").unwrap();
         match t {
             Target::Dns(h) => assert_eq!(h.as_str(), "api.example.com"),
-            other => panic!("expected DNS, got {other:?}"),
+            other @ Target::Ip(_) => panic!("expected DNS, got {other:?}"),
         }
     }
 
@@ -112,7 +114,10 @@ mod tests {
     #[test]
     fn rejects_invalid_hostname() {
         let err = Target::parse("foo_bar.example").unwrap_err();
-        assert!(matches!(err, TargetError::Hostname(HostnameError::InvalidChar { .. })));
+        assert!(matches!(
+            err,
+            TargetError::Hostname(HostnameError::InvalidChar { .. })
+        ));
     }
 
     #[test]
@@ -122,6 +127,9 @@ mod tests {
         // rejects all-numeric inputs so the IP-literal classifier
         // remains the only owner of numeric forms.
         let err = Target::parse("12345").unwrap_err();
-        assert!(matches!(err, TargetError::Hostname(HostnameError::AllNumeric(_))));
+        assert!(matches!(
+            err,
+            TargetError::Hostname(HostnameError::AllNumeric(_))
+        ));
     }
 }

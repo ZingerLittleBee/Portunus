@@ -70,6 +70,29 @@ default cap is 1024 ports per range (`range_rule_max_ports` in
 so the Prometheus cardinality budget stays one row per rule regardless
 of range size.
 
+DNS-name targets (v0.3.0,
+[`003-domain-name-forward`](specs/003-domain-name-forward/quickstart.md)):
+the target host in any rule may now be a DNS name instead of an IP
+literal. The client resolves on first connect, caches per the
+resolver-reported TTL clamped to `[5 s, 5 min]`, and serves the last
+known answer for up to 30 s of grace if a refresh fails — the rule
+stays Active throughout, individual connections fail fast with a
+classified reason. Default address-family is IPv4-first; pass
+`--prefer-ipv6` to flip the order per rule. DNS failure rate is
+exposed per rule both via `rule-stats` and as
+`forward_rule_dns_failures_total{client,rule}` in `/metrics`.
+
+```sh
+# DNS target — resolves api.example.com on first connect, caches TTL
+./target/release/forward-server push-rule edge-01 8443 api.example.com:443
+
+# Same target, prefer IPv6 (AAAA-first; falls back to A if no AAAA)
+./target/release/forward-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+```
+
+IP-target rules from v0.2.0 keep their byte-identical hot path —
+the resolver layer is short-circuited entirely.
+
 The full step-by-step walkthrough — including key fingerprint pinning,
 revocation, and the SC-001 5-minute target — is in
 [`specs/001-tcp-forward-mvp/quickstart.md`](specs/001-tcp-forward-mvp/quickstart.md).

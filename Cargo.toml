@@ -19,6 +19,20 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# Pedantic lints that produce excessive false positives on this codebase:
+# * `doc_markdown` flags every un-backticked identifier in long-form doc
+#   comments (`prefer_ipv6=true`, `dns_failures`) — those reference
+#   project-internal config keys/fields, not external crates needing
+#   intra-doc links.
+# * `items_after_statements` collides with the project's preferred test
+#   layout (`use` for test-only imports deep inside `#[test]` blocks).
+# * `ref_option` / `trivially_copy_pass_by_ref` clash with serde's
+#   `serialize_with` signature, which forces `&Option<T>` / `&bool`
+#   on the serializer.
+doc_markdown = "allow"
+items_after_statements = "allow"
+ref_option = "allow"
+trivially_copy_pass_by_ref = "allow"
 
 [workspace.dependencies]
 # Async runtime

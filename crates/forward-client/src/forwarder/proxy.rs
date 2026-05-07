@@ -63,7 +63,8 @@ pub async fn proxy<R: Resolve>(
             // stale answer still works. The connection is allowed
             // through (graceful degradation), but the metric counts.
             if matches!(source, AnswerSource::Stale)
-                && let Some(stats) = stats.as_ref() {
+                && let Some(stats) = stats.as_ref()
+            {
                 stats.inc_dns_failure();
             }
             s
@@ -294,8 +295,8 @@ mod tests {
     /// not inside the resolver — so tests live with the seam.
     #[tokio::test]
     async fn dns_failures_increments_per_refused_connection() {
-        use crate::resolver::test_support::MockResolver;
         use crate::resolver::ResolverError;
+        use crate::resolver::test_support::MockResolver;
 
         let resolver = Arc::new(LiveResolver::new(
             Arc::new(MockResolver::always_fail(ResolverError::Lookup(
@@ -351,8 +352,8 @@ mod tests {
     /// problem is real, the operator just got lucky on this attempt.
     #[tokio::test]
     async fn dns_failures_increments_on_stale_served_connection() {
-        use crate::resolver::test_support::MockResolver;
         use crate::resolver::ResolverError;
+        use crate::resolver::test_support::MockResolver;
         use std::time::Duration;
 
         let echo = spawn_echo().await;
@@ -369,8 +370,10 @@ mod tests {
         // Critical: lower the cache floor so the 1ms TTL isn't
         // clamped up to the default 5s — otherwise the warmup entry
         // stays Cached and we never reach StaleAfterFailedRefresh.
-        let mut config = ResolverConfig::default();
-        config.cache_floor = Duration::from_millis(1);
+        let config = ResolverConfig {
+            cache_floor: Duration::from_millis(1),
+            ..ResolverConfig::default()
+        };
         let resolver = Arc::new(LiveResolver::new(Arc::new(mock), config));
         let stats = RuleStats::new();
         let target = Target::Dns(Hostname::new("flaky.example").unwrap());

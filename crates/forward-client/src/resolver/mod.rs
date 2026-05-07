@@ -262,7 +262,8 @@ impl<R: Resolve> LiveResolver<R> {
                 // (the first one we'll attempt) for traceability;
                 // multi-A fallback walks the rest silently.
                 if result.source == AnswerSource::Fresh
-                    && let Some(first) = ordered.first() {
+                    && let Some(first) = ordered.first()
+                {
                     info!(
                         event = "rule.dns_resolved",
                         rule_id = %rule_id,
@@ -316,8 +317,7 @@ impl<R: Resolve> LiveResolver<R> {
 /// (`connect_target`) already guard against this with
 /// `ResolverError::EmptyAnswer`.
 fn order_by_family(addrs: &[IpAddr], prefer_ipv6: bool) -> Vec<IpAddr> {
-    let (v6, v4): (Vec<IpAddr>, Vec<IpAddr>) =
-        addrs.iter().copied().partition(IpAddr::is_ipv6);
+    let (v6, v4): (Vec<IpAddr>, Vec<IpAddr>) = addrs.iter().copied().partition(IpAddr::is_ipv6);
     let mut out = Vec::with_capacity(addrs.len());
     if prefer_ipv6 {
         out.extend(v6);
@@ -468,8 +468,10 @@ mod tests {
 
         // Wrap in a LiveResolver. We tweak attempt_timeout down so a
         // hypothetical hang on the dead port doesn't slow the test.
-        let mut config = ResolverConfig::default();
-        config.attempt_timeout = Duration::from_millis(500);
+        let config = ResolverConfig {
+            attempt_timeout: Duration::from_millis(500),
+            ..ResolverConfig::default()
+        };
         let live = LiveResolver::new(Arc::new(resolver), config);
 
         // Cheat: both addresses are 127.0.0.1, but we want different
@@ -546,8 +548,10 @@ mod tests {
         let alive: IpAddr = "127.0.0.1".parse().unwrap();
         let resolver = MockResolver::ok(vec![dead, alive], Duration::from_secs(60));
 
-        let mut config = ResolverConfig::default();
-        config.attempt_timeout = Duration::from_millis(500);
+        let config = ResolverConfig {
+            attempt_timeout: Duration::from_millis(500),
+            ..ResolverConfig::default()
+        };
         let live = LiveResolver::new(Arc::new(resolver), config);
         let target = Target::Dns(Hostname::new("any.example").unwrap());
         let (mut sock, _src) = live
@@ -574,8 +578,10 @@ mod tests {
         let port = 1u16;
         let resolver = MockResolver::ok(vec![dead1, dead2], Duration::from_secs(60));
 
-        let mut config = ResolverConfig::default();
-        config.attempt_timeout = Duration::from_millis(500);
+        let config = ResolverConfig {
+            attempt_timeout: Duration::from_millis(500),
+            ..ResolverConfig::default()
+        };
         let live = LiveResolver::new(Arc::new(resolver), config);
         let target = Target::Dns(Hostname::new("any.example").unwrap());
         let err = live
@@ -655,9 +661,7 @@ mod tests {
 
         let echo = StdListener::bind("127.0.0.1:0").unwrap();
         let echo_port = echo.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for _ in echo.incoming().flatten() {}
-        });
+        std::thread::spawn(move || for _ in echo.incoming().flatten() {});
 
         // Mock answer with both families. ::1 connects on most boxes
         // (loopback), but at port 1 (privileged, unlistened) it
