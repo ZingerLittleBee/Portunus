@@ -10,8 +10,10 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use forward_core::Target;
+
 use crate::OutputFormat;
-use crate::operator::cli::{parse_listen, parse_target};
+use crate::operator::cli::{OperatorError, parse_listen, parse_target};
 use crate::rules::{Rule, RuleState};
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -51,6 +53,12 @@ fn code_to_exit(code: &str) -> u8 {
         "client_already_exists" => 2,
         "invalid_name" | "invalid_protocol" | "invalid_target" | "exceeds_cap"
         | "range_invalid" | "range_inverted" | "mismatched_range" => 3,
+        // 003-domain-name-forward: target_host validator codes share
+        // the exit-3 family (input validation).
+        "invalid_target_host"
+        | "invalid_target_host_too_long"
+        | "invalid_target_host_label_too_long"
+        | "invalid_target_host_label_hyphen" => 3,
         "client_not_connected" => 4,
         "port_in_use" => 5,
         "activation_failed" => 6,
@@ -92,6 +100,15 @@ pub fn push(
         eprintln!("error: {e}");
         e.exit_code()
     })?;
+    // 003-domain-name-forward T021: validate the host before we open
+    // the HTTP socket so the operator gets exit-3 immediately on
+    // malformed input, instead of a round-trip and a server-side
+    // 400. The HTTP path validates again as a backstop.
+    if let Err(e) = Target::parse(&target_host) {
+        let op_err: OperatorError = e.into();
+        eprintln!("error: {op_err}");
+        return Err(op_err.exit_code());
+    }
     let url = format!("http://{endpoint}/v1/rules");
     let mut body = serde_json::json!({
         "client": raw_client,

@@ -219,6 +219,7 @@ impl From<OperatorError> for ApiError {
             OperatorError::InvalidName(_)
             | OperatorError::InvalidProtocol(_)
             | OperatorError::InvalidTarget(_)
+            | OperatorError::InvalidTargetHost { .. }
             | OperatorError::ExceedsCap { .. }
             | OperatorError::RangeInvalid(_) => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_) | OperatorError::ActivationFailed(_) => {

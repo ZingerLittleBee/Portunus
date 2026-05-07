@@ -665,6 +665,7 @@ name = "forward-client"
 version = "0.3.0-dev"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "base64",
  "chrono",
  "clap",

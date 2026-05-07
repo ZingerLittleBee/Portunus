@@ -10,7 +10,10 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use forward_auth::{AuthError, Authenticator};
-use forward_core::{ClientName, ClientNameError, PortRange, PortRangeError, RequestId, RuleId};
+use forward_core::{
+    ClientName, ClientNameError, HostnameError, PortRange, PortRangeError, RequestId, RuleId,
+    Target, TargetError,
+};
 use forward_proto::v1::{
     ActivationOutcome, Protocol as ProtoProto, Rule as ProtoRule, RuleAction, RuleUpdate,
     ServerMessage, server_message,
@@ -53,6 +56,16 @@ pub enum OperatorError {
     InvalidProtocol(String),
     #[error("invalid_target: {0}")]
     InvalidTarget(String),
+    /// `target_host` failed `forward_core::Target::parse` (FR-001 /
+    /// 003-domain-name-forward). The `code` field carries the
+    /// `operator-api.md`-frozen subcategory string so the HTTP layer
+    /// and CLI exit-mapper can route on it without reparsing the
+    /// message.
+    #[error("{code}: {message}")]
+    InvalidTargetHost {
+        code: &'static str,
+        message: String,
+    },
     /// Range size > server-configured cap (FR-008, 002-port-range-forward).
     #[error("exceeds_cap: requested={requested} cap={cap}")]
     ExceedsCap { requested: u32, cap: u32 },
@@ -81,6 +94,7 @@ impl OperatorError {
             Self::InvalidName(_)
             | Self::InvalidProtocol(_)
             | Self::InvalidTarget(_)
+            | Self::InvalidTargetHost { .. }
             | Self::ExceedsCap { .. }
             | Self::RangeInvalid(_) => 3,
             Self::ClientNotConnected(_) => 4,
@@ -102,6 +116,7 @@ impl OperatorError {
             Self::InvalidName(_) => "invalid_name",
             Self::InvalidProtocol(_) => "invalid_protocol",
             Self::InvalidTarget(_) => "invalid_target",
+            Self::InvalidTargetHost { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -111,6 +126,32 @@ impl OperatorError {
             Self::RangeInvalid(_) => "range_invalid",
             Self::Io(_) => "io_error",
             Self::Auth(_) => "auth_error",
+        }
+    }
+}
+
+impl From<TargetError> for OperatorError {
+    fn from(e: TargetError) -> Self {
+        // Subcategory codes per `contracts/operator-api.md`:
+        // we expose the four most-actionable shapes so operators can
+        // pattern-match on `error.code` without parsing prose. Every
+        // other validator failure folds into the bare
+        // `invalid_target_host`.
+        let code = match &e {
+            TargetError::Hostname(HostnameError::TotalTooLong(_)) => {
+                "invalid_target_host_too_long"
+            }
+            TargetError::Hostname(HostnameError::LabelTooLong { .. }) => {
+                "invalid_target_host_label_too_long"
+            }
+            TargetError::Hostname(HostnameError::HyphenBoundary { .. }) => {
+                "invalid_target_host_label_hyphen"
+            }
+            _ => "invalid_target_host",
+        };
+        Self::InvalidTargetHost {
+            code,
+            message: e.to_string(),
         }
     }
 }
@@ -327,6 +368,12 @@ pub async fn push_rule(
 ) -> Result<Rule, OperatorError> {
     let client_name = ClientName::from_str(raw_client)?;
     let proto = parse_protocol(protocol)?;
+    // 003-domain-name-forward T021: validate `target_host` against the
+    // shared classifier before we touch any connected-client state.
+    // We discard the parsed `Target` because the client side reparses
+    // it from the proto wire form — the server stores `target_host`
+    // as a verbatim string per `contracts/operator-api.md`.
+    let _ = Target::parse(target_host).map_err(OperatorError::from)?;
 
     // Reject up-front if the client isn't connected — saves us from leaving a
     // Pending rule behind that would never be acked.
@@ -678,5 +725,50 @@ mod tests {
     fn parse_target_inverted_range_returns_range_invalid() {
         let err = parse_target("h:8090-8080").unwrap_err();
         assert!(matches!(err, OperatorError::RangeInvalid(_)));
+    }
+
+    // ---- T021 (US1): TargetError → OperatorError::InvalidTargetHost
+    // mapping. Codes are part of `contracts/operator-api.md`'s frozen
+    // surface, so we pin them down here.
+
+    #[test]
+    fn target_error_invalid_char_maps_to_generic_invalid_target_host() {
+        let err: OperatorError = Target::parse("foo_bar.example").unwrap_err().into();
+        assert_eq!(err.code(), "invalid_target_host");
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn target_error_label_too_long_maps_to_label_subcode() {
+        let long_label = "a".repeat(64);
+        let host = format!("{long_label}.example.com");
+        let err: OperatorError = Target::parse(&host).unwrap_err().into();
+        assert_eq!(err.code(), "invalid_target_host_label_too_long");
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn target_error_total_too_long_maps_to_total_subcode() {
+        // 254 chars: build labels of 63 to dodge the per-label limit.
+        let label = "a".repeat(63);
+        let host = format!("{label}.{label}.{label}.{label}xx");
+        assert!(host.len() > 253);
+        let err: OperatorError = Target::parse(&host).unwrap_err().into();
+        assert_eq!(err.code(), "invalid_target_host_too_long");
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn target_error_hyphen_boundary_maps_to_hyphen_subcode() {
+        let err: OperatorError = Target::parse("-leading.example").unwrap_err().into();
+        assert_eq!(err.code(), "invalid_target_host_label_hyphen");
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn target_error_unbracketed_ipv6_maps_to_generic_subcode() {
+        let err: OperatorError = Target::parse("2001:db8::1").unwrap_err().into();
+        assert_eq!(err.code(), "invalid_target_host");
+        assert_eq!(err.exit_code(), 3);
     }
 }

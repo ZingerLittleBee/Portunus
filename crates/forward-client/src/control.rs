@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::bundle::CredentialBundle;
 use crate::forwarder::stats::RuleStats;
@@ -186,6 +186,23 @@ pub async fn run_with_reconnect(
     cfg: ReconnectConfig,
     cancel: CancellationToken,
 ) {
+    // 003-domain-name-forward (T020): a single LiveResolver lives
+    // for the entire process lifetime and is shared across every
+    // forwarder. Cache state survives reconnects (DNS is a
+    // client-local concern, not bound to the control-plane stream).
+    let resolver = match crate::resolver::HickoryResolver::from_system(
+        &crate::resolver::ResolverConfig::default(),
+    ) {
+        Ok(r) => Arc::new(crate::resolver::LiveResolver::new(
+            Arc::new(r),
+            crate::resolver::ResolverConfig::default(),
+        )),
+        Err(e) => {
+            error!(event = "control.resolver_init_failed", error = %e);
+            return;
+        }
+    };
+
     let mut attempt: u32 = 0;
     let max_delay = Duration::from_secs(cfg.max_delay_secs);
     loop {
@@ -198,6 +215,7 @@ pub async fn run_with_reconnect(
                 attempt = 0;
                 pump(
                     session,
+                    Arc::clone(&resolver),
                     &cancel,
                     cfg.drain_timeout,
                     cfg.stats_report_interval,
@@ -252,6 +270,7 @@ struct RuleSlot {
 
 async fn pump(
     mut session: LiveSession,
+    resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
     cancel: &CancellationToken,
     drain_timeout: Duration,
     stats_report_interval: Duration,
@@ -268,7 +287,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, &status_tx, drain_timeout);
+                    handle_server_message(server_msg, &mut rules, Arc::clone(&resolver), &status_tx, drain_timeout);
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -312,6 +331,7 @@ async fn pump(
 fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
+    resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
 ) {
@@ -387,11 +407,37 @@ fn handle_server_message(
                 }
             };
             let cancel = CancellationToken::new();
+            // 003-domain-name-forward (T020): classify the operator
+            // string into either an IP literal (resolver short-circuit)
+            // or a validated DNS hostname (resolver path). The server
+            // already rejected malformed values at push time (T021), so
+            // a parse failure here means the wire was tampered with —
+            // refuse the rule with a structured reason rather than
+            // crashing the runtime.
+            let target = match forward_core::Target::parse(&rule.target_host) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        event = "control.rule_push_invalid_target",
+                        request_id = %request_id,
+                        rule_id = %rule_id,
+                        error = %e,
+                    );
+                    let _ = status_tx.try_send(RuleStatusEvent::Failed {
+                        rule_id,
+                        reason: "invalid_target_host".into(),
+                    });
+                    return;
+                }
+            };
+            let prefer_ipv6 = rule.prefer_ipv6.unwrap_or(false);
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
                 target_host: rule.target_host,
+                target,
                 target_range,
+                prefer_ipv6,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -404,6 +450,7 @@ fn handle_server_message(
             tokio::spawn(async move {
                 forwarder::run(
                     client_rule,
+                    resolver,
                     task_status_tx,
                     task_cancel,
                     drain_timeout,

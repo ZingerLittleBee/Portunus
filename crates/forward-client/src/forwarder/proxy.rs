@@ -7,19 +7,25 @@
 use std::io;
 use std::sync::Arc;
 
+use forward_core::Target;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
 use super::stats::RuleStats;
+use crate::resolver::{LiveResolver, Resolve};
 
-/// Forward `inbound` to `target` (host:port DNS-resolved each call) until
-/// either side closes or the shutdown token fires. Returns `(bytes_in,
-/// bytes_out)` where `bytes_in` is bytes flowing inbound→outbound (from the
-/// outside requester to the target) and `bytes_out` the reverse.
+/// Forward `inbound` to `target` (resolved via `resolver` for DNS
+/// targets; short-circuited to a direct connect for IP literals)
+/// until either side closes or the shutdown token fires. Returns
+/// `(bytes_in, bytes_out)` where `bytes_in` is bytes flowing
+/// inbound→outbound (from the outside requester to the target) and
+/// `bytes_out` the reverse.
 ///
-/// `target_host` is resolved on every call — intentional in MVP per
-/// `data-model.md` ("no caching"). Resolution failure returns
-/// `target_resolution_failed`-style `io::Error`.
+/// 003-domain-name-forward (T020): the resolver layer owns DNS
+/// caching + (in US2) single-flight coalescing + family preference.
+/// IP-target rules continue to add zero overhead beyond the v0.2.0
+/// hot path because `LiveResolver::connect_target` short-circuits to
+/// `TcpStream::connect` (Constitution II / SC-004).
 ///
 /// `stats` is updated in two passes: `active_connections` is incremented at
 /// entry and decremented on exit (RAII via the guard); byte counters get the
@@ -32,16 +38,20 @@ use super::stats::RuleStats;
 /// counters in `stats.per_port` are updated alongside the aggregate;
 /// for single-port rules `listen_port` equals the rule's only port and
 /// the per-port slot may be empty (graceful degradation).
-pub async fn proxy(
+#[allow(clippy::too_many_arguments)]
+pub async fn proxy<R: Resolve>(
     mut inbound: TcpStream,
-    target_host: &str,
+    resolver: &LiveResolver<R>,
+    target: &Target,
     target_port: u16,
+    prefer_ipv6: bool,
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
 ) -> io::Result<(u64, u64)> {
-    let target = format!("{target_host}:{target_port}");
-    let mut outbound = TcpStream::connect(&target).await?;
+    let mut outbound = resolver
+        .connect_target(target, target_port, prefer_ipv6)
+        .await?;
     // Disable Nagle to keep latency-sensitive small writes prompt; the kernel
     // still coalesces opportunistically.
     let _ = inbound.set_nodelay(true);
@@ -90,9 +100,27 @@ impl Drop for ActiveGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use crate::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
+    use forward_core::Hostname;
+    use std::net::{IpAddr, Ipv4Addr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    /// Test-only resolver that panics if invoked. IP-target proxy
+    /// calls MUST short-circuit and never touch this.
+    #[derive(Debug, Default)]
+    struct PanickingResolver;
+
+    #[async_trait::async_trait]
+    impl Resolve for PanickingResolver {
+        async fn resolve(&self, name: &Hostname) -> Result<ResolveAnswer, ResolverError> {
+            panic!("PanickingResolver::resolve was called for {name}");
+        }
+    }
+
+    fn ip_resolver() -> LiveResolver<PanickingResolver> {
+        LiveResolver::new(Arc::new(PanickingResolver), ResolverConfig::default())
+    }
 
     /// Helper: spawn an echo server on a random port, return its address.
     async fn spawn_echo() -> std::net::SocketAddr {
@@ -128,12 +156,15 @@ mod tests {
 
         // Accept one connection through the proxy.
         let cancel_proxy = cancel.clone();
+        let resolver = Arc::new(ip_resolver());
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
             proxy(
                 sock,
-                &echo.ip().to_string(),
+                resolver.as_ref(),
+                &Target::Ip(echo.ip()),
                 echo.port(),
+                false,
                 cancel_proxy,
                 None,
                 0,
@@ -163,12 +194,15 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let cancel_proxy = cancel.clone();
+        let resolver = Arc::new(ip_resolver());
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
             proxy(
                 sock,
-                &echo.ip().to_string(),
+                resolver.as_ref(),
+                &Target::Ip(echo.ip()),
                 echo.port(),
+                false,
                 cancel_proxy,
                 None,
                 0,
@@ -193,9 +227,20 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();
         let cancel = CancellationToken::new();
+        let resolver = Arc::new(ip_resolver());
         let proxy_task = tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
-            proxy(sock, "127.0.0.1", 1, cancel, None, 0).await
+            proxy(
+                sock,
+                resolver.as_ref(),
+                &Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                1,
+                false,
+                cancel,
+                None,
+                0,
+            )
+            .await
         });
         let _client = TcpStream::connect(proxy_addr).await.unwrap();
         let err = proxy_task.await.unwrap().unwrap_err();
