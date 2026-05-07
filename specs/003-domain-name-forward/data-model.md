@@ -151,23 +151,25 @@ re-validates DNS state on first traffic.
 
 ## Entity: `ResolverConfig` (new, in `forward-client/src/resolver/mod.rs`)
 
-Process-wide resolver tunables, populated from CLI flags / config
-file. Defaults match spec § Assumptions and Clarifications.
+Process-wide resolver constants for v0.3.0. All fields are
+spec-fixed defaults — no CLI/config wire-up in this feature; the
+struct exists so future work can swap defaults for operator-supplied
+values without changing call sites.
 
 | Field                       | Type             | Default | Notes                                                                                |
 |-----------------------------|------------------|---------|--------------------------------------------------------------------------------------|
-| `cache_floor`               | `Duration`       | `5 s`   | Lower clamp on resolver-reported TTL (FR-003).                                       |
-| `cache_ceiling`             | `Duration`       | `5 min` | Upper clamp on resolver-reported TTL (FR-003).                                       |
-| `stale_while_error_grace`   | `Duration`       | `30 s`  | Stale-while-error window past TTL when fresh resolution fails (FR-005).              |
+| `cache_floor`               | `Duration`       | `5 s`   | Lower clamp on resolver-reported TTL (FR-003). Spec-fixed in v0.3.0; future work may expose as a server-side default at rule install. |
+| `cache_ceiling`             | `Duration`       | `5 min` | Upper clamp on resolver-reported TTL (FR-003). Spec-fixed in v0.3.0; future work may expose as a server-side default at rule install. |
+| `stale_while_error_grace`   | `Duration`       | `30 s`  | Stale-while-error window past TTL when fresh resolution fails (FR-005). **Fixed spec budget**, not a runtime knob even in future work. |
 | `attempt_timeout`           | `Duration`       | `3 s`   | Per-resolver-attempt timeout (Assumptions).                                          |
 | `negative_cache_retry`      | `Duration`       | `3 s`   | After grace expiry, brief delay before next resolver attempt (R-002).                |
 | `max_concurrent_resolves`   | `usize`          | `64`    | Cap on `Pending` entries to bound resolver-side load if many unique names go bad simultaneously. |
 
-**Tunable seam**: server-side defaults at rule install time set the
-floor/ceiling/grace; the client receives them via
-`forward-server`-issued client config or applies its own defaults if
-the server is silent (so v0.2.0-server + v0.3.0-client deployments
-work out of the box).
+**Future-work seam (NOT built in v0.3.0)**: a later spec can deliver
+floor/ceiling overrides via `forward-server`-issued client config so
+operators tune cache budgets per fleet without redeploying clients.
+For v0.3.0 the defaults above are baked at compile time; any "operator
+tunability" language in earlier drafts of this doc is deferred.
 
 ---
 

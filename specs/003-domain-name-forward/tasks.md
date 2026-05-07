@@ -58,7 +58,7 @@ etc.).
 - [ ] T008 Re-export `Hostname` and `Target` from `crates/forward-core/src/lib.rs` (one-line `pub use`)
 - [ ] T009 Update `proto/forward.proto`: add `optional bool prefer_ipv6 = 8;` to `message Rule` and `uint64 dns_failures = 6;` to `message RuleStats` per `contracts/forward.proto`
 - [ ] T010 Contract test `crates/forward-proto/tests/dns_wire_compat.rs` (NEW): construct a `Rule` and a `RuleStats` populated only with v0.2.0 fields; serialize via prost; assert byte-identical encoding before/after the additive proto change (use a hand-rolled v0.2.0-shaped reference vec for the comparison). Then construct one with `prefer_ipv6 = Some(true)` / `dns_failures = 7` and assert the new bytes round-trip cleanly
-- [ ] T011 Extend `PersistedRule` in `crates/forward-server/src/rules.rs`: add `prefer_ipv6: Option<bool>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`; on load, classify `target_host` via `forward_core::Target::parse` and reject malformed entries with a startup error naming the offending `rule_id`
+- [ ] T011 Extend `PersistedRule` in `crates/forward-server/src/rules.rs`: add `prefer_ipv6: Option<bool>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`; on load, classify `target_host` via `forward_core::Target::parse` and reject entries whose `target_host` fails parsing (data corruption — distinct from forward-compat unknown serde fields, which proto3/serde already tolerate) with a startup error naming the offending `rule_id`
 
 **Checkpoint**: Foundation ready — proto delta in, hostname seam in,
 persistence accepts hostnames. User story implementation can proceed.
@@ -90,11 +90,12 @@ profile, log shape, persistence shape).
 ### Implementation for User Story 1
 
 - [ ] T016 [P] [US1] Define `Resolver` trait + `ResolverError` types + `Target` re-import in `crates/forward-client/src/resolver/mod.rs` per R-006 signature; trait is `async_trait`-free (use AFIT given Rust 1.88) or `#[async_trait]` if needed for object safety
-- [ ] T017 [P] [US1] Define `ResolverConfig` defaults struct in `crates/forward-client/src/resolver/mod.rs`: cache_floor=5s, cache_ceiling=5min, stale_while_error_grace=30s, attempt_timeout=3s, negative_cache_retry=3s, max_concurrent_resolves=64
+- [ ] T017 [P] [US1] Define `ResolverConfig` defaults struct in `crates/forward-client/src/resolver/mod.rs`: cache_floor=5s, cache_ceiling=5min, stale_while_error_grace=30s, attempt_timeout=3s, negative_cache_retry=3s, max_concurrent_resolves=64. Doc-comment that all values are spec-fixed in v0.3.0 (no operator/server tunability wired in this feature) and that `stale_while_error_grace` is a fixed spec budget per FR-005 — not a runtime knob even when future work exposes the cache floor/ceiling
 - [ ] T018 [US1] Build cache module in `crates/forward-client/src/resolver/cache.rs`: `Arc<Mutex<HashMap<Hostname, CacheEntry>>>`; only `Pending` and `Resolved` variants in this phase (StaleAfterFailedRefresh + Failed land in US2). Provide `get_or_resolve(name, &impl Resolve) -> Result<Vec<IpAddr>, ResolverError>` (depends on T016)
 - [ ] T019 [US1] Implement `LiveResolver` in `crates/forward-client/src/resolver/mod.rs`: hickory-backed `Resolve` impl reading `/etc/resolv.conf` via `system-config`; for `Target::Ip` short-circuit; for `Target::Dns` call `cache.get_or_resolve(name)` then sequential dial with `attempt_timeout` per address. Family preference is hard-coded IPv4-first here; US3 adds the flip (depends on T016, T017, T018)
 - [ ] T020 [US1] Wire `LiveResolver` into the proxy hot path in `crates/forward-client/src/forwarder/proxy.rs`: replace the `format!("{host}:{port}") + TcpStream::connect` line with a `self.resolver.connect_target(target, port, prefer_ipv6=false)` call. Forwarder owns one `Arc<LiveResolver>` (constructed in `crates/forward-client/src/main.rs` at startup) shared across all rules. `ClientRule` grows a `target: Target` field populated from the proto `target_host` string at rule-receive time in `crates/forward-client/src/control.rs` (depends on T019)
 - [ ] T021 [US1] Server-side `target_host` validation seam: in `crates/forward-server/src/operator/rule_cli.rs` and `crates/forward-server/src/operator/http.rs`, route `target_host` through `forward_core::Target::parse` and surface `OperatorError::InvalidTargetHost { code, message }` per `contracts/operator-api.md` (depends on T011)
+- [ ] T021a [P] [US1] Port-range × DNS coalescing test in `crates/forward-client/src/forwarder/mod.rs` (or dedicated `tests/range_dns.rs`): construct a `ClientRule` with a 4-port range (e.g. `8080-8083 → echo.test:41000-41003`) backed by a `MockResolver`, drive 4 concurrent end-user connections — one per listen port — and assert `MockResolver::resolve()` is invoked **exactly once** for `echo.test`. Proves FR-011 ("port-range rules with DNS targets share one resolution per range") holds via the existing `Hostname`-keyed cache (depends on T018, T020)
 
 **Checkpoint**: US1 fully functional — DNS targets work end-to-end,
 IP targets unchanged. Run T015 to validate.
@@ -132,6 +133,7 @@ without operator action.
 - [ ] T031 [US2] Apply TTL clamp `[ResolverConfig::cache_floor, cache_ceiling]` to resolver-reported TTL when transitioning `Pending → Resolved` in `crates/forward-client/src/resolver/cache.rs` (FR-003)
 - [ ] T032 [US2] Implement stale-while-error grace in `crates/forward-client/src/resolver/cache.rs`: when refresh attempt for an expired-but-cached name fails, transition to `StaleAfterFailedRefresh` and serve `stale_addrs` until `fail_grace_until` then transition to `Failed` (FR-005)
 - [ ] T033 [US2] Define `ResolveFailReason` enum + classifier in `crates/forward-client/src/resolver/mod.rs`: `NxDomain`, `ServFail`, `AttemptTimeout`, `AllAddrsUnreachable`, `Other`. Classify hickory's error variants into these (depends on T029, T030, T032)
+- [ ] T033a [P] [US2] Multi-A dial-fallback unit test in `crates/forward-client/src/resolver/mod.rs` `#[cfg(test)] mod tests`: MockResolver returns two A records where the first points at a closed/RST-ing port (bind+drop a TcpListener; or use `127.0.0.1:1` which RSTs fast on Linux/macOS) and the second points at a live echo. Assert `connect_target` walks the list and the resulting connection succeeds against the second address (FR-006 + spec § Edge Cases L204-209). Pair with a "both addresses fail" variant that asserts `dns_resolution_failed` after both attempts time out (depends on T033)
 - [ ] T034 [US2] On `dns_resolution_failed` from the resolver layer in `crates/forward-client/src/forwarder/proxy.rs`: refuse the end-user connection (close inbound socket; do NOT half-open the proxy), and emit a structured log event `rule.dns_failed` with `{rule_id, hostname, reason}` (depends on T033)
 - [ ] T035 [US2] Audit-grade resolution-success log: in `crates/forward-client/src/resolver/mod.rs` emit one `rule.dns_resolved` event per successful resolution (NOT per cache hit) with `{rule_id, hostname, chosen_addr, ttl_applied}` at INFO level — must NOT log resolved addresses on every connection (Constitution IV / R-008)
 
@@ -207,7 +209,8 @@ without grepping logs; T045 passes.
 verification.
 
 - [ ] T053 [P] Add criterion bench `dns_resolver_cache_hit` in `crates/forward-client/benches/dns_resolver.rs` (NEW): single LiveResolver, prime cache, measure `connect_target(Target::Dns(_), _, _)` median when answer is cached. Must show ≪ network connect cost (SC-004)
-- [ ] T054 [P] Add criterion bench `dns_resolver_singleflight` in `crates/forward-client/benches/dns_resolver.rs`: 100 concurrent first-connect attempts to a slow MockResolver; assert resolver call count == 1 (proves FR-012); measure median per-task latency overhead
+- [ ] T054 [P] Add criterion bench `dns_resolver_singleflight` in `crates/forward-client/benches/dns_resolver.rs`: 100 concurrent first-connect attempts to a slow MockResolver; assert resolver call count == 1 (proves FR-012); measure median per-task latency overhead. Doc-comment that SC-005 ("≤1 query per rule per cache window across 100 mixed rules") follows by composition: per-rule single-flight (this bench) × per-rule cache lifetime (T013/T024) — no separate fleet-scale bench is run because the bound is structural, not statistical
+- [ ] T054a [P] Re-run the existing `cargo bench --bench data_plane` from v0.2.0 against the v0.3.0 binary; record before/after p99 + throughput in the PR description and assert no >5% regression (Constitution II hot-path gate). The proxy hot path itself is unchanged for IP-target rules and adds only one cache-hit lookup for warm-cache DNS rules; this bench confirms it
 - [ ] T055 [P] Update `README.md` with a v0.3.0 DNS-target push example block (matches `quickstart.md` § "Walkthrough" step 4)
 - [ ] T056 [P] Update `docs/runbook.md`: remove "no domain forwarding" from the Limitations section if present; add a "Domain-name forwarding (v0.3.0+)" subsection covering the 30 s stale-while-error and 5 min cache-ceiling operator expectations
 - [ ] T057 [P] Update `deploy/server.toml.example` and the systemd units in `deploy/systemd/` if any new server config keys land for resolver tunables (currently none — defaults from `ResolverConfig` are baked in; this task is to confirm that and add a `# Reserved for future resolver tunables` comment if useful)
@@ -266,16 +269,18 @@ verification.
   parallel after T004 (Target depends on Hostname)
 - Phase 3: T012/T013/T014/T015 (tests) all parallel; T016/T017
   parallel; T018 → T019 → T020 sequential within client-side; T021
-  parallel with the client-side chain
+  parallel with the client-side chain; T021a runs after T020 (proves
+  FR-011 port-range × DNS coalescing)
 - Phase 4: T022–T027 (tests) all parallel; T028 → T029 → T030/T031/T032
   sequential within cache; T033/T034/T035 parallel after the cache
-  state-machine lands
+  state-machine lands; T033a (FR-006 multi-A dial fallback) runs after
+  T033
 - Phase 5: T036/T037/T038 (tests) parallel; T039 → T040 sequential;
   T041/T042 parallel with the client-side chain
 - Phase 6: T043/T044/T045 (tests) parallel; T046 → T047 → T048
   sequential client-side; T049 → T050 → T051 sequential server-side;
   T052 parallel after T051
-- Phase 7: T053/T054/T055/T056/T057 all parallel; T058 → T059
+- Phase 7: T053/T054/T054a/T055/T056/T057 all parallel; T058 → T059
   sequential at the end
 
 ### Parallel Example: User Story 1 tests

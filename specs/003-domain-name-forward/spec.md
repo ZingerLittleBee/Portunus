@@ -246,10 +246,12 @@ rule id, no per-attempt explosion.
   zero-TTL records from turning the client into a resolver-amplification
   source; the ceiling guarantees that a re-deployed upstream becomes
   reachable within 5 minutes even when the published TTL is longer.
-  Both bounds are operator-tunable via server-side defaults at rule
-  install; the 5 s / 5 min pair is the default spec contract that
-  SC-002 measures against. Cache hits MUST be served without
-  consulting the resolver.
+  In v0.3.0 both bounds are **spec-fixed** at 5 s / 5 min and baked into
+  the client's `ResolverConfig` defaults; exposing them as
+  operator-tunable server-side defaults at rule install is tracked
+  as future work and is out of scope for this feature. SC-002 measures
+  against the spec-fixed 5 min ceiling. Cache hits MUST be served
+  without consulting the resolver.
 - **FR-004**: When DNS resolution fails (NXDOMAIN, SERVFAIL, timeout,
   resolver unreachable, or any other resolver-reported error), the
   client MUST: (a) leave the rule's status `Active`, (b) refuse the
