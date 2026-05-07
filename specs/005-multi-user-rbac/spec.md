@@ -3,7 +3,7 @@
 **Feature Branch**: `005-multi-user-rbac`
 **Created**: 2026-05-07
 **Status**: Draft
-**Input**: User description: "Multi-user RBAC for the forward server: identity model (users with credentials), role hierarchy, and per-user grants for client machines, listen-port ranges, and forwarding protocols. Every operator push-rule and stats request is authorized against the caller's grants before reaching the rule store. Additive on top of v0.4.0 — the existing operator bearer token maps to a built-in superadmin identity. No web UI in this feature."
+**Input**: User description: "Multi-user RBAC for the forward server: identity model (users with credentials), role hierarchy, and per-user grants for client machines, listen-port ranges, and forwarding protocols. Every operator push-rule and stats request is authorized against the caller's grants before reaching the rule store. Additive on top of v0.4.0 — response bodies become byte-supersets (gain an `owner` field); the only operator-visible breaking change is that an `Authorization: Bearer <token>` header becomes mandatory. No web UI in this feature."
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -13,7 +13,7 @@ A platform operator (superadmin) onboards a tenant by creating a user, issuing a
 
 **Why this priority**: This is the smallest end-to-end slice that delivers the core value — multiple identities can share one server with isolated, bounded forwarding capability. Without it, the RBAC model has no observable user-facing effect. Every other story builds on this enforcement path.
 
-**Independent Test**: Create one constrained user via the existing superadmin credential; push a compliant rule with the new user's credential and observe success; push four violation variants (wrong client, listen port too low, listen port too high, wrong protocol) and observe four distinct rejection reasons. The superadmin's own push-rule path keeps working byte-identically throughout.
+**Independent Test**: Create one constrained user via the existing superadmin credential; push a compliant rule with the new user's credential and observe success; push four violation variants (wrong client, listen port too low, listen port too high, wrong protocol) and observe four distinct rejection reasons. The superadmin's own push-rule path keeps working with the same wire shape (response bodies gain an `owner` field; no other change) throughout.
 
 **Acceptance Scenarios**:
 
@@ -21,7 +21,7 @@ A platform operator (superadmin) onboards a tenant by creating a user, issuing a
 2. **Given** the same alice grant, **When** alice pushes a TCP rule on client-a listen port 30099, **Then** the request is rejected with reason `port_outside_grant` and no rule is created or activated.
 3. **Given** the same alice grant, **When** alice pushes a UDP rule on client-a listen port 30005, **Then** the request is rejected with reason `protocol_not_granted`.
 4. **Given** the same alice grant, **When** alice pushes a TCP rule on client-b listen port 30005, **Then** the request is rejected with reason `client_not_granted`.
-5. **Given** alice has no credential and the legacy operator bearer token is presented, **When** any rule is pushed, **Then** the request is treated as superadmin and accepted regardless of grants (backward compatibility).
+5. **Given** the deployment uses the `operator_token` config-shortcut bootstrap path (see FR-006) and presents that token, **When** any rule is pushed, **Then** the request is treated as the built-in `_superadmin` identity and accepted regardless of grants.
 
 ---
 
@@ -80,8 +80,9 @@ A tenant whose credential may have leaked rotates it themselves without requirin
 - A grant references a client that does not currently exist (offline or never connected). Pushing rules under that grant succeeds; the rule sits in the existing pending state and activates when the client appears, identical to current v0.4.0 behavior.
 - A grant is revoked while a rule it authorized is actively forwarding traffic. The rule is removed within the SC-005 propagation window; in-flight datagrams/connections complete or fail per existing v0.4.0 rule-removal semantics, no new connections accepted.
 - A user is removed while they hold an active CLI session (long-running stats stream). The next request after invalidation MUST be rejected; the server MUST NOT panic or leak the prior session.
-- The legacy bearer token in `server.toml` is unset. The server still starts, but no superadmin exists until one is created via a bootstrap path. The bootstrap path MUST be documented and MUST NOT silently grant superadmin to any unauthenticated request.
-- A grant specifies `protocols: []` (empty set). Treated as a no-op grant: nothing matches, every push is rejected with `protocol_not_granted`. Creating an empty-protocol grant is allowed (useful for staging) but logged.
+- Neither the `operator_token` config-shortcut nor a prior `bootstrap-superadmin` invocation has been run. The server still starts, but every operator request is rejected with `bootstrap_required` until one of the two bootstrap paths runs. The server MUST NOT silently grant superadmin to any unauthenticated request.
+- A grant is created with `operator_token` config-shortcut already applied AND a different superadmin already exists in `identity.json`. The config-shortcut is a no-op on subsequent starts (the existing superadmin is honored; the config token is NOT minted as a second superadmin) — startup emits one INFO log noting the shortcut was ignored.
+- A grant is requested with `protocols: []` (empty set). The grant-add request is rejected at validation time with `empty_protocol_set`; no grant is persisted. (No "no-op grant" mode exists — the codebase fails closed.)
 - Two users hold credentials that happen to collide due to a hash truncation. Credential lookup MUST disambiguate by full credential, not by prefix.
 
 ## Requirements *(mandatory)*
@@ -98,8 +99,8 @@ A tenant whose credential may have leaked rotates it themselves without requirin
 **Roles & Authorization**
 
 - **FR-005**: The system MUST recognize at least two roles: `superadmin` (unrestricted) and `user` (restricted to their grants). Future roles MAY be added without breaking existing role assignments.
-- **FR-006**: The system MUST treat the legacy operator bearer token configured in `server.toml` as the built-in superadmin identity, preserving v0.4.0 operator workflows byte-identically (no command syntax, response shape, or exit-code change for callers using that token).
-- **FR-007**: The system MUST authorize every operator request (push-rule, remove-rule, list-rules, rule-stats, per-port-stats, user/grant management) against the caller's identity and grants before any side effect occurs. Unauthorized requests MUST be rejected with a categorized reason and MUST NOT mutate state.
+- **FR-006**: The system MUST support an optional `operator_token` key in `server.toml` (introduced by v0.5.0) that, when set on a deployment with no existing superadmin in the identity store, mints a built-in `_superadmin` user backed by the supplied token on first start. This is one of two bootstrap paths to obtain the first superadmin (the other is the `bootstrap-superadmin` CLI subcommand per FR-017). After first start, removing the config key does NOT revoke the token (it has been persisted to the identity store as a hash). Wire-shape compatibility: success-path response bodies are byte-supersets of v0.4.0 (only the additive `owner` field is new); the only operator-visible breaking change is that an `Authorization: Bearer <token>` header becomes mandatory on every `/v1/*` request.
+- **FR-007**: The system MUST authorize every operator request (push-rule, remove-rule, list-rules, rule-stats, per-port-stats, user/grant management, AND the existing v0.4.0 client-provisioning endpoints `/v1/clients*`) against the caller's identity and grants before any side effect occurs. Unauthorized requests MUST be rejected with a categorized reason and MUST NOT mutate state. Client provisioning becomes superadmin-only by default (non-superadmin operators receive `role_required`).
 - **FR-008**: The system MUST distinguish at least the following authorization rejection reasons in machine-readable form: `unauthenticated`, `credential_invalid`, `client_not_granted`, `port_outside_grant`, `protocol_not_granted`, `not_owner`, `role_required`. Each reason MUST map to a stable error code usable by the operator CLI.
 
 **Grants**
@@ -108,7 +109,7 @@ A tenant whose credential may have leaked rotates it themselves without requirin
 - **FR-010**: The system MUST allow a user to hold multiple grants. A push request is authorized if at least one grant satisfies all dimensions (client, every port in the rule's listen range, protocol). Range rules MUST require the entire listen range to fit within a single grant's port range; partial coverage by multiple grants is NOT sufficient.
 - **FR-011**: The system MUST permit grants that reference a client identifier that has not yet connected. Such grants are stored and become effective as soon as that client connects, with no further operator action.
 - **FR-012**: When a grant is revoked, the system MUST remove any rule whose authorization depended exclusively on that grant within the time bound stated in SC-005. Rules that remain authorized by another grant the user still holds MUST continue running. The owning user is notified through the standard rule-removed audit channel.
-- **FR-013**: When a user is removed, the system MUST remove all rules owned by that user, invalidate all of that user's credentials, and revoke all of that user's grants atomically.
+- **FR-013**: When a user is removed, the system MUST remove all rules owned by that user, invalidate all of that user's credentials, and revoke all of that user's grants. The identity-side state changes (credentials revoked, grants revoked, user removed) MUST commit as one atomic write to the identity store BEFORE the rule-removal cascade begins; the rule-removal cascade then runs synchronously and completes within the SC-005 5 s bound. A crash between the two phases MUST leave the identity store consistent and MUST NOT leak capability through still-running rules (the rule-removal cascade is idempotent and replays cleanly on restart, although as of v0.5.0 rules do not survive restart at all per the v0.4.0 design).
 
 **Ownership & Visibility**
 
@@ -118,7 +119,7 @@ A tenant whose credential may have leaked rotates it themselves without requirin
 
 **Bootstrap & Operability**
 
-- **FR-017**: The system MUST provide a documented bootstrap path that creates the first superadmin identity in environments where the legacy bearer token is not configured. This path MUST be safe to invoke exactly once at deployment time and MUST refuse to run silently against an already-bootstrapped system.
+- **FR-017**: The system MUST provide a documented `bootstrap-superadmin` CLI subcommand that creates the first superadmin identity in environments where the `operator_token` config-shortcut (FR-006) was not used. This subcommand MUST be safe to invoke at deployment time, MUST print the freshly-minted token to stdout exactly once (never to logs), and MUST exit non-zero with `already_bootstrapped` if any superadmin already exists in the identity store.
 - **FR-018**: All authorization decisions (grant, deny) MUST be logged at a level operators can route to standard observability sinks, and MUST include the actor, the resource, the decision, and (on deny) the rejection reason. Logging MUST NOT include raw credentials.
 
 ### Key Entities *(include if feature involves data)*
@@ -136,10 +137,10 @@ A tenant whose credential may have leaked rotates it themselves without requirin
 - **SC-001**: A superadmin can onboard a new tenant from "user does not exist" to "tenant has pushed their first rule successfully" in under 60 seconds of wall-clock time, following the documented quickstart, on a single-host loopback environment.
 - **SC-002**: Adding the authorization check to the push-rule and stats-read paths increases their median end-to-end latency by no more than 5 ms compared to the v0.4.0 baseline measured on the same hardware.
 - **SC-003**: 100% of push-rule, remove-rule, list-rules, and stats requests that violate any grant dimension or ownership constraint are rejected with the categorized reason codes enumerated in FR-008. Verified by the per-story acceptance scenarios.
-- **SC-004**: All v0.4.0 operator CLI invocations using the legacy bearer token produce byte-identical request/response wire shapes and exit codes after this feature lands. Verified by replaying the v0.4.0 quickstart end-to-end with no edits.
+- **SC-004**: After this feature lands, v0.4.0 operator CLI invocations require exactly one additive change to keep working: setting `FORWARD_OPERATOR_TOKEN` (or passing `--token`). With that token in place, success-path response bodies are byte-supersets of v0.4.0 (only the additive `owner` field is new — existing v0.4 client decoders ignore unknown JSON fields per superset rules) and CLI exit codes for the success path are unchanged. Verified by replaying the v0.4.0 quickstart end-to-end after exporting `FORWARD_OPERATOR_TOKEN`.
 - **SC-005**: When a grant is revoked or a user is removed, every dependent rule is removed within 5 seconds of the revocation request returning success, measured from the operator's clock.
 - **SC-006**: After a server restart, 100% of users, non-revoked grants, and active credentials are present and usable. No bootstrap step beyond starting the binary is required.
-- **SC-007**: Operators can answer "who pushed rule X?" and "what can user Y do?" using only the operator CLI in under 10 seconds each, with no log grepping.
+- **SC-007**: Operators can answer "who pushed rule X?" via a single `rule-list --format table` invocation (the table includes an `owner` column) and "what can user Y do?" via a single `grant-list --user Y --format table` invocation. Both queries are answerable from the operator CLI without log grepping or accessing any other surface.
 
 ## Assumptions
 
@@ -149,6 +150,6 @@ A tenant whose credential may have leaked rotates it themselves without requirin
 - A grant's port range and protocol set are matched exactly as written; the system does not infer port-protocol combinations (e.g., granting `[tcp]` does not implicitly allow UDP on the same port).
 - Revoking a grant removes any rule whose authorization depended on it (fail-closed posture). This is preferable to leaving orphaned rules running, even though it may surprise operators; the behavior is explicit in FR-012 and surfaced in audit logs.
 - Aggregate metric cardinality remains bounded by the v0.4.0 rule established for port-range rules (one row per rule per collector). Adding the `owner` dimension does not multiply rows because each rule already has exactly one owner.
-- Bootstrap path: when the legacy bearer token is absent, a one-shot CLI subcommand creates the initial superadmin and prints its credential exactly once. The exact subcommand name is an implementation detail captured during planning.
+- Bootstrap path: when the `operator_token` config-shortcut (FR-006) is absent, a one-shot `bootstrap-superadmin` CLI subcommand (FR-017) creates the initial superadmin and prints its credential exactly once.
 - The audit event stream piggybacks on the existing structured-logging facility (Constitution Principle IV); a separate persistent audit database is out of scope and may be added in a future feature.
 - Per-grant rate limiting and per-user quota beyond port-range / protocol scoping are out of scope; they may be added in a future feature without changing the entities defined here.
