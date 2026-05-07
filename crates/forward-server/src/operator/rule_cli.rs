@@ -199,6 +199,11 @@ struct StatsResponse {
     bytes_in: u64,
     bytes_out: u64,
     active_connections: u32,
+    /// 003-domain-name-forward T052: per-rule DNS-failure counter.
+    /// Always present in the body per `contracts/operator-api.md`;
+    /// 0 for IP-target rules.
+    #[serde(default)]
+    dns_failures: u64,
     updated_at: DateTime<Utc>,
     /// Optional per-port detail; populated only when `?per_port=true`
     /// was requested AND the rule is a range rule with cached samples
@@ -238,12 +243,13 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool)
         }
         OutputFormat::Text => {
             println!(
-                "rule_id={} client={} bytes_in={} bytes_out={} active={} updated_at={}",
+                "rule_id={} client={} bytes_in={} bytes_out={} active={} dns_failures={} updated_at={}",
                 body.rule_id,
                 body.client_name,
                 body.bytes_in,
                 body.bytes_out,
                 body.active_connections,
+                body.dns_failures,
                 body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
             );
             if let Some(rows) = body.per_port.as_ref() {
@@ -275,6 +281,7 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
         "bytes_in": body.bytes_in,
         "bytes_out": body.bytes_out,
         "active_connections": body.active_connections,
+        "dns_failures": body.dns_failures,
         "updated_at": body.updated_at,
     });
     if let Some(rows) = body.per_port.as_ref() {

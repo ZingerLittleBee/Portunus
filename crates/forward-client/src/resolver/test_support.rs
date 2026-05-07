@@ -24,20 +24,20 @@ use super::{Resolve, ResolveAnswer, ResolverError};
 /// call `advance(d)` between cache operations to simulate elapsed
 /// time without sleeping.
 #[derive(Debug)]
-pub(super) struct MockClock {
+pub(crate) struct MockClock {
     base: Instant,
     offset: Mutex<Duration>,
 }
 
 impl MockClock {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             base: Instant::now(),
             offset: Mutex::new(Duration::ZERO),
         }
     }
 
-    pub(super) fn advance(&self, d: Duration) {
+    pub(crate) fn advance(&self, d: Duration) {
         let mut g = self.offset.lock().unwrap();
         *g += d;
     }
@@ -52,7 +52,7 @@ impl Clock for MockClock {
 /// Resolver fixture with a queue of canned answers and an optional
 /// per-call delay (for exercising the single-flight Pending window).
 #[derive(Debug)]
-pub(super) struct MockResolver {
+pub(crate) struct MockResolver {
     calls: AtomicUsize,
     inner: Mutex<MockState>,
 }
@@ -71,7 +71,7 @@ struct MockState {
 
 impl MockResolver {
     /// Always returns a single successful answer with the given addrs/TTL.
-    pub(super) fn ok(addrs: Vec<IpAddr>, ttl: Duration) -> Self {
+    pub(crate) fn ok(addrs: Vec<IpAddr>, ttl: Duration) -> Self {
         let answer = Ok(ResolveAnswer { addrs, ttl });
         Self {
             calls: AtomicUsize::new(0),
@@ -87,7 +87,7 @@ impl MockResolver {
     /// returns `err`. Used for stale-while-error tests where the
     /// cache primes on success then refreshes against a broken
     /// resolver.
-    pub(super) fn ok_then_fail(
+    pub(crate) fn ok_then_fail(
         addrs: Vec<IpAddr>,
         ttl: Duration,
         err: ResolverError,
@@ -105,7 +105,7 @@ impl MockResolver {
     }
 
     /// Always fails with the same error.
-    pub(super) fn always_fail(err: ResolverError) -> Self {
+    pub(crate) fn always_fail(err: ResolverError) -> Self {
         Self {
             calls: AtomicUsize::new(0),
             inner: Mutex::new(MockState {
@@ -119,13 +119,13 @@ impl MockResolver {
     /// Successful answer with a per-call delay. Used by the
     /// single-flight test to keep the cache in the Pending state long
     /// enough for concurrent waiters to pile up.
-    pub(super) fn delayed_ok(addrs: Vec<IpAddr>, ttl: Duration, delay: Duration) -> Self {
+    pub(crate) fn delayed_ok(addrs: Vec<IpAddr>, ttl: Duration, delay: Duration) -> Self {
         let me = Self::ok(addrs, ttl);
         me.inner.lock().unwrap().delay = Some(delay);
         me
     }
 
-    pub(super) fn calls(&self) -> usize {
+    pub(crate) fn calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
     }
 

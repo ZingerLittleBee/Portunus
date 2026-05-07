@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::stats::RuleStats;
-use crate::resolver::{ConnectError, LiveResolver, ResolveFailReason, Resolve};
+use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
 
 /// Forward `inbound` to `target` (resolved via `resolver` for DNS
 /// targets; short-circuited to a direct connect for IP literals)
@@ -55,7 +55,19 @@ pub async fn proxy<R: Resolve>(
         .connect_target(rule_id, target, target_port, prefer_ipv6)
         .await
     {
-        Ok(s) => s,
+        Ok((s, source)) => {
+            // T047 (US4): a dial that succeeded via the
+            // stale-while-error grace window still counts as a DNS
+            // failure (FR-005 + FR-008) — the underlying refresh
+            // attempt failed, the operator just got lucky that the
+            // stale answer still works. The connection is allowed
+            // through (graceful degradation), but the metric counts.
+            if matches!(source, AnswerSource::Stale)
+                && let Some(stats) = stats.as_ref() {
+                stats.inc_dns_failure();
+            }
+            s
+        }
         Err(e) => {
             // T034: refuse the inbound socket cleanly (drop closes
             // it; do NOT half-open the proxy) and emit the
@@ -75,6 +87,9 @@ pub async fn proxy<R: Resolve>(
                         reason = ResolveFailReason::classify(reason).as_str(),
                         detail = %reason,
                     );
+                    if let Some(stats) = stats.as_ref() {
+                        stats.inc_dns_failure();
+                    }
                 }
                 ConnectError::AllAddrsUnreachable { tried, last } => {
                     let hostname_str = match target {
@@ -89,6 +104,9 @@ pub async fn proxy<R: Resolve>(
                         tried = *tried,
                         last_error = %last,
                     );
+                    if let Some(stats) = stats.as_ref() {
+                        stats.inc_dns_failure();
+                    }
                 }
                 ConnectError::Dial(_) => {
                     // Pure dial failure on an IP-target rule. Not a
@@ -267,6 +285,164 @@ mod tests {
         assert!(
             err.to_string().contains("proxy_cancelled"),
             "expected proxy_cancelled, got {err}"
+        );
+    }
+
+    /// T043 (US4): NXDOMAIN-only path bumps `dns_failures` exactly
+    /// once per refused connection. The increment happens at the
+    /// proxy boundary (single seam where ConnectError is observed),
+    /// not inside the resolver — so tests live with the seam.
+    #[tokio::test]
+    async fn dns_failures_increments_per_refused_connection() {
+        use crate::resolver::test_support::MockResolver;
+        use crate::resolver::ResolverError;
+
+        let resolver = Arc::new(LiveResolver::new(
+            Arc::new(MockResolver::always_fail(ResolverError::Lookup(
+                "no such host".into(),
+            ))),
+            ResolverConfig::default(),
+        ));
+        let stats = RuleStats::new();
+        let target = Target::Dns(Hostname::new("nx.example").unwrap());
+
+        // Drive M end-user connections; each MUST fail and bump.
+        const M: u64 = 5;
+        for _ in 0..M {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            let r = Arc::clone(&resolver);
+            let s = Arc::clone(&stats);
+            let target = target.clone();
+            let proxy_task = tokio::spawn(async move {
+                let (sock, _) = listener.accept().await.unwrap();
+                let _ = proxy(
+                    sock,
+                    r.as_ref(),
+                    RuleId(0),
+                    &target,
+                    443,
+                    false,
+                    CancellationToken::new(),
+                    Some(s),
+                    0,
+                )
+                .await;
+            });
+            // Open and immediately close the client side. proxy()
+            // refuses (ConnectError::Resolution) and drops the inbound
+            // socket — the client may see write success then EOF on
+            // read; we don't care about the data plane here.
+            let client = TcpStream::connect(proxy_addr).await.unwrap();
+            drop(client);
+            proxy_task.await.unwrap();
+        }
+        assert_eq!(
+            stats.snapshot_dns_failures(),
+            M,
+            "every refused connection MUST bump dns_failures exactly once (FR-008)"
+        );
+    }
+
+    /// T043 (US4) part 2: a stale-served connection (cache returns
+    /// `AnswerSource::Stale` because refresh failed within the grace
+    /// window) MUST also bump `dns_failures` even though the dial
+    /// succeeded. Per spec § Clarifications and FR-005: the underlying
+    /// problem is real, the operator just got lucky on this attempt.
+    #[tokio::test]
+    async fn dns_failures_increments_on_stale_served_connection() {
+        use crate::resolver::test_support::MockResolver;
+        use crate::resolver::ResolverError;
+        use std::time::Duration;
+
+        let echo = spawn_echo().await;
+
+        // First call returns the working v4 echo with a tiny TTL,
+        // then every refresh fails. After the TTL elapses, cache
+        // transitions to StaleAfterFailedRefresh on each refresh
+        // attempt → returns AnswerSource::Stale within the 30s grace.
+        let mock = MockResolver::ok_then_fail(
+            vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            Duration::from_millis(1),
+            ResolverError::Lookup("upstream down".into()),
+        );
+        // Critical: lower the cache floor so the 1ms TTL isn't
+        // clamped up to the default 5s — otherwise the warmup entry
+        // stays Cached and we never reach StaleAfterFailedRefresh.
+        let mut config = ResolverConfig::default();
+        config.cache_floor = Duration::from_millis(1);
+        let resolver = Arc::new(LiveResolver::new(Arc::new(mock), config));
+        let stats = RuleStats::new();
+        let target = Target::Dns(Hostname::new("flaky.example").unwrap());
+
+        async fn drive_one(
+            resolver: Arc<LiveResolver<MockResolver>>,
+            stats: Arc<RuleStats>,
+            target: Target,
+            echo_port: u16,
+            payload: &[u8],
+        ) {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                let (sock, _) = listener.accept().await.unwrap();
+                let _ = proxy(
+                    sock,
+                    resolver.as_ref(),
+                    RuleId(1),
+                    &target,
+                    echo_port,
+                    false,
+                    CancellationToken::new(),
+                    Some(stats),
+                    0,
+                )
+                .await;
+            });
+            let mut c = TcpStream::connect(proxy_addr).await.unwrap();
+            c.write_all(payload).await.unwrap();
+            let mut buf = vec![0u8; payload.len()];
+            c.read_exact(&mut buf).await.unwrap();
+            drop(c);
+            task.await.unwrap();
+        }
+
+        // Warmup: Fresh source → no bump.
+        drive_one(
+            Arc::clone(&resolver),
+            Arc::clone(&stats),
+            target.clone(),
+            echo.port(),
+            b"warm",
+        )
+        .await;
+        assert_eq!(
+            stats.snapshot_dns_failures(),
+            0,
+            "warmup (Fresh) connection MUST NOT bump"
+        );
+
+        // Wait past the (1ms) TTL so the next get_or_resolve refreshes.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // M stale-served connections. Each refresh fails → cache
+        // transitions to StaleAfterFailedRefresh → AnswerSource::Stale
+        // → bump.
+        const M: u64 = 3;
+        for _ in 0..M {
+            drive_one(
+                Arc::clone(&resolver),
+                Arc::clone(&stats),
+                target.clone(),
+                echo.port(),
+                b"stale",
+            )
+            .await;
+        }
+        assert_eq!(
+            stats.snapshot_dns_failures(),
+            M,
+            "stale-served connections MUST bump dns_failures (FR-005 + FR-008)"
         );
     }
 

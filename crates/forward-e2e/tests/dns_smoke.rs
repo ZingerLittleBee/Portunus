@@ -480,3 +480,124 @@ fn test_dns_us3_ipv6_optin_falls_back_to_ipv4_only_target() {
         "client MUST log rule.dns_resolved with prefer_ipv6 field"
     );
 }
+
+/// T045 (US4) — `forward_rule_dns_failures_total` cardinality and
+/// per-rule accuracy.
+///
+/// Pushes N rules pointing at `broken.invalid` (NXDOMAIN under any
+/// well-behaved resolver), drives K connection attempts through each,
+/// waits for one StatsReport tick (5 s default), scrapes `/metrics`,
+/// and asserts:
+///   - exactly N `forward_rule_dns_failures_total` rows (SC-006 /
+///     R-008 cardinality budget — 1 row per rule)
+///   - each row's value equals the K_i count we drove through it
+///
+/// Skipped on hosts with NXDOMAIN hijacking (same gating logic as
+/// T034).
+#[test]
+fn test_dns_us4_metric_cardinality() {
+    if dns_hijack_detected() {
+        eprintln!("skipping T045: local resolver hijacks NXDOMAIN — see T034 skip");
+        return;
+    }
+    let server = common::spawn_server(&[]);
+    let (_grpc, http, metrics_addr) = server
+        .wait_listening_full(Duration::from_secs(5))
+        .expect("server listening");
+
+    let bundle = common::provision_client_http(&http, "edge-01");
+    let _client = common::spawn_client(&bundle, &[]);
+    let connected = common::wait_for(Duration::from_secs(5), || {
+        let arr = common::list_clients_http(&http);
+        arr.as_array()?
+            .iter()
+            .find(|v| {
+                v.get("client_name").and_then(|n| n.as_str()) == Some("edge-01")
+                    && v.get("connected").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .cloned()
+    });
+    assert!(connected.is_some(), "edge-01 must connect within 5s");
+
+    // Push N broken-DNS rules; record (rule_id, listen_port).
+    const N: usize = 3;
+    const K: usize = 2;
+    let mut rules: Vec<(u64, u16)> = Vec::with_capacity(N);
+    for _ in 0..N {
+        let listen = pick_free_port();
+        let (status, body) = common::push_rule_http(
+            &http,
+            "edge-01",
+            listen,
+            "broken.invalid",
+            443,
+            Some(3),
+        );
+        assert!(status.is_success(), "push: {status} {body}");
+        let rule_id = body
+            .get("rule_id")
+            .and_then(Value::as_u64)
+            .expect("rule_id in response");
+        rules.push((rule_id, listen));
+    }
+
+    // Drive K connection attempts through each rule. Each attempt
+    // MUST refuse fast (FR-005 budget) and bump the per-rule counter.
+    for (_, port) in &rules {
+        for _ in 0..K {
+            // Best-effort connect: kernel may RST or proxy may close
+            // mid-handshake — both satisfy "DNS-failure path taken".
+            if let Ok(mut sock) =
+                std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, *port))
+            {
+                sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let _ = sock.write_all(b"ping");
+                let mut b = [0u8; 1];
+                let _ = sock.read_exact(&mut b);
+            }
+        }
+    }
+
+    // Wait for one StatsReport tick + a small grace. Default
+    // interval is 5s; we poll the metrics endpoint until every
+    // expected row appears, capped at ~10s.
+    let _ = common::wait_for(Duration::from_secs(10), || {
+        let body = common::fetch_metrics_text(&metrics_addr);
+        let rows: Vec<&str> = body
+            .lines()
+            .filter(|l| l.starts_with("forward_rule_dns_failures_total{"))
+            .collect();
+        if rows.len() == N { Some(()) } else { None }
+    });
+
+    let body = common::fetch_metrics_text(&metrics_addr);
+    let rows: Vec<&str> = body
+        .lines()
+        .filter(|l| l.starts_with("forward_rule_dns_failures_total{"))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        N,
+        "expected exactly N={N} dns_failures rows (SC-006), got {}\n{body}",
+        rows.len()
+    );
+
+    // Each row's value MUST equal K (one bump per refused attempt).
+    for (rule_id, _) in &rules {
+        let pat = format!(r#"rule="{rule_id}"}}"#);
+        let row = rows
+            .iter()
+            .find(|l| l.contains(&pat))
+            .unwrap_or_else(|| panic!("no row for rule {rule_id}\n{body}"));
+        // Extract the trailing integer after the last space.
+        let value: u64 = row
+            .rsplit(' ')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("can't parse value from {row}"));
+        assert_eq!(
+            value, K as u64,
+            "rule {rule_id}: expected {K} failures, got {value}\n{row}"
+        );
+    }
+}

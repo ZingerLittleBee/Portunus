@@ -32,6 +32,15 @@ pub struct RuleStats {
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
     pub active_connections: AtomicU32,
+    /// 003-domain-name-forward (FR-008): monotonic count of end-user
+    /// connections that ultimately failed to dial because of DNS —
+    /// either resolution returned an error, the answer was empty, or
+    /// every resolved address was unreachable. For IP-target rules
+    /// this counter never increments (the resolver layer is
+    /// short-circuited); the wire emit (`StatsReport`) skips the
+    /// proto field when the value is 0 to keep v0.2.0 byte-compat
+    /// (verified by `dns_wire_compat::v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero`).
+    pub dns_failures: AtomicU64,
     /// Per-port counters keyed on the listen-side port. Populated at
     /// construction by [`RuleStats::for_range`]; empty when constructed
     /// via [`RuleStats::new`]. Lookup misses are silent — the aggregate
@@ -66,8 +75,25 @@ impl RuleStats {
             bytes_in: AtomicU64::new(0),
             bytes_out: AtomicU64::new(0),
             active_connections: AtomicU32::new(0),
+            dns_failures: AtomicU64::new(0),
             per_port,
         })
+    }
+
+    /// 003-domain-name-forward (FR-008): one DNS failure (NXDOMAIN,
+    /// SERVFAIL, timeout, all-addrs-unreachable, stale-served-then-still-failing).
+    /// Per-rule cardinality only; no per-port breakdown — the
+    /// resolver works at the rule level.
+    pub fn inc_dns_failure(&self) {
+        self.dns_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Snapshot the DNS-failure counter. Used by `StatsReport` and
+    /// the test harness; the wire emit conditionally skips the proto
+    /// field when this is 0 (v0.2.0 byte-compat).
+    #[must_use]
+    pub fn snapshot_dns_failures(&self) -> u64 {
+        self.dns_failures.load(Ordering::Relaxed)
     }
 
     /// Record `n` inbound bytes on `port`. The aggregate counter is

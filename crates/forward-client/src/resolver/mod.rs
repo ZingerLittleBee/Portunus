@@ -20,7 +20,7 @@
 pub mod cache;
 mod clock;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -32,7 +32,8 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tracing::info;
 
-use cache::{AnswerSource, Cache};
+pub use cache::AnswerSource;
+use cache::Cache;
 
 /// Process-wide resolver constants. All fields are spec-fixed in
 /// v0.3.0 — no CLI/config wire-up in this feature; the struct exists
@@ -237,10 +238,11 @@ impl<R: Resolve> LiveResolver<R> {
         target: &Target,
         port: u16,
         prefer_ipv6: bool,
-    ) -> Result<TcpStream, ConnectError> {
+    ) -> Result<(TcpStream, AnswerSource), ConnectError> {
         match target {
             Target::Ip(ip) => TcpStream::connect(SocketAddr::new(*ip, port))
                 .await
+                .map(|s| (s, AnswerSource::Fresh))
                 .map_err(ConnectError::Dial),
             Target::Dns(name) => {
                 let result = self
@@ -281,7 +283,7 @@ impl<R: Resolve> LiveResolver<R> {
                     )
                     .await
                     {
-                        Ok(Ok(stream)) => return Ok(stream),
+                        Ok(Ok(stream)) => return Ok((stream, result.source)),
                         Ok(Err(e)) => {
                             last_err = Some(e);
                         }
@@ -423,7 +425,7 @@ mod tests {
         let echo = spawn_echo().await;
         let target = Target::Ip(echo.ip());
         let resolver = LiveResolver::new(Arc::new(PanickingResolver), ResolverConfig::default());
-        let mut sock = resolver
+        let (mut sock, _src) = resolver
             .connect_target(RuleId(0), &target, echo.port(), false)
             .await
             .expect("ip target should connect without resolver");
@@ -548,7 +550,7 @@ mod tests {
         config.attempt_timeout = Duration::from_millis(500);
         let live = LiveResolver::new(Arc::new(resolver), config);
         let target = Target::Dns(Hostname::new("any.example").unwrap());
-        let mut sock = live
+        let (mut sock, _src) = live
             .connect_target(RuleId(2), &target, port, false)
             .await
             .expect("multi-A fallback should reach the alive address");

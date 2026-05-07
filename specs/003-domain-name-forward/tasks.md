@@ -184,19 +184,19 @@ N rows and per-row counts equal K.
 
 ### Tests for User Story 4 ⚠️
 
-- [ ] T043 [P] [US4] Counter-increment unit test in `crates/forward-client/src/resolver/mod.rs`: drive M end-user connections through a name that always NXDOMAINs, assert the per-rule `dns_failures` accumulator equals M; drive M connections during a stale-while-error window where refresh fails, assert the accumulator also gains M (FR-005 + FR-008 increment rule)
-- [ ] T044 [P] [US4] Cardinality unit test in `crates/forward-server/src/metrics.rs` `#[cfg(test)] mod tests`: register the new collector, simulate StatsReports for N rules, scrape the registry text format, `grep ^forward_rule_dns_failures_total | wc -l` equals N (SC-006)
-- [ ] T045 [P] [US4] e2e test `test_dns_us4_metric_cardinality` in `crates/forward-e2e/tests/dns_smoke.rs`: N broken DNS rules, K connections each, wait one StatsReport tick (5 s default), curl `/metrics`, assert exactly N rows and `value(rule=i) == K_i`
+- [X] T043 [P] [US4] Counter-increment unit test in `crates/forward-client/src/resolver/mod.rs`: drive M end-user connections through a name that always NXDOMAINs, assert the per-rule `dns_failures` accumulator equals M; drive M connections during a stale-while-error window where refresh fails, assert the accumulator also gains M (FR-005 + FR-008 increment rule)
+- [X] T044 [P] [US4] Cardinality unit test in `crates/forward-server/src/metrics.rs` `#[cfg(test)] mod tests`: register the new collector, simulate StatsReports for N rules, scrape the registry text format, `grep ^forward_rule_dns_failures_total | wc -l` equals N (SC-006)
+- [X] T045 [P] [US4] e2e test `test_dns_us4_metric_cardinality` in `crates/forward-e2e/tests/dns_smoke.rs`: N broken DNS rules, K connections each, wait one StatsReport tick (5 s default), curl `/metrics`, assert exactly N rows and `value(rule=i) == K_i`
 
 ### Implementation for User Story 4
 
-- [ ] T046 [US4] Add `dns_failures: AtomicU64` to per-rule stats in `crates/forward-client/src/forwarder/stats.rs` `RuleStats`; `inc_dns_failure(&self)` helper
-- [ ] T047 [US4] Resolver layer bumps the counter in `crates/forward-client/src/resolver/mod.rs`: increment on (a) every connection that ultimately reports `dns_resolution_failed`, AND (b) every cache-hit that succeeds via `StaleAfterFailedRefresh` (because the underlying refresh attempt failed — FR-005). The Resolver gets a `&Arc<RuleStats>` reference passed in by the proxy at `connect_target` call time (depends on T046)
-- [ ] T048 [US4] Carry `dns_failures` on the existing `StatsReport` tick: extend the per-rule snapshot serialization in `crates/forward-client/src/forwarder/stats.rs` to populate the new proto field 6 (depends on T009, T046)
-- [ ] T049 [US4] Server: register `forward_rule_dns_failures_total` `IntCounterVec` in `crates/forward-server/src/metrics.rs` with labels `["client", "rule"]`; expose a `record_dns_failures(&self, client, rule, delta)` helper
-- [ ] T050 [US4] Server: accumulate per-rule `dns_failures` from incoming `StatsReport` in `crates/forward-server/src/grpc/service.rs` (where v0.2.0 already accumulates `bytes_in/bytes_out`), and update the per-rule stats cache in `crates/forward-server/src/operator/per_port_stats.rs` (or wherever the rule-stats snapshot lives — verify path) (depends on T049)
-- [ ] T051 [US4] Operator HTTP `GET /v1/rules/{id}/stats` returns `dns_failures` field in the body in `crates/forward-server/src/operator/http.rs` (depends on T050)
-- [ ] T052 [P] [US4] Operator CLI `rule-stats <id>` prints `dns_failures` row in `crates/forward-server/src/operator/rule_cli.rs` (text mode + `--json` mode) (depends on T051)
+- [X] T046 [US4] Add `dns_failures: AtomicU64` to per-rule stats in `crates/forward-client/src/forwarder/stats.rs` `RuleStats`; `inc_dns_failure(&self)` helper
+- [X] T047 [US4] Resolver layer bumps the counter in `crates/forward-client/src/resolver/mod.rs`: increment on (a) every connection that ultimately reports `dns_resolution_failed`, AND (b) every cache-hit that succeeds via `StaleAfterFailedRefresh` (because the underlying refresh attempt failed — FR-005). The Resolver gets a `&Arc<RuleStats>` reference passed in by the proxy at `connect_target` call time (depends on T046)
+- [X] T048 [US4] Carry `dns_failures` on the existing `StatsReport` tick: extend the per-rule snapshot serialization in `crates/forward-client/src/forwarder/stats.rs` to populate the new proto field 6 (depends on T009, T046)
+- [X] T049 [US4] Server: register `forward_rule_dns_failures_total` `IntCounterVec` in `crates/forward-server/src/metrics.rs` with labels `["client", "rule"]`; expose a `record_dns_failures(&self, client, rule, delta)` helper
+- [X] T050 [US4] Server: accumulate per-rule `dns_failures` from incoming `StatsReport` in `crates/forward-server/src/grpc/service.rs` (where v0.2.0 already accumulates `bytes_in/bytes_out`), and update the per-rule stats cache in `crates/forward-server/src/operator/per_port_stats.rs` (or wherever the rule-stats snapshot lives — verify path) (depends on T049)
+- [X] T051 [US4] Operator HTTP `GET /v1/rules/{id}/stats` returns `dns_failures` field in the body in `crates/forward-server/src/operator/http.rs` (depends on T050)
+- [X] T052 [P] [US4] Operator CLI `rule-stats <id>` prints `dns_failures` row in `crates/forward-server/src/operator/rule_cli.rs` (text mode + `--json` mode) (depends on T051)
 
 **Checkpoint**: US4 done — operators see DNS failures on dashboards
 without grepping logs; T045 passes.

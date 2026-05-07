@@ -39,6 +39,11 @@ pub struct RuleStatsSnapshot {
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub active_connections: u32,
+    /// 003-domain-name-forward T050: per-rule cumulative DNS-failure
+    /// count, surfaced via `GET /v1/rules/{id}/stats` and
+    /// `rule-stats <id>`. Always present (0 for IP-target rules) per
+    /// `contracts/operator-api.md`.
+    pub dns_failures: u64,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -50,6 +55,11 @@ pub struct Metrics {
     pub rule_bytes_in_total: CounterVec,
     pub rule_bytes_out_total: CounterVec,
     pub rule_active_connections: GaugeVec,
+    /// 003-domain-name-forward T049: per-rule monotonic DNS-failure
+    /// counter, labelled `(client, rule)`. Cardinality budget:
+    /// strictly one row per rule, never per address / per attempt /
+    /// per failure-mode reason (R-008 / SC-006).
+    pub rule_dns_failures_total: IntCounterVec,
 }
 
 impl Metrics {
@@ -86,11 +96,19 @@ impl Metrics {
             ),
             &["client", "rule"],
         )?;
+        let rule_dns_failures_total = IntCounterVec::new(
+            opts!(
+                "forward_rule_dns_failures_total",
+                "Per-rule monotonic count of end-user connections refused due to DNS resolution failure (NXDOMAIN, SERVFAIL, timeout, full multi-A exhaustion)"
+            ),
+            &["client", "rule"],
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
         registry.register(Box::new(rule_bytes_out_total.clone()))?;
         registry.register(Box::new(rule_active_connections.clone()))?;
+        registry.register(Box::new(rule_dns_failures_total.clone()))?;
 
         Ok(Self {
             registry,
@@ -99,6 +117,7 @@ impl Metrics {
             rule_bytes_in_total,
             rule_bytes_out_total,
             rule_active_connections,
+            rule_dns_failures_total,
         })
     }
 
@@ -126,6 +145,10 @@ struct CachedEntry {
     /// Prometheus counters in [`RuleStatsCache::observe`].
     prev_bytes_in: u64,
     prev_bytes_out: u64,
+    /// 003-domain-name-forward T050: previous DNS-failure count for
+    /// monotonic delta computation. Same baseline-reset rule as
+    /// `prev_bytes_*`.
+    prev_dns_failures: u64,
 }
 
 impl RuleStatsCache {
@@ -144,6 +167,7 @@ impl RuleStatsCache {
         bytes_in: u64,
         bytes_out: u64,
         active_connections: u32,
+        dns_failures: u64,
         metrics: &Metrics,
     ) {
         let mut guard = self.inner.write().await;
@@ -154,15 +178,18 @@ impl RuleStatsCache {
                 bytes_in: 0,
                 bytes_out: 0,
                 active_connections: 0,
+                dns_failures: 0,
                 updated_at: Utc::now(),
             },
             prev_bytes_in: 0,
             prev_bytes_out: 0,
+            prev_dns_failures: 0,
         });
 
         let labels = [client_name.as_str(), &rule_id.0.to_string()];
         let in_delta = bytes_in.saturating_sub(entry.prev_bytes_in);
         let out_delta = bytes_out.saturating_sub(entry.prev_bytes_out);
+        let dns_delta = dns_failures.saturating_sub(entry.prev_dns_failures);
         if in_delta > 0 {
             metrics
                 .rule_bytes_in_total
@@ -175,6 +202,12 @@ impl RuleStatsCache {
                 .with_label_values(&labels)
                 .inc_by(precise_f64(out_delta));
         }
+        if dns_delta > 0 {
+            metrics
+                .rule_dns_failures_total
+                .with_label_values(&labels)
+                .inc_by(dns_delta);
+        }
         metrics
             .rule_active_connections
             .with_label_values(&labels)
@@ -182,9 +215,11 @@ impl RuleStatsCache {
 
         entry.prev_bytes_in = bytes_in;
         entry.prev_bytes_out = bytes_out;
+        entry.prev_dns_failures = dns_failures;
         entry.snapshot.bytes_in = bytes_in;
         entry.snapshot.bytes_out = bytes_out;
         entry.snapshot.active_connections = active_connections;
+        entry.snapshot.dns_failures = dns_failures;
         entry.snapshot.updated_at = Utc::now();
         entry.snapshot.client_name = client_name.clone();
     }
@@ -200,13 +235,19 @@ impl RuleStatsCache {
     pub async fn drop_rule(&self, rule_id: RuleId, client_name: &ClientName, metrics: &Metrics) {
         let mut guard = self.inner.write().await;
         if guard.remove(&rule_id).is_some() {
-            // Strip the rule's labels from the gauges so a stale entry doesn't
-            // hang around in `/metrics` after the rule is removed. Counters
-            // are kept per Prometheus convention (counters never disappear
-            // mid-process).
+            // Strip the rule's labels from the gauges AND the
+            // dns_failures counter (003-domain-name-forward T049 —
+            // SC-006 cardinality budget: 1 row per live rule, no
+            // accumulation of removed-rule rows). Byte counters are
+            // kept per Prometheus convention; SC-002 already accepts
+            // their unbounded retention.
+            let labels = [client_name.as_str(), &rule_id.0.to_string()];
             let _ = metrics
                 .rule_active_connections
-                .remove_label_values(&[client_name.as_str(), &rule_id.0.to_string()]);
+                .remove_label_values(&labels);
+            let _ = metrics
+                .rule_dns_failures_total
+                .remove_label_values(&labels);
         }
     }
 }
@@ -237,17 +278,18 @@ mod tests {
         let metrics = Metrics::new().unwrap();
         let cache = RuleStatsCache::new();
         cache
-            .observe(&name("edge-a"), RuleId(7), 1000, 2000, 3, &metrics)
+            .observe(&name("edge-a"), RuleId(7), 1000, 2000, 3, 0, &metrics)
             .await;
         let snap = cache.get(RuleId(7)).await.unwrap();
         assert_eq!(snap.bytes_in, 1000);
         assert_eq!(snap.bytes_out, 2000);
         assert_eq!(snap.active_connections, 3);
+        assert_eq!(snap.dns_failures, 0);
         assert_eq!(snap.client_name, name("edge-a"));
 
         // Second observation: counters take the delta.
         cache
-            .observe(&name("edge-a"), RuleId(7), 1500, 2100, 2, &metrics)
+            .observe(&name("edge-a"), RuleId(7), 1500, 2100, 2, 0, &metrics)
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         assert!(
@@ -265,10 +307,10 @@ mod tests {
         let metrics = Metrics::new().unwrap();
         let cache = RuleStatsCache::new();
         cache
-            .observe(&name("edge-a"), RuleId(1), 5_000, 5_000, 0, &metrics)
+            .observe(&name("edge-a"), RuleId(1), 5_000, 5_000, 0, 0, &metrics)
             .await;
         cache
-            .observe(&name("edge-a"), RuleId(1), 100, 100, 0, &metrics)
+            .observe(&name("edge-a"), RuleId(1), 100, 100, 0, 0, &metrics)
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         // Total stayed at 5000 (no negative delta); next observation will
@@ -278,12 +320,72 @@ mod tests {
             "rendered: {body}"
         );
         cache
-            .observe(&name("edge-a"), RuleId(1), 300, 300, 0, &metrics)
+            .observe(&name("edge-a"), RuleId(1), 300, 300, 0, 0, &metrics)
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         assert!(
             body.contains("forward_rule_bytes_in_total{client=\"edge-a\",rule=\"1\"} 5200"),
             "rendered: {body}"
+        );
+    }
+
+    /// T044 (US4): per-rule cardinality budget — exactly one
+    /// `forward_rule_dns_failures_total` row per `(client, rule)`
+    /// pair, regardless of how many failures fold into it (SC-006 /
+    /// R-008). This protects against accidental refactors that would
+    /// add per-address or per-failure-reason labels and explode
+    /// cardinality on a fleet of 10k rules.
+    #[tokio::test]
+    async fn dns_failures_cardinality_is_one_row_per_rule() {
+        const N: u64 = 5;
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+
+        // Simulate N rules, each emitting K=7 DNS failures across two
+        // StatsReports (delta accumulates). Same `(client, rule)`
+        // tuple MUST yield one row.
+        for i in 0..N {
+            cache
+                .observe(&name("edge-a"), RuleId(i), 0, 0, 0, 3, &metrics)
+                .await;
+            cache
+                .observe(&name("edge-a"), RuleId(i), 0, 0, 0, 7, &metrics)
+                .await;
+        }
+
+        let body = String::from_utf8(metrics.render()).unwrap();
+        let row_count = body
+            .lines()
+            .filter(|l| l.starts_with("forward_rule_dns_failures_total{"))
+            .count();
+        assert_eq!(
+            row_count as u64, N,
+            "expected exactly N={N} rows, got {row_count}\n--- body ---\n{body}"
+        );
+        for i in 0..N {
+            let pat =
+                format!("forward_rule_dns_failures_total{{client=\"edge-a\",rule=\"{i}\"}} 7");
+            assert!(body.contains(&pat), "missing {pat}\n--- body ---\n{body}");
+        }
+    }
+
+    /// T044 part 2: dropping a rule removes its dns_failures row so a
+    /// long-running server doesn't slowly accumulate stale rule rows.
+    #[tokio::test]
+    async fn drop_rule_removes_dns_failures_row() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        cache
+            .observe(&name("edge-a"), RuleId(42), 0, 0, 0, 5, &metrics)
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(body.contains("forward_rule_dns_failures_total{client=\"edge-a\",rule=\"42\"} 5"));
+
+        cache.drop_rule(RuleId(42), &name("edge-a"), &metrics).await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(
+            !body.contains("rule=\"42\""),
+            "dropped rule row MUST disappear from /metrics: {body}"
         );
     }
 }

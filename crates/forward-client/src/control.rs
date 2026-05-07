@@ -593,8 +593,12 @@ async fn send_stats_report(
                 bytes_out: bout,
                 active_connections: active,
                 per_port,
-                // Populated by US4 (T048); zero in US1.
-                dns_failures: 0,
+                // 003-domain-name-forward T048: monotonic per-rule
+                // DNS-failure counter (FR-008). For IP-target rules
+                // this is always 0 (resolver layer is short-circuited);
+                // proto field 6 with default-zero stays absent on the
+                // wire (verified by `dns_wire_compat::v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero`).
+                dns_failures: slot.stats.snapshot_dns_failures(),
             }
         })
         .collect();
