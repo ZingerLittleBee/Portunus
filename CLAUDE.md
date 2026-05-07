@@ -1,19 +1,23 @@
 <!-- SPECKIT START -->
-Active feature: `003-domain-name-forward` on branch `003-domain-name-forward`.
-This is an additive extension on top of v0.2.0 (`002-port-range-forward`),
-which itself sits on v0.1.0 (`001-tcp-forward-mvp`).
+Active feature: `004-udp-forward` on branch `004-udp-forward`.
+This is an additive extension on top of v0.3.0 (`003-domain-name-forward`),
+which itself sits on v0.2.0 (`002-port-range-forward`) and v0.1.0
+(`001-tcp-forward-mvp`).
 
 For technical context, project structure, dependency choices, and the
 Constitution Check, read the current plan:
-- `specs/003-domain-name-forward/plan.md`
+- `specs/004-udp-forward/plan.md`
 - Supporting artifacts in the same directory: `research.md`, `data-model.md`,
   `contracts/forward.proto` (additive overlay), `contracts/operator-api.md`
   (additive deltas), `contracts/persistence.md` (additive deltas),
   `quickstart.md`.
 
 Inherited baselines (do not re-derive):
+- v0.3.0 — `specs/003-domain-name-forward/plan.md` and its supporting
+  artifacts (DNS resolver layer is shared between TCP and UDP rules
+  in v0.4.0).
 - v0.2.0 — `specs/002-port-range-forward/plan.md` and its supporting
-  artifacts in the same directory.
+  artifacts (range-rule mechanism extends to UDP in v0.4.0).
 - v0.1.0 — `specs/001-tcp-forward-mvp/plan.md` and its `data-model.md`,
   `contracts/forward.proto`, `contracts/operator-api.md`,
   `contracts/persistence.md`, `quickstart.md`.

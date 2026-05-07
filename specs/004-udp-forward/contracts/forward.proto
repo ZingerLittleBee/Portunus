@@ -1,0 +1,134 @@
+// Additive overlay for v0.4.0 UDP forwarding (spec 004-udp-forward).
+// This file is NOT the canonical proto — `proto/forward.proto` is.
+// Treat this as the diff that goes on top of v0.3.0.
+//
+// Wire-compatibility contract: a v0.3.0 reader receiving a v0.4.0
+// message drops unknown fields per proto3 semantics; a v0.4.0 reader
+// receiving a v0.3.0 message sees default-zero for every field below.
+// `forward-proto/tests/udp_wire_compat.rs` pins both directions.
+
+// ============================================================================
+// Protocol enum — adds UDP
+// ============================================================================
+//
+// v0.3.0 shape:
+//   enum Protocol {
+//     PROTOCOL_UNSPECIFIED = 0;
+//     TCP = 1;
+//     // Future: UDP, etc.
+//   }
+//
+// v0.4.0 shape:
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  TCP = 1;
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Adding a value to a proto3 enum is non-breaking. v0.3.0 readers
+  // decoding `2` see the integer value; an exhaustive Rust match
+  // hits the default arm and returns `unsupported_protocol`.
+  UDP = 2;
+}
+
+// ============================================================================
+// Welcome — server-pushed UDP runtime tunables
+// ============================================================================
+//
+// Sent inside the existing Welcome message at control-plane connect.
+// Field numbers continue past whatever Welcome's highest v0.3.0 field
+// is — the implementation will assign concrete numbers when patching
+// proto/forward.proto. Both fields use 0 to mean "use client default":
+//   - udp_flow_idle_secs    = 0  → client uses 60 s
+//   - udp_max_flows_per_rule = 0  → client uses 1024
+// This makes a v0.3.0 server (which sends neither) backwards-compatible:
+// the v0.4.0 client falls back to the same compile-time defaults.
+
+message Welcome {
+  // ... existing fields elided ...
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  uint32 udp_flow_idle_secs    = N;     // 30..=300; 0 = use client default (60)
+  uint32 udp_max_flows_per_rule = N + 1; // 1..=65535; 0 = use client default (1024)
+}
+
+// ============================================================================
+// RuleStats — UDP-specific counters
+// ============================================================================
+//
+// v0.3.0 shape:
+//   message RuleStats {
+//     uint64 rule_id              = 1;
+//     uint64 bytes_in             = 2;
+//     uint64 bytes_out            = 3;
+//     uint32 active_connections   = 4;
+//     repeated PerPortStats per_port = 5;
+//     uint64 dns_failures         = 6;
+//   }
+//
+// v0.4.0 adds four fields (7-10), all proto3 default-zero scalars so
+// a TCP-only sender emits byte-identical wire to v0.3.0:
+
+message RuleStats {
+  uint64 rule_id              = 1;
+  uint64 bytes_in             = 2;  // protocol-agnostic (TCP+UDP)
+  uint64 bytes_out            = 3;  // protocol-agnostic
+  uint32 active_connections   = 4;  // TCP only — UDP rules emit 0
+  repeated PerPortStats per_port = 5;
+  uint64 dns_failures         = 6;  // protocol-agnostic — UDP path increments same counter
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Cumulative count of UDP datagrams the rule's listener received
+  // from end-users (across all ports for range rules). Always 0 for
+  // TCP rules.
+  uint64 datagrams_in         = 7;
+
+  // Cumulative count of UDP datagrams the rule sent back to end-users
+  // (replies received on per-flow upstream sockets and forwarded to
+  // the original source). Always 0 for TCP rules.
+  uint64 datagrams_out        = 8;
+
+  // Current live UDP flows aggregated across all ports. Replaces the
+  // `active_connections` semantic for UDP rules — operator surfaces
+  // present this as `active_flows`. Always 0 for TCP rules.
+  uint32 active_flows         = 9;
+
+  // Cumulative count of new-flow first-datagrams dropped because the
+  // per-rule flow table was at `udp_max_flows_per_rule`. Always 0 for
+  // TCP rules.
+  uint64 flows_dropped_overflow = 10;
+}
+
+// ============================================================================
+// PerPortStats — UDP per-port detail (range rules with --per-port)
+// ============================================================================
+//
+// v0.2.0/v0.3.0 shape:
+//   message PerPortStats {
+//     uint32 listen_port = 1;
+//     uint64 bytes_in    = 2;
+//     uint64 bytes_out   = 3;
+//   }
+
+message PerPortStats {
+  uint32 listen_port  = 1;
+  uint64 bytes_in     = 2;
+  uint64 bytes_out    = 3;
+
+  // Additive in v1.3 (spec 004-udp-forward). Always 0 for TCP rules.
+  uint64 datagrams_in  = 4;
+  uint64 datagrams_out = 5;
+}
+
+// ============================================================================
+// Reserved diagnostic counters (NOT surfaced in v0.4.0 Prometheus)
+// ============================================================================
+//
+// These two slots are reserved in `RuleStats` for future operator
+// visibility but are NOT exported as Prometheus rows in v0.4.0. They
+// surface in DEBUG logs and may be added to `rule-stats --debug` in a
+// future release without a wire bump.
+//
+// recv_truncated_total      = 11; // datagrams larger than recv buffer (kernel MSG_TRUNC)
+// upstream_async_errors_total = 12; // ICMP-derived errors on per-flow upstream sockets
+//
+// They are listed here so a future PR adding them does NOT collide
+// with field numbers chosen in haste during 005-*.
