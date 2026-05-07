@@ -63,16 +63,44 @@ message Rule {
 }
 
 // ============================================================================
+// DELTA on `RuleStats` message
+// ============================================================================
+//
+// Existing fields (unchanged):
+//   uint32 rule_id            = 1;
+//   uint64 bytes_in           = 2;
+//   uint64 bytes_out          = 3;
+//   uint32 active_connections = 4;
+//   repeated PerPortStats per_port = 5;   // v0.2.0
+//
+// NEW field:
+//   uint64 dns_failures = 6;
+//
+// Semantics:
+//   - Monotonic per-rule count of end-user connections that failed
+//     because of DNS resolution (NXDOMAIN, SERVFAIL, attempt timeout,
+//     full multi-A exhaustion). Always 0 for IP-target rules.
+//   - The client computes the value (FR-008 increment rule lives
+//     client-side); StatsReport carries it on the existing 5 s tick
+//     so the server can both (a) accumulate it per `(client, rule)`
+//     for the Prometheus collector
+//     `forward_rule_dns_failures_total{client, rule}` (R-008 / SC-006),
+//     and (b) surface it on the operator HTTP API
+//     `GET /v1/rules/{id}/stats` body alongside `bytes_in`/`bytes_out`.
+//   - v0.2.0 servers reading this field as unknown drop it on the
+//     floor (proto3 unknown-field semantics); their /metrics surface
+//     simply doesn't get the new collector. v0.3.0 servers reading a
+//     v0.2.0 client's StatsReport see field 6 absent → decoded as 0
+//     → the new collector reports 0 for that rule (correct).
+
+message RuleStats {
+  // ... v0.2.0 fields elided ...
+  uint64 dns_failures = 6;     // NEW in v0.3.0
+}
+
+// ============================================================================
 // No changes to other messages
 // ============================================================================
 //
-// `RuleStats`, `PerPortStats`, `RuleUpdate`, `RuleStatus`, `Hello`,
-// `Welcome`, `StatsReport`, and the envelope messages are all untouched.
-//
-// In particular `RuleStats` does NOT gain a `dns_failures` field. The
-// new per-rule DNS-failure counter is exposed through the Prometheus
-// scrape endpoint (`forward_rule_dns_failures_total{client,rule}`) and
-// the operator HTTP API (`GET /v1/rules/{id}/stats` body — see
-// contracts/operator-api.md). Carrying it on the gRPC stats stream
-// would inflate the StatsReport schema for a counter that operators
-// already read off the metrics endpoint.
+// `PerPortStats`, `RuleUpdate`, `RuleStatus`, `Hello`, `Welcome`,
+// `StatsReport`, and the envelope messages are all untouched.

@@ -180,7 +180,8 @@ of DNS resolution. Lives alongside the v0.2.0 counters
 | Field          | Type        | Notes                                                                                              |
 |----------------|-------------|----------------------------------------------------------------------------------------------------|
 | `value`        | `AtomicU64` | Bumped exactly once per end-user connection that failed because of `dns_resolution_failed` (FR-008). |
-| `Prometheus`   | `IntCounterVec({"client", "rule"})` | One row per rule on the metrics endpoint (SC-006).                       |
+| `wire`         | `RuleStats.dns_failures = 6` (uint64) | Carried to the server on the existing 5 s `StatsReport` tick (R-008 / contracts/forward.proto). |
+| `Prometheus`   | `IntCounterVec({"client", "rule"})` | Server-side collector fed by the StatsReport accumulation; one row per rule on the metrics endpoint (SC-006). |
 
 **Increment rule**: bumped *only* by the resolver layer on a
 "final" DNS failure (NXDOMAIN, SERVFAIL, full multi-A exhaustion,

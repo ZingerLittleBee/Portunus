@@ -305,7 +305,7 @@ encode/decode byte-identically — verified by a contract test in
 
 ---
 
-## R-008 — Metric naming and label cardinality
+## R-008 — Metric naming, wire transport, and label cardinality
 
 **Decision**: New collector
 `forward_rule_dns_failures_total{client, rule}`, type `IntCounterVec`,
@@ -316,6 +316,14 @@ classifier (NXDOMAIN, SERVFAIL, timeout, …) is captured in the
 structured log event `rule.dns_failed.reason` for diagnosis but not
 exploded into Prometheus rows.
 
+**Wire transport**: the count is bumped on the client (FR-008 increment
+rule), then carried to the server on the existing per-rule
+`StatsReport` tick via a new `RuleStats.dns_failures = 6` proto field
+(see `contracts/forward.proto` overlay). The server accumulates per
+`(client, rule)` and exposes the resulting value through both the
+Prometheus collector above and the operator HTTP
+`GET /v1/rules/{id}/stats` body.
+
 **Rationale**:
 
 - SC-006 commits to "one row per rule that has ever attempted
@@ -325,9 +333,19 @@ exploded into Prometheus rows.
 - Matching the existing metric family's labels means existing alert
   templates and dashboards can adopt the new counter with one-line
   diff (operator ergonomics).
+- Carrying the count on the existing 5 s `StatsReport` tick (instead
+  of a dedicated message) keeps the wire delta minimal — one optional
+  `uint64`, no new RPC, no new envelope variant.
 
 **Alternatives considered**:
 
+- **Client-side `/metrics` endpoint** — rejected: would require the
+  client to expose a separately scraped surface. The whole point of
+  the existing architecture is that the server is the single
+  observability vantage point.
+- **Dedicated `DnsFailureReport` message in the bidirectional stream**
+  — rejected: solves nothing the existing `StatsReport` doesn't already
+  solve, costs a new message type and an extra envelope variant.
 - **`forward_rule_dns_failures_by_reason{client, rule, reason}`** —
   rejected as above.
 - **Histogram of resolution latency** — deferred. The ≤ 1 query per
