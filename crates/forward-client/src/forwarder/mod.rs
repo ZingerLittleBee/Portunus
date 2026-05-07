@@ -251,6 +251,7 @@ async fn accept_loop<R: Resolve + 'static>(
                         match proxy::proxy(
                             sock,
                             conn_resolver.as_ref(),
+                            rule_id,
                             &target,
                             target_port,
                             prefer_ipv6,

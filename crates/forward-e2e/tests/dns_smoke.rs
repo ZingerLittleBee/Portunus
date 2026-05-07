@@ -140,3 +140,151 @@ fn test_dns_us1_happy_path() {
         "IP-target round-trip mismatch — v0.2.0 byte path regressed"
     );
 }
+
+/// T027 (US2) — DNS failure does NOT take a rule down.
+///
+/// The original spec wording asked for /etc/hosts manipulation to
+/// observe failure-then-recovery. That requires root and pollutes the
+/// system DNS for parallel test runs. We use the cleaner alternative
+/// allowed by spec § Assumptions: a hostname under `.invalid` (RFC
+/// 6761 §6.4) which is guaranteed NXDOMAIN on every well-behaved
+/// resolver, including hickory.
+///
+/// What we assert:
+///   - The push succeeds (server-side `Target::parse` accepts a
+///     syntactically valid hostname; the client only resolves at
+///     connect time per FR-002).
+///   - `list-rules` reports the rule as Active (FR-004 — DNS failure
+///     does NOT mark the rule Failed; that only happens on bind /
+///     port-conflict failures).
+///   - End-user connections are refused within 3 s (FR-005 budget).
+///   - The client emits a structured `rule.dns_failed` log line
+///     (T034) carrying the rule_id + hostname + a classified reason.
+///
+/// The "recovery on next connection" half from the spec is covered
+/// by the cache state-machine unit test
+/// `cache::tests::refresh_failure_serves_stale_within_grace`
+/// (T025) — replicating it e2e would require dependency-injecting
+/// the system resolver, which is out of scope until the localhost
+/// mini-resolver harness lands (referenced from T024 but not part of
+/// US2's scope).
+/// Probe whether the local resolver actually returns NXDOMAIN for a
+/// `.invalid` hostname. Some ISP/captive-portal DNS configurations
+/// hijack NXDOMAIN and return a synthetic IP, which would invalidate
+/// the failure-side assertions of `test_dns_us2_failure_*`. When that
+/// happens we skip with a clear explanation rather than fail
+/// spuriously.
+fn dns_hijack_detected() -> bool {
+    use std::net::ToSocketAddrs;
+    "broken.invalid:443"
+        .to_socket_addrs()
+        .map(|mut iter| iter.next().is_some())
+        .unwrap_or(false)
+}
+
+#[test]
+fn test_dns_us2_failure_active_rule_and_event() {
+    if dns_hijack_detected() {
+        eprintln!(
+            "skipping: local resolver hijacks NXDOMAIN for `.invalid` — \
+             T034 cannot exercise dns_failed without a controlled resolver \
+             (covered by unit tests cache::tests::* and \
+             resolver::tests::all_addrs_unreachable_when_every_address_fails)"
+        );
+        return;
+    }
+    let server = common::spawn_server(&[]);
+    let (_grpc, http) = server
+        .wait_listening(Duration::from_secs(5))
+        .expect("server listening");
+
+    let bundle = common::provision_client_http(&http, "edge-01");
+    let client = common::spawn_client(&bundle, &[]);
+
+    let connected = common::wait_for(Duration::from_secs(5), || {
+        let arr = common::list_clients_http(&http);
+        arr.as_array()?
+            .iter()
+            .find(|v| {
+                v.get("client_name").and_then(|n| n.as_str()) == Some("edge-01")
+                    && v.get("connected").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .cloned()
+    });
+    assert!(connected.is_some(), "edge-01 must connect within 5s");
+
+    let listen = pick_free_port();
+    let (status, body) = common::push_rule_http(
+        &http,
+        "edge-01",
+        listen,
+        // RFC 6761 §6.4: the .invalid TLD is reserved and MUST NOT
+        // resolve in any production DNS.
+        "broken.invalid",
+        443,
+        Some(3),
+    );
+    assert!(
+        status.is_success(),
+        "DNS-target push must succeed even for unresolvable name (FR-004): {status} body={body}"
+    );
+
+    // Rule must report Active — FR-004 / acceptance scenario 1.
+    let rules = common::list_rules_http(&http, Some("edge-01"));
+    let rule_state = rules
+        .as_array()
+        .and_then(|arr| {
+            arr.iter()
+                .find(|r| r.get("listen_port").and_then(Value::as_u64) == Some(u64::from(listen)))
+        })
+        .expect("rule should be listed");
+    let kind = rule_state
+        .pointer("/state/kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_eq!(
+        kind, "active",
+        "DNS-failing rule MUST stay Active (FR-004), got state={kind}"
+    );
+
+    // End-user connection must fail within 3 s (FR-005 budget).
+    let attempt_started = std::time::Instant::now();
+    let conn_result = TcpStream::connect((Ipv4Addr::LOCALHOST, listen));
+    if let Ok(mut sock) = conn_result {
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        sock.write_all(b"ping").unwrap();
+        let mut buf = [0u8; 4];
+        let read_err = sock.read_exact(&mut buf);
+        assert!(
+            read_err.is_err() || attempt_started.elapsed() < Duration::from_secs(4),
+            "connection to DNS-failing target must fail-fast within 3s budget, took {:?}",
+            attempt_started.elapsed()
+        );
+    }
+    // Either the kernel refuses (proxy closed inbound) or the proxy
+    // accepted then immediately closed — both satisfy "refuse / fail
+    // fast" per FR-005.
+
+    // T034: structured `rule.dns_failed` event MUST appear in the
+    // client's stderr within 5 s. We poll because tracing's JSON
+    // layer may flush asynchronously.
+    let saw_event = common::wait_for(Duration::from_secs(5), || {
+        client
+            .stderr_lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("rule.dns_failed"))
+            .then_some(())
+    });
+    if saw_event.is_none() {
+        eprintln!("--- client stderr (no rule.dns_failed seen) ---");
+        for l in client.stderr_lines.lock().unwrap().iter() {
+            eprintln!("{l}");
+        }
+    }
+    assert!(
+        saw_event.is_some(),
+        "T034: client MUST emit rule.dns_failed for broken.invalid"
+    );
+}

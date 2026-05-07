@@ -7,12 +7,13 @@
 use std::io;
 use std::sync::Arc;
 
-use forward_core::Target;
+use forward_core::{RuleId, Target};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use super::stats::RuleStats;
-use crate::resolver::{LiveResolver, Resolve};
+use crate::resolver::{ConnectError, LiveResolver, ResolveFailReason, Resolve};
 
 /// Forward `inbound` to `target` (resolved via `resolver` for DNS
 /// targets; short-circuited to a direct connect for IP literals)
@@ -42,6 +43,7 @@ use crate::resolver::{LiveResolver, Resolve};
 pub async fn proxy<R: Resolve>(
     mut inbound: TcpStream,
     resolver: &LiveResolver<R>,
+    rule_id: RuleId,
     target: &Target,
     target_port: u16,
     prefer_ipv6: bool,
@@ -49,9 +51,54 @@ pub async fn proxy<R: Resolve>(
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
 ) -> io::Result<(u64, u64)> {
-    let mut outbound = resolver
-        .connect_target(target, target_port, prefer_ipv6)
-        .await?;
+    let mut outbound = match resolver
+        .connect_target(rule_id, target, target_port, prefer_ipv6)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            // T034: refuse the inbound socket cleanly (drop closes
+            // it; do NOT half-open the proxy) and emit the
+            // structured DNS-failure event with rule_id + hostname +
+            // classified reason. AllAddrsUnreachable counts as a
+            // DNS-side failure per FR-006/FR-008.
+            match &e {
+                ConnectError::Resolution(reason) => {
+                    let hostname_str = match target {
+                        Target::Dns(h) => h.as_str().to_string(),
+                        Target::Ip(ip) => ip.to_string(),
+                    };
+                    warn!(
+                        event = "rule.dns_failed",
+                        rule_id = %rule_id,
+                        hostname = %hostname_str,
+                        reason = ResolveFailReason::classify(reason).as_str(),
+                        detail = %reason,
+                    );
+                }
+                ConnectError::AllAddrsUnreachable { tried, last } => {
+                    let hostname_str = match target {
+                        Target::Dns(h) => h.as_str().to_string(),
+                        Target::Ip(ip) => ip.to_string(),
+                    };
+                    warn!(
+                        event = "rule.dns_failed",
+                        rule_id = %rule_id,
+                        hostname = %hostname_str,
+                        reason = ResolveFailReason::AllAddrsUnreachable.as_str(),
+                        tried = *tried,
+                        last_error = %last,
+                    );
+                }
+                ConnectError::Dial(_) => {
+                    // Pure dial failure on an IP-target rule. Not a
+                    // DNS event; let accept_loop log the generic
+                    // rule.conn_error fall-through.
+                }
+            }
+            return Err(e.into_io());
+        }
+    };
     // Disable Nagle to keep latency-sensitive small writes prompt; the kernel
     // still coalesces opportunistically.
     let _ = inbound.set_nodelay(true);
@@ -162,6 +209,7 @@ mod tests {
             proxy(
                 sock,
                 resolver.as_ref(),
+                RuleId(0),
                 &Target::Ip(echo.ip()),
                 echo.port(),
                 false,
@@ -200,6 +248,7 @@ mod tests {
             proxy(
                 sock,
                 resolver.as_ref(),
+                RuleId(0),
                 &Target::Ip(echo.ip()),
                 echo.port(),
                 false,
@@ -233,6 +282,7 @@ mod tests {
             proxy(
                 sock,
                 resolver.as_ref(),
+                RuleId(0),
                 &Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 1,
                 false,
