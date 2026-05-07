@@ -65,13 +65,45 @@ The v0.3.0 `dns_failures` counter increments on `Resolution`/`AllAddrsUnreachabl
 
 ## R-007 — `active_connections` vs `active_flows` naming
 
-**Decision**: At the **wire level**, reuse the existing `RuleStats.active_connections` field for both protocols — semantically it is "live concurrent sessions", which is meaningful for both. At the **operator-visible surface** (`rule-stats` text output, `/metrics` collector name, `--per-port` JSON), expose protocol-appropriate naming: TCP rules show `active_connections`, UDP rules show `active_flows`. The Prometheus side ships **two distinct collector names** so dashboards can target one or the other without filtering by `rule_id`.
+**Decision**: Split at **both** the wire layer and the operator
+surface. The existing `RuleStats.active_connections` (proto field 4)
+remains TCP-only — UDP rules emit zero on it. A new
+`RuleStats.active_flows` (proto field 9) carries the live UDP flow
+count — TCP rules emit zero on it. Prometheus ships two distinct
+collector names (`forward_rule_active_connections` and
+`forward_rule_active_flows`), each with the same `{client, rule}`
+label set. Operator text surfaces (`rule-stats` text, JSON) select
+the field based on `rule.protocol`.
 
-**Rationale**: Wire reuse keeps the proto byte-identical for v0.3.0 readers (FR-010, R-009 below). Operator-visible naming honors the spec's FR-008 wording and matches industry convention (UDP NAT entries are "flows", TCP sessions are "connections"). Two Prometheus collectors with identical labels but different names is the same pattern v0.2.0 used for `bytes_in_total` vs `bytes_out_total` — no cardinality penalty, dashboards stay self-documenting.
+**Rationale**: Reusing `active_connections` for both protocols
+sounds elegant but breaks the v0.3.0 wire contract: a v0.3.0
+operator dashboard reading `active_connections` for an `edge-01:0`
+that the v0.4.0 server now treats as UDP would silently start
+showing UDP flow counts under a label that historically meant TCP
+connections. Worse, a v0.3.0 reader (operator dashboard, scraping
+sidecar) decoding a v0.4.0 RuleStats sees an `active_connections`
+value with no protocol context — the field's meaning depends on
+out-of-band rule metadata. Splitting at the wire level keeps every
+field's semantics stable: `active_connections > 0` ⇒ TCP rule,
+`active_flows > 0` ⇒ UDP rule, both fields are zero for an idle
+rule of either protocol. This is the same pattern v0.2.0 used for
+`bytes_in_total` vs `bytes_out_total` (and v0.3.0 for
+`dns_failures_total`) — distinct collectors with shared labels, no
+cardinality penalty, dashboards stay self-documenting.
+
+The wire cost is one `uint32` per `RuleStats` message (4 bytes per
+stats tick, every 5 s, per rule) — well within the additive proto3
+budget.
 
 **Alternatives considered**:
-- One collector `forward_rule_active_sessions{client,rule,protocol}`: adds a label, breaks the v0.3.0 cardinality contract for dashboards that key by the existing collector name.
-- Rename `active_connections` to `active_sessions` on the wire: not byte-compat with v0.3.0. Hard no.
+- Reuse `active_connections` field for both protocols (the
+  initially-recorded R-007 decision): silently overloads a stable
+  v0.3.0 field's semantics. Rejected as a wire-contract violation.
+- One collector `forward_rule_active_sessions{client,rule,protocol}`:
+  adds a label, breaks the v0.3.0 cardinality contract for dashboards
+  that key by the existing collector name.
+- Rename `active_connections` to `active_sessions` on the wire: not
+  byte-compat with v0.3.0. Hard no.
 
 ## R-008 — Prometheus metric cardinality (SC-004)
 

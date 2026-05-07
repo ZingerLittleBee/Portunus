@@ -98,11 +98,19 @@ counter all carry over from v0.3.0.
 ### 6. Verify range-rule UDP (US3)
 
 ```sh
-forward-server push-rule edge-01 6010-6019 127.0.0.1:9999-9999 --protocol udp
-# → 10 UDP listeners on edge-01, all forwarding to upstream :9999
+forward-server push-rule edge-01 6010-6019 127.0.0.1:9990-9999 --protocol udp
+# → 10 UDP listeners on edge-01, each forwarding to its same-offset
+#   upstream port (edge :6010 → upstream :9990, …, edge :6013 → :9993, …)
+#   Range rule semantics require equal-length ranges on both sides
+#   (carry-over from v0.2.0 — see specs/002-port-range-forward).
+
+# Bring up echoes on the upstream window:
+for p in 9990 9991 9992 9993 9994 9995 9996 9997 9998 9999; do
+  ncat -u -l -k -e /bin/cat 127.0.0.1 $p &
+done
 
 echo 'range-port-3' | ncat -u -w 1 127.0.0.1 6013
-# → range-port-3
+# → range-port-3   (lands at upstream :9993)
 ```
 
 Per-port UDP datagram counters via `--per-port`:

@@ -17,13 +17,40 @@ validator, `Cache`, and `LiveResolver` carry over verbatim.
 | `TCP` | 1 | v0.1.0+ |
 | `UDP` | 2 | **NEW in v0.4.0** |
 
-A v0.3.0 client receiving `UDP = 2` decodes the integer value and a
-typed match against the enum hits the default arm, which returns
-`unsupported_protocol` over the gRPC `RuleStatus` reply (FR-011).
-This is enforced server-side at rule push time as well — the server
-inspects its connected client's `Welcome.protocol_version` and
-rejects a UDP push for a v0.3.0 client with a typed error code, so
-the operator sees the failure before bytes hit the wire.
+Capability negotiation is **proactive** (push-time), not reactive
+(after RuleStatus.failed):
+
+1. **Client → server (Hello)**: The client declares its supported
+   protocols in a new `Hello.supported_protocols repeated Protocol`
+   field (see `contracts/forward.proto`). v0.4.0 clients send
+   `{TCP, UDP}`. v0.3.0 clients don't send the field; the server
+   treats absence as `{TCP}`.
+2. **Server (ConnectedClient)**: The Control RPC handler reads the
+   first inbound `ClientMessage`. If it is a Hello, the server
+   stores `supported_protocols: HashSet<Protocol>` on the
+   `ConnectedClient` row created by `ClientRegistry::register`. If
+   the first message is not a Hello (Hello is documented as
+   optional in v1), the field defaults to `{TCP}`. Welcome is sent
+   AFTER this read (in v0.3.0 it was sent immediately on register —
+   v0.4.0 reorders so Welcome can carry capability-derived tunables
+   in the future).
+3. **Server (push validation)**: `RuleStore::push_*` rejects a UDP
+   rule with HTTP 422 / exit 3 / typed code `unsupported_protocol`
+   if the target client's `supported_protocols` does not contain
+   `UDP`. Rejection happens **before** the rule is persisted to
+   `rules.json` and **before** any RuleUpdate is sent over the
+   wire — operators see the failure at the CLI / HTTP response.
+4. **Client (defence-in-depth)**: The client's RuleUpdate handler
+   inspects `rule.protocol`. Unknown variants (any value other than
+   the protocols this client was compiled with) return
+   `RuleStatus.failed` with `reason="unsupported_protocol"`. A v0.3
+   client paired with a v0.4 server that bypassed step 3 (e.g.
+   server downgrade between Hello and push) still fails safely.
+
+This explicitly replaces the reactive RuleStatus.failed-only path
+that v0.3.0 implicitly relied on (and that did not actually trigger,
+since v0.3.0 clients silently constructed a TCP forwarder for any
+protocol value).
 
 ### UdpFlow (new, client-side runtime)
 
@@ -160,15 +187,18 @@ inside the `Welcome` message at control-plane connect time). This
 keeps the operator surface single-pane: an operator running 50 edge
 hosts tunes one `server.toml`, not 50 `client.toml`.
 
-**Welcome additions (additive proto3)**:
+**Welcome additions (additive proto3)** — canonical v0.3.0 Welcome
+has fields 1 (`server_version`) and 2 (`server_time_unix_ms`); the
+new tunables claim fields 3 and 4:
 
 ```protobuf
 message Welcome {
-  // ... existing fields ...
+  string server_version       = 1;
+  uint64 server_time_unix_ms  = 2;
 
   // Additive in v1.3 (spec 004-udp-forward).
-  uint32 udp_flow_idle_secs    = N;   // 0 → use client's compile-time default (60)
-  uint32 udp_max_flows_per_rule = N+1; // 0 → use client's compile-time default (1024)
+  uint32 udp_flow_idle_secs     = 3;  // 0 → use client's compile-time default (60)
+  uint32 udp_max_flows_per_rule = 4;  // 0 → use client's compile-time default (1024)
 }
 ```
 
@@ -251,7 +281,7 @@ to the existing `bytes_in` / `bytes_out` per-port object.
 
 | Case | Storage / runtime treatment |
 |---|---|
-| Datagram larger than recv buffer | Kernel sets `MSG_TRUNC`; we count `recv_truncated` per-rule (see contracts/operator-api.md for the reserved counter slot, surfaced in DEBUG logs only for v0.4.0). |
+| Datagram larger than recv buffer | Impossible at the IP level — the per-listener buffer is sized at 65 535 bytes (the IPv4/IPv6 UDP payload ceiling). No truncation can occur, so no counter is required. (Tokio's `UdpSocket::recv_from` does not expose `MSG_TRUNC` anyway — a counter would not be implementable on the current API surface.) |
 | Upstream `EHOSTUNREACH`/`ENETUNREACH` from `send_to` | Per-flow state preserved (FR-012). One log at WARN level the first time per flow, count in a per-rule diagnostic counter (reserved field, not a Prometheus row in v0.4.0). |
 | TCP rule on `:9000` AND UDP rule on `:9000` for same client | Both legal (per-protocol port spaces). |
 | Mixed-protocol port range | Rejected at push time with `mismatched_range` (existing v0.2.0 error code reused). |
