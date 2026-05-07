@@ -97,6 +97,14 @@ message Rule {
   // Each listen port `p` forwards to target_port + (p - listen_port).
   uint32 listen_port_end = 6;
   uint32 target_port_end = 7;
+
+  // Additive in v1.2 (spec 003-domain-name-forward).
+  // Address-family preference for DNS-target rules. Absent (proto3
+  // `optional`, treated as None on the client) → default IPv4-first.
+  // `true` → prefer AAAA records when both A and AAAA are returned.
+  // For IP-literal targets the field is silently ignored. Wire field
+  // number 8 is the next free slot after v1.1.
+  optional bool prefer_ipv6 = 8;
 }
 
 enum RuleAction {
@@ -143,6 +151,15 @@ message RuleStats {
   // Consumed only when an operator requests `--per-port`; never re-
   // exported as Prometheus time series (cardinality budget — SC-002).
   repeated PerPortStats per_port = 5;
+
+  // Additive in v1.2 (spec 003-domain-name-forward).
+  // Cumulative count of end-user connections that failed because of
+  // DNS resolution. Always 0 for IP-target rules. Carried on the
+  // existing 5 s StatsReport tick; the server feeds the new
+  // `forward_rule_dns_failures_total{client,rule}` collector.
+  // v1.1 servers/clients reading an unknown field 6 follow proto3
+  // semantics (drop on emit, decode as 0 on read).
+  uint64 dns_failures = 6;
 }
 
 // New in v1.1 (spec 002-port-range-forward).

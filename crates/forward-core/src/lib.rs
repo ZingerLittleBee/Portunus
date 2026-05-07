@@ -7,10 +7,14 @@
 pub mod config;
 pub mod error;
 pub mod fingerprint;
+pub mod hostname;
 pub mod id;
 pub mod log_redact;
 pub mod port_range;
+pub mod target;
 
 pub use error::ForwardError;
+pub use hostname::{Hostname, HostnameError};
 pub use id::{ClientName, ClientNameError, RequestId, RuleId};
 pub use port_range::{PortRange, PortRangeError};
+pub use target::{Target, TargetError};

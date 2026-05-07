@@ -546,6 +546,8 @@ async fn send_stats_report(
                 bytes_out: bout,
                 active_connections: active,
                 per_port,
+                // Populated by US4 (T048); zero in US1.
+                dns_failures: 0,
             }
         })
         .collect();

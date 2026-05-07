@@ -36,9 +36,9 @@ Multi-crate Cargo workspace at repo root: `crates/forward-core`,
 
 **Purpose**: Workspace-level prerequisites for the v0.3.0 work
 
-- [ ] T001 Bump workspace version to `0.3.0-dev` in `Cargo.toml` (workspace package metadata) and re-sync each member crate's `version = "0.3.0-dev"` line in `crates/*/Cargo.toml`
-- [ ] T002 [P] Add `hickory-resolver = "0.24"` (or current stable) with features `["tokio-runtime", "system-config"]` to `crates/forward-client/Cargo.toml`; deny default features to keep static-musl builds clean (no `dns-over-tls` / `dns-over-https` per spec § OOS)
-- [ ] T003 [P] Add `[Unreleased]` section to `CHANGELOG.md` referencing `003-domain-name-forward`; leave the body empty until T053 fills it post-quickstart
+- [X] T001 Bump workspace version to `0.3.0-dev` in `Cargo.toml` (workspace package metadata) and re-sync each member crate's `version = "0.3.0-dev"` line in `crates/*/Cargo.toml`
+- [X] T002 [P] Add `hickory-resolver = "0.24"` (or current stable) with features `["tokio-runtime", "system-config"]` to `crates/forward-client/Cargo.toml`; deny default features to keep static-musl builds clean (no `dns-over-tls` / `dns-over-https` per spec § OOS)
+- [X] T003 [P] Add `[Unreleased]` section to `CHANGELOG.md` referencing `003-domain-name-forward`; leave the body empty until T053 fills it post-quickstart
 
 ---
 
@@ -51,14 +51,14 @@ seam — every user story consumes these.
 complete (US1 needs the proto field, US2 needs Target classification,
 etc.).
 
-- [ ] T004 [P] Create RFC 1123 strict-hostname validator + `Hostname` newtype in `crates/forward-core/src/hostname.rs` (R-005, FR-001). Pure function, zero deps; rejects underscores, IDN unicode, SRV-style names, whitespace, label > 63 octets, total > 253 octets, leading/trailing hyphen
-- [ ] T005 [P] Unit tests for the hostname validator in `crates/forward-core/src/hostname.rs` (`#[cfg(test)] mod tests`): happy cases (`api.example.com`, `single`, trailing-dot FQDN) + sad cases (each rejection rule above) + ASCII case-insensitive normalization
-- [ ] T006 Create `Target` enum + `Target::parse(&str) -> Result<Target, TargetError>` in `crates/forward-core/src/target.rs` per data-model.md disambiguation order: try IPv4 → bracketed IPv6 → hostname; bare unbracketed IPv6 with port rejected
-- [ ] T007 [P] Unit tests for `Target::parse` in `crates/forward-core/src/target.rs`: IPv4 literal / bracketed IPv6 / valid hostname / hostname classified before all-numeric / unbracketed IPv6 rejection
-- [ ] T008 Re-export `Hostname` and `Target` from `crates/forward-core/src/lib.rs` (one-line `pub use`)
-- [ ] T009 Update `proto/forward.proto`: add `optional bool prefer_ipv6 = 8;` to `message Rule` and `uint64 dns_failures = 6;` to `message RuleStats` per `contracts/forward.proto`
-- [ ] T010 Contract test `crates/forward-proto/tests/dns_wire_compat.rs` (NEW): construct a `Rule` and a `RuleStats` populated only with v0.2.0 fields; serialize via prost; assert byte-identical encoding before/after the additive proto change (use a hand-rolled v0.2.0-shaped reference vec for the comparison). Then construct one with `prefer_ipv6 = Some(true)` / `dns_failures = 7` and assert the new bytes round-trip cleanly
-- [ ] T011 Extend `PersistedRule` in `crates/forward-server/src/rules.rs`: add `prefer_ipv6: Option<bool>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`; on load, classify `target_host` via `forward_core::Target::parse` and reject entries whose `target_host` fails parsing (data corruption — distinct from forward-compat unknown serde fields, which proto3/serde already tolerate) with a startup error naming the offending `rule_id`
+- [X] T004 [P] Create RFC 1123 strict-hostname validator + `Hostname` newtype in `crates/forward-core/src/hostname.rs` (R-005, FR-001). Pure function, zero deps; rejects underscores, IDN unicode, SRV-style names, whitespace, label > 63 octets, total > 253 octets, leading/trailing hyphen
+- [X] T005 [P] Unit tests for the hostname validator in `crates/forward-core/src/hostname.rs` (`#[cfg(test)] mod tests`): happy cases (`api.example.com`, `single`, trailing-dot FQDN) + sad cases (each rejection rule above) + ASCII case-insensitive normalization
+- [X] T006 Create `Target` enum + `Target::parse(&str) -> Result<Target, TargetError>` in `crates/forward-core/src/target.rs` per data-model.md disambiguation order: try IPv4 → bracketed IPv6 → hostname; bare unbracketed IPv6 with port rejected
+- [X] T007 [P] Unit tests for `Target::parse` in `crates/forward-core/src/target.rs`: IPv4 literal / bracketed IPv6 / valid hostname / hostname classified before all-numeric / unbracketed IPv6 rejection
+- [X] T008 Re-export `Hostname` and `Target` from `crates/forward-core/src/lib.rs` (one-line `pub use`)
+- [X] T009 Update `proto/forward.proto`: add `optional bool prefer_ipv6 = 8;` to `message Rule` and `uint64 dns_failures = 6;` to `message RuleStats` per `contracts/forward.proto`
+- [X] T010 Contract test `crates/forward-proto/tests/dns_wire_compat.rs` (NEW): construct a `Rule` and a `RuleStats` populated only with v0.2.0 fields; serialize via prost; assert byte-identical encoding before/after the additive proto change (use a hand-rolled v0.2.0-shaped reference vec for the comparison). Then construct one with `prefer_ipv6 = Some(true)` / `dns_failures = 7` and assert the new bytes round-trip cleanly
+- [X] T011 Extend `PersistedRule` in `crates/forward-server/src/rules.rs`: add `prefer_ipv6: Option<bool>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`; on load, classify `target_host` via `forward_core::Target::parse` and reject entries whose `target_host` fails parsing (data corruption — distinct from forward-compat unknown serde fields, which proto3/serde already tolerate) with a startup error naming the offending `rule_id`
 
 **Checkpoint**: Foundation ready — proto delta in, hostname seam in,
 persistence accepts hostnames. User story implementation can proceed.

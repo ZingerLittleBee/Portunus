@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Domain-name forwarding targets** (additive, spec
+  `003-domain-name-forward`). _In progress — body filled at quickstart
+  verification (T058)._
+
+## [0.2.0] — 2026-05-07
+
+### Added
+
 - **Port-range forwarding rules** (additive, spec
   `002-port-range-forward`). Operators can now push a single forwarding
   rule that maps a contiguous listen-port range to a same-offset

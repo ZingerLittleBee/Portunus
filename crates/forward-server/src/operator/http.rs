@@ -76,6 +76,12 @@ struct PushRuleBody {
     target_port_end: Option<u16>,
     #[serde(default = "default_protocol")]
     protocol: String,
+    /// 003-domain-name-forward: per-rule address-family preference
+    /// for DNS-target rules. Absent → IPv4-first (default).
+    /// `true` → prefer IPv6 (AAAA-first). Silently ignored for
+    /// IP-literal targets.
+    #[serde(default)]
+    prefer_ipv6: Option<bool>,
     /// Optional override of the per-request ack timeout in seconds.
     #[serde(default)]
     ack_timeout_secs: Option<u64>,
@@ -117,6 +123,7 @@ async fn post_rules(
         &body.target_host,
         target,
         &body.protocol,
+        body.prefer_ipv6,
         state.range_rule_max_ports,
         timeout,
     )

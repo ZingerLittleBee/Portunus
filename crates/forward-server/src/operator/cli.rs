@@ -321,6 +321,7 @@ pub async fn push_rule(
     target_host: &str,
     target: PortRange,
     protocol: &str,
+    prefer_ipv6: Option<bool>,
     range_cap: u32,
     ack_timeout: Duration,
 ) -> Result<Rule, OperatorError> {
@@ -341,6 +342,7 @@ pub async fn push_rule(
             target_host.to_string(),
             target,
             proto,
+            prefer_ipv6,
             range_cap,
         )
         .await?;
@@ -383,6 +385,7 @@ pub async fn push_rule(
                 } else {
                     0
                 },
+                prefer_ipv6,
             }),
         })),
     };
@@ -494,6 +497,7 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     protocol: ProtoProto::Tcp as i32,
                     listen_port_end: removed.listen_port_end.map_or(0, u32::from),
                     target_port_end: removed.target_port_end.map_or(0, u32::from),
+                    prefer_ipv6: removed.prefer_ipv6,
                 }),
             })),
         };

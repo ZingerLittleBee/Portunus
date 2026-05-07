@@ -63,6 +63,13 @@ pub struct Rule {
     /// Range end on the target side (symmetric to `listen_port_end`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_port_end: Option<u16>,
+    /// Address-family preference for DNS-target rules
+    /// (003-domain-name-forward, FR-007). Absent → IPv4-first.
+    /// `Some(true)` → IPv6-first. Silently ignored for IP-literal
+    /// targets. Skipped on serialize when absent so v0.2.0 rule
+    /// payloads stay byte-identical (FR-009 / FR-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_ipv6: Option<bool>,
     pub protocol: Protocol,
     pub state: RuleState,
     pub created_at: DateTime<Utc>,
@@ -174,6 +181,7 @@ impl ServerRuleStore {
         target_host: String,
         target_port: u16,
         protocol: Protocol,
+        prefer_ipv6: Option<bool>,
     ) -> Result<Rule, RuleStoreError> {
         self.push_range(
             client_name,
@@ -181,6 +189,7 @@ impl ServerRuleStore {
             target_host,
             PortRange::single(target_port),
             protocol,
+            prefer_ipv6,
             // No cap enforcement on the legacy single-port path —
             // size 1 is always under any positive cap. We pass
             // u32::MAX so callers that don't know the cap (tests,
@@ -200,6 +209,7 @@ impl ServerRuleStore {
         target_host: String,
         target: PortRange,
         protocol: Protocol,
+        prefer_ipv6: Option<bool>,
         range_cap: u32,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
@@ -257,6 +267,7 @@ impl ServerRuleStore {
             target_host,
             target_port: target.start(),
             target_port_end,
+            prefer_ipv6,
             protocol,
             state: RuleState::Pending,
             created_at: now,
@@ -347,6 +358,7 @@ mod tests {
                 "10.0.0.5".into(),
                 8080,
                 Protocol::Tcp,
+                None,
             )
             .await
             .unwrap()
@@ -408,7 +420,7 @@ mod tests {
         let r = push_one(&store).await;
         store.mark_active(r.id).await.unwrap();
         let err = store
-            .push(name("edge-01"), 18080, "x".into(), 1, Protocol::Tcp)
+            .push(name("edge-01"), 18080, "x".into(), 1, Protocol::Tcp, None)
             .await
             .unwrap_err();
         match err {
@@ -426,7 +438,7 @@ mod tests {
         // Re-push: blocked.
         assert!(matches!(
             store
-                .push(name("edge-01"), 18080, "x".into(), 1, Protocol::Tcp)
+                .push(name("edge-01"), 18080, "x".into(), 1, Protocol::Tcp, None)
                 .await,
             Err(RuleStoreError::PortInUse { .. })
         ));
@@ -449,11 +461,11 @@ mod tests {
     async fn list_filters_by_client() {
         let store = ServerRuleStore::new();
         store
-            .push(name("edge-a"), 1000, "x".into(), 1, Protocol::Tcp)
+            .push(name("edge-a"), 1000, "x".into(), 1, Protocol::Tcp, None)
             .await
             .unwrap();
         store
-            .push(name("edge-b"), 1001, "x".into(), 1, Protocol::Tcp)
+            .push(name("edge-b"), 1001, "x".into(), 1, Protocol::Tcp, None)
             .await
             .unwrap();
         assert_eq!(store.list(None).await.len(), 2);
@@ -477,6 +489,7 @@ mod tests {
                 "10.0.0.5".into(),
                 PortRange::new(t, te).unwrap(),
                 Protocol::Tcp,
+                None,
                 1024,
             )
             .await
@@ -518,6 +531,7 @@ mod tests {
                 "10.0.0.5".into(),
                 PortRange::new(40000, 40000).unwrap(), // length 1 vs 51
                 Protocol::Tcp,
+                None,
                 1024,
             )
             .await
@@ -546,6 +560,7 @@ mod tests {
                 "h".into(),
                 PortRange::new(40000, 40005).unwrap(),
                 Protocol::Tcp,
+                None,
                 1024,
             )
             .await
@@ -566,6 +581,7 @@ mod tests {
                 "h".into(),
                 PortRange::new(40000, 40100).unwrap(),
                 Protocol::Tcp,
+                None,
                 50,
             )
             .await
@@ -590,6 +606,7 @@ mod tests {
                 "10.0.0.5".into(),
                 PortRange::single(8080),
                 Protocol::Tcp,
+                None,
                 1024,
             )
             .await
