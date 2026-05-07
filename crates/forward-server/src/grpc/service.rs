@@ -313,11 +313,23 @@ async fn handle_client_message(
             let entries = report.stats.len();
             for entry in report.stats {
                 let rule_id = RuleId(entry.rule_id);
+                // 005-multi-user-rbac T045: thread the rule's owner
+                // user_id through the metrics path so the per-rule
+                // collectors carry an `owner` label. If the rule was
+                // removed between the StatsReport leaving the client
+                // and arriving here, the lookup misses — fall back to
+                // `_unknown` so cardinality stays bounded.
+                let owner = state
+                    .rules
+                    .get(rule_id)
+                    .await
+                    .map_or_else(|| "_unknown".to_string(), |r| r.owner_user_id.to_string());
                 state
                     .stats_cache
                     .observe(
                         &identity.client_name,
                         rule_id,
+                        owner.as_str(),
                         entry.bytes_in,
                         entry.bytes_out,
                         entry.active_connections,

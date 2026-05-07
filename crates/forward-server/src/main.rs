@@ -1,16 +1,5 @@
 //! `forward-server` binary entry point.
 
-mod bundle;
-mod clients;
-mod grpc;
-mod metrics;
-mod operator;
-mod rules;
-mod serve;
-mod shutdown;
-mod state;
-mod tls;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -18,11 +7,15 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use forward_auth::file_store::FileTokenStore;
 
-use crate::clients::ConnectedClients;
-use crate::operator::cli::{self, OperatorError};
-use crate::operator::rule_cli;
-use crate::state::AppState;
-use crate::tls::ServerTlsMaterial;
+use forward_server::OutputFormat;
+use forward_server::clients::ConnectedClients;
+use forward_server::operator::bootstrap;
+use forward_server::operator::cli::{self, OperatorError};
+use forward_server::operator::identity_cli;
+use forward_server::operator::rule_cli;
+use forward_server::serve;
+use forward_server::state::AppState;
+use forward_server::tls::ServerTlsMaterial;
 
 #[derive(Parser, Debug)]
 #[command(name = "forward-server", version, about = "forward-rs control plane")]
@@ -111,12 +104,119 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum OutputFormat {
-    Text,
-    Json,
+    /// 005-multi-user-rbac: seed an empty operator store with the
+    /// canonical `_superadmin` user + an Active credential. Prints the
+    /// raw bearer token to stdout EXACTLY ONCE — capture it now.
+    BootstrapSuperadmin {
+        /// Display name for the new superadmin.
+        #[arg(long, default_value = "ops")]
+        name: String,
+    },
+    /// 005-multi-user-rbac: print a fresh URL-safe-base64 token to
+    /// stdout. Useful for seeding `operator_token` in `server.toml`
+    /// out-of-band before first start.
+    GenToken,
+    /// Add a new operator user (superadmin-only).
+    UserAdd {
+        user_id: String,
+        #[arg(long)]
+        display_name: String,
+        #[arg(long, default_value = "user")]
+        role: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    UserList {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    UserGet {
+        user_id: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    UserRemove {
+        user_id: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    /// Issue a fresh credential for a user. Prints raw token in JSON exactly once.
+    CredentialIssue {
+        user_id: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    CredentialList {
+        user_id: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    CredentialRevoke {
+        user_id: String,
+        credential_id: String,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    CredentialRotate {
+        user_id: String,
+        credential_id: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    /// Add a grant (superadmin-only). `--client` is either a `ClientName`
+    /// or `*` for wildcard. `--protocols` is a comma-separated list
+    /// (e.g. `tcp` or `tcp,udp`).
+    GrantAdd {
+        #[arg(long)]
+        user_id: String,
+        #[arg(long)]
+        client: String,
+        #[arg(long)]
+        listen_port_start: u16,
+        #[arg(long)]
+        listen_port_end: u16,
+        #[arg(long, value_delimiter = ',', default_value = "tcp")]
+        protocols: Vec<String>,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    GrantList {
+        #[arg(long)]
+        user_id: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    GrantRevoke {
+        grant_id: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -227,6 +327,98 @@ fn run(cli: Cli) -> Result<(), u8> {
             per_port,
             http_endpoint,
         } => rule_cli::stats(&http_endpoint, rule_id, format, per_port),
+        Cmd::BootstrapSuperadmin { name } => {
+            std::fs::create_dir_all(&config_dir).map_err(|e| {
+                eprintln!("config dir: {e}");
+                1u8
+            })?;
+            let identity_path = config_dir.join("identity.json");
+            let code = bootstrap::bootstrap_superadmin(&identity_path, &name);
+            if code == 0 { Ok(()) } else { Err(code) }
+        }
+        Cmd::GenToken => {
+            let code = bootstrap::gen_token();
+            if code == 0 { Ok(()) } else { Err(code) }
+        }
+        Cmd::UserAdd {
+            user_id,
+            display_name,
+            role,
+            format,
+            http_endpoint,
+        } => identity_cli::user_add(&http_endpoint, &user_id, &display_name, &role, format),
+        Cmd::UserList {
+            format,
+            http_endpoint,
+        } => identity_cli::user_list(&http_endpoint, format),
+        Cmd::UserGet {
+            user_id,
+            format,
+            http_endpoint,
+        } => identity_cli::user_get(&http_endpoint, &user_id, format),
+        Cmd::UserRemove {
+            user_id,
+            format,
+            http_endpoint,
+        } => identity_cli::user_remove(&http_endpoint, &user_id, format),
+        Cmd::CredentialIssue {
+            user_id,
+            label,
+            format,
+            http_endpoint,
+        } => identity_cli::credential_issue(&http_endpoint, &user_id, label.as_deref(), format),
+        Cmd::CredentialList {
+            user_id,
+            format,
+            http_endpoint,
+        } => identity_cli::credential_list(&http_endpoint, &user_id, format),
+        Cmd::CredentialRevoke {
+            user_id,
+            credential_id,
+            http_endpoint,
+        } => identity_cli::credential_revoke(&http_endpoint, &user_id, &credential_id),
+        Cmd::CredentialRotate {
+            user_id,
+            credential_id,
+            label,
+            format,
+            http_endpoint,
+        } => identity_cli::credential_rotate(
+            &http_endpoint,
+            &user_id,
+            &credential_id,
+            label.as_deref(),
+            format,
+        ),
+        Cmd::GrantAdd {
+            user_id,
+            client,
+            listen_port_start,
+            listen_port_end,
+            protocols,
+            note,
+            format,
+            http_endpoint,
+        } => identity_cli::grant_add(
+            &http_endpoint,
+            &user_id,
+            &client,
+            listen_port_start,
+            listen_port_end,
+            &protocols,
+            note.as_deref(),
+            format,
+        ),
+        Cmd::GrantList {
+            user_id,
+            format,
+            http_endpoint,
+        } => identity_cli::grant_list(&http_endpoint, user_id.as_deref(), format),
+        Cmd::GrantRevoke {
+            grant_id,
+            format,
+            http_endpoint,
+        } => identity_cli::grant_revoke(&http_endpoint, &grant_id, format),
     }
 }
 
@@ -263,9 +455,17 @@ fn build_offline_state(
         eprintln!("token store: {e}");
         1u8
     })?);
+    let operator_store = Arc::new(
+        forward_auth::operator_store::FileOperatorStore::open(config_dir.join("identity.json"))
+            .map_err(|e| {
+                eprintln!("operator store: {e}");
+                1u8
+            })?,
+    );
     let endpoint = advertised_endpoint.unwrap_or_else(|| "127.0.0.1:7443".to_string());
     AppState::new(
         tokens,
+        operator_store,
         ConnectedClients::default(),
         endpoint,
         tls.leaf_fingerprint_hex,

@@ -43,7 +43,15 @@ cargo build --release -p forward-server -p forward-client
 # Host A — start the server (TLS material + token store auto-generated)
 ./target/release/forward-server --config-dir ./srv serve
 
-# Operator (any shell on Host A) — provision and copy the bundle
+# Operator (Host A) — bootstrap the superadmin operator account (v0.5.0+).
+# Prints the bearer token EXACTLY ONCE — capture it now.
+./target/release/forward-server --config-dir ./srv bootstrap-superadmin --name ops
+# →  superadmin user_id=_superadmin token=<paste-into-FORWARD_OPERATOR_TOKEN>
+
+# Every operator subcommand below reads FORWARD_OPERATOR_TOKEN from env.
+export FORWARD_OPERATOR_TOKEN=<paste-token-here>
+
+# Operator — provision a forwarding client and copy the bundle
 ./target/release/forward-server --config-dir ./srv \
   provision-client edge-01 --out ./edge-01.bundle.json
 
@@ -100,6 +108,61 @@ exposed per rule both via `rule-stats` and as
 
 IP-target rules from v0.2.0 keep their byte-identical hot path —
 the resolver layer is short-circuited entirely.
+
+## Multi-user RBAC (v0.5.0,
+[`005-multi-user-rbac`](specs/005-multi-user-rbac/quickstart.md))
+
+The operator API is now bearer-authed (`Authorization: Bearer <token>`
+on every `/v1/*` request). State lives in `<config-dir>/identity.json`
+alongside the existing `tokens.json`. Two bootstrap paths:
+
+```sh
+# Path A — interactive single-shot bootstrap (recommended).
+./target/release/forward-server --config-dir ./srv bootstrap-superadmin --name ops
+# Path B — server.toml shortcut. Add this once, restart, then remove.
+#   operator_token = "<43-char URL-safe-base64 token>"
+./target/release/forward-server gen-token  # ← prints a fresh token to stdout
+```
+
+Add a constrained user, give them a credential, scope what they can push:
+
+```sh
+./target/release/forward-server user-add alice --display-name Alice
+./target/release/forward-server credential-issue alice --label laptop
+./target/release/forward-server grant-add --user-id alice --client edge-01 \
+  --listen-port-start 30000 --listen-port-end 30050 --protocols tcp,udp
+```
+
+Now alice can `push-rule` only on `edge-01`, only ports `30000..=30050`,
+only TCP or UDP. Outside that envelope she gets HTTP 403 with one of
+`client_not_granted`, `port_outside_grant`, or `protocol_not_granted`.
+A grant whose `--client *` matches any client; a grant whose
+`--listen-port-end` equals `--listen-port-start` is a single-port grant.
+Closed-set matching: a single grant must cover the entire requested
+listen range — rules straddling two grants are rejected.
+
+`GET /v1/rules` projects only the caller's owned rules to non-superadmin
+users; superadmin gets `?owner=<user_id>` to filter by owner. Every
+rule response carries an `owner` field stamped at push time. Audit
+log: every operator request emits one structured `event =
+"operator.allow"` (INFO) or `"operator.deny"` (WARN); raw bearer
+tokens never reach the audit code path (Constitution Principle IV).
+
+Self-service credential rotate: alice authenticates with her current
+token and rotates it herself; the response carries a fresh token, the
+old token then 401s on subsequent requests:
+
+```sh
+FORWARD_OPERATOR_TOKEN=<alice's old token> \
+  ./target/release/forward-server credential-rotate alice <credential_id>
+```
+
+The data plane (gRPC client tokens, TCP/UDP forwarding hot path, DNS
+resolver, range rules) is **byte-identical** to v0.4.0 — every existing
+forwarding test passes verbatim under the v0.5 router after the test
+fixtures add the bearer header. See
+[`specs/005-multi-user-rbac/contracts/operator-api.md`](specs/005-multi-user-rbac/contracts/operator-api.md)
+for the full HTTP surface and exit-code table.
 
 The full step-by-step walkthrough — including key fingerprint pinning,
 revocation, and the SC-001 5-minute target — is in

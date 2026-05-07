@@ -4,12 +4,14 @@
 //! The bind address MUST be loopback; we assert that at server startup.
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    middleware::from_fn_with_state,
     response::IntoResponse,
     routing::{delete, get, post},
 };
+use forward_auth::OperatorIdentity;
 use forward_core::{PortRange, RuleId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,6 +20,7 @@ use std::time::Duration;
 
 use crate::bundle::CredentialBundle;
 use crate::operator::ClientView;
+use crate::operator::auth_layer::auth_middleware;
 use crate::operator::cli::{self, OperatorError};
 use crate::rules::Rule;
 use crate::state::AppState;
@@ -25,12 +28,38 @@ use crate::state::AppState;
 const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn router(state: Arc<AppState>) -> Router {
+    use crate::operator::{credentials, grants, users};
     Router::new()
         .route("/v1/clients", get(get_clients).post(post_clients))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/rules", get(get_rules).post(post_rules))
         .route("/v1/rules/{rule_id}", delete(delete_rule))
         .route("/v1/rules/{rule_id}/stats", get(get_rule_stats))
+        // 005-multi-user-rbac T038: identity-management routes. All
+        // superadmin-only (enforced inside each handler).
+        .route("/v1/users", get(users::get_users).post(users::post_users))
+        .route(
+            "/v1/users/{user_id}",
+            get(users::get_user).delete(users::delete_user),
+        )
+        .route(
+            "/v1/users/{user_id}/credentials",
+            get(credentials::get_credentials).post(credentials::post_credential),
+        )
+        .route(
+            "/v1/users/{user_id}/credentials/{cred_id}",
+            delete(credentials::delete_credential),
+        )
+        .route(
+            "/v1/users/{user_id}/credentials/{cred_id}/rotate",
+            post(credentials::post_credential_rotate),
+        )
+        .route("/v1/grants", get(grants::get_grants).post(grants::post_grants))
+        .route("/v1/grants/{grant_id}", delete(grants::delete_grant))
+        // 005-multi-user-rbac T023: every /v1/* request goes through the
+        // auth middleware FIRST. Mounted via `route_layer` so it applies
+        // to all routes registered above.
+        .route_layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state)
 }
 
@@ -106,10 +135,15 @@ struct PushRuleResponse {
     /// `"tcp"` or `"udp"`; future protocols extend this set without a
     /// wire bump.
     protocol: String,
+    /// 005-multi-user-rbac T023: owning user id stamped at creation
+    /// (FR-014). Always present; superadmin-pushed rules carry
+    /// `_superadmin`.
+    owner: String,
 }
 
 async fn post_rules(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Json(body): Json<PushRuleBody>,
 ) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
     // Co-presence check (FR-005 / contracts/operator-api.md):
@@ -130,6 +164,7 @@ async fn post_rules(
         .map_or(DEFAULT_ACK_TIMEOUT, Duration::from_secs);
     let rule = cli::push_rule(
         &state,
+        &identity,
         &body.client,
         listen,
         &body.target_host,
@@ -154,6 +189,7 @@ async fn post_rules(
             target_host: rule.target_host.clone(),
             prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
             protocol: rule.protocol.as_str().to_string(),
+            owner: rule.owner_user_id.to_string(),
         }),
     ))
 }
@@ -168,26 +204,45 @@ fn build_range(start: u16, end: Option<u16>) -> Result<PortRange, String> {
 
 async fn delete_rule(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(rule_id): Path<u64>,
 ) -> Result<StatusCode, ApiError> {
+    // 005-multi-user-rbac T043: enforce read-side ownership before
+    // any mutation. Superadmin always bypasses; everyone else must
+    // own the rule.
+    if let Some(rule) = state.rules.get(RuleId(rule_id)).await {
+        crate::operator::rbac::enforce_read(&identity, &rule.owner_user_id)?;
+    }
     cli::remove_rule(&state, RuleId(rule_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_rules(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<Rule>>, ApiError> {
     let client = params.get("client").map(String::as_str);
-    let rules = cli::list_rules(&state, client).await?;
+    let mut rules = cli::list_rules(&state, client).await?;
+    // T043: superadmin sees all (with optional `?owner=` filter);
+    // everyone else only sees their own.
+    if identity.role != forward_auth::OperatorRole::Superadmin {
+        rules.retain(|r| r.owner_user_id == identity.user_id);
+    } else if let Some(o) = params.get("owner") {
+        rules.retain(|r| r.owner_user_id.as_str() == o);
+    }
     Ok(Json(rules))
 }
 
 async fn get_rule_stats(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(rule_id): Path<u64>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    if let Some(rule) = state.rules.get(RuleId(rule_id)).await {
+        crate::operator::rbac::enforce_read(&identity, &rule.owner_user_id)?;
+    }
     let snap = cli::rule_stats(&state, RuleId(rule_id)).await?;
     let mut body = serde_json::to_value(&snap).map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -248,6 +303,26 @@ pub struct ApiError {
     message: String,
 }
 
+impl ApiError {
+    /// Public constructor used by the v0.5 user/credential/grant
+    /// handlers when they need to surface a non-`OperatorError` failure
+    /// (e.g., `IdentityStoreError::WriteFailed`).
+    #[must_use]
+    pub fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl From<forward_auth::RbacError> for ApiError {
+    fn from(e: forward_auth::RbacError) -> Self {
+        Self::from(OperatorError::Rbac(e))
+    }
+}
+
 impl From<OperatorError> for ApiError {
     fn from(e: OperatorError) -> Self {
         let status = match &e {
@@ -268,6 +343,9 @@ impl From<OperatorError> for ApiError {
             | OperatorError::UnsupportedProtocol { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
             OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
+            // 005-multi-user-rbac: RBAC failures use the auth_layer's
+            // shared status table (single source of truth).
+            OperatorError::Rbac(rb) => crate::operator::auth_layer::rbac_status(rb),
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self {

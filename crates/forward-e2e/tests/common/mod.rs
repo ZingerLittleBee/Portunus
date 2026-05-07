@@ -161,6 +161,16 @@ impl Drop for ClientHandle {
     }
 }
 
+/// 005-multi-user-rbac: every operator HTTP request now requires
+/// `Authorization: Bearer <token>`. The e2e tests bootstrap a single
+/// reserved-`_legacy` superadmin via the `operator_token` server.toml
+/// shortcut and reuse this constant on every helper request.
+pub const TEST_OPERATOR_TOKEN: &str = "test-operator-token-005";
+
+fn auth_header() -> (&'static str, &'static str) {
+    ("Authorization", "Bearer test-operator-token-005")
+}
+
 /// Launch `forward-server serve` against a fresh temp config dir.
 /// Caller is responsible for waiting for readiness (e.g., by polling the
 /// operator HTTP listener).
@@ -177,22 +187,29 @@ pub fn spawn_server(extra_args: &[&str]) -> ServerHandle {
 /// missing files exactly as it does without a server.toml.
 pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> ServerHandle {
     let config_dir = fresh_tempdir("server config");
-    if let Some(extra) = extra_toml {
-        let cd = config_dir.path();
-        let body = format!(
-            "control_listen = \"127.0.0.1:0\"\n\
-             operator_http_listen = \"127.0.0.1:0\"\n\
-             metrics_listen = \"127.0.0.1:0\"\n\
-             tls_cert_path = {cert_path:?}\n\
-             tls_key_path = {key_path:?}\n\
-             token_store_path = {token_path:?}\n\
-             {extra}\n",
-            cert_path = cd.join("server.crt").to_string_lossy(),
-            key_path = cd.join("server.key").to_string_lossy(),
-            token_path = cd.join("tokens.json").to_string_lossy(),
-        );
-        std::fs::write(cd.join("server.toml"), body).expect("write server.toml override");
-    }
+    // 005-multi-user-rbac T025: every test now needs a server.toml so we can
+    // inject `operator_token = "..."`, which auto-bootstraps a `_legacy`
+    // superadmin on first start. Without this, every operator HTTP call
+    // would 503 with `bootstrap_required`.
+    let cd = config_dir.path();
+    let extra = extra_toml.unwrap_or("");
+    let body = format!(
+        "control_listen = \"127.0.0.1:0\"\n\
+         operator_http_listen = \"127.0.0.1:0\"\n\
+         metrics_listen = \"127.0.0.1:0\"\n\
+         tls_cert_path = {cert_path:?}\n\
+         tls_key_path = {key_path:?}\n\
+         token_store_path = {token_path:?}\n\
+         operator_store_path = {identity_path:?}\n\
+         operator_token = \"{token}\"\n\
+         {extra}\n",
+        cert_path = cd.join("server.crt").to_string_lossy(),
+        key_path = cd.join("server.key").to_string_lossy(),
+        token_path = cd.join("tokens.json").to_string_lossy(),
+        identity_path = cd.join("identity.json").to_string_lossy(),
+        token = TEST_OPERATOR_TOKEN,
+    );
+    std::fs::write(cd.join("server.toml"), body).expect("write server.toml");
     let mut cmd = cmd_for("forward-server");
     cmd.arg("--config-dir")
         .arg(config_dir.path())
@@ -265,7 +282,12 @@ pub fn provision_client_with_endpoint(
 /// `connected: false`.
 pub fn list_clients_http(operator_http_addr: &str) -> serde_json::Value {
     let url = format!("http://{operator_http_addr}/v1/clients");
-    let resp = reqwest::blocking::get(&url).expect("GET /v1/clients");
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(k, v)
+        .send()
+        .expect("GET /v1/clients");
     assert!(
         resp.status().is_success(),
         "list-clients HTTP failed: {resp:?}"
@@ -280,8 +302,10 @@ pub fn list_clients_http(operator_http_addr: &str) -> serde_json::Value {
 /// rejected. Going through HTTP keeps both views consistent.
 pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
     let url = format!("http://{operator_http_addr}/v1/clients");
+    let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
+        .header(k, v)
         .json(&serde_json::json!({ "name": name }))
         .send()
         .expect("POST /v1/clients");
@@ -351,8 +375,10 @@ pub fn push_rule_http_full(
     if let Some(secs) = ack_timeout_secs {
         body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
     }
+    let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
+        .header(k, v)
         .json(&body)
         .send()
         .expect("POST /v1/rules");
@@ -385,8 +411,10 @@ pub fn push_rule_http_with_protocol(
     if let Some(secs) = ack_timeout_secs {
         body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
     }
+    let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
+        .header(k, v)
         .json(&body)
         .send()
         .expect("POST /v1/rules");
@@ -423,8 +451,10 @@ pub fn push_rule_http_range_with_protocol(
     if let Some(secs) = ack_timeout_secs {
         body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
     }
+    let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
+        .header(k, v)
         .json(&body)
         .send()
         .expect("POST /v1/rules");
@@ -460,8 +490,10 @@ pub fn push_rule_http_with_prefer_ipv6(
     if let Some(secs) = ack_timeout_secs {
         body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
     }
+    let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
+        .header(k, v)
         .json(&body)
         .send()
         .expect("POST /v1/rules");
@@ -472,8 +504,10 @@ pub fn push_rule_http_with_prefer_ipv6(
 
 pub fn remove_rule_http(operator_http_addr: &str, rule_id: u64) -> reqwest::StatusCode {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}");
+    let (k, v) = auth_header();
     reqwest::blocking::Client::new()
         .delete(&url)
+        .header(k, v)
         .send()
         .expect("DELETE /v1/rules/{rule_id}")
         .status()
@@ -484,7 +518,12 @@ pub fn list_rules_http(operator_http_addr: &str, client_filter: Option<&str>) ->
     if let Some(c) = client_filter {
         url = format!("{url}?client={c}");
     }
-    let resp = reqwest::blocking::get(&url).expect("GET /v1/rules");
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(k, v)
+        .send()
+        .expect("GET /v1/rules");
     assert!(
         resp.status().is_success(),
         "list-rules HTTP failed: {resp:?}"
@@ -495,8 +534,10 @@ pub fn list_rules_http(operator_http_addr: &str, client_filter: Option<&str>) ->
 /// Revoke a client via the running server's HTTP API.
 pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode {
     let url = format!("http://{operator_http_addr}/v1/clients/{name}/revoke");
+    let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
+        .header(k, v)
         .send()
         .expect("POST revoke");
     resp.status()
@@ -507,7 +548,12 @@ pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode 
 /// `wait_for`.
 pub fn rule_stats_http(operator_http_addr: &str, rule_id: u64) -> Option<serde_json::Value> {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}/stats");
-    let resp = reqwest::blocking::get(&url).expect("GET /v1/rules/{rule_id}/stats");
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(k, v)
+        .send()
+        .expect("GET /v1/rules/{rule_id}/stats");
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return None;
     }
@@ -523,7 +569,12 @@ pub fn rule_stats_http_per_port(
     rule_id: u64,
 ) -> Option<serde_json::Value> {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}/stats?per_port=true");
-    let resp = reqwest::blocking::get(&url).expect("GET /v1/rules/{rule_id}/stats?per_port=true");
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(k, v)
+        .send()
+        .expect("GET /v1/rules/{rule_id}/stats?per_port=true");
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return None;
     }

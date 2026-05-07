@@ -98,6 +98,18 @@ pub struct Rule {
     pub state: RuleState,
     pub created_at: DateTime<Utc>,
     pub last_state_change_at: DateTime<Utc>,
+    /// Owner user id (005-multi-user-rbac, FR-014). Stamped by the
+    /// HTTP push handler from the verified `OperatorIdentity`. Required
+    /// (no Option) because every rule has an owner — superadmin-pushed
+    /// rules are stamped with `UserId::superadmin()`. In-memory only;
+    /// rules don't persist across restart, so neither does this field.
+    pub owner_user_id: forward_auth::UserId,
+}
+
+impl crate::operator::rbac::HasOwner for Rule {
+    fn owner(&self) -> &forward_auth::UserId {
+        &self.owner_user_id
+    }
 }
 
 impl Rule {
@@ -217,6 +229,8 @@ impl ServerRuleStore {
     /// Push a single-port rule (v0.1.0 compat shim). Equivalent to
     /// [`push_range`] with `PortRange::single` on both sides. Kept as
     /// a convenience for legacy tests and future single-port callers.
+    /// The owner defaults to the built-in superadmin identity — only
+    /// the test surface uses this path.
     #[allow(dead_code)]
     pub async fn push(
         &self,
@@ -239,13 +253,15 @@ impl ServerRuleStore {
             // u32::MAX so callers that don't know the cap (tests,
             // legacy paths) aren't artificially blocked.
             u32::MAX,
+            forward_auth::UserId::superadmin(),
         )
         .await
     }
 
     /// Push a (potentially range) rule. Validates structure, enforces
     /// the configured cap, and rejects overlaps with any existing
-    /// `Active`/`Failed` rule on the same client.
+    /// `Active`/`Failed` rule on the same client. The `owner_user_id`
+    /// is stamped on the new rule (005-multi-user-rbac, FR-014).
     #[allow(clippy::too_many_arguments)]
     pub async fn push_range(
         &self,
@@ -256,6 +272,7 @@ impl ServerRuleStore {
         protocol: Protocol,
         prefer_ipv6: Option<bool>,
         range_cap: u32,
+        owner_user_id: forward_auth::UserId,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
         let (listen, target) =
@@ -323,6 +340,7 @@ impl ServerRuleStore {
             state: RuleState::Pending,
             created_at: now,
             last_state_change_at: now,
+            owner_user_id,
         };
         guard
             .by_client_listen_start
@@ -376,6 +394,46 @@ impl ServerRuleStore {
 
     pub async fn get(&self, id: RuleId) -> Option<Rule> {
         self.inner.read().await.rules.get(&id).cloned()
+    }
+
+    /// 005-multi-user-rbac T036: snapshot of every rule owned by `user_id`.
+    /// Used by the grant-revoke cascade to re-evaluate which of the user's
+    /// rules survive without the dropped grant.
+    pub async fn list_owned_by(&self, user_id: &forward_auth::UserId) -> Vec<Rule> {
+        self.inner
+            .read()
+            .await
+            .rules
+            .values()
+            .filter(|r| &r.owner_user_id == user_id)
+            .cloned()
+            .collect()
+    }
+
+    /// 005-multi-user-rbac T033 cascade helper: remove every rule owned by
+    /// `user_id` and return the freed `RuleId`s. Used by the user-removal
+    /// path AFTER the operator-side identity flush has committed (R-006).
+    pub async fn remove_owned_by(&self, user_id: &forward_auth::UserId) -> Vec<u64> {
+        let mut guard = self.inner.write().await;
+        let to_remove: Vec<RuleId> = guard
+            .rules
+            .values()
+            .filter(|r| &r.owner_user_id == user_id)
+            .map(|r| r.id)
+            .collect();
+        let mut out = Vec::with_capacity(to_remove.len());
+        for id in to_remove {
+            if let Some(rule) = guard.rules.remove(&id) {
+                if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_name) {
+                    index.remove(&rule.listen_port);
+                    if index.is_empty() {
+                        guard.by_client_listen_start.remove(&rule.client_name);
+                    }
+                }
+                out.push(id.0);
+            }
+        }
+        out
     }
 
     /// Snapshot of every rule. `client_filter` narrows by owner.
@@ -542,6 +600,7 @@ mod tests {
                 Protocol::Tcp,
                 None,
                 1024,
+                forward_auth::UserId::superadmin(),
             )
             .await
     }
@@ -584,6 +643,7 @@ mod tests {
                 Protocol::Tcp,
                 None,
                 1024,
+                forward_auth::UserId::superadmin(),
             )
             .await
             .unwrap_err();
@@ -613,6 +673,7 @@ mod tests {
                 Protocol::Tcp,
                 None,
                 1024,
+                forward_auth::UserId::superadmin(),
             )
             .await
             .unwrap_err();
@@ -634,6 +695,7 @@ mod tests {
                 Protocol::Tcp,
                 None,
                 50,
+                forward_auth::UserId::superadmin(),
             )
             .await
             .unwrap_err();
@@ -659,6 +721,7 @@ mod tests {
                 Protocol::Tcp,
                 None,
                 1024,
+                forward_auth::UserId::superadmin(),
             )
             .await
             .unwrap();
@@ -825,6 +888,7 @@ mod tests {
                 Protocol::Udp,
                 None,
                 u32::MAX,
+                forward_auth::UserId::superadmin(),
             )
             .await
             .expect("equal-length UDP range push must succeed");
@@ -845,6 +909,7 @@ mod tests {
                 Protocol::Udp,
                 None,
                 u32::MAX,
+                forward_auth::UserId::superadmin(),
             )
             .await
             .expect_err("mismatched ranges MUST be rejected for UDP too");

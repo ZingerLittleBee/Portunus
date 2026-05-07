@@ -244,6 +244,9 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "blake3"
@@ -645,9 +648,10 @@ dependencies = [
 
 [[package]]
 name = "forward-auth"
-version = "0.4.0-dev"
+version = "0.5.0"
 dependencies = [
  "base64",
+ "bitflags",
  "blake3",
  "chrono",
  "forward-core",
@@ -658,11 +662,12 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
+ "ulid",
 ]
 
 [[package]]
 name = "forward-client"
-version = "0.4.0-dev"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -694,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "forward-core"
-version = "0.4.0-dev"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "serde",
@@ -710,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "forward-e2e"
-version = "0.4.0-dev"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "forward-auth",
@@ -725,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "forward-proto"
-version = "0.4.0-dev"
+version = "0.5.0"
 dependencies = [
  "prost",
  "tonic",
@@ -735,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "forward-server"
-version = "0.4.0-dev"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -761,8 +766,10 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
+ "tower",
  "tracing",
  "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]

@@ -430,6 +430,7 @@ fn test_range_us3_per_port_observability() {
         .arg("--per-port")
         .arg("--http-endpoint")
         .arg(&http)
+        .env("FORWARD_OPERATOR_TOKEN", common::TEST_OPERATOR_TOKEN)
         .output()
         .expect("spawn forward-server rule-stats");
     assert!(

@@ -50,6 +50,22 @@ pub struct ServerConfig {
     /// message; the client falls back to the default on 0.
     #[serde(default)]
     pub udp_max_flows_per_rule: Option<u32>,
+
+    /// Path to the operator-side identity store (`identity.json`,
+    /// 005-multi-user-rbac, FR-004). Defaults to
+    /// `<config_dir>/identity.json` when absent.
+    #[serde(default = "default_operator_store_path")]
+    pub operator_store_path: PathBuf,
+
+    /// Optional bootstrap shortcut (005-multi-user-rbac, FR-006). When
+    /// set on a deployment with no existing superadmin in
+    /// `identity.json`, mints a built-in `_superadmin` user backed by
+    /// this token on first start. After first start, removing this key
+    /// does NOT revoke the token (it has been hashed and persisted to
+    /// `identity.json`). Validated to be a 43-char URL-safe-base64
+    /// string at load time; rejected otherwise.
+    #[serde(default)]
+    pub operator_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -100,6 +116,14 @@ fn default_stats_report_interval_secs() -> u64 {
 /// Default cap for `range_rule_max_ports` (1024). Public so the offline
 /// CLI paths can stay aligned with the served config without needing to
 /// instantiate a `ServerConfig`.
+#[must_use]
+fn default_operator_store_path() -> PathBuf {
+    // The TOML loader replaces this when relative paths are resolved
+    // against the config_dir; the bare default below is only hit when a
+    // ServerConfig is constructed in code (tests, default_config in serve.rs).
+    PathBuf::from("identity.json")
+}
+
 #[must_use]
 pub fn default_range_rule_max_ports() -> u32 {
     1024

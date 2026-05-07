@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
+use forward_auth::OperatorAuthenticator;
 use forward_auth::file_store::FileTokenStore;
+use forward_auth::operator_store::FileOperatorStore;
 use forward_core::config::ServerConfig;
 
 use crate::clients::ConnectedClients;
@@ -40,6 +42,15 @@ pub struct AppState {
     /// (T013, 004-udp-forward). `None` when the server was started
     /// from a CLI-only path that pre-dates the v0.4.0 tunables.
     pub server_config: Option<Arc<ServerConfig>>,
+    /// Operator-side identity store (005-multi-user-rbac). Always
+    /// present after `serve.rs` startup; used by the auth_layer
+    /// middleware (T019) to verify operator bearer tokens.
+    pub operator_store: Arc<FileOperatorStore>,
+    /// Same store, exposed via the `OperatorAuthenticator` trait so
+    /// the auth_layer can take an abstraction (Constitution I single
+    /// seam). In v0.5.0 this is just `Arc::clone`-cast of the store
+    /// above; future impls (e.g., OIDC) can swap it.
+    pub operator_auth: Arc<dyn OperatorAuthenticator>,
 }
 
 impl AppState {
@@ -47,14 +58,17 @@ impl AppState {
     ///
     /// Propagates `prometheus::Error` from collector registration — only fails
     /// on duplicate metric names, which would be a programming bug.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tokens: Arc<FileTokenStore>,
+        operator_store: Arc<FileOperatorStore>,
         clients: ConnectedClients,
         server_endpoint: impl Into<String>,
         server_cert_sha256: impl Into<String>,
         server_cert_pem: impl Into<String>,
         range_rule_max_ports: u32,
     ) -> Result<Self, prometheus::Error> {
+        let operator_auth: Arc<dyn OperatorAuthenticator> = operator_store.clone();
         Ok(Self {
             tokens,
             clients,
@@ -67,6 +81,8 @@ impl AppState {
             per_port_stats: PerPortStatsCache::new(),
             range_rule_max_ports,
             server_config: None,
+            operator_store,
+            operator_auth,
         })
     }
 

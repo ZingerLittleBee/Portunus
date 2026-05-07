@@ -80,6 +80,11 @@ pub enum OperatorError {
         client_name: ClientName,
         protocol: &'static str,
     },
+    /// 005-multi-user-rbac: authorisation rejection. Maps to HTTP
+    /// 401/403/422/etc. per the variant; CLI exit per the table in
+    /// `contracts/operator-api.md` § "CLI Exit Codes".
+    #[error("rbac: {0}")]
+    Rbac(forward_auth::RbacError),
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -109,6 +114,27 @@ impl OperatorError {
             Self::ActivationFailed(_) => 6,
             Self::AckTimeout => 7,
             Self::RuleNotFound => 8,
+            // 005: RBAC failures use the new operator-api table:
+            // 4=auth, 5=rbac denial, 6=bootstrap_required, 2=already_bootstrapped, 3=validation.
+            Self::Rbac(e) => match e {
+                forward_auth::RbacError::Unauthenticated
+                | forward_auth::RbacError::CredentialInvalid
+                | forward_auth::RbacError::UserDisabled => 4,
+                forward_auth::RbacError::ClientNotGranted
+                | forward_auth::RbacError::PortOutsideGrant
+                | forward_auth::RbacError::ProtocolNotGranted
+                | forward_auth::RbacError::NotOwner
+                | forward_auth::RbacError::RoleRequired => 5,
+                forward_auth::RbacError::BootstrapRequired => 6,
+                forward_auth::RbacError::AlreadyBootstrapped => 2,
+                forward_auth::RbacError::InvalidUserId
+                | forward_auth::RbacError::InvalidDisplayName
+                | forward_auth::RbacError::ReservedUserId
+                | forward_auth::RbacError::InvalidPortRange
+                | forward_auth::RbacError::EmptyProtocolSet
+                | forward_auth::RbacError::InvalidClient => 3,
+                _ => 1,
+            },
             _ => 1,
         }
     }
@@ -132,6 +158,7 @@ impl OperatorError {
             Self::ExceedsCap { .. } => "exceeds_cap",
             Self::RangeInvalid(_) => "range_invalid",
             Self::UnsupportedProtocol { .. } => "unsupported_protocol",
+            Self::Rbac(e) => e.code(),
             Self::Io(_) => "io_error",
             Self::Auth(_) => "auth_error",
         }
@@ -275,6 +302,7 @@ pub async fn list_clients(state: &AppState) -> Vec<ClientView> {
     views
 }
 
+#[must_use]
 pub fn render_client_view_text(views: &[ClientView]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
@@ -375,6 +403,7 @@ pub fn parse_target(spec: &str) -> Result<(String, PortRange), OperatorError> {
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub async fn push_rule(
     state: &AppState,
+    identity: &forward_auth::OperatorIdentity,
     raw_client: &str,
     listen: PortRange,
     target_host: &str,
@@ -386,6 +415,22 @@ pub async fn push_rule(
 ) -> Result<Rule, OperatorError> {
     let client_name = ClientName::from_str(raw_client)?;
     let proto = parse_protocol(protocol)?;
+
+    // 005-multi-user-rbac T022: authorise BEFORE any state mutation.
+    // Superadmin short-circuits inside enforce_push.
+    let push_proto = match proto {
+        Protocol::Tcp => crate::operator::rbac::PushProtocol::Tcp,
+        Protocol::Udp => crate::operator::rbac::PushProtocol::Udp,
+    };
+    let push_req = crate::operator::rbac::PushRequest {
+        client: &client_name,
+        listen_port_start: listen.start(),
+        listen_port_end: listen.end(),
+        protocol: push_proto,
+    };
+    let grants = state.operator_auth.grants_for(&identity.user_id);
+    crate::operator::rbac::enforce_push(identity, &push_req, &grants)
+        .map_err(OperatorError::Rbac)?;
     // 003-domain-name-forward T021: validate `target_host` against the
     // shared classifier before we touch any connected-client state.
     // We discard the parsed `Target` because the client side reparses
@@ -428,6 +473,7 @@ pub async fn push_rule(
             proto,
             prefer_ipv6,
             range_cap,
+            identity.user_id.clone(),
         )
         .await?;
     let request_id = RequestId::new().to_string();
@@ -567,9 +613,10 @@ pub async fn push_rule(
 /// from the store", not "client confirmed teardown".
 pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, OperatorError> {
     let removed = state.rules.remove(rule_id).await?;
+    let owner = removed.owner_user_id.to_string();
     state
         .stats_cache
-        .drop_rule(rule_id, &removed.client_name, &state.metrics)
+        .drop_rule(rule_id, &removed.client_name, owner.as_str(), &state.metrics)
         .await;
     // T046 (002-port-range-forward): a removed rule's per-port detail
     // is no longer meaningful — clear it so a subsequent `rule-stats
@@ -640,6 +687,7 @@ pub async fn list_rules(
 }
 
 #[allow(dead_code)]
+#[must_use]
 pub fn render_rules_text(rules: &[Rule]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
@@ -670,6 +718,7 @@ pub fn render_rules_text(rules: &[Rule]) -> String {
 
 /// Used by the CLI when no config file exists — synthesises a `ServerConfig`
 /// with sensible defaults rooted at `<config_dir>`.
+#[must_use]
 pub fn default_paths(config_dir: &Path) -> DefaultPaths {
     DefaultPaths {
         cert: config_dir.join("server.crt"),

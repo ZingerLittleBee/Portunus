@@ -8,7 +8,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/ZingerLittleBee/forward-rs"
 authors = ["forward-rs contributors"]
-version = "0.4.0-dev"
+version = "0.5.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -33,6 +33,18 @@ doc_markdown = "allow"
 items_after_statements = "allow"
 ref_option = "allow"
 trivially_copy_pass_by_ref = "allow"
+# `needless_pass_by_value` would force every `Json(body)` axum handler
+# to take `&serde_json::Value`, which fights axum's `FromRequest` impl.
+needless_pass_by_value = "allow"
+# `used_underscore_binding` flags intentional drop-guards (`_guard`,
+# `_dir`) used to keep RAII state alive for the duration of a test.
+used_underscore_binding = "allow"
+# `too_many_lines` flags `serve::run` and `main::run` — both wire-up
+# functions whose splitting would scatter the dependency graph.
+too_many_lines = "allow"
+# Operator-CLI URL building uses `format!` push idioms that are clearer
+# than the suggested alternatives.
+format_push_string = "allow"
 
 [workspace.dependencies]
 # Async runtime
