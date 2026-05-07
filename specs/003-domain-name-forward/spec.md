@@ -5,6 +5,16 @@
 **Status**: Draft  
 **Input**: User description: "domain-name forwarding: target host in a forwarding rule may be a DNS name (e.g. `api.example.com:443`) instead of an IP. The client resolves the name on first connect, caches the result honoring DNS TTL with a sensible upper bound, falls back gracefully if resolution fails (rule stays Active, individual conn fails with a recorded reason), and prefers IPv4 when both A and AAAA are available unless the operator opts in to v6. Surface DNS resolution failures as a per-rule counter so operators can spot bad targets without grepping logs. Additive on top of v0.2.0 — IP targets keep working byte-identically."
 
+## Clarifications
+
+### Session 2026-05-07
+
+- Q: Address-family preference granularity (where does the IPv6 opt-in live)? → A: Per-rule flag — each rule carries its own preference; default is IPv4-first, operator flips per rule on push.
+- Q: What DNS-name characters does the server accept at rule push? → A: Strict RFC 1123 hostname — labels of `[A-Za-z0-9-]`, no leading/trailing hyphen, each label ≤63 chars, full name ≤253 chars, separated by `.`. Underscores, IDN, and SRV-style names are rejected at push (re-evaluable in a later spec if demand surfaces).
+- Q: When a DNS name resolves to multiple A records and the first dial fails, what does the client do? → A: Try in order on dial failure — walk the resolver-returned list (within the chosen address family per FR-007) until one connect succeeds or all are exhausted; only then report `dns_resolution_failed` to the end-user connection.
+- Q: After TTL expiry, if a fresh resolution fails, should the client keep serving the previous answer? → A: 30-second stale-while-error grace (RFC 8767-style). Past TTL + grace, the client gives up the stale answer and reports `dns_resolution_failed` until a fresh resolution succeeds. The DNS-failure counter (FR-008) still increments during the grace window so operators can see the underlying problem.
+- Q: TTL clamp defaults (floor / ceiling)? → A: floor 5 s / ceiling 5 min. Floor protects against malicious or accidental zero-TTL records turning the client into a resolver-amplification source; ceiling guarantees a re-deployed upstream is reachable within 5 minutes regardless of an over-long published TTL. Both are operator-tunable via server-side defaults at rule install; the 5 s / 5 min pair is the spec contract for the SC-002 budget.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Push a rule whose target is a DNS name (Priority: P1)
@@ -216,16 +226,30 @@ rule id, no per-attempt explosion.
 
 - **FR-001**: A forwarding rule's target host MUST accept either an IP
   literal (IPv4 or bracketed IPv6, current v0.2.0 behavior) **or** a
-  DNS name. The accepted-input syntax for both forms is unambiguous
-  and validated at rule push time.
+  DNS name. DNS names MUST conform to RFC 1123 strict hostname syntax:
+  labels of `[A-Za-z0-9-]` only, no leading or trailing hyphen, each
+  label ≤63 characters, full name ≤253 characters, labels separated
+  by `.`. Inputs failing this syntax (underscores, IDN unicode,
+  SRV-style names, whitespace, length overruns, …) MUST be rejected
+  by the server at rule push with a clear error naming the offending
+  input. The IP-literal vs DNS-name classification at push time is
+  unambiguous: anything that parses as an IPv4 or bracketed IPv6
+  literal is treated as an IP, everything else falls through to the
+  hostname validator.
 - **FR-002**: When a rule's target is a DNS name, the client MUST
   perform name resolution **lazily**, on the first end-user connection
   through the rule (not at rule push, not at rule activation). Rule
   push and activation MUST NOT block on or fail because of DNS state.
 - **FR-003**: The client MUST cache successful resolutions for the
-  duration of the record's TTL, clamped to a configured cache floor
-  (lower bound) and ceiling (upper bound). Cache hits MUST be served
-  without consulting the resolver.
+  duration of the record's TTL, clamped to a cache floor of **5
+  seconds** and a cache ceiling of **5 minutes**. The floor prevents
+  zero-TTL records from turning the client into a resolver-amplification
+  source; the ceiling guarantees that a re-deployed upstream becomes
+  reachable within 5 minutes even when the published TTL is longer.
+  Both bounds are operator-tunable via server-side defaults at rule
+  install; the 5 s / 5 min pair is the default spec contract that
+  SC-002 measures against. Cache hits MUST be served without
+  consulting the resolver.
 - **FR-004**: When DNS resolution fails (NXDOMAIN, SERVFAIL, timeout,
   resolver unreachable, or any other resolver-reported error), the
   client MUST: (a) leave the rule's status `Active`, (b) refuse the
@@ -235,11 +259,15 @@ rule id, no per-attempt explosion.
   still-valid cached answer for *other* connections, if one exists.
 - **FR-005**: When the cached answer expires (TTL or ceiling reached),
   the next connection MUST trigger a fresh resolution. If the new
-  resolution fails but the previous answer is still topologically
-  reachable, the client MAY continue serving the previous answer for
-  a bounded grace period to absorb transient resolver outages without
-  cascading the failure to end users — the grace bound is part of the
-  spec's measurable budgets, not a runtime knob.
+  resolution fails, the client MUST continue serving the previous
+  answer for a stale-while-error grace window of **30 seconds beyond
+  the answer's effective expiry** (RFC 8767-style behavior), then
+  give up and report `dns_resolution_failed` until a fresh resolution
+  succeeds. The 30 s grace is a fixed spec budget, not a runtime
+  knob. The DNS-failure counter (FR-008) MUST still increment for
+  every connection that hit a failed-fresh resolution during the
+  grace window, so operators see the underlying problem in metrics
+  even while end users are being served from stale cache.
 - **FR-006**: When a DNS query returns multiple addresses, the client
   MUST attempt them in order on per-connection dial failure (refusal,
   timeout) before reporting the connection failed. Address ordering
@@ -328,18 +356,13 @@ rule id, no per-attempt explosion.
 
 ## Assumptions
 
-- **TTL clamp defaults**: cache floor of 5 seconds (so a malicious
-  zero-TTL record cannot DDoS the resolver), cache ceiling of 5
-  minutes (so a re-deployed upstream is reachable within a bounded
-  window even if its old TTL was a day). These are operator-tunable
-  via server-side defaults applied at rule install.
+- **TTL clamp, stale-while-error grace, and address-family
+  preference defaults** are pinned in the Clarifications section
+  above and the relevant FRs (FR-003, FR-005, FR-007). Listed here
+  only as a pointer.
 - **Resolution timeout**: a single resolver attempt is bounded at
   3 seconds — enough for transcontinental round trips with a slow
   resolver, short enough to fit inside the 3-second SC-003 budget.
-- **Stale-while-error grace**: when a fresh resolution fails but a
-  previous answer exists past its TTL, the client MAY serve the
-  stale answer for up to 30 seconds beyond expiry to absorb
-  transient resolver outages.
 - **Resolver source**: the client uses the host operating system's
   configured resolver (`/etc/resolv.conf` or the OS equivalent).
   Custom DNS-over-HTTPS, DNS-over-TLS, or operator-supplied
@@ -353,9 +376,6 @@ rule id, no per-attempt explosion.
   range (FR-011) — this matches operator intuition that
   `8080-8089 → api.example.com:80-89` points at one logical
   upstream identified by name.
-- **Address-family opt-in is per-rule, not global**, so an operator
-  can stage IPv6 migration one rule at a time without flipping the
-  whole client.
 - **No DNSSEC validation** is performed by the client. The trust
   boundary remains at the OS resolver — operators who need DNSSEC
   configure it on the resolver they point the client at.

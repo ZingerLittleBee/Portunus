@@ -31,15 +31,10 @@
 
 ## Notes
 
-- Spec opens lazy DNS resolution (FR-002) as the central design decision
-  — rule push never blocks on DNS state. Operators expecting "validate
-  at push" should call this out in `/speckit-clarify` if it's
-  surprising.
-- Default address-family preference is A (IPv4); per-rule opt-in
-  inverts. If the project's deployment skew is actually IPv6-first,
-  flip the default in clarification.
-- Stale-while-error grace (30 s, FR-005 + Assumptions) is a soft
-  preference; if the team prefers strict TTL semantics, drop it during
-  clarification.
-- Items marked incomplete require spec updates before
-  `/speckit-clarify` or `/speckit-plan`.
+- Five spec ambiguities resolved in `/speckit-clarify` session
+  2026-05-07 — see spec.md § Clarifications. Anchored decisions:
+  per-rule IPv6 opt-in (default IPv4), strict RFC 1123 hostname
+  validation at push, in-order multi-A dial fallback, 30 s
+  stale-while-error grace (RFC 8767-style), and 5 s / 5 min cache
+  clamp defaults.
+- Items marked incomplete require spec updates before `/speckit-plan`.
