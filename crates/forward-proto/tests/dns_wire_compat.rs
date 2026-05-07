@@ -93,6 +93,10 @@ fn v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero() {
         active_connections: 3,
         per_port: vec![],
         dns_failures: 0,
+        datagrams_in: 0,
+        datagrams_out: 0,
+        active_flows: 0,
+        flows_dropped_overflow: 0,
     };
     let bytes = s.encode_to_vec();
 
@@ -117,6 +121,10 @@ fn rule_stats_with_dns_failures_roundtrips() {
         active_connections: 2,
         per_port: vec![],
         dns_failures: 7,
+        datagrams_in: 0,
+        datagrams_out: 0,
+        active_flows: 0,
+        flows_dropped_overflow: 0,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

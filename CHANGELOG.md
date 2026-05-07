@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **UDP forwarding** (additive, spec `004-udp-forward`). Operator
+  flips `--protocol udp` (CLI) / `"protocol": "udp"` (HTTP) on
+  `push-rule` to activate a UDP rule. Each end-user `(addr, port)`
+  gets its own kernel-allocated upstream `UdpSocket`, providing
+  NAT-style return-path isolation — the kernel's source-port
+  selection demuxes replies for free, so the proxy never tracks
+  return-paths in userspace. UDP and TCP rules coexist on the same
+  port (the conflict check now keys on protocol). Range rules and
+  DNS-name targets work for UDP too: each port in a range spawns
+  its own listener task with an independent flow table, all sharing
+  the parent rule's `RuleStats` for aggregate roll-up; DNS targets
+  reuse the v0.3.0 `LiveResolver` so cache + single-flight +
+  IPv4-first preference + `dns_failures` semantics carry over
+  verbatim. Per-flow state is reaped after `udp_flow_idle_secs`
+  (server.toml, default 60s, range 30..=300); per-rule cap
+  `udp_max_flows_per_rule` (default 1024, range 1..=65535) bounds
+  resource use under sustained churn — overflow drops increment the
+  new `forward_rule_flows_dropped_overflow_total` counter rather
+  than evicting existing flows. Both knobs flow to the client over
+  Welcome; v0.3.0 servers (no UDP fields) leave the client on the
+  documented compile-time defaults. The TCP hot path is
+  byte-identical to v0.3.0 — `proxy.rs` is untouched, every existing
+  TCP test passes (Constitution Principle II / FR-010). New
+  Prometheus collectors observe the per-rule cardinality budget
+  (one row per rule across `forward_rule_udp_datagrams_in_total`,
+  `forward_rule_udp_datagrams_out_total`, `forward_rule_active_flows`,
+  and `forward_rule_flows_dropped_overflow_total`), and `rule-stats`
+  surfaces a `protocol` field plus the UDP-specific counters
+  (datagrams_in/out, active_flows, flows_dropped_overflow). The
+  `--per-port` view extends to UDP range rules with per-port
+  `datagrams_in/out` columns.
 - **Domain-name forwarding targets** (additive, spec
   `003-domain-name-forward`). The target host in any push-rule
   invocation may now be a DNS name (e.g. `api.example.com:443`) instead
@@ -33,6 +64,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IpAddr` and goes straight to `TcpStream::connect`.
 
 ### Verified
+
+- **SC-002 (UDP datagram throughput)** — criterion bench
+  `udp_data_plane.single_flow_throughput` in
+  `crates/forward-client/benches/udp_data_plane.rs` reports a median
+  of **~51 µs** per full datagram round-trip (send + proxy fwd +
+  echo + proxy back + recv = 4 datagram hops per iteration). At
+  ~19.4k round-trips/s that is **~78k datagrams/s** through the
+  proxy — comfortably above the 50,000 dgrams/s SC-002 floor.
+- **SC-003 (per-flow isolation)** — `udp_listener_two_sources_isolated_replies`
+  unit test in `crates/forward-client/src/forwarder/udp/mod.rs` and
+  the gated 1000-source stress test
+  `test_udp_us1_thousand_source_isolation` (cargo test --ignored)
+  prove kernel-side per-flow upstream sockets give NAT-style
+  isolation with zero misroutes.
+- **SC-004 (UDP cardinality budget)** — covered by
+  `metrics::tests::active_flows_cardinality_is_one_row_per_rule`
+  (asserts ≤ N rows for each of the 4 UDP collectors after
+  observing N rules) and end-to-end test `test_udp_us3_metric_cardinality`
+  in `crates/forward-e2e/tests/udp_smoke.rs`. A 10-port UDP range
+  with traffic on 3 ports produces exactly **1** row of
+  `forward_rule_udp_datagrams_in_total{rule=…}` (NOT 10).
+- **SC-001 (push → first byte budget)** — `test_udp_us1_happy_path`
+  reports wall-clock **~6.6 s** from server spawn through
+  provision-client → push-rule → first datagram round-trip on a
+  developer-class macOS host. Far under the 60 s budget; see the
+  test's wait_for ack timeouts (`Some(3)`) for the per-step caps.
+- **Constitution II (TCP hot-path inspection)** — `forwarder/proxy.rs`
+  is untouched in this release. The full v0.3.0 TCP test suite
+  (5 dns_smoke + 50 forwarder unit + 70 server unit) passes
+  unmodified; the TCP data-plane criterion baseline is unchanged.
 
 - **SC-004 (cache-hit hot path)** — criterion bench
   `dns_resolver_cache_hit` in `crates/forward-client/benches/dns_resolver.rs`

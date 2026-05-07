@@ -408,7 +408,63 @@ Constitution Principle I — operator endpoints are unauthenticated and
 trust shell access to the server host. Bind them to `127.0.0.1` and put
 your scraper on the same host.
 
-## Limitations (v0.1.0)
+## UDP forwarding (v0.4.0+)
+
+`push-rule … --protocol udp` activates a UDP rule. Defaults to `tcp`
+when the flag is absent so v0.3.0 and earlier callers keep their wire
+shape.
+
+- **Per-flow upstream sockets.** Each end-user `(addr, port)` gets its
+  own kernel-allocated upstream `UdpSocket`. The kernel's source-port
+  selection gives NAT-style return-path isolation for free; we don't
+  demux replies in userspace.
+- **Per-protocol port spaces.** UDP:6000 and TCP:6000 on the same
+  client coexist. The conflict check in the rule store now keys on
+  `(client, port, protocol)` rather than `(client, port)`.
+- **Range rules.** `--protocol udp` works with port ranges
+  (`6010-6019 → upstream:9990-9999`) — one listener task per port,
+  each with its own flow table; the per-rule `RuleStats` aggregates
+  across ports for `--per-port` detail.
+- **DNS targets.** UDP rules accept DNS-name targets and reuse the
+  v0.3.0 `LiveResolver` (cache, single-flight, IPv4-first family
+  preference unless `prefer_ipv6=true`). Resolution failures bump
+  the existing per-rule `dns_failures` counter and drop the
+  datagram; the rule stays Active (FR-012).
+
+### UDP knobs (server.toml)
+
+Both keys are optional; the server self-selects the documented default
+on absence and surfaces the runtime value to the client over Welcome.
+
+| Key                       | Default | Range      | Effect                                                         |
+| ------------------------- | ------- | ---------- | -------------------------------------------------------------- |
+| `udp_flow_idle_secs`      | `60`    | `30..=300` | Reaper retires per-flow upstream sockets after this many secs. |
+| `udp_max_flows_per_rule`  | `1024`  | `1..=65535`| Hard cap on simultaneous live UDP flows per rule.              |
+
+The TCP-only `range_rule_max_ports` (above) is independent — UDP range
+rules respect the same cap on listen-port count, but the per-flow cap is
+governed by `udp_max_flows_per_rule`. Raise alongside `LimitNOFILE` in
+the systemd unit if your traffic legitimately needs more concurrent
+end-user sources; existing flows are NEVER evicted to make room when
+the cap is reached (idle eviction handles steady-state shrinkage).
+
+### UDP metrics
+
+Per-rule cardinality budget (SC-004) is preserved — one row per rule
+per collector regardless of port-range size:
+
+- `forward_rule_udp_datagrams_in_total{client,rule}` — inbound from
+  end-user.
+- `forward_rule_udp_datagrams_out_total{client,rule}` — outbound to
+  end-user.
+- `forward_rule_active_flows{client,rule}` — gauge of live flows.
+- `forward_rule_flows_dropped_overflow_total{client,rule}` —
+  cumulative count of new-flow first-datagrams refused at the cap.
+
+The `forward_rule_dns_failures_total` collector (added in v0.3.0)
+covers UDP rules too — the resolver layer is shared.
+
+## Limitations (v0.4.0)
 
 What this release does **not** do — listed explicitly so you don't go
 looking for it:
@@ -420,10 +476,12 @@ looking for it:
   host can provision clients and push rules. There's a single token
   store and no per-operator audit beyond the user that ran the systemd
   unit.
-- **No UDP.** Only TCP is forwarded. Port-range rules ARE supported
-  as of v0.2.0 — see "Managing port-range rules" above; domain-name
-  targets are supported as of v0.3.0 — see "Domain-name forwarding"
-  below.
+- **No QUIC / DTLS / connection-oriented UDP.** v0.4.0 forwards
+  individual datagrams; framing-aware protocols round-trip but the
+  proxy doesn't track session state. WireGuard, QUIC, and DTLS work
+  as long as the per-flow idle window is wider than their handshake
+  cadence (default 60 s comfortably covers WireGuard's persistent
+  keepalive).
 - **No hot reload of `server.toml`.** Config changes require a
   service restart.
 - **No external secret management integration.** Bundles and tokens

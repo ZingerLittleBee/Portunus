@@ -44,6 +44,13 @@ pub struct RuleStatsSnapshot {
     /// `rule-stats <id>`. Always present (0 for IP-target rules) per
     /// `contracts/operator-api.md`.
     pub dns_failures: u64,
+    /// 004-udp-forward T038: UDP-specific cumulative counters. All zero
+    /// for TCP rules. Surfaced via `rule-stats <id>` JSON and the
+    /// rendered `/metrics` collectors registered in T037.
+    pub datagrams_in: u64,
+    pub datagrams_out: u64,
+    pub active_flows: u32,
+    pub flows_dropped_overflow: u64,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -60,6 +67,19 @@ pub struct Metrics {
     /// strictly one row per rule, never per address / per attempt /
     /// per failure-mode reason (R-008 / SC-006).
     pub rule_dns_failures_total: IntCounterVec,
+    /// 004-udp-forward T037: per-rule live UDP flow gauge. One row per
+    /// rule (NOT per port for range rules). Always 0 for TCP rules.
+    pub rule_active_flows: GaugeVec,
+    /// 004-udp-forward T037: per-rule cumulative UDP datagrams the
+    /// listener received. One row per rule.
+    pub rule_udp_datagrams_in_total: IntCounterVec,
+    /// 004-udp-forward T037: per-rule cumulative UDP datagrams sent
+    /// back to end-users. One row per rule.
+    pub rule_udp_datagrams_out_total: IntCounterVec,
+    /// 004-udp-forward T037: per-rule cumulative count of new-flow
+    /// first-datagrams dropped because the per-rule UdpFlowTable was
+    /// at `udp_max_flows_per_rule`. Always 0 for TCP rules.
+    pub rule_flows_dropped_overflow_total: IntCounterVec,
 }
 
 impl Metrics {
@@ -103,12 +123,44 @@ impl Metrics {
             ),
             &["client", "rule"],
         )?;
+        let rule_active_flows = GaugeVec::new(
+            opts!(
+                "forward_rule_active_flows",
+                "Live UDP flows per rule (one row per rule, even for range rules; always 0 for TCP rules)"
+            ),
+            &["client", "rule"],
+        )?;
+        let rule_udp_datagrams_in_total = IntCounterVec::new(
+            opts!(
+                "forward_rule_udp_datagrams_in_total",
+                "Per-rule monotonic count of UDP datagrams received from end-users (always 0 for TCP rules)"
+            ),
+            &["client", "rule"],
+        )?;
+        let rule_udp_datagrams_out_total = IntCounterVec::new(
+            opts!(
+                "forward_rule_udp_datagrams_out_total",
+                "Per-rule monotonic count of UDP datagrams sent back to end-users (always 0 for TCP rules)"
+            ),
+            &["client", "rule"],
+        )?;
+        let rule_flows_dropped_overflow_total = IntCounterVec::new(
+            opts!(
+                "forward_rule_flows_dropped_overflow_total",
+                "Per-rule monotonic count of UDP first-datagrams dropped because the per-rule flow table hit `udp_max_flows_per_rule`"
+            ),
+            &["client", "rule"],
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
         registry.register(Box::new(rule_bytes_out_total.clone()))?;
         registry.register(Box::new(rule_active_connections.clone()))?;
         registry.register(Box::new(rule_dns_failures_total.clone()))?;
+        registry.register(Box::new(rule_active_flows.clone()))?;
+        registry.register(Box::new(rule_udp_datagrams_in_total.clone()))?;
+        registry.register(Box::new(rule_udp_datagrams_out_total.clone()))?;
+        registry.register(Box::new(rule_flows_dropped_overflow_total.clone()))?;
 
         Ok(Self {
             registry,
@@ -118,6 +170,10 @@ impl Metrics {
             rule_bytes_out_total,
             rule_active_connections,
             rule_dns_failures_total,
+            rule_active_flows,
+            rule_udp_datagrams_in_total,
+            rule_udp_datagrams_out_total,
+            rule_flows_dropped_overflow_total,
         })
     }
 
@@ -149,6 +205,13 @@ struct CachedEntry {
     /// monotonic delta computation. Same baseline-reset rule as
     /// `prev_bytes_*`.
     prev_dns_failures: u64,
+    /// 004-udp-forward T038: previous UDP cumulative readings used to
+    /// compute monotonic deltas for the new collectors. Baseline-reset
+    /// (new < prev) is treated as a fresh window — counters never
+    /// decrement.
+    prev_datagrams_in: u64,
+    prev_datagrams_out: u64,
+    prev_flows_dropped_overflow: u64,
 }
 
 impl RuleStatsCache {
@@ -169,6 +232,13 @@ impl RuleStatsCache {
         bytes_out: u64,
         active_connections: u32,
         dns_failures: u64,
+        // 004-udp-forward T038: UDP-specific cumulative values from
+        // the StatsReport. TCP rules pass zeros; the deltas land at 0
+        // and the corresponding collectors stay quiet.
+        datagrams_in: u64,
+        datagrams_out: u64,
+        active_flows: u32,
+        flows_dropped_overflow: u64,
         metrics: &Metrics,
     ) {
         let mut guard = self.inner.write().await;
@@ -180,17 +250,27 @@ impl RuleStatsCache {
                 bytes_out: 0,
                 active_connections: 0,
                 dns_failures: 0,
+                datagrams_in: 0,
+                datagrams_out: 0,
+                active_flows: 0,
+                flows_dropped_overflow: 0,
                 updated_at: Utc::now(),
             },
             prev_bytes_in: 0,
             prev_bytes_out: 0,
             prev_dns_failures: 0,
+            prev_datagrams_in: 0,
+            prev_datagrams_out: 0,
+            prev_flows_dropped_overflow: 0,
         });
 
         let labels = [client_name.as_str(), &rule_id.0.to_string()];
         let in_delta = bytes_in.saturating_sub(entry.prev_bytes_in);
         let out_delta = bytes_out.saturating_sub(entry.prev_bytes_out);
         let dns_delta = dns_failures.saturating_sub(entry.prev_dns_failures);
+        let dgin_delta = datagrams_in.saturating_sub(entry.prev_datagrams_in);
+        let dgout_delta = datagrams_out.saturating_sub(entry.prev_datagrams_out);
+        let drop_delta = flows_dropped_overflow.saturating_sub(entry.prev_flows_dropped_overflow);
         if in_delta > 0 {
             metrics
                 .rule_bytes_in_total
@@ -209,18 +289,47 @@ impl RuleStatsCache {
                 .with_label_values(&labels)
                 .inc_by(dns_delta);
         }
+        if dgin_delta > 0 {
+            metrics
+                .rule_udp_datagrams_in_total
+                .with_label_values(&labels)
+                .inc_by(dgin_delta);
+        }
+        if dgout_delta > 0 {
+            metrics
+                .rule_udp_datagrams_out_total
+                .with_label_values(&labels)
+                .inc_by(dgout_delta);
+        }
+        if drop_delta > 0 {
+            metrics
+                .rule_flows_dropped_overflow_total
+                .with_label_values(&labels)
+                .inc_by(drop_delta);
+        }
         metrics
             .rule_active_connections
             .with_label_values(&labels)
             .set(f64::from(active_connections));
+        metrics
+            .rule_active_flows
+            .with_label_values(&labels)
+            .set(f64::from(active_flows));
 
         entry.prev_bytes_in = bytes_in;
         entry.prev_bytes_out = bytes_out;
         entry.prev_dns_failures = dns_failures;
+        entry.prev_datagrams_in = datagrams_in;
+        entry.prev_datagrams_out = datagrams_out;
+        entry.prev_flows_dropped_overflow = flows_dropped_overflow;
         entry.snapshot.bytes_in = bytes_in;
         entry.snapshot.bytes_out = bytes_out;
         entry.snapshot.active_connections = active_connections;
         entry.snapshot.dns_failures = dns_failures;
+        entry.snapshot.datagrams_in = datagrams_in;
+        entry.snapshot.datagrams_out = datagrams_out;
+        entry.snapshot.active_flows = active_flows;
+        entry.snapshot.flows_dropped_overflow = flows_dropped_overflow;
         entry.snapshot.updated_at = Utc::now();
         entry.snapshot.client_name = client_name.clone();
     }
@@ -241,10 +350,22 @@ impl RuleStatsCache {
             // SC-006 cardinality budget: 1 row per live rule, no
             // accumulation of removed-rule rows). Byte counters are
             // kept per Prometheus convention; SC-002 already accepts
-            // their unbounded retention.
+            // their unbounded retention. 004-udp-forward T038 extends
+            // the cleanup to the four UDP-specific collectors so the
+            // SC-004 cardinality budget holds for UDP rules as well.
             let labels = [client_name.as_str(), &rule_id.0.to_string()];
             let _ = metrics.rule_active_connections.remove_label_values(&labels);
             let _ = metrics.rule_dns_failures_total.remove_label_values(&labels);
+            let _ = metrics.rule_active_flows.remove_label_values(&labels);
+            let _ = metrics
+                .rule_udp_datagrams_in_total
+                .remove_label_values(&labels);
+            let _ = metrics
+                .rule_udp_datagrams_out_total
+                .remove_label_values(&labels);
+            let _ = metrics
+                .rule_flows_dropped_overflow_total
+                .remove_label_values(&labels);
         }
     }
 }
@@ -275,7 +396,19 @@ mod tests {
         let metrics = Metrics::new().unwrap();
         let cache = RuleStatsCache::new();
         cache
-            .observe(&name("edge-a"), RuleId(7), 1000, 2000, 3, 0, &metrics)
+            .observe(
+                &name("edge-a"),
+                RuleId(7),
+                1000,
+                2000,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
             .await;
         let snap = cache.get(RuleId(7)).await.unwrap();
         assert_eq!(snap.bytes_in, 1000);
@@ -286,7 +419,19 @@ mod tests {
 
         // Second observation: counters take the delta.
         cache
-            .observe(&name("edge-a"), RuleId(7), 1500, 2100, 2, 0, &metrics)
+            .observe(
+                &name("edge-a"),
+                RuleId(7),
+                1500,
+                2100,
+                2,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         assert!(
@@ -304,10 +449,34 @@ mod tests {
         let metrics = Metrics::new().unwrap();
         let cache = RuleStatsCache::new();
         cache
-            .observe(&name("edge-a"), RuleId(1), 5_000, 5_000, 0, 0, &metrics)
+            .observe(
+                &name("edge-a"),
+                RuleId(1),
+                5_000,
+                5_000,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
             .await;
         cache
-            .observe(&name("edge-a"), RuleId(1), 100, 100, 0, 0, &metrics)
+            .observe(
+                &name("edge-a"),
+                RuleId(1),
+                100,
+                100,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         // Total stayed at 5000 (no negative delta); next observation will
@@ -317,7 +486,19 @@ mod tests {
             "rendered: {body}"
         );
         cache
-            .observe(&name("edge-a"), RuleId(1), 300, 300, 0, 0, &metrics)
+            .observe(
+                &name("edge-a"),
+                RuleId(1),
+                300,
+                300,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         assert!(
@@ -343,10 +524,10 @@ mod tests {
         // tuple MUST yield one row.
         for i in 0..N {
             cache
-                .observe(&name("edge-a"), RuleId(i), 0, 0, 0, 3, &metrics)
+                .observe(&name("edge-a"), RuleId(i), 0, 0, 0, 3, 0, 0, 0, 0, &metrics)
                 .await;
             cache
-                .observe(&name("edge-a"), RuleId(i), 0, 0, 0, 7, &metrics)
+                .observe(&name("edge-a"), RuleId(i), 0, 0, 0, 7, 0, 0, 0, 0, &metrics)
                 .await;
         }
 
@@ -373,7 +554,19 @@ mod tests {
         let metrics = Metrics::new().unwrap();
         let cache = RuleStatsCache::new();
         cache
-            .observe(&name("edge-a"), RuleId(42), 0, 0, 0, 5, &metrics)
+            .observe(
+                &name("edge-a"),
+                RuleId(42),
+                0,
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
             .await;
         let body = String::from_utf8(metrics.render()).unwrap();
         assert!(body.contains("forward_rule_dns_failures_total{client=\"edge-a\",rule=\"42\"} 5"));
@@ -384,5 +577,100 @@ mod tests {
             !body.contains("rule=\"42\""),
             "dropped rule row MUST disappear from /metrics: {body}"
         );
+    }
+
+    // ---- 004-udp-forward T038 ----
+
+    /// SC-004: per-rule UDP collectors emit exactly one row per rule
+    /// regardless of how many flows / datagrams pass through. Same
+    /// budget the v0.3 dns_failures collector enforces.
+    #[tokio::test]
+    async fn active_flows_cardinality_is_one_row_per_rule() {
+        const N: u64 = 5;
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+
+        // Drive each rule through three increasing observations to
+        // simulate ramping flow counts. Cardinality MUST stay at N.
+        for i in 0..N {
+            for active_flows in [0_u32, 7, 13] {
+                cache
+                    .observe(
+                        &name("edge-a"),
+                        RuleId(i),
+                        100,
+                        200,
+                        0,
+                        0,
+                        50,
+                        45,
+                        active_flows,
+                        2,
+                        &metrics,
+                    )
+                    .await;
+            }
+        }
+
+        let body = String::from_utf8(metrics.render()).unwrap();
+        for collector in [
+            "forward_rule_active_flows{",
+            "forward_rule_udp_datagrams_in_total{",
+            "forward_rule_udp_datagrams_out_total{",
+            "forward_rule_flows_dropped_overflow_total{",
+        ] {
+            let row_count = body.lines().filter(|l| l.starts_with(collector)).count();
+            assert_eq!(
+                row_count as u64, N,
+                "expected N={N} rows for {collector}, got {row_count}\n--- body ---\n{body}"
+            );
+        }
+    }
+
+    /// drop_rule removes UDP collector rows alongside the v0.3
+    /// dns_failures cleanup.
+    #[tokio::test]
+    async fn drop_rule_removes_udp_rows() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        cache
+            .observe(
+                &name("edge-a"),
+                RuleId(99),
+                10,
+                20,
+                0,
+                0,
+                100,
+                90,
+                7,
+                3,
+                &metrics,
+            )
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(body.contains("forward_rule_active_flows{client=\"edge-a\",rule=\"99\"} 7"));
+        assert!(
+            body.contains("forward_rule_udp_datagrams_in_total{client=\"edge-a\",rule=\"99\"} 100")
+        );
+
+        cache.drop_rule(RuleId(99), &name("edge-a"), &metrics).await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        // Byte counters are kept per Prometheus convention (SC-002 budget
+        // accepts unbounded retention there). UDP-specific gauges and
+        // counters MUST be cleared.
+        for collector in [
+            "forward_rule_active_flows{",
+            "forward_rule_udp_datagrams_in_total{",
+            "forward_rule_udp_datagrams_out_total{",
+            "forward_rule_flows_dropped_overflow_total{",
+            "forward_rule_active_connections{",
+            "forward_rule_dns_failures_total{",
+        ] {
+            assert!(
+                !body.lines().any(|l| l.starts_with(collector)),
+                "dropped rule row MUST disappear from {collector}: {body}"
+            );
+        }
     }
 }

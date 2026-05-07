@@ -62,11 +62,29 @@ message Hello {
   string protocol_version = 1;  // semantic version of the protocol the client
                                 // claims to speak, e.g. "1.0.0"
   string client_version = 2;    // forward-client binary version, informational
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Forwarding protocols this client can activate. v0.3.0 clients
+  // never send this field; the server treats an empty list as
+  // {TCP} (the v0.3.0-implicit capability) for backwards compat.
+  // v0.4.0 clients MUST send {TCP, UDP}. Future protocols (e.g. QUIC,
+  // SCTP) extend this list without requiring a new wire field.
+  repeated Protocol supported_protocols = 3;
 }
 
 message Welcome {
   string server_version = 1;
   uint64 server_time_unix_ms = 2;
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // UDP runtime tunables sourced from server config. Both fields use 0
+  // to mean "client uses compile-time default":
+  //   udp_flow_idle_secs       = 0 → client uses 60 s
+  //   udp_max_flows_per_rule   = 0 → client uses 1024
+  // A v0.3.0 server (which sends neither) is therefore
+  // backwards-compatible with a v0.4.0 client.
+  uint32 udp_flow_idle_secs     = 3;  // 30..=300
+  uint32 udp_max_flows_per_rule = 4;  // 1..=65535
 }
 
 // ============================================================================
@@ -76,7 +94,13 @@ message Welcome {
 enum Protocol {
   PROTOCOL_UNSPECIFIED = 0;
   TCP = 1;
-  // Future: UDP, etc. Adding values to a proto3 enum is non-breaking.
+  // Additive in v1.3 (spec 004-udp-forward). Adding values to a proto3
+  // enum is non-breaking. v0.3.0 readers decoding `2` see the integer
+  // value; an exhaustive Rust match hits the default arm and triggers
+  // RuleStatus.failed with reason "unsupported_protocol". The server's
+  // proactive guard in push-rule (using Hello.supported_protocols)
+  // surfaces the same condition as HTTP 422 / exit 3.
+  UDP = 2;
 }
 
 message Rule {
@@ -160,6 +184,30 @@ message RuleStats {
   // v1.1 servers/clients reading an unknown field 6 follow proto3
   // semantics (drop on emit, decode as 0 on read).
   uint64 dns_failures = 6;
+
+  // Additive in v1.3 (spec 004-udp-forward). All four UDP fields are
+  // proto3 default-zero scalars so a TCP-only sender emits byte-
+  // identical wire to v0.3.0. v0.3.0 readers drop these on decode.
+
+  // Cumulative count of UDP datagrams the rule's listener received
+  // from end-users (across all ports for range rules). Always 0 for
+  // TCP rules.
+  uint64 datagrams_in = 7;
+
+  // Cumulative count of UDP datagrams the rule sent back to end-users
+  // (replies received on per-flow upstream sockets and forwarded to
+  // the original source). Always 0 for TCP rules.
+  uint64 datagrams_out = 8;
+
+  // Current live UDP flows aggregated across all ports. Replaces the
+  // `active_connections` semantic for UDP rules — operator surfaces
+  // present this as `active_flows`. Always 0 for TCP rules.
+  uint32 active_flows = 9;
+
+  // Cumulative count of new-flow first-datagrams dropped because the
+  // per-rule flow table was at `udp_max_flows_per_rule`. Always 0 for
+  // TCP rules.
+  uint64 flows_dropped_overflow = 10;
 }
 
 // New in v1.1 (spec 002-port-range-forward).
@@ -167,7 +215,13 @@ message PerPortStats {
   uint32 listen_port = 1;
   uint64 bytes_in = 2;
   uint64 bytes_out = 3;
-  uint32 active_connections = 4;
+  uint32 active_connections = 4;  // TCP only — UDP per-port emits 0
+
+  // Additive in v1.3 (spec 004-udp-forward). Always 0 for TCP rules.
+  // Field 4 was already taken by v0.2.0 active_connections, so UDP
+  // datagram counters start at 5.
+  uint64 datagrams_in = 5;
+  uint64 datagrams_out = 6;
 }
 
 message StatsReport {

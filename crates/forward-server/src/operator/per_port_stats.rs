@@ -17,12 +17,22 @@ use tokio::sync::RwLock;
 
 /// One per-port reading, tagged with the wall-clock instant the server
 /// last received it. Mirrors the proto `PerPortStats` shape one-for-one.
+///
+/// 004-udp-forward T053/T055: `datagrams_in/out` carry per-port UDP
+/// counters for range UDP rules. TCP entries leave them at 0; the JSON
+/// serialization is unconditional so generic operator tooling can rely
+/// on the field's presence (mirrors the protocol/datagrams_* fields on
+/// the rule-level stats body).
 #[derive(Debug, Clone, Serialize)]
 pub struct PerPortSnapshot {
     pub listen_port: u16,
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub active_connections: u32,
+    #[serde(default)]
+    pub datagrams_in: u64,
+    #[serde(default)]
+    pub datagrams_out: u64,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -80,6 +90,8 @@ mod tests {
             bytes_in: in_b,
             bytes_out: out_b,
             active_connections: 0,
+            datagrams_in: 0,
+            datagrams_out: 0,
             updated_at: Utc::now(),
         }
     }

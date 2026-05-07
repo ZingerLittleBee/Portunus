@@ -35,8 +35,14 @@ fn serialize_prefer_ipv6_as_bool<S: serde::Serializer>(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Tcp,
+    /// Additive in v0.4.0 (spec 004-udp-forward). When persisted in
+    /// `rules.json` (future work), serializes as `"udp"`. v0.3.0 readers
+    /// of a v0.4.0 dump fail loudly on the unknown variant — operators
+    /// should drain UDP rules before downgrading.
+    Udp,
 }
 
 impl Protocol {
@@ -45,6 +51,7 @@ impl Protocol {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
+            Self::Udp => "udp",
         }
     }
 }
@@ -160,6 +167,26 @@ pub enum RuleStoreError {
     /// Range failed structural validation (inverted, length mismatch, etc.).
     #[error("range_invalid: {0}")]
     RangeInvalid(PortRangeError),
+
+    /// 004-udp-forward T017: target client did not declare the requested
+    /// protocol in its `Hello.supported_protocols`. Surfaced to the
+    /// operator as HTTP 422 / exit 3 with code `unsupported_protocol`
+    /// (see `contracts/operator-api.md`). Carries both the client name
+    /// (so the operator knows which deployment is stale) and the
+    /// protocol string (`"udp"` in v0.4.0; reserved for future
+    /// protocols).
+    ///
+    /// Reserved on the public surface: capability gating currently
+    /// lives in `operator::cli::push_rule` (it has direct access to
+    /// `ConnectedClients`). This variant is kept so a future caller
+    /// that wants `ServerRuleStore` to enforce gating internally has a
+    /// stable error code to thread through.
+    #[allow(dead_code)]
+    #[error("unsupported_protocol: client {client_name} does not support protocol {protocol}")]
+    UnsupportedProtocol {
+        client_name: ClientName,
+        protocol: &'static str,
+    },
 }
 
 /// In-memory rule store. Cheap to clone (`Arc` internal); thread-safe via
@@ -247,12 +274,18 @@ impl ServerRuleStore {
         // Conflict check via the per-client interval index. We walk
         // every entry whose `start <= candidate.end` and inspect the
         // associated rule. Any rule whose listen_range overlaps the
-        // candidate AND is in Active/Failed state blocks the push.
+        // candidate AND is in Active/Failed state AND uses the SAME
+        // protocol blocks the push. 004-udp-forward T036: cross-protocol
+        // rules on the same port coexist (UDP:6000 alongside TCP:6000
+        // is legal because the kernel demuxes by protocol).
         if let Some(index) = guard.by_client_listen_start.get(&client_name) {
             for (_start, existing_id) in index.range(..=listen.end()) {
                 let Some(existing) = guard.rules.get(existing_id) else {
                     continue;
                 };
+                if existing.protocol != protocol {
+                    continue;
+                }
                 let existing_range = existing.listen_range();
                 if existing_range.overlaps(listen)
                     && matches!(existing.state, RuleState::Active | RuleState::Failed { .. })
@@ -702,6 +735,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(b.range_size(), 4);
+    }
+
+    // ---- 004-udp-forward T036 ----
+
+    #[tokio::test]
+    async fn udp_and_tcp_on_same_port_coexist() {
+        // The kernel demuxes by protocol, so UDP:6000 and TCP:6000 on
+        // the same client are legal. Pre-T036 the index was protocol-
+        // agnostic and would have raised PortInUse here.
+        let store = ServerRuleStore::new();
+        let tcp = store
+            .push(
+                name("edge-01"),
+                6000,
+                "127.0.0.1".into(),
+                9999,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        store.mark_active(tcp.id).await.unwrap();
+        let udp = store
+            .push(
+                name("edge-01"),
+                6000,
+                "127.0.0.1".into(),
+                9999,
+                Protocol::Udp,
+                None,
+            )
+            .await
+            .expect("UDP on same port MUST be accepted alongside TCP");
+        assert_ne!(tcp.id, udp.id);
+        assert_eq!(udp.protocol, Protocol::Udp);
+    }
+
+    #[tokio::test]
+    async fn same_protocol_same_port_still_conflicts() {
+        // Pinning the v0.1.0 invariant: UDP:6000 + UDP:6000 still fails.
+        let store = ServerRuleStore::new();
+        let first = store
+            .push(
+                name("edge-01"),
+                6000,
+                "127.0.0.1".into(),
+                9999,
+                Protocol::Udp,
+                None,
+            )
+            .await
+            .unwrap();
+        store.mark_active(first.id).await.unwrap();
+        let err = store
+            .push(
+                name("edge-01"),
+                6000,
+                "127.0.0.1".into(),
+                9999,
+                Protocol::Udp,
+                None,
+            )
+            .await
+            .unwrap_err();
+        match err {
+            RuleStoreError::PortInUse { offending_port } => assert_eq!(offending_port, 6000),
+            other => panic!("expected PortInUse, got {other:?}"),
+        }
+    }
+
+    /// 004-udp-forward T048: a UDP push of equal-length listen and
+    /// target ranges succeeds; mismatched lengths return
+    /// `mismatched_range` (exit 3) — same v0.2 validator path the TCP
+    /// range push hits, just exercised under `Protocol::Udp` to pin
+    /// down "no UDP escape hatch".
+    #[tokio::test]
+    async fn udp_range_push_validates_lengths() {
+        let store = ServerRuleStore::new();
+        // Equal lengths → accepted.
+        let listen = PortRange::new(6010, 6019).unwrap();
+        let target = PortRange::new(9990, 9999).unwrap();
+        let rule = store
+            .push_range(
+                name("edge-01"),
+                listen,
+                "127.0.0.1".into(),
+                target,
+                Protocol::Udp,
+                None,
+                u32::MAX,
+            )
+            .await
+            .expect("equal-length UDP range push must succeed");
+        assert_eq!(rule.protocol, Protocol::Udp);
+        assert_eq!(rule.listen_port, 6010);
+        assert_eq!(rule.listen_port_end, Some(6019));
+        assert_eq!(rule.target_port, 9990);
+        assert_eq!(rule.target_port_end, Some(9999));
+
+        // Mismatched lengths → mismatched_range (PortRange::pair guard).
+        let bad_target = PortRange::new(9990, 9991).unwrap();
+        let err = store
+            .push_range(
+                name("edge-02"),
+                listen,
+                "127.0.0.1".into(),
+                bad_target,
+                Protocol::Udp,
+                None,
+                u32::MAX,
+            )
+            .await
+            .expect_err("mismatched ranges MUST be rejected for UDP too");
+        match err {
+            RuleStoreError::RangeInvalid(PortRangeError::LengthMismatch {
+                listen_len,
+                target_len,
+            }) => {
+                assert_eq!(listen_len, 10);
+                assert_eq!(target_len, 2);
+            }
+            other => panic!("expected RangeInvalid(LengthMismatch), got {other:?}"),
+        }
     }
 
     #[tokio::test]

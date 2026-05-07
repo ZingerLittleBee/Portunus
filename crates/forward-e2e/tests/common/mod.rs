@@ -165,7 +165,34 @@ impl Drop for ClientHandle {
 /// Caller is responsible for waiting for readiness (e.g., by polling the
 /// operator HTTP listener).
 pub fn spawn_server(extra_args: &[&str]) -> ServerHandle {
+    spawn_server_with_toml(None, extra_args)
+}
+
+/// 004-udp-forward T058/T059 helper: write a fully-formed `server.toml`
+/// (mirroring the binary's `default_config` listener shape — LOCALHOST:0
+/// for all three sockets so e2e tests don't collide on shared ports)
+/// with the supplied extra TOML lines spliced in. Callers pass UDP-tuning
+/// overrides like `udp_max_flows_per_rule = 2`; the helper takes care of
+/// the required TLS / token-store paths so the server self-generates the
+/// missing files exactly as it does without a server.toml.
+pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> ServerHandle {
     let config_dir = fresh_tempdir("server config");
+    if let Some(extra) = extra_toml {
+        let cd = config_dir.path();
+        let body = format!(
+            "control_listen = \"127.0.0.1:0\"\n\
+             operator_http_listen = \"127.0.0.1:0\"\n\
+             metrics_listen = \"127.0.0.1:0\"\n\
+             tls_cert_path = {cert_path:?}\n\
+             tls_key_path = {key_path:?}\n\
+             token_store_path = {token_path:?}\n\
+             {extra}\n",
+            cert_path = cd.join("server.crt").to_string_lossy(),
+            key_path = cd.join("server.key").to_string_lossy(),
+            token_path = cd.join("tokens.json").to_string_lossy(),
+        );
+        std::fs::write(cd.join("server.toml"), body).expect("write server.toml override");
+    }
     let mut cmd = cmd_for("forward-server");
     cmd.arg("--config-dir")
         .arg(config_dir.path())
@@ -321,6 +348,78 @@ pub fn push_rule_http_full(
     if let Some(end) = target_port_end {
         body["target_port_end"] = serde_json::Value::Number(end.into());
     }
+    if let Some(secs) = ack_timeout_secs {
+        body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
+    }
+    let resp = reqwest::blocking::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .expect("POST /v1/rules");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+/// 004-udp-forward T026 helper: push a single-port rule with an
+/// explicit `protocol` (e.g. `"udp"`). Returns the standard
+/// `(status, body)` pair so callers can assert specifics.
+#[allow(dead_code)]
+pub fn push_rule_http_with_protocol(
+    operator_http_addr: &str,
+    client: &str,
+    listen_port: u16,
+    target_host: &str,
+    target_port: u16,
+    protocol: &str,
+    ack_timeout_secs: Option<u64>,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("http://{operator_http_addr}/v1/rules");
+    let mut body = serde_json::json!({
+        "client": client,
+        "listen_port": listen_port,
+        "target_host": target_host,
+        "target_port": target_port,
+        "protocol": protocol,
+    });
+    if let Some(secs) = ack_timeout_secs {
+        body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
+    }
+    let resp = reqwest::blocking::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .expect("POST /v1/rules");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+/// 004-udp-forward T049 helper: push a range rule with an explicit
+/// `protocol`. Combines `push_rule_http_full` (range fields) with
+/// `push_rule_http_with_protocol` (protocol field).
+#[allow(dead_code, clippy::too_many_arguments)]
+pub fn push_rule_http_range_with_protocol(
+    operator_http_addr: &str,
+    client: &str,
+    listen_port: u16,
+    listen_port_end: u16,
+    target_host: &str,
+    target_port: u16,
+    target_port_end: u16,
+    protocol: &str,
+    ack_timeout_secs: Option<u64>,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("http://{operator_http_addr}/v1/rules");
+    let mut body = serde_json::json!({
+        "client": client,
+        "listen_port": listen_port,
+        "listen_port_end": listen_port_end,
+        "target_host": target_host,
+        "target_port": target_port,
+        "target_port_end": target_port_end,
+        "protocol": protocol,
+    });
     if let Some(secs) = ack_timeout_secs {
         body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
     }

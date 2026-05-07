@@ -4,14 +4,14 @@
 //! `Welcome`) and registers the client in [`crate::clients`]. Rule push
 //! and stats handling land in US2/US3.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use forward_auth::ClientIdentity;
 use forward_proto::v1::{
-    ClientMessage, ServerMessage, Welcome, control_server::Control, server_message,
+    ClientMessage, Protocol, ServerMessage, Welcome, control_server::Control, server_message,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -46,6 +46,7 @@ impl Control for ControlService {
     type ChannelStream =
         Pin<Box<dyn Stream<Item = Result<ServerMessage, Status>> + Send + 'static>>;
 
+    #[allow(clippy::too_many_lines)]
     async fn channel(
         &self,
         request: Request<Streaming<ClientMessage>>,
@@ -74,22 +75,92 @@ impl Control for ControlService {
             )
             .await;
         state.metrics.clients_connected.inc();
+
+        // 004-udp-forward T008: peek the first inbound message before
+        // sending Welcome. If it is Hello, harvest `supported_protocols`
+        // into the ConnectedClient row so push-rule can gate UDP rules
+        // pre-wire (HIGH-1 review fix). If the first message is anything
+        // else (e.g. v0.3 client jumping straight to StatsReport), the
+        // session keeps the registration default `{TCP}` and the original
+        // message is fed into the existing handler.
+        let pending_first_msg: Option<ClientMessage> = match inbound.next().await {
+            Some(Ok(client_msg)) => match &client_msg.payload {
+                Some(forward_proto::v1::client_message::Payload::Hello(h)) => {
+                    let caps = capabilities_from_hello(&h.supported_protocols);
+                    state
+                        .clients
+                        .set_supported_protocols(&identity.client_name, session_id, caps.clone())
+                        .await;
+                    info!(
+                        event = "client.hello",
+                        client_name = %identity.client_name,
+                        protocol_version = %h.protocol_version,
+                        client_version = %h.client_version,
+                        supported_protocols = ?caps_for_log(&caps),
+                    );
+                    None
+                }
+                _ => Some(client_msg),
+            },
+            Some(Err(e)) => {
+                state
+                    .clients
+                    .unregister(&identity.client_name, session_id)
+                    .await;
+                state.metrics.clients_connected.dec();
+                warn!(
+                    event = "client.transport_error",
+                    client_name = %identity.client_name,
+                    error = %e,
+                );
+                return Err(Status::cancelled("transport_error_before_welcome"));
+            }
+            None => {
+                state
+                    .clients
+                    .unregister(&identity.client_name, session_id)
+                    .await;
+                state.metrics.clients_connected.dec();
+                return Err(Status::cancelled("client_dropped_before_hello"));
+            }
+        };
+
+        let session_caps = state
+            .clients
+            .snapshot()
+            .await
+            .get(&identity.client_name)
+            .map_or_else(
+                || {
+                    let mut s = HashSet::new();
+                    s.insert(Protocol::Tcp);
+                    s
+                },
+                |c| c.supported_protocols.clone(),
+            );
         info!(
             event = "client.connected",
             client_name = %identity.client_name,
             remote_addr = ?remote_addr,
             session_id,
+            supported_protocols = ?caps_for_log(&session_caps),
         );
 
-        // Send Welcome immediately.
+        // Send Welcome with UDP tunables sourced from server config (T013).
+        // 0 means "use client default" — for v0.4.0 servers we always
+        // emit the resolved positive integers from ServerConfig.
+        let (idle_secs, max_flows) = state.server_config.as_ref().map_or((0, 0), |c| {
+            (c.udp_flow_idle_secs(), c.udp_max_flows_per_rule())
+        });
         let welcome = ServerMessage {
             payload: Some(server_message::Payload::Welcome(Welcome {
                 server_version: SERVER_VERSION.to_string(),
                 server_time_unix_ms: now_ms(),
+                udp_flow_idle_secs: idle_secs,
+                udp_max_flows_per_rule: max_flows,
             })),
         };
         if tx.send(Ok(welcome)).await.is_err() {
-            // Receiver dropped before we could even send Welcome; clean up.
             state
                 .clients
                 .unregister(&identity.client_name, session_id)
@@ -109,6 +180,11 @@ impl Control for ControlService {
         // sends rule pushes through this same channel.)
         tokio::spawn(async move {
             let _outbound = tx;
+            // If the first inbound message wasn't a Hello, replay it
+            // through the existing handler now (v0.3 client back-compat).
+            if let Some(replay) = pending_first_msg {
+                handle_client_message(&pump_state, &pump_identity, &pump_waiters, replay).await;
+            }
             loop {
                 tokio::select! {
                     () = pump_cancel.cancelled() => {
@@ -155,6 +231,38 @@ impl Control for ControlService {
     }
 }
 
+/// Convert the wire `repeated Protocol supported_protocols` (i32 enum
+/// values) into a `HashSet<Protocol>`. Unknown integers are silently
+/// dropped (proto3 forward-compat); `Protocol::Unspecified` is also
+/// dropped so it can never satisfy a `supports()` check.
+fn capabilities_from_hello(values: &[i32]) -> HashSet<Protocol> {
+    let mut out = HashSet::new();
+    for v in values {
+        if let Ok(p) = Protocol::try_from(*v)
+            && !matches!(p, Protocol::Unspecified)
+        {
+            out.insert(p);
+        }
+    }
+    out
+}
+
+/// Stable, sorted list rendering for log output — `HashSet` iteration
+/// order is non-deterministic, which would defeat log scrubbing in
+/// integration tests.
+fn caps_for_log(caps: &HashSet<Protocol>) -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = caps
+        .iter()
+        .map(|p| match p {
+            Protocol::Unspecified => "UNSPECIFIED",
+            Protocol::Tcp => "TCP",
+            Protocol::Udp => "UDP",
+        })
+        .collect();
+    v.sort_unstable();
+    v
+}
+
 async fn handle_client_message(
     state: &AppState,
     identity: &ClientIdentity,
@@ -165,8 +273,11 @@ async fn handle_client_message(
     use forward_proto::v1::client_message::Payload;
     match msg.payload {
         Some(Payload::Hello(h)) => {
-            info!(
-                event = "client.hello",
+            // A Hello can only legitimately appear as the first message
+            // (consumed by `channel()` before Welcome). Anything later
+            // is a protocol error from the client; log and ignore.
+            warn!(
+                event = "client.hello_after_welcome",
                 client_name = %identity.client_name,
                 protocol_version = %h.protocol_version,
                 client_version = %h.client_version,
@@ -215,6 +326,15 @@ async fn handle_client_message(
                         // present in the proto; 0 for IP-target
                         // rules where the resolver layer is bypassed.
                         entry.dns_failures,
+                        // 004-udp-forward T039: UDP cumulative readings
+                        // straight off the wire (proto3 zero for TCP
+                        // rules — SC-004 cardinality holds because the
+                        // observe path skips collector writes when
+                        // every delta is 0).
+                        entry.datagrams_in,
+                        entry.datagrams_out,
+                        entry.active_flows,
+                        entry.flows_dropped_overflow,
                         &state.metrics,
                     )
                     .await;
@@ -229,6 +349,8 @@ async fn handle_client_message(
                                 bytes_in: p.bytes_in,
                                 bytes_out: p.bytes_out,
                                 active_connections: p.active_connections,
+                                datagrams_in: p.datagrams_in,
+                                datagrams_out: p.datagrams_out,
                                 updated_at: chrono::Utc::now(),
                             })
                         })
@@ -252,4 +374,65 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 004-udp-forward T009. The end-to-end Hello-gated path is exercised
+    // through the existing register/handle integration suites in
+    // `forward-e2e`; here we lock down the pure helpers that decide
+    // capability membership at the wire boundary.
+
+    #[test]
+    fn capabilities_from_hello_with_tcp_and_udp() {
+        let caps = capabilities_from_hello(&[Protocol::Tcp as i32, Protocol::Udp as i32]);
+        assert!(caps.contains(&Protocol::Tcp));
+        assert!(caps.contains(&Protocol::Udp));
+        assert_eq!(caps.len(), 2);
+    }
+
+    #[test]
+    fn capabilities_from_hello_drops_unknown_enum_values() {
+        // Wire integer 99 is not defined in the enum — proto3 forward-
+        // compat semantics say silently ignore. The set MUST NOT
+        // contain a coerced value.
+        let caps = capabilities_from_hello(&[Protocol::Tcp as i32, 99]);
+        assert!(caps.contains(&Protocol::Tcp));
+        assert_eq!(caps.len(), 1, "unknown enum integer must be dropped");
+    }
+
+    #[test]
+    fn capabilities_from_hello_drops_unspecified() {
+        // Even an explicitly-emitted PROTOCOL_UNSPECIFIED (= 0) is
+        // useless for capability checks — `supports()` always returns
+        // false for it; we drop at parse time so it can never bloat
+        // the set or appear in audit logs.
+        let caps = capabilities_from_hello(&[Protocol::Unspecified as i32, Protocol::Udp as i32]);
+        assert!(caps.contains(&Protocol::Udp));
+        assert!(!caps.contains(&Protocol::Unspecified));
+        assert_eq!(caps.len(), 1);
+    }
+
+    #[test]
+    fn capabilities_from_hello_empty_list_yields_empty_set() {
+        // A v0.3.0 client whose Hello arrives with no
+        // `supported_protocols` is treated as TCP-only at the
+        // ConnectedClient level (the registration default seeded by
+        // `register()`), but THIS function reflects only what the wire
+        // said. The caller decides the back-compat default.
+        let caps = capabilities_from_hello(&[]);
+        assert!(caps.is_empty());
+    }
+
+    #[test]
+    fn caps_for_log_is_sorted_and_human_readable() {
+        let mut caps = HashSet::new();
+        caps.insert(Protocol::Udp);
+        caps.insert(Protocol::Tcp);
+        // HashSet iteration is non-deterministic; the rendering must
+        // be stable so log scrapers can pin on it.
+        assert_eq!(caps_for_log(&caps), vec!["TCP", "UDP"]);
+    }
 }

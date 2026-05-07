@@ -239,11 +239,73 @@ impl<R: Resolve> LiveResolver<R> {
         port: u16,
         prefer_ipv6: bool,
     ) -> Result<(TcpStream, AnswerSource), ConnectError> {
-        match target {
-            Target::Ip(ip) => TcpStream::connect(SocketAddr::new(*ip, port))
+        // 004-udp-forward T015: connect_target is now a thin dial loop
+        // on top of `resolve_target`. The behaviour MUST be byte-
+        // identical to the v0.3.0 path — every existing test in this
+        // file passes with no changes.
+        let (addrs, source) = self
+            .resolve_target(rule_id, target, port, prefer_ipv6)
+            .await?;
+
+        // IP-target rules always produced exactly one SocketAddr; the
+        // dial loop below short-circuits on the first attempt and the
+        // error-mapping for that single attempt MUST stay
+        // `ConnectError::Dial` (not `AllAddrsUnreachable`) for parity
+        // with the pre-refactor code path.
+        if matches!(target, Target::Ip(_)) {
+            return TcpStream::connect(addrs[0])
                 .await
-                .map(|s| (s, AnswerSource::Fresh))
-                .map_err(ConnectError::Dial),
+                .map(|s| (s, source))
+                .map_err(ConnectError::Dial);
+        }
+
+        let mut last_err: Option<io::Error> = None;
+        let tried = addrs.len();
+        for addr in &addrs {
+            match tokio::time::timeout(self.config.attempt_timeout, TcpStream::connect(*addr)).await
+            {
+                Ok(Ok(stream)) => return Ok((stream, source)),
+                Ok(Err(e)) => {
+                    last_err = Some(e);
+                }
+                Err(_) => {
+                    last_err = Some(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("dial timeout after {:?}", self.config.attempt_timeout),
+                    ));
+                }
+            }
+        }
+        // Every address failed. Surface FR-006's
+        // "all addresses unreachable" classification.
+        let last = last_err
+            .unwrap_or_else(|| io::Error::other("no addresses (unreachable: zero attempts)"));
+        Err(ConnectError::AllAddrsUnreachable { tried, last })
+    }
+
+    /// 004-udp-forward T014 (HIGH-2 review fix): the resolution-and-
+    /// ordering portion of `connect_target` exposed without dialing,
+    /// so the UDP forwarder can reuse the cache + family-preference
+    /// logic without depending on `TcpStream`.
+    ///
+    /// Returns the ordered candidate `(IpAddr, port)` list plus the
+    /// answer source the cache reported. For `Target::Ip(ip)` this is
+    /// always `(vec![SocketAddr::new(*ip, port)], AnswerSource::Fresh)`
+    /// — the resolver is never invoked (R-006 / Constitution II
+    /// hot-path budget).
+    ///
+    /// Errors mirror `connect_target`: `ConnectError::Resolution` on
+    /// resolver failure (so the UDP path can bump
+    /// `forward_rule_dns_failures_total` for the same condition).
+    pub async fn resolve_target(
+        &self,
+        rule_id: RuleId,
+        target: &Target,
+        port: u16,
+        prefer_ipv6: bool,
+    ) -> Result<(Vec<SocketAddr>, AnswerSource), ConnectError> {
+        match target {
+            Target::Ip(ip) => Ok((vec![SocketAddr::new(*ip, port)], AnswerSource::Fresh)),
             Target::Dns(name) => {
                 let result = self
                     .cache
@@ -257,10 +319,12 @@ impl<R: Resolve> LiveResolver<R> {
 
                 let ordered = order_by_family(&result.addrs, prefer_ipv6);
 
-                // T035: log only on fresh resolutions to keep the
-                // cache-hit hot path quiet. We log the *chosen* addr
-                // (the first one we'll attempt) for traceability;
-                // multi-A fallback walks the rest silently.
+                // T035 (003-domain-name-forward): log only on fresh
+                // resolutions. Cache hits and stale-while-error serves
+                // stay quiet (Constitution IV). We log the chosen addr
+                // (head of the ordered list) — the dial path may walk
+                // past it on multi-A fallback, but this matches the
+                // pre-refactor behaviour for parity.
                 if result.source == AnswerSource::Fresh
                     && let Some(first) = ordered.first()
                 {
@@ -274,34 +338,11 @@ impl<R: Resolve> LiveResolver<R> {
                     );
                 }
 
-                let mut last_err: Option<io::Error> = None;
-                let tried = ordered.len();
-                for ip in &ordered {
-                    let addr = SocketAddr::new(*ip, port);
-                    match tokio::time::timeout(
-                        self.config.attempt_timeout,
-                        TcpStream::connect(addr),
-                    )
-                    .await
-                    {
-                        Ok(Ok(stream)) => return Ok((stream, result.source)),
-                        Ok(Err(e)) => {
-                            last_err = Some(e);
-                        }
-                        Err(_) => {
-                            last_err = Some(io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                format!("dial timeout after {:?}", self.config.attempt_timeout),
-                            ));
-                        }
-                    }
-                }
-                // Every address failed. Surface FR-006's
-                // "all addresses unreachable" classification.
-                let last = last_err.unwrap_or_else(|| {
-                    io::Error::other("no addresses (unreachable: zero attempts)")
-                });
-                Err(ConnectError::AllAddrsUnreachable { tried, last })
+                let socket_addrs: Vec<SocketAddr> = ordered
+                    .into_iter()
+                    .map(|ip| SocketAddr::new(ip, port))
+                    .collect();
+                Ok((socket_addrs, result.source))
             }
         }
     }
@@ -640,6 +681,67 @@ mod tests {
         // Empty input: empty output (no panic).
         assert!(order_by_family(&[], false).is_empty());
         assert!(order_by_family(&[], true).is_empty());
+    }
+
+    // ---- 004-udp-forward T016 ----
+
+    /// IP-target call to `resolve_target` MUST NOT touch the resolver
+    /// (R-006 / Constitution II hot-path budget). PanickingResolver
+    /// makes any accidental resolver call a hard failure.
+    #[tokio::test]
+    async fn resolve_target_ip_short_circuits_resolver() {
+        let target = Target::Ip("127.0.0.1".parse().unwrap());
+        let resolver = LiveResolver::new(Arc::new(PanickingResolver), ResolverConfig::default());
+        let (addrs, source) = resolver
+            .resolve_target(RuleId(0), &target, 9999, false)
+            .await
+            .expect("ip target must resolve without invoking resolver");
+        assert_eq!(addrs, vec!["127.0.0.1:9999".parse().unwrap()]);
+        assert_eq!(source, AnswerSource::Fresh);
+    }
+
+    /// DNS dual-stack with default `prefer_ipv6 = false` orders v4
+    /// addresses first, v6 second; ports are joined onto the resolved
+    /// `IpAddr`s. Mirrors the same ordering the dial loop in
+    /// `connect_target` consumes (R-003 / FR-007).
+    #[tokio::test]
+    async fn resolve_target_dual_stack_v4_first_when_default() {
+        use crate::resolver::test_support::MockResolver;
+
+        let v4: IpAddr = "127.0.0.1".parse().unwrap();
+        let v6: IpAddr = "::1".parse().unwrap();
+        // Resolver returns AAAA-then-A; ordering MUST place A first.
+        let resolver = MockResolver::ok(vec![v6, v4], Duration::from_secs(60));
+        let live = LiveResolver::new(Arc::new(resolver), ResolverConfig::default());
+        let target = Target::Dns(Hostname::new("dual.example").unwrap());
+        let (addrs, _source) = live
+            .resolve_target(RuleId(20), &target, 9999, false)
+            .await
+            .expect("dual-stack resolve must succeed");
+        assert_eq!(addrs.len(), 2);
+        assert_eq!(addrs[0], SocketAddr::new(v4, 9999));
+        assert_eq!(addrs[1], SocketAddr::new(v6, 9999));
+    }
+
+    /// DNS dual-stack with `prefer_ipv6 = true` flips the order: AAAA
+    /// before A. Single-family answers stay unchanged under both flag
+    /// values (proven by `order_by_family_covers_all_fr_007_cases`).
+    #[tokio::test]
+    async fn resolve_target_dual_stack_v6_first_when_prefer_ipv6() {
+        use crate::resolver::test_support::MockResolver;
+
+        let v4: IpAddr = "127.0.0.1".parse().unwrap();
+        let v6: IpAddr = "::1".parse().unwrap();
+        let resolver = MockResolver::ok(vec![v6, v4], Duration::from_secs(60));
+        let live = LiveResolver::new(Arc::new(resolver), ResolverConfig::default());
+        let target = Target::Dns(Hostname::new("dual.example").unwrap());
+        let (addrs, _source) = live
+            .resolve_target(RuleId(21), &target, 9999, true)
+            .await
+            .expect("v6-preferred resolve must succeed");
+        assert_eq!(addrs.len(), 2);
+        assert_eq!(addrs[0], SocketAddr::new(v6, 9999));
+        assert_eq!(addrs[1], SocketAddr::new(v4, 9999));
     }
 
     /// T036 (US3): end-to-end through `connect_target` — the dial

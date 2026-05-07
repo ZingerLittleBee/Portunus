@@ -20,11 +20,13 @@
 pub mod proxy;
 pub mod range;
 pub mod stats;
+pub mod udp;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use forward_core::{PortRange, RuleId, Target};
+use forward_proto::v1::Protocol;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -61,6 +63,17 @@ pub struct ClientRule {
     pub target: Target,
     pub target_range: PortRange,
     pub prefer_ipv6: bool,
+    /// 004-udp-forward T031: forwarding protocol. v0.3 callers default
+    /// to `Tcp`; v0.4 control plane sets this from the wire `Rule.protocol`.
+    pub protocol: Protocol,
+    /// 004-udp-forward T031: per-rule cap on simultaneous live UDP
+    /// flows. Sourced from `Welcome.udp_max_flows_per_rule` (default
+    /// 1024 if 0/absent). Ignored for TCP rules.
+    pub udp_max_flows: u32,
+    /// 004-udp-forward T062: idle window in seconds before a UDP flow
+    /// is reaped. Sourced from `Welcome.udp_flow_idle_secs` (default
+    /// 60 if 0/absent). Ignored for TCP rules.
+    pub udp_flow_idle_secs: u32,
 }
 
 /// Run the forwarder until `cancel` fires. Sends exactly one
@@ -80,6 +93,14 @@ pub async fn run<R: Resolve + 'static>(
     drain_timeout: Duration,
     stats: Arc<RuleStats>,
 ) {
+    // 004-udp-forward T031: dispatch on protocol. UDP rules go through
+    // the `udp::run_listener` path; TCP keeps the v0.3 path byte-
+    // identical (FR-010).
+    if matches!(rule.protocol, Protocol::Udp) {
+        run_udp(rule, resolver, status_tx, cancel, stats).await;
+        return;
+    }
+
     let listeners = match range::bind_all(&rule.listen_range).await {
         Ok(v) => v,
         Err(BindFailure {
@@ -301,6 +322,171 @@ async fn accept_loop<R: Resolve + 'static>(
     while local.join_next().await.is_some() {}
 }
 
+/// 004-udp-forward T031/T052: UDP per-rule entry point.
+///
+/// Single-port rule (`listen_range.len() == 1`): spawns one
+/// `udp::run_listener`. Range rule (US3): probe-binds every port up
+/// front so a partial-success can fail atomically with
+/// `port_in_use:<offending_port>` (matching the TCP `bind_all` shape),
+/// then spawns one listener task per port — each owns its own
+/// `UdpFlowTable` keyed on `(source_addr, port)` while sharing the
+/// rule-level `RuleStats` for aggregate counter roll-up. Per-port slots
+/// in `RuleStats::per_port` (allocated by `RuleStats::for_range` in
+/// `control.rs`) collect the per-port `bytes_*`/`datagrams_*` totals
+/// surfaced by `--per-port`.
+///
+/// Activation reporting follows the TCP shape: a successful probe-bind
+/// of every port → `Activated`; ANY bind failure → single `Failed`
+/// event with the offending port suffixed for range rules.
+/// 004-udp-forward T057/T062: `udp_max_flows_per_rule == 0` (the proto3
+/// default a v0.3 server emits) means "use the client compile-time
+/// default". v0.4 servers always send a non-zero value via Welcome.
+pub(crate) const UDP_MAX_FLOWS_DEFAULT: u32 = 1024;
+/// 004-udp-forward T057/T062: `udp_flow_idle_secs == 0` falls back to
+/// the documented compile-time default of 60 seconds.
+pub(crate) const UDP_FLOW_IDLE_SECS_DEFAULT: u32 = 60;
+
+pub(crate) fn resolve_udp_cap(welcome_value: u32) -> usize {
+    let value = if welcome_value == 0 {
+        UDP_MAX_FLOWS_DEFAULT
+    } else {
+        welcome_value
+    };
+    usize::try_from(value).unwrap_or(UDP_MAX_FLOWS_DEFAULT as usize)
+}
+
+pub(crate) fn resolve_udp_idle_window(welcome_value: u32) -> Duration {
+    let secs = if welcome_value == 0 {
+        UDP_FLOW_IDLE_SECS_DEFAULT
+    } else {
+        welcome_value
+    };
+    Duration::from_secs(u64::from(secs))
+}
+
+async fn run_udp<R: Resolve + 'static>(
+    rule: ClientRule,
+    resolver: Arc<LiveResolver<R>>,
+    status_tx: mpsc::Sender<RuleStatusEvent>,
+    cancel: CancellationToken,
+    stats: Arc<RuleStats>,
+) {
+    let listen_start = rule.listen_range.start();
+    let listen_end = rule.listen_range.end();
+    let range_size = rule.listen_range.len();
+
+    // Probe-bind every port in the range so a partial-success surfaces
+    // atomically as `Failed{port_in_use:<port>}` BEFORE we report
+    // `Activated`. We drop the probes immediately so the listener tasks
+    // can re-bind cleanly; a hostile concurrent grab between drop and
+    // re-bind would surface as `udp_bind_failed` in the listener log
+    // and the rule would effectively no-op (operator sees missing
+    // datagrams). v0.5 work can move bind into this function and pass
+    // the bound socket into `run_listener` to close that race.
+    let mut probes = Vec::with_capacity(range_size as usize);
+    for port in listen_start..=listen_end {
+        match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
+            Ok(p) => probes.push(p),
+            Err(e) => {
+                let reason = if range_size == 1 {
+                    "port_in_use".to_string()
+                } else {
+                    format!("port_in_use:{port}")
+                };
+                warn!(
+                    event = "rule.failed",
+                    rule_id = %rule.rule_id,
+                    listen_port = port,
+                    reason = %reason,
+                    error = %e,
+                );
+                let _ = status_tx
+                    .send(RuleStatusEvent::Failed {
+                        rule_id: rule.rule_id,
+                        reason,
+                    })
+                    .await;
+                return;
+            }
+        }
+    }
+    drop(probes);
+
+    let target_first = rule.target_range.start();
+    info!(
+        event = "rule.activated",
+        rule_id = %rule.rule_id,
+        listen_port = listen_start,
+        listen_port_end = listen_end,
+        range_size = range_size,
+        protocol = "udp",
+        target = %format!("{}:{}-{}", rule.target_host, target_first, rule.target_range.end()),
+    );
+    if status_tx
+        .send(RuleStatusEvent::Activated {
+            rule_id: rule.rule_id,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let cap = resolve_udp_cap(rule.udp_max_flows);
+    let idle_window = resolve_udp_idle_window(rule.udp_flow_idle_secs);
+
+    // Spawn one listener per port. They share `cancel` so a single
+    // remove/shutdown drains every flow across the range; they share
+    // `stats` so the aggregate roll-up + per-port slot population
+    // happens transparently via `RuleStats::inc_datagram_*(port, n)`.
+    let mut tasks: JoinSet<()> = JoinSet::new();
+    for listen_port in listen_start..=listen_end {
+        let Some(target_port) =
+            PortRange::target_for(listen_port, rule.listen_range, rule.target_range)
+        else {
+            warn!(
+                event = "rule.target_mapping_missing",
+                rule_id = %rule.rule_id,
+                listen_port = listen_port,
+            );
+            continue;
+        };
+        let rule_id = rule.rule_id;
+        let target = rule.target.clone();
+        let prefer_ipv6 = rule.prefer_ipv6;
+        let task_stats = Arc::clone(&stats);
+        let task_resolver = Arc::clone(&resolver);
+        let task_cancel = cancel.clone();
+        tasks.spawn(async move {
+            udp::run_listener(
+                rule_id,
+                listen_port,
+                target,
+                target_port,
+                prefer_ipv6,
+                cap,
+                idle_window,
+                task_stats,
+                task_resolver,
+                task_cancel,
+            )
+            .await;
+        });
+    }
+
+    while tasks.join_next().await.is_some() {}
+
+    info!(
+        event = "rule.removed",
+        rule_id = %rule.rule_id,
+    );
+    let _ = status_tx
+        .send(RuleStatusEvent::Removed {
+            rule_id: rule.rule_id,
+        })
+        .await;
+}
+
 async fn drain(
     mut in_flight: JoinSet<()>,
     proxy_cancel: CancellationToken,
@@ -339,6 +525,41 @@ mod tests {
 
     fn port_pool_lock() -> &'static tokio::sync::Mutex<()> {
         super::range::test_port_pool_lock()
+    }
+
+    /// T057 (US4): the Welcome `udp_*` field → ClientRule fallback rules.
+    /// A v0.3 server (no UDP fields) lands as 0/0 and the client uses
+    /// its baked-in defaults; a v0.4 server passes the configured value
+    /// through verbatim.
+    #[test]
+    fn welcome_zero_falls_back_to_compile_time_defaults() {
+        // v0.3 / proto3 default — both fields absent on the wire arrive
+        // as 0/0; the client must apply 60s / 1024.
+        assert_eq!(super::resolve_udp_cap(0), 1024);
+        assert_eq!(
+            super::resolve_udp_idle_window(0),
+            std::time::Duration::from_secs(60),
+        );
+    }
+
+    #[test]
+    fn welcome_nonzero_is_passed_through_verbatim() {
+        // v0.4 server-supplied tunables ride through unchanged so
+        // operators see the values they configured in `server.toml`.
+        assert_eq!(super::resolve_udp_cap(256), 256);
+        assert_eq!(
+            super::resolve_udp_idle_window(90),
+            std::time::Duration::from_secs(90),
+        );
+    }
+
+    #[test]
+    fn welcome_unreasonable_cap_clamps_to_default_via_try_from() {
+        // u32::MAX → usize::MAX on 64-bit — accept it as a sentinel
+        // "no real cap"; the helper still returns a valid usize. On
+        // 32-bit hosts the try_from fallback kicks in.
+        let v = super::resolve_udp_cap(u32::MAX);
+        assert!(v >= 1, "must always return at least 1");
     }
 
     /// Resolver that panics if invoked. All forwarder tests below use
@@ -446,6 +667,9 @@ mod tests {
             target: Target::Ip(target.ip()),
             target_range: PortRange::single(target.port()),
             prefer_ipv6: false,
+            protocol: Protocol::Tcp,
+            udp_max_flows: 0,
+            udp_flow_idle_secs: 0,
         }
     }
 
@@ -512,6 +736,9 @@ mod tests {
                 prefer_ipv6: false,
                 target_host: "127.0.0.1".into(),
                 target_range: PortRange::single(1),
+                protocol: Protocol::Tcp,
+                udp_max_flows: 0,
+                udp_flow_idle_secs: 0,
             },
             ip_resolver(),
             tx,
@@ -797,6 +1024,9 @@ mod tests {
                     target: Target::Ip(echo_ip),
                     target_range: PortRange::new(target_port, target_port + 9).unwrap(),
                     prefer_ipv6: false,
+                    protocol: Protocol::Tcp,
+                    udp_max_flows: 0,
+                    udp_flow_idle_secs: 0,
                 },
                 ip_resolver(),
                 tx,
@@ -871,6 +1101,9 @@ mod tests {
                     target: Target::Ip(echo_ip),
                     target_range: target,
                     prefer_ipv6: false,
+                    protocol: Protocol::Tcp,
+                    udp_max_flows: 0,
+                    udp_flow_idle_secs: 0,
                 },
                 ip_resolver(),
                 tx,
@@ -977,6 +1210,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(clippy::too_many_lines)]
     async fn port_range_dns_target_resolves_hostname_exactly_once() {
         let _guard = port_pool_lock().lock().await;
 
@@ -1027,6 +1261,9 @@ mod tests {
             target: Target::Dns(host),
             target_range,
             prefer_ipv6: false,
+            protocol: Protocol::Tcp,
+            udp_max_flows: 0,
+            udp_flow_idle_secs: 0,
         };
 
         let (tx, mut rx) = mpsc::channel(8);

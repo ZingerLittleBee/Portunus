@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use forward_auth::file_store::FileTokenStore;
+use forward_core::config::ServerConfig;
 
 use crate::clients::ConnectedClients;
 use crate::metrics::{Metrics, RuleStatsCache};
@@ -33,6 +34,12 @@ pub struct AppState {
     /// Maximum ports any single range rule may span (FR-008). Loaded
     /// from `server.toml`'s `range_rule_max_ports`.
     pub range_rule_max_ports: u32,
+    /// Full loaded `ServerConfig` if the server was started from a
+    /// TOML file. The gRPC handler reads `udp_flow_idle_secs()` and
+    /// `udp_max_flows_per_rule()` from this to populate `Welcome`
+    /// (T013, 004-udp-forward). `None` when the server was started
+    /// from a CLI-only path that pre-dates the v0.4.0 tunables.
+    pub server_config: Option<Arc<ServerConfig>>,
 }
 
 impl AppState {
@@ -59,6 +66,20 @@ impl AppState {
             stats_cache: RuleStatsCache::new(),
             per_port_stats: PerPortStatsCache::new(),
             range_rule_max_ports,
+            server_config: None,
         })
+    }
+
+    /// Attach a loaded `ServerConfig` so the handler can plumb UDP
+    /// tunables into Welcome (T013, 004-udp-forward).
+    #[must_use]
+    pub fn with_server_config(mut self, cfg: Arc<ServerConfig>) -> Self {
+        // Keep `range_rule_max_ports` in sync — when AppState is built
+        // before the config is attached, the original value is what
+        // `main.rs` saw on the CLI; passing the same value through here
+        // is harmless but makes intent explicit.
+        self.range_rule_max_ports = cfg.range_rule_max_ports;
+        self.server_config = Some(cfg);
+        self
     }
 }

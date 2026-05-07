@@ -79,6 +79,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
         }
     });
 
+    let cfg_arc = Arc::new(cfg.clone());
     let state = Arc::new(
         AppState::new(
             Arc::clone(&tokens),
@@ -88,7 +89,8 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
             tls.cert_pem.clone(),
             cfg.range_rule_max_ports,
         )
-        .map_err(|e| ForwardError::Tls(format!("metrics: {e}")))?,
+        .map_err(|e| ForwardError::Tls(format!("metrics: {e}")))?
+        .with_server_config(cfg_arc),
     );
 
     let interceptor = AuthInterceptor::new(
@@ -206,6 +208,8 @@ fn default_config(config_dir: &std::path::Path) -> ServerConfig {
         shutdown_drain_timeout_secs: 30,
         log_format: LogFormat::Json,
         range_rule_max_ports: 1024,
+        udp_flow_idle_secs: None,
+        udp_max_flows_per_rule: None,
     }
 }
 

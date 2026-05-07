@@ -2,14 +2,14 @@
 //!
 //! See `data-model.md` § `ConnectedClient`. Bounded by ≤100 entries (SC-004a).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use forward_core::ClientName;
-use forward_proto::v1::{RuleStatus as ProtoRuleStatus, ServerMessage};
+use forward_proto::v1::{Protocol, RuleStatus as ProtoRuleStatus, ServerMessage};
 use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
@@ -36,6 +36,24 @@ pub struct ConnectedClient {
     pub session_id: u64,
     pub outbound: OutboundSender,
     pub status_waiters: StatusWaiters,
+    /// Forwarding protocols this client can activate. Defaults to
+    /// `{Protocol::Tcp}` for v0.3.0 clients that never send Hello;
+    /// v0.4.0 clients populate this from `Hello.supported_protocols`.
+    /// Used by `push-rule` validation to reject UDP rules pre-wire
+    /// (HIGH-1 review fix). See `data-model.md` § Capability negotiation.
+    pub supported_protocols: HashSet<Protocol>,
+}
+
+impl ConnectedClient {
+    /// Capability check used by `push-rule` validation. Returns false
+    /// for `Protocol::Unspecified` regardless of what the set holds.
+    #[must_use]
+    pub fn supports(&self, p: Protocol) -> bool {
+        if matches!(p, Protocol::Unspecified) {
+            return false;
+        }
+        self.supported_protocols.contains(&p)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +92,12 @@ impl ConnectedClients {
         status_waiters: StatusWaiters,
     ) -> u64 {
         let session_id = self.next_session.fetch_add(1, Ordering::Relaxed);
+        // Default to v0.3.0 capability set (TCP only) until/unless a
+        // Hello carrying `supported_protocols` is observed. Service-layer
+        // (T008) calls `set_supported_protocols` once it has parsed the
+        // first inbound message.
+        let mut default_caps = HashSet::new();
+        default_caps.insert(Protocol::Tcp);
         let entry = ConnectedClient {
             client_name: client_name.clone(),
             remote_addr,
@@ -82,12 +106,43 @@ impl ConnectedClients {
             session_id,
             outbound,
             status_waiters,
+            supported_protocols: default_caps,
         };
         let mut guard = self.inner.write().await;
         if let Some(prev) = guard.insert(client_name, entry) {
             prev.cancel_token.cancel();
         }
         session_id
+    }
+
+    /// Replace the registered client's `supported_protocols` (called by
+    /// the service layer once a Hello message has been parsed). The
+    /// `session_id` guard mirrors `unregister`: a late-arriving Hello
+    /// from a torn-down session must not clobber a freshly reconnected
+    /// session's capabilities. Returns true on apply, false if the
+    /// client/session pair is no longer current.
+    pub async fn set_supported_protocols(
+        &self,
+        client_name: &ClientName,
+        session_id: u64,
+        caps: HashSet<Protocol>,
+    ) -> bool {
+        let mut guard = self.inner.write().await;
+        if let Some(existing) = guard.get_mut(client_name)
+            && existing.session_id == session_id
+        {
+            existing.supported_protocols = caps;
+            return true;
+        }
+        false
+    }
+
+    /// Capability check used by the operator-side push-rule path. Looks
+    /// up the connected client and asks whether it can activate
+    /// `protocol`. Returns `None` when the client is not connected.
+    pub async fn supports(&self, client_name: &ClientName, protocol: Protocol) -> Option<bool> {
+        let guard = self.inner.read().await;
+        guard.get(client_name).map(|c| c.supports(protocol))
     }
 
     /// Snapshot the (outbound, waiters) handles for a connected client, used
@@ -148,5 +203,107 @@ impl ConnectedClients {
 
     pub fn shutdown(&self) {
         self.session_root.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    fn make_client() -> ConnectedClient {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut caps = HashSet::new();
+        caps.insert(Protocol::Tcp);
+        ConnectedClient {
+            client_name: "edge-01".parse().expect("client name"),
+            remote_addr: None,
+            connected_at: Utc::now(),
+            cancel_token: CancellationToken::new(),
+            session_id: 0,
+            outbound: tx,
+            status_waiters: Arc::default(),
+            supported_protocols: caps,
+        }
+    }
+
+    #[test]
+    fn fresh_connected_client_supports_only_tcp_by_default() {
+        let c = make_client();
+        assert!(c.supports(Protocol::Tcp));
+        assert!(!c.supports(Protocol::Udp));
+        // PROTOCOL_UNSPECIFIED is never reported as supported, even if
+        // (somehow) inserted into the set — defence-in-depth for
+        // `supports()`'s contract.
+        assert!(!c.supports(Protocol::Unspecified));
+    }
+
+    #[test]
+    fn adding_udp_to_capabilities_makes_supports_true() {
+        let mut c = make_client();
+        c.supported_protocols.insert(Protocol::Udp);
+        assert!(c.supports(Protocol::Tcp));
+        assert!(c.supports(Protocol::Udp));
+    }
+
+    #[test]
+    fn supports_unspecified_is_always_false_even_if_in_set() {
+        let mut c = make_client();
+        c.supported_protocols.insert(Protocol::Unspecified);
+        assert!(!c.supports(Protocol::Unspecified));
+    }
+
+    #[tokio::test]
+    async fn register_defaults_to_tcp_only_until_set_supported_protocols() {
+        let registry = ConnectedClients::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let session_id = registry
+            .register(
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        let name: ClientName = "edge-01".parse().unwrap();
+        assert_eq!(registry.supports(&name, Protocol::Tcp).await, Some(true));
+        assert_eq!(registry.supports(&name, Protocol::Udp).await, Some(false));
+
+        let mut caps = HashSet::new();
+        caps.insert(Protocol::Tcp);
+        caps.insert(Protocol::Udp);
+        assert!(
+            registry
+                .set_supported_protocols(&name, session_id, caps)
+                .await
+        );
+
+        assert_eq!(registry.supports(&name, Protocol::Tcp).await, Some(true));
+        assert_eq!(registry.supports(&name, Protocol::Udp).await, Some(true));
+    }
+
+    #[tokio::test]
+    async fn set_supported_protocols_rejects_stale_session() {
+        let registry = ConnectedClients::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let _session_id = registry
+            .register(
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        let name: ClientName = "edge-01".parse().unwrap();
+        let mut caps = HashSet::new();
+        caps.insert(Protocol::Udp);
+        // Session id 99 was never issued — must be rejected so a late
+        // Hello from a torn-down session can't clobber a reconnect.
+        assert!(!registry.set_supported_protocols(&name, 99, caps).await);
+        assert_eq!(registry.supports(&name, Protocol::Udp).await, Some(false));
     }
 }

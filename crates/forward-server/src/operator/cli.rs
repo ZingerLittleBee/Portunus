@@ -71,6 +71,15 @@ pub enum OperatorError {
     /// `mismatched_range`; CLI maps to exit `3`.
     #[error("range_invalid: {0}")]
     RangeInvalid(String),
+    /// 004-udp-forward T017: target client never declared support for
+    /// the requested protocol in its `Hello.supported_protocols`.
+    /// Maps to HTTP 422 / exit 3 with code `unsupported_protocol`
+    /// (see `contracts/operator-api.md`).
+    #[error("unsupported_protocol: client {client_name} does not support protocol {protocol}")]
+    UnsupportedProtocol {
+        client_name: ClientName,
+        protocol: &'static str,
+    },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -93,7 +102,8 @@ impl OperatorError {
             | Self::InvalidTarget(_)
             | Self::InvalidTargetHost { .. }
             | Self::ExceedsCap { .. }
-            | Self::RangeInvalid(_) => 3,
+            | Self::RangeInvalid(_)
+            | Self::UnsupportedProtocol { .. } => 3,
             Self::ClientNotConnected(_) => 4,
             Self::PortInUse { .. } => 5,
             Self::ActivationFailed(_) => 6,
@@ -121,6 +131,7 @@ impl OperatorError {
             Self::RuleNotFound => "rule_not_found",
             Self::ExceedsCap { .. } => "exceeds_cap",
             Self::RangeInvalid(_) => "range_invalid",
+            Self::UnsupportedProtocol { .. } => "unsupported_protocol",
             Self::Io(_) => "io_error",
             Self::Auth(_) => "auth_error",
         }
@@ -161,6 +172,13 @@ impl From<RuleStoreError> for OperatorError {
             RuleStoreError::InvalidTransition => Self::ActivationFailed("invalid_state".into()),
             RuleStoreError::ExceedsCap { requested, cap } => Self::ExceedsCap { requested, cap },
             RuleStoreError::RangeInvalid(e) => Self::RangeInvalid(e.to_string()),
+            RuleStoreError::UnsupportedProtocol {
+                client_name,
+                protocol,
+            } => Self::UnsupportedProtocol {
+                client_name,
+                protocol,
+            },
         }
     }
 }
@@ -295,6 +313,11 @@ fn listen_end_for_log(r: PortRange) -> Option<u16> {
 fn parse_protocol(s: &str) -> Result<Protocol, OperatorError> {
     match s.to_ascii_lowercase().as_str() {
         "tcp" => Ok(Protocol::Tcp),
+        // 004-udp-forward T017: accept "udp" on the operator surface.
+        // Capability gating against the connected client lives in
+        // `push_rule`, not here — `parse_protocol` only knows about
+        // protocol strings the server can in principle activate.
+        "udp" => Ok(Protocol::Udp),
         other => Err(OperatorError::InvalidProtocol(other.to_string())),
     }
 }
@@ -376,6 +399,25 @@ pub async fn push_rule(
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 
+    // 004-udp-forward T017: capability gating. UDP rules can only be
+    // pushed to a client whose Hello declared UDP support. v0.3 clients
+    // (no Hello / TCP-only Hello) get a clean 422 / exit 3 surface
+    // instead of a delayed RuleStatus.failed (HIGH-1 review fix).
+    if matches!(proto, Protocol::Udp) {
+        let proto_wire = forward_proto::v1::Protocol::Udp;
+        let supported = state
+            .clients
+            .supports(&client_name, proto_wire)
+            .await
+            .unwrap_or(false);
+        if !supported {
+            return Err(OperatorError::UnsupportedProtocol {
+                client_name,
+                protocol: "udp",
+            });
+        }
+    }
+
     let rule = state
         .rules
         .push_range(
@@ -416,7 +458,15 @@ pub async fn push_rule(
                 listen_port: u32::from(listen.start()),
                 target_host: target_host.to_string(),
                 target_port: u32::from(target.start()),
-                protocol: ProtoProto::Tcp as i32,
+                // 004-udp-forward T017: encode the actual rule protocol
+                // on the wire so the client routes UDP rules into the
+                // UDP forwarder (US1 T026+). v0.3 clients never reach
+                // this branch because the capability gate above rejects
+                // UDP pushes to TCP-only clients.
+                protocol: match proto {
+                    Protocol::Tcp => ProtoProto::Tcp as i32,
+                    Protocol::Udp => ProtoProto::Udp as i32,
+                },
                 listen_port_end: if listen.len() > 1 {
                     u32::from(listen.end())
                 } else {

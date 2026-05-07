@@ -151,19 +151,23 @@ message RuleStats {
 //
 // v0.2.0/v0.3.0 shape:
 //   message PerPortStats {
-//     uint32 listen_port = 1;
-//     uint64 bytes_in    = 2;
-//     uint64 bytes_out   = 3;
+//     uint32 listen_port        = 1;
+//     uint64 bytes_in           = 2;
+//     uint64 bytes_out          = 3;
+//     uint32 active_connections = 4;
 //   }
 
 message PerPortStats {
-  uint32 listen_port  = 1;
-  uint64 bytes_in     = 2;
-  uint64 bytes_out    = 3;
+  uint32 listen_port        = 1;
+  uint64 bytes_in           = 2;
+  uint64 bytes_out          = 3;
+  uint32 active_connections = 4;  // TCP only — UDP per-port emits 0
 
   // Additive in v1.3 (spec 004-udp-forward). Always 0 for TCP rules.
-  uint64 datagrams_in  = 4;
-  uint64 datagrams_out = 5;
+  // Wire fields 5 and 6 — field 4 is already taken by v0.2.0
+  // active_connections (see corrected v0.2.0/v0.3.0 shape comment above).
+  uint64 datagrams_in  = 5;
+  uint64 datagrams_out = 6;
 }
 
 // ============================================================================
