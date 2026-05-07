@@ -1,0 +1,78 @@
+// Phase 1 contract — additive overlay on `proto/forward.proto` (v1).
+//
+// This file documents the diff this feature introduces. The shipped
+// `proto/forward.proto` at the repo root is the source of truth; this
+// overlay file exists so the spec carries the wire contract delta in
+// review.
+//
+// Constitution Principle III gate: a v0.2.0-shaped `Rule` (no field 8
+// on the wire) MUST encode and decode byte-identically before and
+// after this change. Verified by `forward-proto/tests/dns_wire_compat.rs`.
+//
+// Backward / forward compatibility:
+//   - v0.2.0 servers reading a v0.3.0+ Rule see field 8 as an unknown
+//     field and per proto3 semantics retain it on re-emit. They have
+//     no way to act on `prefer_ipv6`, but they also do not corrupt or
+//     reject the rule.
+//   - v0.3.0+ servers reading a v0.2.0 Rule see no field 8 → decoded
+//     as `None` (Rust) → treated as the spec default `false` =
+//     "prefer IPv4". Behavior matches v0.2.0.
+//
+// Field number 8 is the next free slot after v0.2.0's used numbers
+// (2, 3, 4, 6, 7 on `Rule`; field 5 is reserved/unused historically).
+
+syntax = "proto3";
+
+package forward.v1;
+
+// ============================================================================
+// DELTA on existing `Rule` message
+// ============================================================================
+//
+// Existing fields (unchanged, listed for context):
+//   uint32  rule_id          = 1;
+//   uint32  listen_port      = 2;   // single port, or range start (inclusive)
+//   string  target_host      = 3;   // CHANGE: SEMANTICS now allow DNS name in addition to IP literal
+//   uint32  target_port      = 4;   // single port, or range start (inclusive)
+//   uint32  listen_port_end  = 6;   // optional, v0.2.0
+//   uint32  target_port_end  = 7;   // optional, v0.2.0
+//
+// NEW field:
+//   optional bool prefer_ipv6 = 8;
+//
+// Semantics:
+//   - `target_host` of type `string` carries either an IP literal
+//     (IPv4 dotted-quad or bracketed IPv6) or a DNS name. The
+//     classification is resolved at the receiving end (server on
+//     push validation, client on connect-time resolution).
+//   - `prefer_ipv6` is meaningful only when `target_host` is a DNS
+//     name AND the resolver returns both A and AAAA records:
+//       * absent or `false` → dial A records first (default)
+//       * `true`            → dial AAAA records first
+//     For IP-literal targets the field is silently ignored.
+//   - `prefer_ipv6` does NOT mean "IPv6-only" — it expresses
+//     *preference*. If only one family is returned, the client uses
+//     it (FR-007).
+
+message Rule {
+  // ... v0.2.0 fields elided ...
+
+  // NEW in v0.3.0: per-rule address-family preference for DNS targets.
+  // Absent (proto3 `optional`) → default IPv4-first.
+  optional bool prefer_ipv6 = 8;
+}
+
+// ============================================================================
+// No changes to other messages
+// ============================================================================
+//
+// `RuleStats`, `PerPortStats`, `RuleUpdate`, `RuleStatus`, `Hello`,
+// `Welcome`, `StatsReport`, and the envelope messages are all untouched.
+//
+// In particular `RuleStats` does NOT gain a `dns_failures` field. The
+// new per-rule DNS-failure counter is exposed through the Prometheus
+// scrape endpoint (`forward_rule_dns_failures_total{client,rule}`) and
+// the operator HTTP API (`GET /v1/rules/{id}/stats` body — see
+// contracts/operator-api.md). Carrying it on the gRPC stats stream
+// would inflate the StatsReport schema for a counter that operators
+// already read off the metrics endpoint.
