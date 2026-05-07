@@ -1,19 +1,21 @@
 # forward-rs
 
-Port-based TCP forwarding service with a control-plane server, edge
-client, and operator surface.
+Port-based TCP and UDP forwarding service with a control-plane server,
+edge client, and operator surface.
 
 A `forward-server` runs on a control host. Edge hosts run `forward-client`,
 authenticate over TLS + bearer token, and accept rule pushes from the
-operator. Each rule binds a TCP listener on the client and proxies bytes
-to a configured `host:port` target. Per-rule byte and connection metrics
-flow back to the server every 5 seconds and are surfaced both via
-`rule-stats` (operator CLI / HTTP) and Prometheus (`/metrics`,
+operator. Each rule binds a listener on the client (TCP `accept` loop or
+UDP `recv_from` loop, per the rule's `protocol`) and forwards traffic to
+a configured `host:port` target. Per-rule byte / connection / datagram
+metrics flow back to the server every 5 seconds and are surfaced both
+via `rule-stats` (operator CLI / HTTP) and Prometheus (`/metrics`,
 loopback-only).
 
-This repository is the v0.1.0 MVP of the
-[`001-tcp-forward-mvp`](specs/001-tcp-forward-mvp/spec.md) feature. The
-release notes and performance baseline are in
+This repository is the v0.4.0 release. v0.4.0 adds UDP forwarding on
+top of v0.3.0's DNS-target support and v0.2.0's port-range rules; the
+TCP hot path is byte-identical to v0.3.0 (Constitution Principle II).
+The release notes and performance baseline are in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
@@ -53,6 +55,12 @@ cargo build --release -p forward-server -p forward-client
 
 # Operator — push a port-range rule (30000-30050 → upstream.local:30000-30050)
 ./target/release/forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+
+# Operator — push a UDP rule (v0.4.0+)
+./target/release/forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+
+# UDP and TCP rules can coexist on the same port — the kernel demuxes by protocol
+./target/release/forward-server push-rule edge-01 6000 upstream.local:9999  # TCP:6000
 
 # Operator — observe traffic
 ./target/release/forward-server rule-stats <rule_id>

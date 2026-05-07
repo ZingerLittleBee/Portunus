@@ -1,4 +1,4 @@
-# forward-rs server configuration (v0.1.0).
+# forward-rs server configuration (v0.4.0).
 # Used by `forward-server --config /etc/forward/server.toml serve`.
 # Defaults match the deploy/systemd/forward-server.service layout.
 # Schema: see crates/forward-core/src/config.rs (ServerConfig).
@@ -47,6 +47,27 @@ log_format = "json"
 # RLIMIT_NOFILE. Raise only after raising LimitNOFILE in the systemd unit
 # accordingly (see deploy/systemd/forward-{server,client}.service).
 # range_rule_max_ports = 1024
+
+# UDP forwarding tunables (004-udp-forward, v0.4.0+). Surfaced to the
+# client over the Welcome message so clients always run with the
+# server-configured values. Both keys are optional; absence (or `0` on
+# the wire) means "use the compile-time default".
+#
+# Idle window before a per-flow upstream socket is reaped. Range:
+# 30..=300 (the validator rejects values outside this band). Default:
+# 60 s. Lower values reclaim faster but can sever long-tail flows
+# (e.g. WireGuard handshake intervals); raise on workloads with very
+# bursty re-use of source ports.
+# udp_flow_idle_secs = 60
+#
+# Per-rule cap on simultaneous live UDP flows. Range: 1..=65535.
+# Default: 1024. The cap activates `forward_rule_flows_dropped_overflow_total`
+# when sustained churn from many distinct source ports exceeds the
+# ceiling — those drops are recorded; existing flows are NEVER evicted
+# to make room (idle eviction handles steady-state shrinkage). Raise
+# alongside the client's LimitNOFILE if your traffic legitimately
+# needs more concurrent end-user sources.
+# udp_max_flows_per_rule = 1024
 
 # DNS resolver tunables (003-domain-name-forward, v0.3.0+).
 # Reserved for future operator overrides. The current release bakes

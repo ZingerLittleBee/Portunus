@@ -65,7 +65,10 @@ fn code_to_exit(code: &str) -> u8 {
         | "invalid_target_host"
         | "invalid_target_host_too_long"
         | "invalid_target_host_label_too_long"
-        | "invalid_target_host_label_hyphen" => 3,
+        | "invalid_target_host_label_hyphen"
+        // 004-udp-forward T018/T034: capability mismatch reuses exit 3
+        // (input-validation family) per operator-api.md stability rules.
+        | "unsupported_protocol" => 3,
         "client_not_connected" => 4,
         "port_in_use" => 5,
         "activation_failed" => 6,
@@ -211,6 +214,21 @@ struct StatsResponse {
     /// 0 for IP-target rules.
     #[serde(default)]
     dns_failures: u64,
+    /// 004-udp-forward T040: protocol discriminator from the store.
+    /// Defaults to `"tcp"` for v0.3 backward-compat (a v0.3 server
+    /// won't include the field; the cli falls back to TCP rendering).
+    #[serde(default = "default_protocol_str")]
+    protocol: String,
+    /// 004-udp-forward T040: UDP-specific counters. Always present in
+    /// the JSON body for v0.4 servers; default-zero for TCP rules.
+    #[serde(default)]
+    datagrams_in: u64,
+    #[serde(default)]
+    datagrams_out: u64,
+    #[serde(default)]
+    active_flows: u32,
+    #[serde(default)]
+    flows_dropped_overflow: u64,
     updated_at: DateTime<Utc>,
     /// Optional per-port detail; populated only when `?per_port=true`
     /// was requested AND the rule is a range rule with cached samples
@@ -219,12 +237,22 @@ struct StatsResponse {
     per_port: Option<Vec<PerPortStat>>,
 }
 
+fn default_protocol_str() -> String {
+    "tcp".to_string()
+}
+
 #[derive(Debug, Deserialize)]
 struct PerPortStat {
     listen_port: u16,
     bytes_in: u64,
     bytes_out: u64,
     active_connections: u32,
+    /// 004-udp-forward T053: per-port UDP datagram counters. Default-
+    /// zero for TCP per-port entries.
+    #[serde(default)]
+    datagrams_in: u64,
+    #[serde(default)]
+    datagrams_out: u64,
 }
 
 pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool) -> Result<(), u8> {
@@ -249,30 +277,66 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool)
             println!("{s}");
         }
         OutputFormat::Text => {
-            println!(
-                "rule_id={} client={} bytes_in={} bytes_out={} active={} dns_failures={} updated_at={}",
-                body.rule_id,
-                body.client_name,
-                body.bytes_in,
-                body.bytes_out,
-                body.active_connections,
-                body.dns_failures,
-                body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
-            );
+            // 004-udp-forward T040: protocol-aware text rendering. UDP
+            // rules drop `active_connections` (always 0) in favour of
+            // `active_flows / datagrams_*`. The JSON shape (consumed by
+            // generic operator tooling) keeps every field unconditional.
+            if body.protocol == "udp" {
+                println!(
+                    "rule_id={} client={} protocol=udp bytes_in={} bytes_out={} active_flows={} datagrams_in={} datagrams_out={} flows_dropped_overflow={} dns_failures={} updated_at={}",
+                    body.rule_id,
+                    body.client_name,
+                    body.bytes_in,
+                    body.bytes_out,
+                    body.active_flows,
+                    body.datagrams_in,
+                    body.datagrams_out,
+                    body.flows_dropped_overflow,
+                    body.dns_failures,
+                    body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                );
+            } else {
+                println!(
+                    "rule_id={} client={} protocol={} bytes_in={} bytes_out={} active={} dns_failures={} updated_at={}",
+                    body.rule_id,
+                    body.client_name,
+                    body.protocol,
+                    body.bytes_in,
+                    body.bytes_out,
+                    body.active_connections,
+                    body.dns_failures,
+                    body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                );
+            }
             if let Some(rows) = body.per_port.as_ref() {
                 use std::fmt::Write as _;
                 let mut buf = String::new();
-                let _ = writeln!(
-                    buf,
-                    "{:<8} {:<14} {:<14} {:<8}",
-                    "PORT", "BYTES_IN", "BYTES_OUT", "ACTIVE"
-                );
-                for r in rows {
+                if body.protocol == "udp" {
+                    let _ = writeln!(
+                        buf,
+                        "{:<8} {:<14} {:<14} {:<14} {:<14}",
+                        "PORT", "BYTES_IN", "BYTES_OUT", "DATAGRAMS_IN", "DATAGRAMS_OUT"
+                    );
+                    for r in rows {
+                        let _ = writeln!(
+                            buf,
+                            "{:<8} {:<14} {:<14} {:<14} {:<14}",
+                            r.listen_port, r.bytes_in, r.bytes_out, r.datagrams_in, r.datagrams_out
+                        );
+                    }
+                } else {
                     let _ = writeln!(
                         buf,
                         "{:<8} {:<14} {:<14} {:<8}",
-                        r.listen_port, r.bytes_in, r.bytes_out, r.active_connections
+                        "PORT", "BYTES_IN", "BYTES_OUT", "ACTIVE"
                     );
+                    for r in rows {
+                        let _ = writeln!(
+                            buf,
+                            "{:<8} {:<14} {:<14} {:<8}",
+                            r.listen_port, r.bytes_in, r.bytes_out, r.active_connections
+                        );
+                    }
                 }
                 print!("{buf}");
             }
@@ -285,10 +349,18 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
     let mut v = serde_json::json!({
         "rule_id": body.rule_id,
         "client_name": body.client_name,
+        "protocol": body.protocol,
         "bytes_in": body.bytes_in,
         "bytes_out": body.bytes_out,
         "active_connections": body.active_connections,
         "dns_failures": body.dns_failures,
+        // 004-udp-forward T040: UDP fields always present in JSON shape
+        // (default-zero for TCP) so generic operator tooling doesn't
+        // need protocol-conditional parsing.
+        "datagrams_in": body.datagrams_in,
+        "datagrams_out": body.datagrams_out,
+        "active_flows": body.active_flows,
+        "flows_dropped_overflow": body.flows_dropped_overflow,
         "updated_at": body.updated_at,
     });
     if let Some(rows) = body.per_port.as_ref() {
@@ -300,6 +372,8 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
                         "bytes_in": r.bytes_in,
                         "bytes_out": r.bytes_out,
                         "active_connections": r.active_connections,
+                        "datagrams_in": r.datagrams_in,
+                        "datagrams_out": r.datagrams_out,
                     })
                 })
                 .collect(),

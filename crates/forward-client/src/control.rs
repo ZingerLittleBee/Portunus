@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use forward_core::{PortRange, RuleId};
 use forward_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, PerPortStats as ProtoPerPortStats, RuleAction,
-    RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
-    client_message, control_client::ControlClient, server_message,
+    ActivationOutcome, ClientMessage, Hello, PerPortStats as ProtoPerPortStats, Protocol,
+    RuleAction, RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage,
+    StatsReport, client_message, control_client::ControlClient, server_message,
 };
 use rand::Rng;
 use thiserror::Error;
@@ -96,6 +96,9 @@ pub async fn connect_once(
         payload: Some(forward_proto::v1::client_message::Payload::Hello(Hello {
             protocol_version: PROTOCOL_VERSION.to_string(),
             client_version: CLIENT_VERSION.to_string(),
+            // T010: declare both forwarding capabilities so the server can
+            // reject UDP push pre-wire for v0.3-only clients.
+            supported_protocols: vec![Protocol::Tcp as i32, Protocol::Udp as i32],
         })),
     };
     outbound_tx
@@ -126,11 +129,15 @@ pub async fn connect_once(
     info!(
         event = "control.connected",
         server_version = %welcome.server_version,
+        udp_flow_idle_secs = welcome.udp_flow_idle_secs,
+        udp_max_flows_per_rule = welcome.udp_max_flows_per_rule,
     );
 
     Ok(LiveSession {
         outbound: outbound_tx,
         inbound: Box::pin(inbound),
+        udp_flow_idle_secs: welcome.udp_flow_idle_secs,
+        udp_max_flows_per_rule: welcome.udp_max_flows_per_rule,
     })
 }
 
@@ -169,6 +176,13 @@ pub struct LiveSession {
     pub inbound: std::pin::Pin<
         Box<dyn tokio_stream::Stream<Item = Result<ServerMessage, tonic::Status>> + Send + 'static>,
     >,
+    /// 004-udp-forward T031: UDP runtime tunables sourced from the
+    /// server's Welcome message. `0` (the proto3 default) means "use
+    /// client compile-time default" — a v0.3 server that doesn't emit
+    /// these fields lands here as 0/0 and the forwarder falls back to
+    /// the 60 s / 1024-flow defaults baked into the client.
+    pub udp_flow_idle_secs: u32,
+    pub udp_max_flows_per_rule: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -275,6 +289,12 @@ async fn pump(
     drain_timeout: Duration,
     stats_report_interval: Duration,
 ) {
+    // 004-udp-forward T031/T061: capture the Welcome-derived UDP knobs
+    // so every UDP rule pushed during this session uses the same values.
+    // Reconnect refreshes them from the new Welcome (the LiveSession
+    // is rebuilt on each connect).
+    let udp_max_flows = session.udp_max_flows_per_rule;
+    let udp_flow_idle_secs = session.udp_flow_idle_secs;
     let mut rules: HashMap<RuleId, RuleSlot> = HashMap::new();
     let (status_tx, mut status_rx) = mpsc::channel::<RuleStatusEvent>(64);
     let mut stats_tick = tokio::time::interval(stats_report_interval);
@@ -287,7 +307,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, Arc::clone(&resolver), &status_tx, drain_timeout);
+                    handle_server_message(server_msg, &mut rules, Arc::clone(&resolver), &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -327,13 +347,15 @@ async fn pump(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
+    udp_max_flows: u32,
+    udp_flow_idle_secs: u32,
 ) {
     let Some(server_message::Payload::RuleUpdate(update)) = msg.payload else {
         // Welcome is consumed before pump; any other variant is ignored.
@@ -431,6 +453,14 @@ fn handle_server_message(
                 }
             };
             let prefer_ipv6 = rule.prefer_ipv6.unwrap_or(false);
+            // 004-udp-forward T031: decode the wire `protocol` field.
+            // Unknown enum integers (proto3 forward-compat) fall back
+            // to TCP — same shape v0.3 clients implicitly assumed.
+            let protocol = Protocol::try_from(rule.protocol).unwrap_or(Protocol::Tcp);
+            let protocol = match protocol {
+                Protocol::Udp => Protocol::Udp,
+                _ => Protocol::Tcp,
+            };
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
@@ -438,6 +468,9 @@ fn handle_server_message(
                 target,
                 target_range,
                 prefer_ipv6,
+                protocol,
+                udp_max_flows,
+                udp_flow_idle_secs,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -575,13 +608,15 @@ async fn send_stats_report(
             // emit empty for wire-shape stability with v0.1.0.
             let per_port = if slot.is_range {
                 slot.stats
-                    .snapshot_per_port()
+                    .snapshot_per_port_with_udp()
                     .into_iter()
-                    .map(|(port, bin, bout, active)| ProtoPerPortStats {
+                    .map(|(port, bin, bout, active, dgin, dgout)| ProtoPerPortStats {
                         listen_port: u32::from(port),
                         bytes_in: bin,
                         bytes_out: bout,
                         active_connections: active,
+                        datagrams_in: dgin,
+                        datagrams_out: dgout,
                     })
                     .collect()
             } else {
@@ -599,6 +634,15 @@ async fn send_stats_report(
                 // proto field 6 with default-zero stays absent on the
                 // wire (verified by `dns_wire_compat::v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero`).
                 dns_failures: slot.stats.snapshot_dns_failures(),
+                // 004-udp-forward T032: UDP counters. For TCP rules
+                // these all stay at the proto3 default-zero (the UDP
+                // helpers are never called) so
+                // `udp_wire_compat::tcp_rule_stats_byte_compatible_when_udp_fields_zero`
+                // (T005) holds for legacy traffic.
+                datagrams_in: slot.stats.snapshot_datagrams_in(),
+                datagrams_out: slot.stats.snapshot_datagrams_out(),
+                active_flows: slot.stats.snapshot_active_flows(),
+                flows_dropped_overflow: slot.stats.snapshot_flows_dropped_overflow(),
             }
         })
         .collect();

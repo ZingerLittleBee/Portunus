@@ -19,6 +19,7 @@ forward-core = { workspace = true }
 forward-auth = { workspace = true }
 forward-proto = { workspace = true }
 
+# UDP forwarding (v0.4.0) uses `tokio::net::UdpSocket` from the existing `net` feature — no new dep.
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -61,4 +62,8 @@ harness = false
 
 [[bench]]
 name = "dns_resolver"
+harness = false
+
+[[bench]]
+name = "udp_data_plane"
 harness = false

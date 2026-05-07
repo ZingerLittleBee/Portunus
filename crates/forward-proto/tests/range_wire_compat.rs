@@ -85,6 +85,10 @@ fn legacy_rule_stats_encodes_without_per_port_tag() {
         active_connections: 3,
         per_port: vec![],
         dns_failures: 0,
+        datagrams_in: 0,
+        datagrams_out: 0,
+        active_flows: 0,
+        flows_dropped_overflow: 0,
     };
     let bytes = s.encode_to_vec();
     // tag 5 wire-type 2 (length-delimited) = 0x2a. Empty repeated
@@ -111,15 +115,23 @@ fn rule_stats_with_per_port_roundtrips() {
                 bytes_in: 4500,
                 bytes_out: 4500,
                 active_connections: 1,
+                datagrams_in: 0,
+                datagrams_out: 0,
             },
             PerPortStats {
                 listen_port: 30001,
                 bytes_in: 4500,
                 bytes_out: 4500,
                 active_connections: 1,
+                datagrams_in: 0,
+                datagrams_out: 0,
             },
         ],
         dns_failures: 0,
+        datagrams_in: 0,
+        datagrams_out: 0,
+        active_flows: 0,
+        flows_dropped_overflow: 0,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

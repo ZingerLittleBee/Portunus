@@ -101,6 +101,11 @@ struct PushRuleResponse {
     status: String,
     target_host: String,
     prefer_ipv6: bool,
+    /// 004-udp-forward T035: echo the activated protocol so generic
+    /// operator tooling doesn't need to remember what it pushed. Always
+    /// `"tcp"` or `"udp"`; future protocols extend this set without a
+    /// wire bump.
+    protocol: String,
 }
 
 async fn post_rules(
@@ -148,6 +153,7 @@ async fn post_rules(
             status,
             target_host: rule.target_host.clone(),
             prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
+            protocol: rule.protocol.as_str().to_string(),
         }),
     ))
 }
@@ -188,6 +194,20 @@ async fn get_rule_stats(
         code: "internal".into(),
         message: e.to_string(),
     })?;
+    // 004-udp-forward T040: inject the rule's protocol so operators can
+    // render TCP rules with `active_connections` and UDP rules with
+    // `active_flows / datagrams_*`. The store lookup is cheap; we fall
+    // back to "tcp" if the rule has been removed between the
+    // stats_cache hit and this lookup (race window is microseconds and
+    // the stale snapshot is already TCP-shaped).
+    if let serde_json::Value::Object(ref mut map) = body {
+        let proto = state
+            .rules
+            .get(RuleId(rule_id))
+            .await
+            .map_or_else(|| "tcp".to_string(), |r| r.protocol.as_str().to_string());
+        map.insert("protocol".to_string(), serde_json::Value::String(proto));
+    }
     // T046 (002-port-range-forward): when `?per_port=true`, append a
     // `per_port` array sourced from the per-port cache. Default
     // behavior (no query param) is unchanged so v0.1.0 callers see the
@@ -240,9 +260,12 @@ impl From<OperatorError> for ApiError {
             | OperatorError::InvalidTargetHost { .. }
             | OperatorError::ExceedsCap { .. }
             | OperatorError::RangeInvalid(_) => StatusCode::BAD_REQUEST,
-            OperatorError::ClientNotConnected(_) | OperatorError::ActivationFailed(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            OperatorError::ClientNotConnected(_)
+            | OperatorError::ActivationFailed(_)
+            // 004-udp-forward T019: capability mismatch surfaces as 422
+            // (client connected but cannot fulfil the rule) — distinct
+            // from 400 (operator's input was syntactically wrong).
+            | OperatorError::UnsupportedProtocol { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
             OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
             _ => StatusCode::INTERNAL_SERVER_ERROR,

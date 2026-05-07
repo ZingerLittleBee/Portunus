@@ -34,6 +34,22 @@ pub struct ServerConfig {
     /// lower it. A value of `0` is rejected at load time.
     #[serde(default = "default_range_rule_max_ports")]
     pub range_rule_max_ports: u32,
+
+    /// Idle window for UDP flows before the per-rule reaper retires
+    /// them (004-udp-forward, FR-014). Optional in TOML so v0.3.0
+    /// configs continue to load; absent → 60 s default. Validated
+    /// range `30..=300`. Surfaced to the client over the Welcome
+    /// message; the client falls back to the same default when the
+    /// value is 0 (i.e. v0.3.0 server).
+    #[serde(default)]
+    pub udp_flow_idle_secs: Option<u32>,
+
+    /// Per-rule cap on simultaneous live UDP flows (004-udp-forward,
+    /// FR-014). Optional in TOML; absent → 1024 default. Validated
+    /// range `1..=65535`. Surfaced to the client over the Welcome
+    /// message; the client falls back to the default on 0.
+    #[serde(default)]
+    pub udp_max_flows_per_rule: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -89,6 +105,20 @@ pub fn default_range_rule_max_ports() -> u32 {
     1024
 }
 
+/// Default idle window for UDP flows (60 s, 004-udp-forward FR-014).
+/// Exposed for the client compile-time fallback when the server's
+/// Welcome carries 0 (i.e. a v0.3.0 server).
+#[must_use]
+pub fn default_udp_flow_idle_secs() -> u32 {
+    60
+}
+
+/// Default per-rule UDP flow cap (1024, 004-udp-forward FR-014).
+#[must_use]
+pub fn default_udp_max_flows_per_rule() -> u32 {
+    1024
+}
+
 impl ServerConfig {
     pub fn from_toml_path(path: &Path) -> Result<Self, ForwardError> {
         let raw = std::fs::read_to_string(path)?;
@@ -99,7 +129,35 @@ impl ServerConfig {
                 "range_rule_max_ports must be >= 1 (a cap of 0 rejects every range push, almost certainly a misconfiguration)".into(),
             ));
         }
+        if let Some(v) = cfg.udp_flow_idle_secs
+            && !(30..=300).contains(&v)
+        {
+            return Err(ForwardError::ConfigInvalid(format!(
+                "udp_flow_idle_secs out of range (got {v}, expected 30..=300)"
+            )));
+        }
+        if let Some(v) = cfg.udp_max_flows_per_rule
+            && !(1..=65535).contains(&v)
+        {
+            return Err(ForwardError::ConfigInvalid(format!(
+                "udp_max_flows_per_rule out of range (got {v}, expected 1..=65535)"
+            )));
+        }
         Ok(cfg)
+    }
+
+    /// Resolved UDP idle-flow window in seconds (default-applied).
+    #[must_use]
+    pub fn udp_flow_idle_secs(&self) -> u32 {
+        self.udp_flow_idle_secs
+            .unwrap_or_else(default_udp_flow_idle_secs)
+    }
+
+    /// Resolved per-rule UDP flow cap (default-applied).
+    #[must_use]
+    pub fn udp_max_flows_per_rule(&self) -> u32 {
+        self.udp_max_flows_per_rule
+            .unwrap_or_else(default_udp_max_flows_per_rule)
     }
 }
 
@@ -221,5 +279,94 @@ mod tests {
         let toml = "this is not toml = =";
         let dir = write_tmp("client.toml", toml);
         assert!(ClientConfig::from_toml_path(&dir.path().join("client.toml")).is_err());
+    }
+
+    // ----- 004-udp-forward T012 -----
+
+    #[test]
+    fn udp_tunables_default_when_absent() {
+        let toml = r#"
+            tls_cert_path = "/a"
+            tls_key_path = "/a"
+            token_store_path = "/a"
+        "#;
+        let dir = write_tmp("server.toml", toml);
+        let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+        assert_eq!(cfg.udp_flow_idle_secs, None);
+        assert_eq!(cfg.udp_max_flows_per_rule, None);
+        assert_eq!(cfg.udp_flow_idle_secs(), 60);
+        assert_eq!(cfg.udp_max_flows_per_rule(), 1024);
+    }
+
+    #[test]
+    fn udp_tunables_edges_accepted() {
+        for v in [30_u32, 300] {
+            let toml = format!(
+                r#"
+                tls_cert_path = "/a"
+                tls_key_path = "/a"
+                token_store_path = "/a"
+                udp_flow_idle_secs = {v}
+            "#
+            );
+            let dir = write_tmp("server.toml", &toml);
+            let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml"))
+                .expect("edge value must be accepted");
+            assert_eq!(cfg.udp_flow_idle_secs(), v);
+        }
+        for v in [1_u32, 65535] {
+            let toml = format!(
+                r#"
+                tls_cert_path = "/a"
+                tls_key_path = "/a"
+                token_store_path = "/a"
+                udp_max_flows_per_rule = {v}
+            "#
+            );
+            let dir = write_tmp("server.toml", &toml);
+            let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml"))
+                .expect("edge value must be accepted");
+            assert_eq!(cfg.udp_max_flows_per_rule(), v);
+        }
+    }
+
+    #[test]
+    fn udp_tunables_out_of_range_rejected() {
+        for v in [0_u32, 29, 301] {
+            let toml = format!(
+                r#"
+                tls_cert_path = "/a"
+                tls_key_path = "/a"
+                token_store_path = "/a"
+                udp_flow_idle_secs = {v}
+            "#
+            );
+            let dir = write_tmp("server.toml", &toml);
+            let err = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap_err();
+            match err {
+                ForwardError::ConfigInvalid(msg) => {
+                    assert!(msg.contains("udp_flow_idle_secs"), "msg: {msg}");
+                }
+                other => panic!("expected ConfigInvalid for v={v}, got {other:?}"),
+            }
+        }
+        for v in [0_u32, 65536] {
+            let toml = format!(
+                r#"
+                tls_cert_path = "/a"
+                tls_key_path = "/a"
+                token_store_path = "/a"
+                udp_max_flows_per_rule = {v}
+            "#
+            );
+            let dir = write_tmp("server.toml", &toml);
+            let err = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap_err();
+            match err {
+                ForwardError::ConfigInvalid(msg) => {
+                    assert!(msg.contains("udp_max_flows_per_rule"), "msg: {msg}");
+                }
+                other => panic!("expected ConfigInvalid for v={v}, got {other:?}"),
+            }
+        }
     }
 }

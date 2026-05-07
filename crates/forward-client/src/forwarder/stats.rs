@@ -25,6 +25,10 @@ pub struct PerPortCounters {
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
     pub active_connections: AtomicU32,
+    /// 004-udp-forward T053: per-port datagram counters for UDP range
+    /// rules. Always 0 for TCP entries.
+    pub datagrams_in: AtomicU64,
+    pub datagrams_out: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -41,6 +45,22 @@ pub struct RuleStats {
     /// proto field when the value is 0 to keep v0.2.0 byte-compat
     /// (verified by `dns_wire_compat::v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero`).
     pub dns_failures: AtomicU64,
+    /// 004-udp-forward T029: monotonic count of UDP datagrams the rule's
+    /// listener received from end-users (across all ports for range
+    /// rules). Always 0 for TCP rules.
+    pub datagrams_in: AtomicU64,
+    /// Cumulative count of UDP datagrams the rule sent back to end-users.
+    /// Always 0 for TCP rules.
+    pub datagrams_out: AtomicU64,
+    /// Current live UDP flows aggregated across all ports. Snapshotted
+    /// each `StatsReport` tick from the per-rule `UdpFlowTable::len()`
+    /// (or the sum across per-port tables for range rules). Always 0
+    /// for TCP rules.
+    pub active_flows: AtomicU32,
+    /// Cumulative count of new-flow first-datagrams dropped because the
+    /// per-rule flow table was at `udp_max_flows_per_rule`. Always 0 for
+    /// TCP rules.
+    pub flows_dropped_overflow: AtomicU64,
     /// Per-port counters keyed on the listen-side port. Populated at
     /// construction by [`RuleStats::for_range`]; empty when constructed
     /// via [`RuleStats::new`]. Lookup misses are silent — the aggregate
@@ -76,8 +96,85 @@ impl RuleStats {
             bytes_out: AtomicU64::new(0),
             active_connections: AtomicU32::new(0),
             dns_failures: AtomicU64::new(0),
+            datagrams_in: AtomicU64::new(0),
+            datagrams_out: AtomicU64::new(0),
+            active_flows: AtomicU32::new(0),
+            flows_dropped_overflow: AtomicU64::new(0),
             per_port,
         })
+    }
+
+    // ----- 004-udp-forward T029: UDP counters -----
+
+    /// Bump the inbound-datagram counter (and the per-port slot if present).
+    /// `n` is the byte count of the datagram payload — also folded into
+    /// `bytes_in` for protocol-agnostic byte-count reporting.
+    pub fn inc_datagram_in(&self, port: u16, n: u64) {
+        self.datagrams_in.fetch_add(1, Ordering::Relaxed);
+        self.bytes_in.fetch_add(n, Ordering::Relaxed);
+        if let Some(slot) = self.per_port.get(&port) {
+            slot.datagrams_in.fetch_add(1, Ordering::Relaxed);
+            slot.bytes_in.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    pub fn inc_datagram_out(&self, port: u16, n: u64) {
+        self.datagrams_out.fetch_add(1, Ordering::Relaxed);
+        self.bytes_out.fetch_add(n, Ordering::Relaxed);
+        if let Some(slot) = self.per_port.get(&port) {
+            slot.datagrams_out.fetch_add(1, Ordering::Relaxed);
+            slot.bytes_out.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Replace the live-flow gauge. Called on each StatsReport tick by
+    /// the listener path with the current `UdpFlowTable::len()`.
+    pub fn set_active_flows(&self, n: u32) {
+        self.active_flows.store(n, Ordering::Relaxed);
+    }
+
+    pub fn inc_flow_dropped_overflow(&self) {
+        self.flows_dropped_overflow.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn snapshot_datagrams_in(&self) -> u64 {
+        self.datagrams_in.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn snapshot_datagrams_out(&self) -> u64 {
+        self.datagrams_out.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn snapshot_active_flows(&self) -> u32 {
+        self.active_flows.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn snapshot_flows_dropped_overflow(&self) -> u64 {
+        self.flows_dropped_overflow.load(Ordering::Relaxed)
+    }
+
+    /// Per-port snapshot in port order, including UDP datagram counts.
+    /// Returns `(listen_port, bytes_in, bytes_out, active_connections,
+    ///           datagrams_in, datagrams_out)`.
+    #[must_use]
+    pub fn snapshot_per_port_with_udp(&self) -> Vec<(u16, u64, u64, u32, u64, u64)> {
+        self.per_port
+            .iter()
+            .map(|(port, c)| {
+                (
+                    *port,
+                    c.bytes_in.load(Ordering::Relaxed),
+                    c.bytes_out.load(Ordering::Relaxed),
+                    c.active_connections.load(Ordering::Relaxed),
+                    c.datagrams_in.load(Ordering::Relaxed),
+                    c.datagrams_out.load(Ordering::Relaxed),
+                )
+            })
+            .collect()
     }
 
     /// 003-domain-name-forward (FR-008): one DNS failure (NXDOMAIN,
@@ -139,8 +236,11 @@ impl RuleStats {
     }
 
     /// Per-port snapshot in port order. Empty for aggregate-only
-    /// constructions (`RuleStats::new`).
+    /// constructions (`RuleStats::new`). Retained for legacy callers /
+    /// tests that don't need the UDP datagram columns; the wire emit
+    /// uses `snapshot_per_port_with_udp`.
     #[must_use]
+    #[allow(dead_code)]
     pub fn snapshot_per_port(&self) -> Vec<(u16, u64, u64, u32)> {
         self.per_port
             .iter()

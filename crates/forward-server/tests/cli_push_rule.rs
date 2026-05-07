@@ -94,3 +94,80 @@ fn push_rule_accepts_valid_dns_target_host_through_validator() {
         "validator should not flag echo.test, got: {stderr}"
     );
 }
+
+// --- 004-udp-forward T020 ---
+
+/// `--protocol udp` MUST survive pre-flight protocol parsing (T017).
+/// Without a running server the CLI fails at the HTTP step (exit 1),
+/// but it MUST NOT bail out with `invalid_protocol` (exit 3) — that
+/// would mean parse_protocol still rejects "udp".
+#[test]
+fn push_rule_accepts_udp_protocol_through_parser() {
+    let out = Command::new(server_bin())
+        .arg("push-rule")
+        .arg("edge-01")
+        .arg("6000")
+        .arg("127.0.0.1:9999")
+        .arg("--protocol")
+        .arg("udp")
+        .arg("--http-endpoint")
+        .arg("127.0.0.1:1")
+        .output()
+        .expect("run push-rule");
+    let code = out.status.code().expect("exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(
+        code, 3,
+        "parser must accept `udp`; got exit 3 with stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("invalid_protocol"),
+        "parser must not reject `udp` as invalid_protocol, got: {stderr}"
+    );
+}
+
+/// 004-udp-forward T047: hostname validation MUST gate UDP rules
+/// identically to TCP. The v0.3 `Target::parse` validator is shared
+/// across protocols — this test pins down "no UDP escape hatch" by
+/// driving `push-rule --protocol udp foo_bar.example:9999` and
+/// asserting exit 3 + `invalid_target_host`. Pairs with the TCP test
+/// `push_rule_rejects_invalid_target_host` (no `--protocol` flag).
+#[test]
+fn push_rule_rejects_invalid_target_host_for_udp() {
+    let out = Command::new(server_bin())
+        .arg("push-rule")
+        .arg("edge-01")
+        .arg("6000")
+        .arg("foo_bar.example:9999")
+        .arg("--protocol")
+        .arg("udp")
+        .output()
+        .expect("run push-rule");
+    let code = out.status.code().expect("exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        code, 3,
+        "UDP push with malformed hostname MUST exit 3 (input-validation), \
+         got {code}; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("invalid_target_host"),
+        "UDP push must surface the same invalid_target_host code as TCP, \
+         got: {stderr}"
+    );
+}
+
+/// End-to-end variant of T020: with a connected v0.3-style client
+/// (TCP-only Hello), `push-rule … --protocol udp` MUST exit 3 with
+/// `unsupported_protocol` in stderr. With a v0.4 client (Hello carries
+/// {TCP, UDP}) the same call must succeed.
+///
+/// Requires US1 forwarder wiring so the success-path RuleStatus echo
+/// makes it back from the client; left ignored until the close of US1
+/// (T040 enables).
+#[test]
+#[ignore = "T020 e2e — unignore at close of US1 (T040)"]
+fn push_rule_rejects_udp_to_tcp_only_client_with_unsupported_protocol() {
+    // Implementation deferred — see crates/forward-e2e/tests/udp_smoke.rs
+    // (US1) for the live-server harness.
+}
