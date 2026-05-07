@@ -20,7 +20,9 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use forward_auth::OperatorAuthenticator;
 use forward_auth::file_store::FileTokenStore;
+use forward_auth::operator_store::FileOperatorStore;
 use forward_core::ForwardError;
 use forward_core::config::ServerConfig;
 use tokio::net::TcpListener;
@@ -59,6 +61,36 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
         FileTokenStore::open(&cfg.token_store_path)
             .map_err(|e| ForwardError::Tls(format!("token store: {e}")))?,
     );
+    // 005-multi-user-rbac T013: load the operator-side identity store.
+    // Failure to load = exit non-zero with a clear message; operators
+    // restore from backup or run `bootstrap-superadmin` against an empty file.
+    let operator_store = Arc::new(
+        FileOperatorStore::open(&cfg.operator_store_path)
+            .map_err(|e| ForwardError::Tls(format!("operator store: {e}")))?,
+    );
+    info!(
+        event = "operator.store_loaded",
+        path = %cfg.operator_store_path.display(),
+        users = operator_store.list_users().len(),
+        grants = operator_store.list_grants(None).len(),
+        superadmin_present = operator_store.has_any_superadmin(),
+    );
+    // FR-006 operator_token shortcut: if `operator_token` is set in
+    // server.toml AND no superadmin exists yet, mint the reserved
+    // `_legacy` superadmin with this exact token. Idempotent: if a
+    // superadmin already exists we silently skip (the operator can
+    // safely leave the line in their config across restarts).
+    if let Some(token) = cfg.operator_token.as_deref()
+        && !operator_store.has_any_superadmin()
+    {
+        match operator_store.bootstrap_legacy_superadmin(token) {
+            Ok(()) => info!(event = "operator.bootstrap_legacy", outcome = "ok"),
+            Err(e) => {
+                error!(event = "operator.bootstrap_legacy", outcome = "fail", error = %e);
+                return Err(ForwardError::Tls(format!("operator_token bootstrap: {e}")));
+            }
+        }
+    }
     let clients = ConnectedClients::default();
     let shutdown = Shutdown::new();
 
@@ -83,6 +115,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
     let state = Arc::new(
         AppState::new(
             Arc::clone(&tokens),
+            Arc::clone(&operator_store),
             clients.clone(),
             advertised,
             tls.leaf_fingerprint_hex.clone(),
@@ -120,6 +153,41 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
         let s = shutdown.clone();
         async move { s.signal_handler().await }
     });
+
+    // T049 (005-multi-user-rbac): SIGHUP triggers an in-place reload
+    // of `identity.json`. Linux + macOS only (Windows has no SIGHUP).
+    // On reload-validation failure the prior in-memory snapshot is
+    // kept; we emit one structured log line either way.
+    #[cfg(unix)]
+    let _sighup_task = {
+        let store = Arc::clone(&operator_store);
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sig = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(event = "operator.sighup_listener_failed", error = %e);
+                    return;
+                }
+            };
+            while sig.recv().await.is_some() {
+                match store.reload_from_disk() {
+                    Ok(()) => info!(
+                        event = "operator.store_reloaded",
+                        users = store.list_users().len(),
+                        grants = store.list_grants(None).len(),
+                        superadmin_present = store.has_any_superadmin(),
+                        outcome = "ok",
+                    ),
+                    Err(e) => tracing::warn!(
+                        event = "operator.store_reload_failed",
+                        reason = %e,
+                        outcome = "fail",
+                    ),
+                }
+            }
+        })
+    };
 
     let grpc_shutdown = shutdown.token();
     let grpc_task = tokio::spawn(async move {
@@ -210,6 +278,8 @@ fn default_config(config_dir: &std::path::Path) -> ServerConfig {
         range_rule_max_ports: 1024,
         udp_flow_idle_secs: None,
         udp_max_flows_per_rule: None,
+        operator_store_path: config_dir.join("identity.json"),
+        operator_token: None,
     }
 }
 

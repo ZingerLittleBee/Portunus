@@ -1,4 +1,4 @@
-# forward-rs server configuration (v0.4.0).
+# forward-rs server configuration (v0.5.0).
 # Used by `forward-server --config /etc/forward/server.toml serve`.
 # Defaults match the deploy/systemd/forward-server.service layout.
 # Schema: see crates/forward-core/src/config.rs (ServerConfig).
@@ -9,9 +9,10 @@
 # co-located server+client testing.
 control_listen = "0.0.0.0:7443"
 
-# Operator HTTP API (provision-client / push-rule / list-rules / rule-stats).
-# MUST stay on loopback: there is no per-request auth — the API trusts
-# anyone with shell access to the server host. Enforced at startup.
+# Operator HTTP API (provision-client / push-rule / list-rules / rule-stats /
+# user-* / credential-* / grant-*). MUST stay on loopback: every /v1/* request
+# also requires `Authorization: Bearer <token>` (v0.5.0+) — see the bootstrap
+# section below — so the loopback bind is defence-in-depth, not the sole gate.
 operator_http_listen = "127.0.0.1:7080"
 
 # Prometheus /metrics endpoint. Same loopback constraint.
@@ -29,6 +30,27 @@ tls_key_path = "/var/lib/forward/server.key"
 # Bearer-token store. Created on first `provision-client`. Mode 0600.
 # Tokens are 256-bit random secrets; keep this file backed up.
 token_store_path = "/var/lib/forward/tokens.json"
+
+# Operator-side identity store (005-multi-user-rbac, v0.5.0+). Holds
+# users / credentials / grants for the operator HTTP API. Created on
+# first `bootstrap-superadmin` (or first start with `operator_token`
+# set below). Mode 0600. Atomic-write JSON; safe to rsync across
+# hosts for HA setups. Keep backed up alongside `token_store_path`.
+# operator_store_path = "/var/lib/forward/identity.json"
+
+# One-shot bootstrap shortcut for the operator superadmin (FR-006).
+# When set AND the identity store has NO superadmin yet, the server
+# auto-mints the reserved `_legacy` superadmin with this exact token
+# on first start. After the first start, leave the line in (it's
+# silently ignored when a superadmin already exists) or remove it.
+#
+# Generate a fresh token out-of-band:
+#   forward-server gen-token   # → 43-char URL-safe-base64
+#
+# Alternative: skip this line and run
+#   forward-server bootstrap-superadmin --name ops
+# which prints the freshly-minted bearer token to stdout exactly once.
+# operator_token = "<43-char URL-safe-base64 token>"
 
 # Graceful drain timeout for forwarded connections on SIGINT/SIGTERM.
 # In-flight rules get up to this many seconds to finish before the

@@ -44,6 +44,25 @@ fn client() -> Result<reqwest::blocking::Client, u8> {
         })
 }
 
+/// 005-multi-user-rbac T025: every operator HTTP request now requires
+/// `Authorization: Bearer <token>`. The CLI reads the token from the
+/// `FORWARD_OPERATOR_TOKEN` env var (set by the operator's shell, by
+/// e2e tests, or by `bootstrap-superadmin --print-export`).
+fn bearer_token_from_env() -> Option<String> {
+    match std::env::var("FORWARD_OPERATOR_TOKEN") {
+        Ok(s) if !s.is_empty() => Some(s),
+        _ => None,
+    }
+}
+
+fn apply_auth(req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    if let Some(t) = bearer_token_from_env() {
+        req.bearer_auth(t)
+    } else {
+        req
+    }
+}
+
 /// Translate the HTTP API's frozen `error.code` strings into the frozen CLI
 /// exit codes from `operator-api.md`. New v1.1 codes (`exceeds_cap`,
 /// `range_invalid`, `mismatched_range`) reuse the existing exit-3 family
@@ -144,10 +163,12 @@ pub fn push(
         let obj = body.as_object_mut().expect("just built a json object");
         obj.insert("prefer_ipv6".into(), true.into());
     }
-    let resp = client()?.post(&url).json(&body).send().map_err(|e| {
-        eprintln!("error: http: {e}");
-        1
-    })?;
+    let resp = apply_auth(client()?.post(&url).json(&body))
+        .send()
+        .map_err(|e| {
+            eprintln!("error: http: {e}");
+            1
+        })?;
     if resp.status().is_success() {
         let parsed: PushResponse = resp.json().map_err(|e| {
             eprintln!("error: parse response: {e}");
@@ -162,7 +183,7 @@ pub fn push(
 
 pub fn remove(endpoint: &str, rule_id: u64) -> Result<(), u8> {
     let url = format!("http://{endpoint}/v1/rules/{rule_id}");
-    let resp = client()?.delete(&url).send().map_err(|e| {
+    let resp = apply_auth(client()?.delete(&url)).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
     })?;
@@ -179,7 +200,7 @@ pub fn list(endpoint: &str, client_filter: Option<&str>, format: OutputFormat) -
     if let Some(c) = client_filter {
         let _ = write!(url, "?client={c}");
     }
-    let resp = client()?.get(&url).send().map_err(|e| {
+    let resp = apply_auth(client()?.get(&url)).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
     })?;
@@ -260,7 +281,7 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool)
     if per_port {
         url.push_str("?per_port=true");
     }
-    let resp = client()?.get(&url).send().map_err(|e| {
+    let resp = apply_auth(client()?.get(&url)).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
     })?;

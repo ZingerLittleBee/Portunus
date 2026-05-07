@@ -162,7 +162,11 @@ fn test_udp_us1_happy_path() {
     // the per-rule UDP counters.
     let snap = common::wait_for(Duration::from_secs(8), || {
         let url = format!("http://{http}/v1/rules/{rule_id}/stats");
-        let resp = reqwest::blocking::get(&url).ok()?;
+        let resp = reqwest::blocking::Client::new()
+            .get(&url)
+            .bearer_auth(common::TEST_OPERATOR_TOKEN)
+            .send()
+            .ok()?;
         if !resp.status().is_success() {
             return None;
         }
@@ -199,7 +203,7 @@ fn test_udp_us1_happy_path() {
     // /metrics directly and grep for the rule's label.
     let metrics_body = common::fetch_metrics_text(&metrics_addr);
     let pat =
-        format!("forward_rule_udp_datagrams_in_total{{client=\"edge-01\",rule=\"{rule_id}\"}}");
+        format!("forward_rule_udp_datagrams_in_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}");
     let matching = metrics_body.lines().filter(|l| l.starts_with(&pat)).count();
     assert_eq!(
         matching, 1,
@@ -472,7 +476,7 @@ fn test_udp_us2_dns_target() {
     let saw_failure = common::wait_for(Duration::from_secs(8), || {
         let body = common::fetch_metrics_text(&metrics_addr);
         let pat =
-            format!("forward_rule_dns_failures_total{{client=\"edge-01\",rule=\"{bad_rule_id}\"}}");
+            format!("forward_rule_dns_failures_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{bad_rule_id}\"}}");
         body.lines().find_map(|l| {
             if !l.starts_with(&pat) {
                 return None;
@@ -651,7 +655,11 @@ fn test_udp_us3_per_port_stats() {
     // make it server-side; poll until the JSON shape we want appears.
     let snap = common::wait_for(Duration::from_secs(8), || {
         let url = format!("http://{http}/v1/rules/{rule_id}/stats?per_port=true");
-        let resp = reqwest::blocking::get(&url).ok()?;
+        let resp = reqwest::blocking::Client::new()
+            .get(&url)
+            .bearer_auth(common::TEST_OPERATOR_TOKEN)
+            .send()
+            .ok()?;
         if !resp.status().is_success() {
             return None;
         }
@@ -771,7 +779,7 @@ fn test_udp_us4_overflow_drop() {
     let saw = common::wait_for(Duration::from_secs(8), || {
         let body = common::fetch_metrics_text(&metrics_addr);
         let pat = format!(
-            "forward_rule_flows_dropped_overflow_total{{client=\"edge-01\",rule=\"{rule_id}\"}}"
+            "forward_rule_flows_dropped_overflow_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}"
         );
         body.lines().find_map(|l| {
             if !l.starts_with(&pat) {
@@ -858,7 +866,7 @@ fn test_udp_us4_idle_eviction() {
     // active_flows MUST be 0 (visible via /metrics).
     let drained = common::wait_for(Duration::from_secs(10), || {
         let body = common::fetch_metrics_text(&metrics_addr);
-        let pat = format!("forward_rule_active_flows{{client=\"edge-01\",rule=\"{rule_id}\"}}");
+        let pat = format!("forward_rule_active_flows{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}");
         body.lines().find_map(|l| {
             if !l.starts_with(&pat) {
                 return None;
@@ -944,7 +952,7 @@ fn test_udp_us3_metric_cardinality() {
     let saw = common::wait_for(Duration::from_secs(8), || {
         let body = common::fetch_metrics_text(&metrics_addr);
         let pat =
-            format!("forward_rule_udp_datagrams_in_total{{client=\"edge-01\",rule=\"{rule_id}\"}}");
+            format!("forward_rule_udp_datagrams_in_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}");
         let count = body.lines().filter(|l| l.starts_with(&pat)).count();
         if count == 0 {
             return None;

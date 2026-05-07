@@ -20,6 +20,8 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+ulid = { workspace = true }
+bitflags = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
