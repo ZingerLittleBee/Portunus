@@ -40,6 +40,8 @@ fn tcp_rule_stats_byte_compatible_when_udp_fields_zero() {
         datagrams_out: 0,
         active_flows: 0,
         flows_dropped_overflow: 0,
+        target_failovers_total: 0,
+        per_target: vec![],
     };
     let bytes = s.encode_to_vec();
 
@@ -74,6 +76,8 @@ fn udp_rule_stats_with_all_udp_fields_roundtrips() {
         datagrams_out: 950,
         active_flows: 17,
         flows_dropped_overflow: 4,
+        target_failovers_total: 0,
+        per_target: vec![],
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

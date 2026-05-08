@@ -33,9 +33,9 @@ This is a 6-crate Rust workspace + `webui/` Vite SPA. Paths are repo-root-relati
 
 **Purpose**: Workspace version bump and changelog stub. No new crate adds.
 
-- [ ] T001 Bump workspace version `0.6.0` → `0.7.0-dev` in `Cargo.toml`
-- [ ] T002 [P] Open `## [Unreleased]` section in `CHANGELOG.md` with placeholders for `### Added` (multi-target rules + active probe + per-target stats), `### Changed` (Rule shape additive), `### Fixed` (none expected at start)
-- [ ] T003 [P] Verify Rust toolchain `rust-toolchain.toml` pins `1.88` (the project MSRV — driven by tonic). No change expected; fail loudly if the file drifted.
+- [X] T001 Bump workspace version `0.6.0` → `0.7.0-dev` in `Cargo.toml`
+- [X] T002 [P] Open `## [Unreleased]` section in `CHANGELOG.md` with placeholders for `### Added` (multi-target rules + active probe + per-target stats), `### Changed` (Rule shape additive), `### Fixed` (none expected at start)
+- [X] T003 [P] Verify Rust toolchain MSRV `1.88` (constitution pins this in `Cargo.toml` `[workspace.package].rust-version`; no separate `rust-toolchain.toml` exists in this repo)
 
 ---
 
@@ -47,25 +47,26 @@ This is a 6-crate Rust workspace + `webui/` Vite SPA. Paths are repo-root-relati
 
 ### Wire protocol + contract tests (Phase 2 — first)
 
-- [ ] T004 Write proto contract test `crates/forward-proto/tests/targets_wire_compat.rs` covering W-1..W-6 from `contracts/proto-rule-extension.md` (legacy round-trip, v0.6 reader drops field 9 silently, byte-eq for single-target, RuleStats back-compat). MUST FAIL before T005/T006.
-- [ ] T005 Extend `proto/forward.proto`: add `message Target`, `repeated Target targets = 9` and `uint32 health_check_interval_secs = 10` on `Rule`, `uint64 target_failovers_total = 11` and `repeated PerTargetStats per_target = 12` on `RuleStats`, and new `message PerTargetStats` per `contracts/proto-rule-extension.md` §1–§4
-- [ ] T006 Re-run `cargo build -p forward-proto` to regenerate the tonic types and confirm T004 passes
+- [X] T004 Write proto contract test `crates/forward-proto/tests/targets_wire_compat.rs` covering W-1..W-6 from `contracts/proto-rule-extension.md` (legacy round-trip, v0.6 reader drops field 9 silently, byte-eq for single-target, RuleStats back-compat). MUST FAIL before T005/T006.
+- [X] T005 Extend `proto/forward.proto`: add `message Target`, `repeated Target targets = 9` and `uint32 health_check_interval_secs = 10` on `Rule`, `uint64 target_failovers_total = 11` and `repeated PerTargetStats per_target = 12` on `RuleStats`, and new `message PerTargetStats` per `contracts/proto-rule-extension.md` §1–§4
+- [X] T006 Re-run `cargo build -p forward-proto` to regenerate the tonic types and confirm T004 passes (6/6 wire-compat tests green; back-compat shimmed in 3 downstream sites with `targets: vec![]` / `health_check_interval_secs: 0` and `target_failovers_total: 0` / `per_target: vec![]` defaults)
 
 ### Core entity types
 
-- [ ] T007 [P] Create `crates/forward-core/src/target.rs` with `pub struct Target { host: String, port: u16, priority: u32 }` plus `pub fn validate(targets: &[Target]) -> Result<(), TargetValidationError>` enforcing V-T1..V-T4 + V-R5 (max 8, no duplicates by `(host,port)`, host syntax via `parse_host`, port `1..=65535`)
-- [ ] T008 [P] Add `crates/forward-core/tests/target_validation.rs` with cases: empty list rejected by callers, dup pairs rejected, port 0 rejected, port 65536 rejected, host syntax check, 8-target accepted, 9-target rejected
-- [ ] T009 Extend `crates/forward-core/src/rules.rs`: add `targets: Vec<Target>` and `health_check_interval_secs: Option<u32>` fields to the in-memory `Rule` struct; add a `targets_view()` helper that returns a one-element `&[Target]` synthesised from `target_host`/`target_port` when `targets.is_empty()` (back-compat reader path)
-- [ ] T010 Re-export `Target` from `crates/forward-core/src/lib.rs`
+- [X] T007 [P] Create `crates/forward-core/src/rule_target.rs` with `pub struct RuleTarget { host: String, port: u16, priority: u32 }` plus `pub fn rule_target::validate(targets: &[RuleTarget]) -> Result<(), RuleTargetError>` enforcing V-T1..V-T4 + V-R5. (NB: name is `RuleTarget` not `Target` — `forward_core::Target` is already taken by the existing host-classifier module.)
+- [X] T008 [P] Add `crates/forward-core/tests/rule_target_validation.rs` with 13 cases: empty/single/max accepted, 9-target rejected, empty-host, invalid-host syntax, port 0, dup (host,port), same-host-different-port accepted, same-priority-value accepted, IPv4/bracketed-IPv6 accepted, unbracketed IPv6 rejected
+- [X] T009 Extend `crates/forward-server/src/rules.rs` (canonical `Rule` lives here, NOT in forward-core): add `targets: Vec<RuleTarget>` and `health_check_interval_secs: Option<u32>` with `#[serde(default, skip_serializing_if = ...)]` so legacy on-disk shapes round-trip; add `targets_view()` and `is_multi_target()` helpers
+- [X] T010 Re-export `RuleTarget`, `RuleTargetError`, `MAX_TARGETS_PER_RULE` from `crates/forward-core/src/lib.rs`
 
 ### Persistence read-tolerance
 
-- [ ] T011 Update `crates/forward-server/src/persistence.rs` write path to emit the back-compat encoding from `data-model.md` §2: single-target rules write `target_host`/`target_port` and leave `targets` empty; multi-target rules write `targets` and leave `target_host=""`/`target_port=0`
-- [ ] T012 Update `crates/forward-server/src/persistence.rs` read path to load v0.6.0-shaped rules (single-target only) by promoting them to a one-element `targets` list in memory at deserialise time (back-compat — no schema-version bump)
-- [ ] T013 Add `crates/forward-server/tests/persistence_back_compat.rs`: write a v0.6.0-shaped `rules.json` by hand, load it through `persistence::load`, assert the in-memory rule has `targets.len() == 1` with the right host/port
+- [~] T011 ~~Update `crates/forward-server/src/persistence.rs` write path~~ **N/A**: rules are in-memory only in this codebase ("future work" per `crates/forward-server/src/rules.rs:42`). The new `Rule.targets` and `Rule.health_check_interval_secs` fields carry serde-default + skip-if-empty attributes so back-compat is automatic if persistence is ever added.
+- [~] T012 ~~Update read path to promote legacy single-target rules~~ **N/A**: see T011. The `targets_view()` helper performs the equivalent in-memory promotion at the consumer-side instead.
+- [~] T013 ~~Persistence back-compat test~~ **N/A**: see T011. The serde back-compat is exercised via the proto wire-compat tests (T004) which round-trip the same shape.
 
 ### Server-side push validation
 
+- [ ] T013a Add `crates/forward-server/tests/rules_multi_target_contract.rs` covering: accept legacy shape (length-1 `targets[]` echoed), accept new shape, reject both shapes (`rule_shape_conflict`), reject neither (`rule_shape_missing`), reject duplicate `(host,port)` (`targets_duplicate`), reject multi-target push to old client (`multi_target_unsupported_by_client`), targets-not-in-RBAC-envelope (operator with narrow grant pushes targets pointing outside grant; server accepts — FR-021). MUST FAIL before T014/T015/T016
 - [ ] T014 Extend `crates/forward-server/src/operator/http.rs` `POST /v1/rules` request schema: accept either `target_host`+`target_port` OR `targets` (with optional `health_check_interval_secs`). Add `enum RulePushBody { Legacy { target_host, target_port }, MultiTarget { targets, health_check_interval_secs } }` derived via serde untagged
 - [ ] T015 Add validation per `contracts/operator-api.md` §1: codes `rule_shape_conflict` (both shapes) → 400, `rule_shape_missing` (neither) → 400, `targets_empty` → 400, `targets_too_many` → 400, `target_invalid_host` → 400, `target_invalid_port` → 400, `targets_duplicate` → 400, `health_check_interval_out_of_range` → 400. Targets list NOT subject to RBAC (FR-021)
 - [ ] T016 Add server-side client-version guard (R-007): when the target client's last-known `Hello.client_version` is `< 0.7.0` and the request is multi-target (`targets.len() >= 2`), respond `422 multi_target_unsupported_by_client` BEFORE persisting and BEFORE pushing on the channel
@@ -153,7 +154,7 @@ This is a 6-crate Rust workspace + `webui/` Vite SPA. Paths are repo-root-relati
 
 ### Tests for User Story 4
 
-- [ ] T040 [P] [US4] Add `crates/forward-server/tests/rules_multi_target_contract.rs` covering: accept legacy shape (length-1 `targets[]` echoed), accept new shape, reject both shapes (`rule_shape_conflict`), reject neither (`rule_shape_missing`), reject duplicate `(host,port)` (`targets_duplicate`), reject multi-target push to old client (`multi_target_unsupported_by_client`). MUST FAIL before T015 was implemented in Phase 2 — re-verify here on the fully-wired endpoint
+- [ ] T040 [P] [US4] Add Phase 6 wire-through-CLI integration coverage in `crates/forward-server/tests/rules_multi_target_e2e.rs`: end-to-end push via the CLI subcommand round-trips back through `GET /v1/rules/{id}` with the targets list intact (validates the surfaces from T043 hang together). The shape validation itself is already covered by T013a in Phase 2.
 - [ ] T041 [P] [US4] Add `crates/forward-server/tests/push_rule_cli.rs`: legacy positional form, repeatable `--target` form, `--targets-json` form, mutually-exclusive form combinations rejected before HTTP issue. MUST FAIL before T043
 - [ ] T042 [P] [US4] Add `webui/tests/e2e/us1-multi-target-push.spec.ts`, `us3-target-detail-render.spec.ts`, `us4-single-target-back-compat.spec.ts` per `contracts/ui-routes.md` §7. MUST FAIL before T046+T047
 

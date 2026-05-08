@@ -113,9 +113,9 @@ The operator pushes a multi-target rule via the same `push-rule` CLI subcommand,
 
 **Active health probing (optional)**
 
-- **FR-013**: A rule MAY carry an `active_health_check_interval_secs` setting. When set, the system MUST periodically perform a TCP-connect probe to each target at that interval. Probe results feed the same passive health-state machine (FR-008, FR-009).
+- **FR-013**: A rule MAY carry a `health_check_interval_secs` setting. When set, the system MUST periodically perform a TCP-connect probe to each target at that interval. Probe results feed the same passive health-state machine (FR-008, FR-009).
 - **FR-014**: The active probe MUST share the same connect timeout the data plane uses. Probes for the same target MUST NOT overlap; if a probe is still in flight when the interval elapses, the next probe MUST be deferred until the in-flight one completes or times out.
-- **FR-015**: When `active_health_check_interval_secs` is unset, the system MUST NOT consume resources or schedule probes for that rule.
+- **FR-015**: When `health_check_interval_secs` is unset, the system MUST NOT consume resources or schedule probes for that rule.
 
 **Operator observability**
 

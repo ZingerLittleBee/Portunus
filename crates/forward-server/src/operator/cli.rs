@@ -524,6 +524,13 @@ pub async fn push_rule(
                     0
                 },
                 prefer_ipv6,
+                // 007-multi-target-failover (Phase 2 stub): the legacy
+                // push path always emits a single-target rule on the
+                // wire (back-compat encoding R-002 — `targets` empty,
+                // legacy fields populated). The new shape lands in
+                // Phase 6 (T043).
+                targets: Vec::new(),
+                health_check_interval_secs: 0,
             }),
         })),
     };
@@ -642,6 +649,11 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     listen_port_end: removed.listen_port_end.map_or(0, u32::from),
                     target_port_end: removed.target_port_end.map_or(0, u32::from),
                     prefer_ipv6: removed.prefer_ipv6,
+                    // 007-multi-target-failover (Phase 2 stub): REMOVE
+                    // pushes only need rule_id, but we keep the message
+                    // shape canonical. Empty/zero on the wire.
+                    targets: Vec::new(),
+                    health_check_interval_secs: 0,
                 }),
             })),
         };

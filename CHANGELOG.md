@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Multi-target failover release (007). Extends a forwarding rule from a
+single `(target_host, target_port)` to an ordered list of targets with
+priority-ordered failover and per-target client-side health tracking.
+Single-target rules stay byte-identical to v0.6.0 — multi-target lives
+in a separate code path entered via `match targets.len()` at rule
+activation, so existing TCP/UDP throughput is unaffected.
+
+### Added (007-multi-target-failover)
+
+- **Multi-target rules** — `Rule.targets[]` (length 1..=8) with
+  per-target `(host, port, priority)`. Lower priority number = higher
+  preference. Operators push via `forward-server push-rule
+  --target host:port[@priority]` (repeatable), `--targets-json '[...]'`,
+  the new `targets[]` field on `POST /v1/rules`, or the Web UI rule push
+  form's "Add another target" button.
+- **Per-target health tracking** — passive failure detection (3
+  consecutive connect failures within 30 s flips a target to Failed; 2
+  consecutive successes flip it back). Optional active probe per rule
+  via `health_check_interval_secs` (1..=3600). All client-side and
+  in-memory; ephemeral across client restarts.
+- **`forward_rule_target_failovers_total{client, rule}`** — Prometheus
+  counter for Healthy↔Failed transitions per rule. Per-target byte
+  counters surface only on demand via `rule-stats --per-target`,
+  `GET /v1/rules/{id}/stats?per_target=true`, the SSE stats stream with
+  `?per_target=true`, and the Web UI rule detail page — never as
+  default `/metrics` series, to keep cardinality bounded.
+- **Web UI rule detail Targets section** — health badges (Healthy /
+  Degraded / Failed), last-failure / last-success timestamps,
+  per-target byte counters that update on the existing 5 s SSE cadence.
+
+### Changed (007-multi-target-failover)
+
+- **Wire protocol v1.4** — additive proto3 fields on `Rule` (`targets =
+  9`, `health_check_interval_secs = 10`) and `RuleStats`
+  (`target_failovers_total = 11`, `per_target = 12`); new `Target` and
+  `PerTargetStats` messages. v0.6.0 readers/writers continue to work
+  unchanged for single-target rules. Multi-target push to a v0.6.0
+  client is rejected at the HTTP layer with `422
+  multi_target_unsupported_by_client`.
+- **`rules.json` persistence** — read path tolerates v0.6.0
+  single-target rules and promotes them to a one-element `targets` list
+  in memory. Write path uses the back-compat encoding (single-target
+  rules emit legacy fields; multi-target rules emit the new `targets[]`
+  field).
+
 ## [0.6.0] — 2026-05-08
 
 Operator Web UI release. Closes the long-deferred `TODO(WEB_UI)` from

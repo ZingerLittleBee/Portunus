@@ -643,6 +643,12 @@ async fn send_stats_report(
                 datagrams_out: slot.stats.snapshot_datagrams_out(),
                 active_flows: slot.stats.snapshot_active_flows(),
                 flows_dropped_overflow: slot.stats.snapshot_flows_dropped_overflow(),
+                // 007-multi-target-failover (Phase 2 stub): single-target
+                // rules emit 0 / empty for both fields. Multi-target
+                // rules will populate these from per-target HealthState
+                // in Phase 5 (T033).
+                target_failovers_total: 0,
+                per_target: Vec::new(),
             }
         })
         .collect();
