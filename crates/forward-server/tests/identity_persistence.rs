@@ -25,10 +25,11 @@ fn full_round_trip_users_credentials_grants() {
 
     // ---- Phase 1: build state, drop the store ----
     {
-        let sqlite_store = std::sync::Arc::new(
-            forward_server::store::Store::open(dir.path()).unwrap(),
+        let sqlite_store =
+            std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
+        let store = forward_server::store::operator_store::SqliteOperatorStore::new(
+            std::sync::Arc::clone(&sqlite_store),
         );
-        let store = forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store));
         store
             .bootstrap_legacy_superadmin(bootstrap_token)
             .expect("bootstrap");
@@ -62,10 +63,11 @@ fn full_round_trip_users_credentials_grants() {
 
     // ---- Phase 2: re-open, assert state survived ----
     {
-        let sqlite_store = std::sync::Arc::new(
-            forward_server::store::Store::open(dir.path()).unwrap(),
+        let sqlite_store =
+            std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
+        let store = forward_server::store::operator_store::SqliteOperatorStore::new(
+            std::sync::Arc::clone(&sqlite_store),
         );
-        let store = forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store));
         // Bootstrap superadmin + alice.
         let users = store.list_users();
         assert_eq!(users.len(), 2);
@@ -97,10 +99,11 @@ fn full_round_trip_users_credentials_grants() {
 
     // ---- Phase 3: revoked credential still on disk, fails verify ----
     {
-        let sqlite_store = std::sync::Arc::new(
-            forward_server::store::Store::open(dir.path()).unwrap(),
+        let sqlite_store =
+            std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
+        let store = forward_server::store::operator_store::SqliteOperatorStore::new(
+            std::sync::Arc::clone(&sqlite_store),
         );
-        let store = forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store));
         let creds = store.list_credentials(&alice);
         assert_eq!(creds.len(), 1, "revoked credential must persist for audit");
         match store.verify(&alice_token) {

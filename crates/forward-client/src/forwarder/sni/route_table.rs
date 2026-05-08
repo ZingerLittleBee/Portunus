@@ -39,7 +39,10 @@ pub enum SniMatch {
 /// (data-model.md §Overlap) prevents these in normal flow; the
 /// in-memory table panics in debug and reports the error in release
 /// so a developer footgun (e.g. two None fallbacks slipping past the
-/// store overlap check) gets caught early.
+/// store overlap check) gets caught early. The shared `Duplicate*`
+/// prefix mirrors the operator-API codes (`conflict.sni_route_duplicate`
+/// / `conflict.sni_fallback_duplicate`); renaming would lose that link.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum BuildError {
     DuplicateExact(String),
@@ -86,17 +89,19 @@ impl SniRoutingTable {
                 Some(p) => {
                     let lowered = p.to_ascii_lowercase();
                     if let Some(suffix) = lowered.strip_prefix("*.") {
-                        if wildcards
-                            .iter()
-                            .any(|(s, _)| s.as_str() == suffix)
-                        {
+                        if wildcards.iter().any(|(s, _)| s.as_str() == suffix) {
                             return Err(BuildError::DuplicateWildcard(suffix.to_string()));
                         }
                         wildcards.push((suffix.to_string(), *id));
-                    } else if exact.contains_key(&lowered) {
-                        return Err(BuildError::DuplicateExact(lowered));
                     } else {
-                        exact.insert(lowered, *id);
+                        match exact.entry(lowered) {
+                            std::collections::hash_map::Entry::Occupied(e) => {
+                                return Err(BuildError::DuplicateExact(e.key().clone()));
+                            }
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(*id);
+                            }
+                        }
                     }
                 }
             }
@@ -179,6 +184,7 @@ fn wildcard_matches(host_lc: &str, suffix: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::match_wildcard_for_single_variants)] // tests pattern-match on `SniMatch::Hit { .. } | other`
 mod tests {
     use super::*;
 
@@ -189,11 +195,9 @@ mod tests {
     #[test]
     fn exact_beats_fallback() {
         // T034: exact match priority over the fallback slot.
-        let table = SniRoutingTable::from_members(&[
-            (Some("api.example.com"), rid(1)),
-            (None, rid(2)),
-        ])
-        .expect("build");
+        let table =
+            SniRoutingTable::from_members(&[(Some("api.example.com"), rid(1)), (None, rid(2))])
+                .expect("build");
         assert_eq!(
             table.lookup(Some("api.example.com")),
             SniMatch::Hit {
@@ -205,11 +209,9 @@ mod tests {
 
     #[test]
     fn unmatched_falls_back() {
-        let table = SniRoutingTable::from_members(&[
-            (Some("api.example.com"), rid(1)),
-            (None, rid(2)),
-        ])
-        .expect("build");
+        let table =
+            SniRoutingTable::from_members(&[(Some("api.example.com"), rid(1)), (None, rid(2))])
+                .expect("build");
         assert_eq!(
             table.lookup(Some("admin.example.com")),
             SniMatch::Hit {
@@ -221,11 +223,9 @@ mod tests {
 
     #[test]
     fn no_sni_lands_on_fallback() {
-        let table = SniRoutingTable::from_members(&[
-            (Some("api.example.com"), rid(1)),
-            (None, rid(2)),
-        ])
-        .expect("build");
+        let table =
+            SniRoutingTable::from_members(&[(Some("api.example.com"), rid(1)), (None, rid(2))])
+                .expect("build");
         assert_eq!(
             table.lookup(None),
             SniMatch::Hit {
@@ -237,8 +237,8 @@ mod tests {
 
     #[test]
     fn no_sni_no_fallback_misses() {
-        let table = SniRoutingTable::from_members(&[(Some("api.example.com"), rid(1))])
-            .expect("build");
+        let table =
+            SniRoutingTable::from_members(&[(Some("api.example.com"), rid(1))]).expect("build");
         assert_eq!(table.lookup(None), SniMatch::Miss);
     }
 

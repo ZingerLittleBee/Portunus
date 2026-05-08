@@ -164,7 +164,10 @@ fn reset_dry_run_prints_path_and_keeps_db() {
         .output()
         .expect("reset dry-run");
     assert!(out.status.success(), "dry-run must succeed");
-    assert!(data.path().join("state.db").exists(), "dry-run must keep DB");
+    assert!(
+        data.path().join("state.db").exists(),
+        "dry-run must keep DB"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry-run"));
 }

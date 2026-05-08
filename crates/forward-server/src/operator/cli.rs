@@ -169,12 +169,10 @@ pub enum OperatorError {
     /// carries the operator-api stable subcategory:
     /// - `validation.sni_on_unsupported_rule` — UDP or range rule.
     /// - `validation.sni_pattern_malformed` — grammar reject.
+    ///
     /// Maps to HTTP 400 / exit 3.
     #[error("{code}: {message}")]
-    SniValidation {
-        code: &'static str,
-        message: String,
-    },
+    SniValidation { code: &'static str, message: String },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -258,7 +256,10 @@ impl OperatorError {
             Self::InvalidName(_) => "invalid_name",
             Self::InvalidProtocol(_) => "invalid_protocol",
             Self::InvalidTarget(_) => "invalid_target",
-            Self::InvalidTargetHost { code, .. } => code,
+            // `InvalidTargetHost` and `SniValidation` (below) both
+            // store an operator-api-stable subcode in their `code`
+            // field; merging the arms keeps the dispatch trivial.
+            Self::InvalidTargetHost { code, .. } | Self::SniValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -288,7 +289,6 @@ impl OperatorError {
             Self::SniFallbackDuplicate { .. } => "conflict.sni_fallback_duplicate",
             Self::LegacyToSniUnsupported { .. } => "conflict.legacy_to_sni_unsupported",
             Self::SniUnsupportedByClient { .. } => "sni_unsupported_by_client",
-            Self::SniValidation { code, .. } => code,
         }
     }
 }

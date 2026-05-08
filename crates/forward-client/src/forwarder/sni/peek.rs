@@ -19,6 +19,7 @@
 //! - `Malformed`      → `tls.parse_failed` (WARN)
 //! - `SizeCap`        → `tls.parse_failed` (WARN)
 //! - `Io(_)`          → `tls.parse_failed` (WARN)
+//!
 //! The listener (T040) catches and emits the right event; this
 //! module just returns the typed error.
 
@@ -41,14 +42,16 @@ pub enum PeekError {
     /// Treat as a malicious peer.
     SizeCap,
     /// Peer closed the connection / read returned 0 / underlying
-    /// I/O error.
-    Io(std::io::Error),
+    /// I/O error. The inner `io::Error` is carried for diagnostics
+    /// (logged by the listener); not part of the public surface.
+    Io(#[allow(dead_code)] std::io::Error),
 }
 
+#[cfg(test)]
 impl PeekError {
     /// Map to the operator-API tracing event name (contracts/operator-api.md §5).
-    #[must_use]
-    pub fn tracing_event(&self) -> &'static str {
+    /// Test-only: the listener inlines this mapping at the call site.
+    pub(crate) fn tracing_event(&self) -> &'static str {
         match self {
             PeekError::Timeout { .. } => "tls.client_hello_timeout",
             _ => "tls.parse_failed",
@@ -108,7 +111,9 @@ where
         // is dripping bytes. Capacity grows in CHUNK steps.
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return Err(PeekError::Timeout { bytes_read: buf.len() });
+            return Err(PeekError::Timeout {
+                bytes_read: buf.len(),
+            });
         }
         let remaining = deadline - now;
         let mut chunk = vec![0u8; CHUNK.min(cap - buf.len())];
@@ -127,7 +132,9 @@ where
             Ok(Ok(n)) => n,
             Ok(Err(e)) => return Err(PeekError::Io(e)),
             Err(_elapsed) => {
-                return Err(PeekError::Timeout { bytes_read: buf.len() });
+                return Err(PeekError::Timeout {
+                    bytes_read: buf.len(),
+                });
             }
         };
         chunk.truncate(n);
@@ -146,11 +153,7 @@ mod tests {
     /// with `gap` ms between writes. The reader half is what
     /// `read_client_hello` peeks. Returns the reader half so the
     /// test can drive the peek.
-    async fn pipe_with(
-        bytes: Vec<u8>,
-        chunk: usize,
-        gap: Duration,
-    ) -> tokio::io::DuplexStream {
+    fn pipe_with(bytes: Vec<u8>, chunk: usize, gap: Duration) -> tokio::io::DuplexStream {
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             for piece in bytes.chunks(chunk.max(1)) {
@@ -169,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn happy_path_one_shot() {
         let bytes = build_client_hello(Some("api.example.com"));
-        let mut reader = pipe_with(bytes.clone(), bytes.len(), Duration::ZERO).await;
+        let mut reader = pipe_with(bytes.clone(), bytes.len(), Duration::ZERO);
         let (captured, sni) = read_client_hello(&mut reader).await.expect("peek");
         assert!(captured.starts_with(&bytes));
         assert_eq!(sni.as_deref(), Some("api.example.com"));
@@ -178,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn drip_feed_assembles() {
         let bytes = build_client_hello(Some("dripped.example.com"));
-        let mut reader = pipe_with(bytes.clone(), 7, Duration::from_millis(2)).await;
+        let mut reader = pipe_with(bytes.clone(), 7, Duration::from_millis(2));
         let (captured, sni) = read_client_hello(&mut reader).await.expect("peek");
         assert_eq!(captured.len(), bytes.len());
         assert_eq!(sni.as_deref(), Some("dripped.example.com"));
@@ -201,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn not_tls_payload_rejected() {
-        let mut reader = pipe_with(b"GET / HTTP/1.1\r\n\r\n".to_vec(), 64, Duration::ZERO).await;
+        let mut reader = pipe_with(b"GET / HTTP/1.1\r\n\r\n".to_vec(), 64, Duration::ZERO);
         let err = read_client_hello(&mut reader).await.expect_err("not TLS");
         match err {
             PeekError::NotTls => {}
@@ -213,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn no_sni_extension_returns_none() {
         let bytes = build_client_hello(None);
-        let mut reader = pipe_with(bytes.clone(), bytes.len(), Duration::ZERO).await;
+        let mut reader = pipe_with(bytes.clone(), bytes.len(), Duration::ZERO);
         let (_captured, sni) = read_client_hello(&mut reader).await.expect("peek");
         assert_eq!(sni, None);
     }
@@ -227,7 +230,7 @@ mod tests {
         // SizeCap before the parser finishes.
         let mut payload = vec![0x16, 0x03, 0x03, 0x04, 0x00]; // record advertises 1024-byte body
         payload.extend_from_slice(&vec![0u8; 600]); // partial body
-        let mut reader = pipe_with(payload, 64, Duration::ZERO).await;
+        let mut reader = pipe_with(payload, 64, Duration::ZERO);
         let err = read_client_hello_with(&mut reader, Duration::from_secs(1), 256)
             .await
             .expect_err("must size-cap");

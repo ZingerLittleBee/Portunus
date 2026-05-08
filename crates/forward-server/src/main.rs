@@ -332,7 +332,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             })
         }
         Cmd::ProvisionClient { name, out } => {
-            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
+            let state =
+                build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             match cli::provision_client(&state, &name, out) {
                 Ok((path, _)) => {
                     println!("{}", path.display());
@@ -346,7 +347,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             }
         }
         Cmd::Revoke { name } => {
-            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
+            let state =
+                build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -359,7 +361,8 @@ fn run(cli: Cli) -> Result<(), u8> {
                 })
         }
         Cmd::ListClients { format } => {
-            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
+            let state =
+                build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

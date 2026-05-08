@@ -21,10 +21,13 @@ const SUPER_TOKEN: &str = "T046-super";
 fn build_router() -> (axum::Router, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let sqlite_store = std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
-    let tokens =
-        Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
+    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
+        std::sync::Arc::clone(&sqlite_store),
+    ));
     let operator_store = Arc::new(
-        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)),
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(
+            &sqlite_store,
+        )),
     );
     operator_store
         .bootstrap_legacy_superadmin(SUPER_TOKEN)

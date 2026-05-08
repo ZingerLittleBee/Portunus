@@ -590,8 +590,7 @@ async fn handle_server_message(
             // per-rule spawn path.
             let routes_via_sni = matches!(protocol, Protocol::Tcp)
                 && listen_end == listen_port
-                && (client_rule.sni_pattern.is_some()
-                    || port_groups.is_sni_port(listen_port));
+                && (client_rule.sni_pattern.is_some() || port_groups.is_sni_port(listen_port));
             if routes_via_sni {
                 match port_groups
                     .apply_push(client_rule.clone(), Arc::clone(&resolver))
@@ -613,8 +612,7 @@ async fn handle_server_message(
                         // Emit Activated synthetically — the SNI
                         // listener bound + table populated, so from
                         // the operator's perspective the rule is live.
-                        let _ = status_tx
-                            .try_send(RuleStatusEvent::Activated { rule_id });
+                        let _ = status_tx.try_send(RuleStatusEvent::Activated { rule_id });
                     }
                     Err(e) => {
                         warn!(
@@ -637,8 +635,7 @@ async fn handle_server_message(
                                 "unknown_rule_id".into()
                             }
                         };
-                        let _ = status_tx
-                            .try_send(RuleStatusEvent::Failed { rule_id, reason });
+                        let _ = status_tx.try_send(RuleStatusEvent::Failed { rule_id, reason });
                     }
                 }
                 return;
@@ -894,10 +891,7 @@ async fn send_stats_report(
                 // stripping keeps the wire shape byte-identical with
                 // v0.8 (verified by
                 // sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
-                sni_route_exact_total: slot
-                    .stats
-                    .sni_route_exact_total
-                    .load(Ordering::Relaxed),
+                sni_route_exact_total: slot.stats.sni_route_exact_total.load(Ordering::Relaxed),
                 sni_route_wildcard_total: slot
                     .stats
                     .sni_route_wildcard_total

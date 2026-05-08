@@ -53,12 +53,7 @@ async fn audit_entries_survive_clean_restart() {
         let drops = IntCounter::new("t_drops", "test").unwrap();
         let lag = Gauge::new("t_lag", "test").unwrap();
         let cancel = CancellationToken::new();
-        let handle = audit_writer::spawn(
-            Arc::clone(&store),
-            drops.clone(),
-            lag,
-            cancel.clone(),
-        );
+        let handle = audit_writer::spawn(Arc::clone(&store), drops.clone(), lag, cancel.clone());
 
         for i in 0..50 {
             let outcome = if i % 5 == 0 {
@@ -116,7 +111,8 @@ async fn audit_entries_survive_repeated_open_close_cycles() {
     let dir = tempdir().unwrap();
 
     for cycle in 0..5 {
-        let store = Arc::new(Store::open(dir.path()).unwrap_or_else(|e| panic!("open cycle {cycle}: {e}")));
+        let store =
+            Arc::new(Store::open(dir.path()).unwrap_or_else(|e| panic!("open cycle {cycle}: {e}")));
         let drops = IntCounter::new(format!("t_drops_{cycle}"), "test").unwrap();
         let lag = Gauge::new(format!("t_lag_{cycle}"), "test").unwrap();
         let cancel = CancellationToken::new();

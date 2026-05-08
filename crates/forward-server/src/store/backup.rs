@@ -43,10 +43,10 @@ impl BackupError {
     /// CLI exit code per `contracts/cli.md`. 0 = success.
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::SourceMissing(_) => 5,        // not_found
+            Self::SourceMissing(_) => 5, // not_found
             Self::DestinationExists(_) | Self::DestinationNonEmpty(_) => 6, // would_overwrite
-            Self::NotSqlite(_) => 7,            // signature_check_failed
-            Self::SchemaTooNew { .. } => 78,    // SchemaTooNew (matches startup exit)
+            Self::NotSqlite(_) => 7,     // signature_check_failed
+            Self::SchemaTooNew { .. } => 78, // SchemaTooNew (matches startup exit)
             Self::MigrationFailed(_) => 70,
             Self::Io(_) | Self::Sqlite(_) => 1,
         }

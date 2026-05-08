@@ -13,6 +13,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::store::operator_store::SqliteOperatorStore;
+use crate::store::token_store::SqliteTokenStore;
 use axum::{
     Router,
     extract::State,
@@ -21,8 +23,6 @@ use axum::{
     routing::get,
 };
 use forward_auth::OperatorAuthenticator;
-use crate::store::operator_store::SqliteOperatorStore;
-use crate::store::token_store::SqliteTokenStore;
 use forward_core::ForwardError;
 use forward_core::config::ServerConfig;
 use tokio::net::TcpListener;
@@ -82,7 +82,10 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
     // 008-sqlite-storage T021 boot order step (4)+(5): open the store
     // and run pending forward migrations.
     let store = Arc::new(crate::store::Store::open(&opts.data_dir).map_err(|e| {
-        ForwardError::Tls(format!("startup.store_open path={} {e}", opts.data_dir.display()))
+        ForwardError::Tls(format!(
+            "startup.store_open path={} {e}",
+            opts.data_dir.display()
+        ))
     })?);
     info!(
         event = "store.ready",

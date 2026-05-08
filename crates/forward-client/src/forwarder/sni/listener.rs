@@ -250,11 +250,13 @@ async fn handle_accept<R: Resolve + 'static>(
             "exact"
         }
         SniMatchKind::Wildcard => {
-            slot.sni_route_wildcard_total.fetch_add(1, Ordering::Relaxed);
+            slot.sni_route_wildcard_total
+                .fetch_add(1, Ordering::Relaxed);
             "wildcard"
         }
         SniMatchKind::Fallback => {
-            slot.sni_route_fallback_total.fetch_add(1, Ordering::Relaxed);
+            slot.sni_route_fallback_total
+                .fetch_add(1, Ordering::Relaxed);
             "fallback"
         }
     };

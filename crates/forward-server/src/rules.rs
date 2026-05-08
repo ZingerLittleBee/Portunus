@@ -272,7 +272,9 @@ pub enum RuleStoreError {
     /// 009-tls-sni-routing: a candidate SNI rule has the same
     /// `sni_pattern` as an existing sibling on `(client, listen_port)`.
     /// Surfaced to the operator as HTTP 409 / `conflict.sni_route_duplicate`.
-    #[error("sni_route_duplicate: client {client_name} listen_port {listen_port} sni_pattern {sni_pattern} already in use")]
+    #[error(
+        "sni_route_duplicate: client {client_name} listen_port {listen_port} sni_pattern {sni_pattern} already in use"
+    )]
     SniRouteDuplicate {
         client_name: ClientName,
         listen_port: u16,
@@ -282,7 +284,9 @@ pub enum RuleStoreError {
     /// 009-tls-sni-routing: a candidate fallback rule (`sni_pattern = None`)
     /// is being pushed to a listener that already has a fallback slot.
     /// Surfaced as HTTP 409 / `conflict.sni_fallback_duplicate`.
-    #[error("sni_fallback_duplicate: client {client_name} listen_port {listen_port} already has a fallback rule")]
+    #[error(
+        "sni_fallback_duplicate: client {client_name} listen_port {listen_port} already has a fallback rule"
+    )]
     SniFallbackDuplicate {
         client_name: ClientName,
         listen_port: u16,
@@ -293,7 +297,9 @@ pub enum RuleStoreError {
     /// HTTP 409 / `conflict.legacy_to_sni_unsupported`. Operator must
     /// remove the existing rule first, then push the new shape onto a
     /// freshly bound listener.
-    #[error("legacy_to_sni_unsupported: client {client_name} listen_port {listen_port} has an active rule in {existing_mode} mode; remove it first before pushing in {candidate_mode} mode")]
+    #[error(
+        "legacy_to_sni_unsupported: client {client_name} listen_port {listen_port} has an active rule in {existing_mode} mode; remove it first before pushing in {candidate_mode} mode"
+    )]
     LegacyToSniUnsupported {
         client_name: ClientName,
         listen_port: u16,
@@ -561,8 +567,7 @@ impl ServerRuleStore {
                                 let mut has_fallback = false;
                                 if let Some(siblings) =
                                     guard.by_client_listen_start.get(&client_name)
-                                    && let Some(sibling_ids) =
-                                        siblings.get(&candidate_listen_port)
+                                    && let Some(sibling_ids) = siblings.get(&candidate_listen_port)
                                 {
                                     for sid in sibling_ids {
                                         if let Some(sib) = guard.rules.get(sid)

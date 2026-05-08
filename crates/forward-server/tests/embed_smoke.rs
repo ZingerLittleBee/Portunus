@@ -22,8 +22,14 @@ const SUPER: &str = "T064-super";
 fn build() -> (axum::Router, TempDir) {
     let dir = TempDir::new().unwrap();
     let sqlite_store = Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
-    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
-    let store = Arc::new(forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)));
+    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
+        std::sync::Arc::clone(&sqlite_store),
+    ));
+    let store = Arc::new(
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(
+            &sqlite_store,
+        )),
+    );
     store.bootstrap_legacy_superadmin(SUPER).unwrap();
     let state = Arc::new(
         AppState::new(

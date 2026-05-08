@@ -54,9 +54,7 @@ impl SqliteOperatorStore {
                     )
                     .map_err(map_rusqlite)?;
                 let mut out = Vec::new();
-                let rows = stmt
-                    .query_map([], row_to_user)
-                    .map_err(map_rusqlite)?;
+                let rows = stmt.query_map([], row_to_user).map_err(map_rusqlite)?;
                 for r in rows {
                     out.push(r.map_err(map_rusqlite)?);
                 }
@@ -188,11 +186,7 @@ impl SqliteOperatorStore {
 
     // ---------------- atomic bootstrap paths ----------------
 
-    pub fn bootstrap_pair(
-        &self,
-        user: User,
-        cred: Credential,
-    ) -> Result<(), IdentityStoreError> {
+    pub fn bootstrap_pair(&self, user: User, cred: Credential) -> Result<(), IdentityStoreError> {
         if cred.user_id != user.id {
             return Err(IdentityStoreError::WriteFailed(
                 "bootstrap_pair: cred.user_id must equal user.id".into(),
@@ -202,7 +196,9 @@ impl SqliteOperatorStore {
         self.store
             .with_write_tx(|tx| {
                 if user_exists(tx, &user.id)? {
-                    return Err(StoreError::Conflict { detail: "user_already_exists".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "user_already_exists".into(),
+                    });
                 }
                 insert_user(tx, &user)?;
                 insert_credential(tx, &cred)?;
@@ -214,10 +210,7 @@ impl SqliteOperatorStore {
             })
     }
 
-    pub fn bootstrap_legacy_superadmin(
-        &self,
-        raw_token: &str,
-    ) -> Result<(), IdentityStoreError> {
+    pub fn bootstrap_legacy_superadmin(&self, raw_token: &str) -> Result<(), IdentityStoreError> {
         if raw_token.is_empty() || raw_token.len() > 256 {
             return Err(IdentityStoreError::WriteFailed(
                 "operator_token must be 1..=256 bytes".into(),
@@ -250,7 +243,9 @@ impl SqliteOperatorStore {
                     )
                     .map_err(map_rusqlite)?;
                 if n > 0 {
-                    return Err(StoreError::Conflict { detail: "already_bootstrapped".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "already_bootstrapped".into(),
+                    });
                 }
                 insert_user(tx, &user)?;
                 insert_credential(tx, &cred)?;
@@ -271,7 +266,9 @@ impl SqliteOperatorStore {
         self.store
             .with_write_tx(|tx| {
                 if user_exists(tx, &user.id)? {
-                    return Err(StoreError::Conflict { detail: "user_already_exists".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "user_already_exists".into(),
+                    });
                 }
                 insert_user(tx, &user)?;
                 Ok(())
@@ -282,15 +279,14 @@ impl SqliteOperatorStore {
             })
     }
 
-    pub fn remove_user(
-        &self,
-        user_id: &UserId,
-    ) -> Result<UserRemoveSummary, IdentityStoreError> {
+    pub fn remove_user(&self, user_id: &UserId) -> Result<UserRemoveSummary, IdentityStoreError> {
         let uid_for_err = user_id.clone();
         self.store
             .with_write_tx(|tx| {
                 if !user_exists(tx, user_id)? {
-                    return Err(StoreError::Conflict { detail: "user_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
                 }
 
                 let cred_ids = collect_credential_ids(tx, user_id)?;
@@ -337,7 +333,9 @@ impl SqliteOperatorStore {
         self.store
             .with_write_tx(|tx| {
                 if !user_exists(tx, user_id)? {
-                    return Err(StoreError::Conflict { detail: "user_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
                 }
                 insert_credential(tx, &cred_clone)?;
                 Ok(())
@@ -369,10 +367,14 @@ impl SqliteOperatorStore {
                     .optional()
                     .map_err(map_rusqlite)?;
                 let Some(owner_uid) = owner else {
-                    return Err(StoreError::Conflict { detail: "credential_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "credential_not_found".into(),
+                    });
                 };
                 if owner_uid != user_id.as_str() {
-                    return Err(StoreError::Conflict { detail: "credential_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "credential_not_found".into(),
+                    });
                 }
                 tx.execute(
                     "UPDATE credentials SET status = 'revoked', revoked_at = ? \
@@ -413,7 +415,9 @@ impl SqliteOperatorStore {
         self.store
             .with_write_tx(|tx| {
                 if !user_exists(tx, user_id)? {
-                    return Err(StoreError::Conflict { detail: "user_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
                 }
                 let owner: Option<String> = tx
                     .query_row(
@@ -424,10 +428,14 @@ impl SqliteOperatorStore {
                     .optional()
                     .map_err(map_rusqlite)?;
                 let Some(owner_uid) = owner else {
-                    return Err(StoreError::Conflict { detail: "credential_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "credential_not_found".into(),
+                    });
                 };
                 if owner_uid != user_id.as_str() {
-                    return Err(StoreError::Conflict { detail: "credential_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "credential_not_found".into(),
+                    });
                 }
                 tx.execute(
                     "UPDATE credentials SET status = 'revoked', revoked_at = ? \
@@ -461,7 +469,9 @@ impl SqliteOperatorStore {
         self.store
             .with_write_tx(|tx| {
                 if !user_exists(tx, &grant.user_id)? {
-                    return Err(StoreError::Conflict { detail: "user_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
                 }
                 insert_grant(tx, &grant)?;
                 Ok(())
@@ -488,7 +498,9 @@ impl SqliteOperatorStore {
                     .optional()
                     .map_err(map_rusqlite)?;
                 let Some(grant) = g else {
-                    return Err(StoreError::Conflict { detail: "grant_not_found".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "grant_not_found".into(),
+                    });
                 };
                 tx.execute(
                     "DELETE FROM grants WHERE grant_id = ?",
@@ -600,8 +612,9 @@ fn collect_credential_ids(
     let mut out = Vec::new();
     for r in rows {
         let s = r.map_err(map_rusqlite)?;
-        let ulid = ulid::Ulid::from_string(&s)
-            .map_err(|e| StoreError::Corruption { detail: format!("bad CredentialId {s}: {e}") })?;
+        let ulid = ulid::Ulid::from_string(&s).map_err(|e| StoreError::Corruption {
+            detail: format!("bad CredentialId {s}: {e}"),
+        })?;
         out.push(CredentialId(ulid));
     }
     Ok(out)
@@ -617,8 +630,9 @@ fn collect_grant_ids(tx: &Connection, user_id: &UserId) -> Result<Vec<GrantId>, 
     let mut out = Vec::new();
     for r in rows {
         let s = r.map_err(map_rusqlite)?;
-        let ulid = ulid::Ulid::from_string(&s)
-            .map_err(|e| StoreError::Corruption { detail: format!("bad GrantId {s}: {e}") })?;
+        let ulid = ulid::Ulid::from_string(&s).map_err(|e| StoreError::Corruption {
+            detail: format!("bad GrantId {s}: {e}"),
+        })?;
         out.push(GrantId(ulid));
     }
     Ok(out)
@@ -731,9 +745,7 @@ fn row_to_credential(r: &Row<'_>) -> rusqlite::Result<Credential> {
             ));
         }
     };
-    let last_used_at = last_used_at
-        .map(|s| parse_ts_rusqlite(&s, 7))
-        .transpose()?;
+    let last_used_at = last_used_at.map(|s| parse_ts_rusqlite(&s, 7)).transpose()?;
     Ok(Credential {
         id: CredentialId(id),
         user_id: uid,
@@ -875,9 +887,7 @@ impl OperatorAuthenticator for SqliteOperatorStore {
             .store
             .with_conn(|c| {
                 let mut stmt = c
-                    .prepare(
-                        "SELECT credential_id, user_id, hash, status FROM credentials",
-                    )
+                    .prepare("SELECT credential_id, user_id, hash, status FROM credentials")
                     .map_err(map_rusqlite)?;
                 let rows = stmt
                     .query_map([], |r| {
@@ -894,9 +904,7 @@ impl OperatorAuthenticator for SqliteOperatorStore {
                 let mut matched_revoked = false;
                 for r in rows {
                     let (id, uid, hash, status) = r.map_err(map_rusqlite)?;
-                    if hash.len() == needle.len()
-                        && fingerprint::ct_eq(hash.as_bytes(), needle)
-                    {
+                    if hash.len() == needle.len() && fingerprint::ct_eq(hash.as_bytes(), needle) {
                         match status.as_str() {
                             "active" => matched_active = Some((id, uid)),
                             _ => matched_revoked = true,
@@ -1082,9 +1090,7 @@ mod tests {
         };
         s.add_grant(g).unwrap();
 
-        let summary = s
-            .remove_user(&UserId::from_str("alice").unwrap())
-            .unwrap();
+        let summary = s.remove_user(&UserId::from_str("alice").unwrap()).unwrap();
         assert_eq!(summary.removed_credential_ids.len(), 1);
         assert_eq!(summary.revoked_grant_ids.len(), 1);
         assert!(s.list_users().is_empty());
@@ -1114,9 +1120,7 @@ mod tests {
     fn bootstrap_legacy_then_blocks_second_bootstrap() {
         let (_d, s) = fresh();
         s.bootstrap_legacy_superadmin("super-secret-token").unwrap();
-        let err = s
-            .bootstrap_legacy_superadmin("another-token")
-            .unwrap_err();
+        let err = s.bootstrap_legacy_superadmin("another-token").unwrap_err();
         assert!(matches!(err, IdentityStoreError::UserAlreadyExists(_)));
         let id = s.verify("super-secret-token").unwrap();
         assert_eq!(id.role, OperatorRole::Superadmin);

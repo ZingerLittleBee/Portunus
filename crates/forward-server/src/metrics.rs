@@ -346,6 +346,10 @@ impl Metrics {
 /// errors and are logged, never blocking fast subscribers (R-008).
 const STATS_BROADCAST_CAPACITY: usize = 16;
 
+/// 009-tls-sni-routing T080: typedef for the per-listener delta map
+/// (factors `clippy::type_complexity` out of `RuleStatsCache`).
+type SniListenerPrevMap = HashMap<(String, u16), (u64, u64)>;
+
 /// Cache the latest `StatsReport` per rule. Cheap to clone (`Arc` internal).
 ///
 /// 006-management-web-ui T011: also fans out new snapshots over
@@ -362,7 +366,7 @@ pub struct RuleStatsCache {
     /// `(client_name, listen_port)`. Tracks the previous tick's
     /// cumulative `(miss, parse_failures)` so the new tick can feed
     /// monotonic deltas into the per-listener Prometheus collectors.
-    sni_listener_prev: Arc<RwLock<HashMap<(String, u16), (u64, u64)>>>,
+    sni_listener_prev: Arc<RwLock<SniListenerPrevMap>>,
 }
 
 #[derive(Debug, Clone)]
@@ -626,18 +630,12 @@ impl RuleStatsCache {
         let exact_delta = sni_route_exact_total.saturating_sub(entry.prev_sni_route_exact_total);
         let wild_delta =
             sni_route_wildcard_total.saturating_sub(entry.prev_sni_route_wildcard_total);
-        let fb_delta =
-            sni_route_fallback_total.saturating_sub(entry.prev_sni_route_fallback_total);
+        let fb_delta = sni_route_fallback_total.saturating_sub(entry.prev_sni_route_fallback_total);
         let rule_id_str = rule_id.0.to_string();
         if exact_delta > 0 {
             metrics
                 .tls_sni_route_total
-                .with_label_values(&[
-                    client_name.as_str(),
-                    rule_id_str.as_str(),
-                    owner,
-                    "exact",
-                ])
+                .with_label_values(&[client_name.as_str(), rule_id_str.as_str(), owner, "exact"])
                 .inc_by(exact_delta);
         }
         if wild_delta > 0 {

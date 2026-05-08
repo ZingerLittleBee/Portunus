@@ -1492,10 +1492,7 @@ mod tests {
     /// shared `Vec`. Used for byte-identity assertions instead of
     /// the echo backend (we want to compare against what the *client*
     /// sent, not what the echo bounced back).
-    async fn spawn_capture_backend() -> (
-        std::net::SocketAddr,
-        Arc<tokio::sync::Mutex<Vec<u8>>>,
-    ) {
+    async fn spawn_capture_backend() -> (std::net::SocketAddr, Arc<tokio::sync::Mutex<Vec<u8>>>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let captured: Arc<tokio::sync::Mutex<Vec<u8>>> =
@@ -1505,11 +1502,11 @@ mod tests {
             if let Ok((mut sock, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 8192];
                 loop {
-                    match sock.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => task_cap.lock().await.extend_from_slice(&buf[..n]),
-                        Err(_) => break,
-                    }
+                    let n = match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    task_cap.lock().await.extend_from_slice(&buf[..n]);
                 }
             }
         });
@@ -1624,13 +1621,12 @@ mod tests {
             if captured.lock().await.len() >= payload.len() {
                 break;
             }
-            if std::time::Instant::now() > deadline {
-                panic!(
-                    "timeout waiting for backend to capture all bytes ({} / {})",
-                    captured.lock().await.len(),
-                    payload.len()
-                );
-            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "timeout waiting for backend to capture all bytes ({} / {})",
+                captured.lock().await.len(),
+                payload.len()
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(

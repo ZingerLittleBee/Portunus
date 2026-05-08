@@ -168,12 +168,12 @@ pub async fn proxy_with_preread<R: Resolve>(
     // bump `record_in` for the preread length so SC-002 byte-equality
     // tests see the same totals regardless of legacy vs. SNI path.
     let mut preread_in: u64 = 0;
-    if let Some(buf) = preread.as_ref() {
-        if !buf.is_empty() {
-            use tokio::io::AsyncWriteExt;
-            outbound.write_all(buf).await?;
-            preread_in = buf.len() as u64;
-        }
+    if let Some(buf) = preread.as_ref()
+        && !buf.is_empty()
+    {
+        use tokio::io::AsyncWriteExt;
+        outbound.write_all(buf).await?;
+        preread_in = buf.len() as u64;
     }
 
     let result = tokio::select! {

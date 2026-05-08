@@ -148,12 +148,12 @@ pub fn parse(bytes: &[u8]) -> Result<ParseOutcome, ParseError> {
     cur.skip(sid_len)?;
 
     // cipher_suites: u16 length + bytes.
-    let cs_len = cur.read_u16()? as usize;
-    cur.skip(cs_len)?;
+    let cipher_suites_len = cur.read_u16()? as usize;
+    cur.skip(cipher_suites_len)?;
 
     // legacy_compression_methods: u8 length + bytes.
-    let cm_len = cur.read_u8()? as usize;
-    cur.skip(cm_len)?;
+    let compression_methods_len = cur.read_u8()? as usize;
+    cur.skip(compression_methods_len)?;
 
     // extensions: u16 length. Absent if we're at the end (TLS 1.0
     // permits this; TLS 1.2+ requires it).
@@ -261,7 +261,12 @@ impl<'a> Cursor<'a> {
 /// `forwarder::sni` tree (avoids an external openssl dependency for
 /// fixtures — see T020..T024 for capture-based fixtures used in
 /// the real-world e2e suite).
+///
+/// The width-clamping casts (`as u16`, `as u8`) are intentional:
+/// fixture inputs are bounded short hostnames so truncation is
+/// structurally impossible.
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn build_client_hello(sni: Option<&str>) -> Vec<u8> {
     let mut body = Vec::with_capacity(256);
     body.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
@@ -342,7 +347,10 @@ mod tests {
     fn parse_lowercases_sni() {
         let bytes = build_client_hello(Some("API.Example.COM"));
         let outcome = parse(&bytes).expect("parse");
-        assert_eq!(outcome, ParseOutcome::Ok(Some("api.example.com".to_string())));
+        assert_eq!(
+            outcome,
+            ParseOutcome::Ok(Some("api.example.com".to_string()))
+        );
     }
 
     #[test]
@@ -350,7 +358,10 @@ mod tests {
         // RFC 6066 §3 permits trailing dot; canonicalise to bare host.
         let bytes = build_client_hello(Some("api.example.com."));
         let outcome = parse(&bytes).expect("parse");
-        assert_eq!(outcome, ParseOutcome::Ok(Some("api.example.com".to_string())));
+        assert_eq!(
+            outcome,
+            ParseOutcome::Ok(Some("api.example.com".to_string()))
+        );
     }
 
     #[test]

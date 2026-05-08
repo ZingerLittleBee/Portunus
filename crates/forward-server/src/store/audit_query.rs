@@ -169,8 +169,7 @@ impl Store {
                     },
                 ))
             };
-            let params_refs: Vec<&dyn rusqlite::ToSql> =
-                params.iter().map(AsRef::as_ref).collect();
+            let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(AsRef::as_ref).collect();
             let iter = stmt
                 .query_map(rusqlite::params_from_iter(params_refs), mapper)
                 .map_err(map_rusqlite)?;
@@ -243,7 +242,9 @@ pub fn encode_cursor(seq: i64) -> String {
 #[must_use]
 pub fn decode_cursor(s: &str) -> Option<i64> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .ok()?;
     let txt = std::str::from_utf8(&bytes).ok()?;
     txt.parse::<i64>().ok()
 }

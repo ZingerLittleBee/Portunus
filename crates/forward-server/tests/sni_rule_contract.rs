@@ -538,7 +538,10 @@ async fn overlap_matrix_legacy_legacy_collides() {
         )
         .await
         .expect_err("second legacy push must collide");
-    assert!(matches!(err, RuleStoreError::PortInUse { .. }), "got {err:?}");
+    assert!(
+        matches!(err, RuleStoreError::PortInUse { .. }),
+        "got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -568,15 +571,39 @@ async fn overlap_matrix_legacy_then_sni_returns_legacy_to_sni() {
 async fn overlap_matrix_sni_distinct_patterns_coexist() {
     let store = ServerRuleStore::new();
     let client = ClientName::new("c4".to_string()).unwrap();
-    plant_active_sni(&store, &client, 443, "10.0.0.1", 9001, Some("api.example.com")).await;
-    plant_active_sni(&store, &client, 443, "10.0.0.2", 9002, Some("admin.example.com")).await;
+    plant_active_sni(
+        &store,
+        &client,
+        443,
+        "10.0.0.1",
+        9001,
+        Some("api.example.com"),
+    )
+    .await;
+    plant_active_sni(
+        &store,
+        &client,
+        443,
+        "10.0.0.2",
+        9002,
+        Some("admin.example.com"),
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn overlap_matrix_sni_duplicate_pattern_refused() {
     let store = ServerRuleStore::new();
     let client = ClientName::new("c5".to_string()).unwrap();
-    plant_active_sni(&store, &client, 443, "10.0.0.1", 9001, Some("api.example.com")).await;
+    plant_active_sni(
+        &store,
+        &client,
+        443,
+        "10.0.0.1",
+        9001,
+        Some("api.example.com"),
+    )
+    .await;
     let err = store
         .push_with_sni(
             client,
@@ -599,7 +626,15 @@ async fn overlap_matrix_sni_then_fallback_coexists() {
     // (Some(_), None): exact + fallback can coexist on the same listener.
     let store = ServerRuleStore::new();
     let client = ClientName::new("c6".to_string()).unwrap();
-    plant_active_sni(&store, &client, 443, "10.0.0.1", 9001, Some("api.example.com")).await;
+    plant_active_sni(
+        &store,
+        &client,
+        443,
+        "10.0.0.1",
+        9001,
+        Some("api.example.com"),
+    )
+    .await;
     plant_active_sni(&store, &client, 443, "10.0.0.99", 9999, None).await;
 }
 
@@ -607,17 +642,18 @@ async fn overlap_matrix_sni_then_fallback_coexists() {
 async fn overlap_matrix_two_fallbacks_refused() {
     let store = ServerRuleStore::new();
     let client = ClientName::new("c7".to_string()).unwrap();
-    plant_active_sni(&store, &client, 443, "10.0.0.1", 9001, Some("api.example.com")).await;
+    plant_active_sni(
+        &store,
+        &client,
+        443,
+        "10.0.0.1",
+        9001,
+        Some("api.example.com"),
+    )
+    .await;
     plant_active_sni(&store, &client, 443, "10.0.0.2", 9002, None).await;
     let err = store
-        .push_with_sni(
-            client,
-            443,
-            "10.0.0.3".into(),
-            9003,
-            Protocol::Tcp,
-            None,
-        )
+        .push_with_sni(client, 443, "10.0.0.3".into(), 9003, Protocol::Tcp, None)
         .await
         .expect_err("second fallback must refuse");
     assert!(

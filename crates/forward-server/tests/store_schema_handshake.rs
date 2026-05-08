@@ -134,7 +134,7 @@ fn refuses_schema_newer_than_binary() {
         conn.execute(
             "INSERT INTO schema_migrations (version, name, applied_on, checksum) \
              VALUES (?1, 'future_migration', '2099-01-01T00:00:00', 'fake')",
-            rusqlite::params![Store::target_schema_version() as i64 + 1],
+            rusqlite::params![i64::from(Store::target_schema_version()) + 1],
         )
         .unwrap();
     }

@@ -61,8 +61,8 @@ impl SqliteTokenStore {
             let mut out = Vec::new();
             for r in rows {
                 let (name, issued, revoked) = r.map_err(map_rusqlite)?;
-                let client_name = ClientName::new(name).map_err(|e| {
-                    StoreError::Internal { message: format!("client_tokens has invalid client_name: {e}") }
+                let client_name = ClientName::new(name).map_err(|e| StoreError::Internal {
+                    message: format!("client_tokens has invalid client_name: {e}"),
                 })?;
                 let issued_at = parse_ts(&issued)?;
                 let revoked_at = revoked.map(|s| parse_ts(&s)).transpose()?;
@@ -80,7 +80,9 @@ impl SqliteTokenStore {
 fn parse_ts(s: &str) -> Result<DateTime<Utc>, StoreError> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| StoreError::Corruption { detail: format!("bad RFC3339 ts: {e}") })
+        .map_err(|e| StoreError::Corruption {
+            detail: format!("bad RFC3339 ts: {e}"),
+        })
 }
 
 fn store_err_to_auth(e: StoreError) -> AuthError {
@@ -165,7 +167,9 @@ impl Authenticator for SqliteTokenStore {
                     })
                     .map_err(map_rusqlite)?;
                 if exists {
-                    return Err(StoreError::Conflict { detail: "client_already_exists".into() });
+                    return Err(StoreError::Conflict {
+                        detail: "client_already_exists".into(),
+                    });
                 }
                 tx.execute(
                     "INSERT INTO client_tokens (client_name, token_hash, issued_at, revoked_at) \
@@ -246,8 +250,13 @@ mod tests {
     fn verify_rejects_wrong_token() {
         let (_d, s) = fresh();
         s.issue(cn("edge-01")).unwrap();
-        let err = s.verify("not-a-real-token-not-a-real-token-not-a-rea").unwrap_err();
-        assert!(matches!(err, AuthError::Failed(AuthFailureReason::NotFound)));
+        let err = s
+            .verify("not-a-real-token-not-a-real-token-not-a-rea")
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AuthError::Failed(AuthFailureReason::NotFound)
+        ));
     }
 
     #[test]

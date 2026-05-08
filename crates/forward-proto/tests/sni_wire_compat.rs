@@ -1,6 +1,15 @@
 //! Wire-compatibility tests for the additive SNI-routing fields
 //! (009-tls-sni-routing T007..T010, T019).
 //!
+//! Test fixtures intentionally use casts/match shapes that read
+//! cleanly against the wire spec — clippy's pedantic flags that suit
+//! library code don't fit a wire-format walker.
+#![allow(
+    clippy::manual_let_else,
+    clippy::cast_possible_truncation,
+    clippy::wildcard_imports
+)]
+//!
 //! Constitution Principle V gate: byte-identical encoding of a
 //! v0.8-shaped `Rule`, `RuleStats`, and `StatsReport` MUST hold
 //! across this change. The new fields are all `optional` /
@@ -55,13 +64,13 @@ fn has_top_level_field(bytes: &[u8], field_number: u32) -> bool {
                 let (_, m) = decode_varint(&bytes[i..]).expect("malformed varint payload");
                 i += m;
             }
-            1 => i += 8,  // 64-bit
+            1 => i += 8, // 64-bit
             2 => {
                 // length-delimited: varint length + payload
                 let (len, m) = decode_varint(&bytes[i..]).expect("malformed length prefix");
                 i += m + len as usize;
             }
-            5 => i += 4,  // 32-bit
+            5 => i += 4, // 32-bit
             other => panic!("unsupported wire type {other} at offset {i}"),
         }
     }
@@ -161,9 +170,18 @@ fn t008_rule_stats_sni_counters_roundtrip() {
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decodes");
     assert_eq!(decoded, s);
-    assert!(has_top_level_field(&bytes, 13), "field 13 must appear when non-zero");
-    assert!(has_top_level_field(&bytes, 14), "field 14 must appear when non-zero");
-    assert!(has_top_level_field(&bytes, 15), "field 15 must appear when non-zero");
+    assert!(
+        has_top_level_field(&bytes, 13),
+        "field 13 must appear when non-zero"
+    );
+    assert!(
+        has_top_level_field(&bytes, 14),
+        "field 14 must appear when non-zero"
+    );
+    assert!(
+        has_top_level_field(&bytes, 15),
+        "field 15 must appear when non-zero"
+    );
 }
 
 #[test]
@@ -390,8 +408,8 @@ fn t019_proto_field_numbers_match_spec() {
         ("uint64 sni_route_exact_total", "= 13"),
         ("uint64 sni_route_wildcard_total", "= 14"),
         ("uint64 sni_route_fallback_total", "= 15"),
-        ("uint32 listen_port", "= 1"),                // SniListenerStats.listen_port
-        ("uint64 sni_route_miss_total", "= 2"),       // SniListenerStats
+        ("uint32 listen_port", "= 1"), // SniListenerStats.listen_port
+        ("uint64 sni_route_miss_total", "= 2"), // SniListenerStats
         ("uint64 client_hello_parse_failures_total", "= 3"),
         ("repeated SniListenerStats sni_listener_stats", "= 3"),
     ];

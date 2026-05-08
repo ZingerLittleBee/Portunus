@@ -699,9 +699,7 @@ fn validate_sni_pattern(raw: &str) -> Result<String, OperatorError> {
             if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') {
                 return Err(OperatorError::SniValidation {
                     code: "validation.sni_pattern_malformed",
-                    message: format!(
-                        "sni_pattern label `{label}` has illegal character `{ch}`"
-                    ),
+                    message: format!("sni_pattern label `{label}` has illegal character `{ch}`"),
                 });
             }
         }

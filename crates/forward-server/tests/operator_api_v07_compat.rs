@@ -12,9 +12,9 @@ use axum::http::{Method, Request, StatusCode};
 use forward_server::clients::ConnectedClients;
 use forward_server::operator::http;
 use forward_server::state::AppState;
-use forward_server::store::{Store, audit_writer};
 use forward_server::store::operator_store::SqliteOperatorStore;
 use forward_server::store::token_store::SqliteTokenStore;
+use forward_server::store::{Store, audit_writer};
 use prometheus::{Gauge, IntCounter};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -22,7 +22,13 @@ use tower::ServiceExt;
 
 const SUPER: &str = "T038-super";
 
-fn build() -> (axum::Router, Arc<AppState>, String, TempDir, CancellationToken) {
+fn build() -> (
+    axum::Router,
+    Arc<AppState>,
+    String,
+    TempDir,
+    CancellationToken,
+) {
     let dir = TempDir::new().unwrap();
     let sqlite = Arc::new(Store::open(dir.path()).unwrap());
     let tokens = Arc::new(SqliteTokenStore::new(sqlite.clone()));

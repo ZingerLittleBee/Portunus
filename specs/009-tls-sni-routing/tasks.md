@@ -248,7 +248,7 @@ Bench home:
 - [ ] T089 [P] Operator API regression bench — `crates/forward-server/benches/operator_api.rs` (existing). Assert the rule-push path is within 5 % of the v0.8 baseline despite the new overlap-matrix walk.
 - [x] T090 CHANGELOG entry under `# 0.9.0` documenting: SNI routing, capability gate, additive proto fields, additive SQL migration, no breaking changes. Reference the spec / plan file paths.
 - [x] T091 Bump workspace version in `Cargo.toml` and `crates/*/Cargo.toml` from `0.8.0` to `0.9.0`. Validate `CHANGELOG.md` entry exists (use the project's `release-version` skill if available).
-- [ ] T092 Final audit — run `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`, `cargo bench --workspace -- --quick` — record the green run in the PR description before merging to `main`.
+- [x] T092 Final audit — run `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`, `cargo bench --workspace -- --quick` — record the green run in the PR description before merging to `main`.
 
 ---
 

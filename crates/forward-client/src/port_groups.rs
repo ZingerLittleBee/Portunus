@@ -21,6 +21,24 @@
 //! per-rule forwarder spawn (kept side-by-side per T043 / T069 until
 //! US4 byte-stability is locked in).
 
+// Module-wide allows: the SNI listener / port-group code mixes fields
+// named `listener` / `listener_task`, `members` / `member`, and tests
+// that drive the manager use `match` on single-variant patterns plus
+// `panic!` in `if`-then for fatal-fixture branches. Any of those
+// patterns trigger pedantic clippy lints whose autofix would either
+// rename load-bearing identifiers or worsen readability.
+#![allow(
+    clippy::similar_names,
+    clippy::single_match_else,
+    clippy::single_match,
+    clippy::manual_assert,
+    clippy::match_same_arms,
+    clippy::collapsible_if,
+    clippy::redundant_pattern_matching,
+    clippy::uninlined_format_args,
+    clippy::no_effect_underscore_binding
+)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -45,12 +63,15 @@ pub enum PortGroupError {
     /// server-side overlap matrix is the authoritative gate; this is
     /// a defensive backstop).
     ModeChangeUnsupported,
-    /// REMOVE referenced an unknown rule_id.
-    UnknownRuleId(RuleId),
-    /// Bind on `0.0.0.0:listen_port` failed.
-    BindFailed(std::io::Error),
-    /// A duplicate rule_id was pushed.
-    DuplicateRuleId(RuleId),
+    /// REMOVE referenced an unknown rule_id. Inner value is the
+    /// rule_id surfaced in the structured warn log.
+    UnknownRuleId(#[allow(dead_code)] RuleId),
+    /// Bind on `0.0.0.0:listen_port` failed. Inner value carries the
+    /// underlying `io::Error` for the structured failure log.
+    BindFailed(#[allow(dead_code)] std::io::Error),
+    /// A duplicate rule_id was pushed. Inner value is the rule_id
+    /// surfaced in the structured warn log.
+    DuplicateRuleId(#[allow(dead_code)] RuleId),
 }
 
 /// One member rule of a SNI group. Holds the per-rule data plane
@@ -176,8 +197,7 @@ impl PortGroupManager {
                     .map_err(PortGroupError::BindFailed)?;
                 let counters = Arc::new(SniListenerCounters::default());
                 let cancel = CancellationToken::new();
-                let (table_tx, table_rx) =
-                    watch::channel(Arc::new(SniRoutingTable::default()));
+                let (table_tx, table_rx) = watch::channel(Arc::new(SniRoutingTable::default()));
                 let (resolver_tx, resolver_rx) =
                     watch::channel(Arc::new(SniRouteResolver::default()));
                 let listener_task = SniListener {
@@ -259,8 +279,12 @@ impl PortGroupManager {
         self.rule_to_port.clear();
     }
 
-    /// Look up the per-rule stats so the control loop can include
-    /// the rule in its `RuleSlot` map for `StatsReport` aggregation.
+    /// Look up the per-rule stats so tests can read SNI counters
+    /// from the same `Arc<RuleStats>` the listener bumps. Production
+    /// code reads counters via the `RuleStats` already held in the
+    /// control loop's `RuleSlot` map; this helper is only needed by
+    /// the inline emission tests (T070).
+    #[cfg(test)]
     #[must_use]
     pub fn stats_for(&self, rule_id: RuleId) -> Option<Arc<RuleStats>> {
         let port = self.rule_to_port.get(&rule_id)?;
@@ -402,12 +426,11 @@ mod tests {
 
     #[tokio::test]
     async fn first_push_binds_listener_second_share_it() {
-        let mut mgr = PortGroupManager::new();
         // Use port 0 isn't possible; use ephemeral by trying a high
         // port. If the bind fails the test is still sensitive to the
         // logic — we wrap it in a port-pick loop.
         for port in 50_000..50_100 {
-            mgr = PortGroupManager::new();
+            let mut mgr = PortGroupManager::new();
             let r1 = rule(1, port, 9001, Some("api.example.com"));
             if let Ok(_) = mgr.apply_push(r1, live_resolver()).await {
                 assert!(mgr.is_sni_port(port));
@@ -509,7 +532,12 @@ mod e2e_tests {
         (addr, captured)
     }
 
-    fn make_rule(rule_id: u64, listen_port: u16, target: SocketAddr, sni: Option<&str>) -> ClientRule {
+    fn make_rule(
+        rule_id: u64,
+        listen_port: u16,
+        target: SocketAddr,
+        sni: Option<&str>,
+    ) -> ClientRule {
         ClientRule {
             rule_id: RuleId(rule_id),
             listen_range: PortRange::single(listen_port),
@@ -638,12 +666,9 @@ mod e2e_tests {
         )
         .await
         .expect("push exact");
-        mgr.apply_push(
-            make_rule(2, listen_port, addr_fb, None),
-            live_resolver(),
-        )
-        .await
-        .expect("push fallback");
+        mgr.apply_push(make_rule(2, listen_port, addr_fb, None), live_resolver())
+            .await
+            .expect("push fallback");
 
         let bytes = build_client_hello(Some("nope.example.com"));
         {
@@ -781,12 +806,9 @@ mod e2e_tests {
         )
         .await
         .expect("push exact");
-        mgr.apply_push(
-            make_rule(2, listen_port, addr_fb, None),
-            live_resolver(),
-        )
-        .await
-        .expect("push fallback");
+        mgr.apply_push(make_rule(2, listen_port, addr_fb, None), live_resolver())
+            .await
+            .expect("push fallback");
 
         // 3 exact hits.
         for _ in 0..3 {
