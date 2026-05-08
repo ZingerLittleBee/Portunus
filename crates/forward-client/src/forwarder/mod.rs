@@ -17,6 +17,7 @@
 //! shares the SAME `proxy_cancel` so the existing drain semantics
 //! apply uniformly to range and single-port rules.
 
+pub mod failover;
 pub mod proxy;
 pub mod range;
 pub mod stats;
