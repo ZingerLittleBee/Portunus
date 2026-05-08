@@ -248,6 +248,45 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
+    /// Take a snapshot of the SQLite store (008-sqlite-storage T062).
+    /// Refuses to overwrite an existing file. If `--out` points at a
+    /// directory, writes `forward-state-<RFC3339>.db` inside it.
+    Backup {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Restore from a backup artefact (008-sqlite-storage T063).
+    /// Refuses to clobber a non-empty data-dir without `--force`.
+    Restore {
+        #[arg(long)]
+        r#in: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Wipe the SQLite store (008-sqlite-storage T064). Verifies the
+    /// target file looks like a SQLite database first so a typo'd
+    /// `--data-dir` cannot delete arbitrary files.
+    Reset {
+        /// Required to actually proceed; without it, `reset` is a
+        /// dry-run that prints the path it would remove.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Audit-table maintenance subcommands (008-sqlite-storage T076).
+    #[command(subcommand)]
+    Audit(AuditCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditCmd {
+    /// Delete audit rows older than `--before <RFC3339>`. Pass
+    /// `--dry-run` to print the count without mutating the store.
+    Prune {
+        #[arg(long)]
+        before: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -372,8 +411,11 @@ fn run(cli: Cli) -> Result<(), u8> {
                 eprintln!("config dir: {e}");
                 1u8
             })?;
-            let identity_path = config_dir.join("identity.json");
-            let code = bootstrap::bootstrap_superadmin(&identity_path, &name);
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                eprintln!("data dir: {e}");
+                1u8
+            })?;
+            let code = bootstrap::bootstrap_superadmin(&data_dir, &name);
             if code == 0 { Ok(()) } else { Err(code) }
         }
         Cmd::GenToken => {
@@ -459,6 +501,85 @@ fn run(cli: Cli) -> Result<(), u8> {
             format,
             http_endpoint,
         } => identity_cli::grant_revoke(&http_endpoint, &grant_id, format),
+        Cmd::Backup { out } => match forward_server::store::backup::run_backup(&data_dir, &out) {
+            Ok(written) => {
+                println!("backup={}", written.display());
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                Err(e.exit_code())
+            }
+        },
+        Cmd::Restore { r#in, force } => {
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                eprintln!("data dir: {e}");
+                1u8
+            })?;
+            match forward_server::store::backup::run_restore(&r#in, &data_dir, force) {
+                Ok(()) => {
+                    println!("restore=ok data_dir={}", data_dir.display());
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Err(e.exit_code())
+                }
+            }
+        }
+        Cmd::Audit(AuditCmd::Prune { before, dry_run }) => {
+            let cutoff = match chrono::DateTime::parse_from_rfc3339(&before) {
+                Ok(dt) => dt.with_timezone(&chrono::Utc),
+                Err(e) => {
+                    eprintln!("error: --before must be RFC3339: {e}");
+                    return Err(3);
+                }
+            };
+            let store = match forward_server::store::Store::open(&data_dir) {
+                Ok(s) => std::sync::Arc::new(s),
+                Err(e) => {
+                    eprintln!("error: open store: {e:?}");
+                    return Err(1);
+                }
+            };
+            if dry_run {
+                match store.audit_prune_count(cutoff) {
+                    Ok(n) => {
+                        println!("audit_prune dry_run=true would_delete={n}");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        Err(1)
+                    }
+                }
+            } else {
+                match store.audit_prune_apply(cutoff) {
+                    Ok(n) => {
+                        println!("audit_prune deleted={n}");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        Err(1)
+                    }
+                }
+            }
+        }
+        Cmd::Reset { confirm } => {
+            if !confirm {
+                println!("would remove: {}", data_dir.join("state.db").display());
+                println!("dry-run: pass --confirm to proceed");
+                return Ok(());
+            }
+            match forward_server::store::backup::run_reset(&data_dir) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Err(e.exit_code())
+                }
+            }
+        }
     }
 }
 

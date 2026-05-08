@@ -6,9 +6,10 @@
 //! scheme (e.g., adding mTLS later) means writing a new `Authenticator`
 //! impl, not touching `forward-server` or `forward-client`.
 
-pub mod file_store;
-pub mod operator_store;
+pub mod store_types;
 pub mod token;
+
+pub use store_types::{IdentityStoreError, ProvisionedClient, UserRemoveSummary};
 
 use std::fmt;
 
@@ -510,7 +511,7 @@ pub trait OperatorAuthenticator: Send + Sync + 'static {
 
 mod hash_hex {
     //! Serde adapter for `[u8; 32]` ↔ 64-char lowercase hex.
-    //! Mirrors the `token_hash` encoding used by `file_store::TokenRecordWire`.
+    //! Mirrors the hex(blake3) encoding the v0.7 `file_store` used.
     use forward_core::fingerprint;
     use serde::{Deserialize, Deserializer, Serializer};
 

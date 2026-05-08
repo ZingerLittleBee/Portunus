@@ -13,8 +13,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use forward_auth::{
-    AuthError, AuthFailureReason, Authenticator, ClientIdentity, file_store::ProvisionedClient,
-    token,
+    AuthError, AuthFailureReason, Authenticator, ClientIdentity, ProvisionedClient, token,
 };
 use forward_core::{ClientName, fingerprint};
 

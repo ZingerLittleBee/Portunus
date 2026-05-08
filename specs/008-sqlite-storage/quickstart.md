@@ -51,11 +51,10 @@ exposes `$STATE_DIRECTORY=/var/lib/forward-rs` to the process.
 Bootstrap the first superadmin (one-time):
 
 ```bash
-sudo -u forward-rs forward-server bootstrap-superadmin \
+sudo -u forward-rs forward-server \
     --config-dir /etc/forward-rs \
     --data-dir   /var/lib/forward-rs \
-    --user-id    root-admin \
-    --display-name 'Initial admin'
+    bootstrap-superadmin --name 'Initial admin'
 # Prints the freshly issued bearer token to stdout.
 # Save it — it is shown only once.
 ```
@@ -84,8 +83,7 @@ cargo build --release -p forward-server -p forward-client
 Defaults are XDG-aligned, so no flags needed:
 
 ```bash
-./target/release/forward-server bootstrap-superadmin --user-id me \
-    --display-name 'Dev admin'
+./target/release/forward-server bootstrap-superadmin --name 'Dev admin'
 # Token printed once; copy it.
 
 ./target/release/forward-server serve
@@ -252,8 +250,8 @@ Regenerate fixtures (if you change a migration):
 
 ```bash
 cargo run -p forward-server --bin forward-server -- \
-    bootstrap-superadmin --user-id seeded --display-name Seed \
-    --data-dir tests/fixtures/seeded
+    --data-dir tests/fixtures/seeded \
+    bootstrap-superadmin --name Seed
 # Then commit tests/fixtures/seeded/state.db.
 ```
 

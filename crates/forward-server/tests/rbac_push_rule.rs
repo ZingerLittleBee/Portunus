@@ -17,7 +17,6 @@
 //! pure in-process test cannot stand up. The existing v0.4 e2e suite
 //! (now bearer-authed) covers that with a real client.
 
-use rusqlite;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};

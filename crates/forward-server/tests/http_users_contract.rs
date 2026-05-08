@@ -93,6 +93,37 @@ async fn post_users_happy_path_creates_user() {
 }
 
 #[tokio::test]
+async fn post_users_duplicate_returns_409_user_already_exists() {
+    // 008-sqlite-storage T047: SqliteOperatorStore turns the duplicate
+    // into StoreError::Conflict → IdentityStoreError::UserAlreadyExists →
+    // RbacError::UserAlreadyExists → HTTP 409 with stable error.code.
+    let (router, _d) = build_router();
+    let resp = router
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({"user_id": "alice", "display_name": "Alice"}),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = router
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({"user_id": "alice", "display_name": "Alice"}),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"]["code"], "user_already_exists");
+}
+
+#[tokio::test]
 async fn post_users_rejects_invalid_id_with_422() {
     let (router, _d) = build_router();
     for bad in ["Alice", "1alice", "_admin", ""] {

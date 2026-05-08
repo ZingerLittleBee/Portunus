@@ -12,6 +12,19 @@
 //! - `backup.rs`: Online Backup API wrapper (T060..T061).
 //! - `migrations/V###__*.sql`: refinery embedded migrations.
 
+// rusqlite returns i64 for every column type, so the SQLite store
+// surface unavoidably casts between i64 and usize/u32/u16/u8 when
+// projecting into domain types. Pedantic cast lints are not actionable
+// in this seam — the upstream constraint is the SQLite type system.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::must_use_candidate
+)]
+
 pub mod audit_query;
 pub mod audit_writer;
 pub mod backup;
@@ -154,7 +167,7 @@ impl Store {
         let target_version = embedded::migrations::runner()
             .get_migrations()
             .iter()
-            .map(|m| m.version())
+            .map(refinery::Migration::version)
             .max()
             .unwrap_or(0);
         let head_before = read_head_version(&conn).unwrap_or(0);
@@ -253,7 +266,7 @@ impl Store {
         embedded::migrations::runner()
             .get_migrations()
             .iter()
-            .map(|m| m.version())
+            .map(refinery::Migration::version)
             .max()
             .unwrap_or(0)
     }
@@ -323,7 +336,7 @@ fn classify_open_error(path: &Path, e: rusqlite::Error) -> BootError {
                 source: e,
             }
         }
-        _ => BootError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())),
+        _ => BootError::Io(io::Error::other(e.to_string())),
     }
 }
 

@@ -22,3 +22,33 @@ export function useAuditLog(query: AuditQuery = {}) {
     staleTime: 2_500,
   });
 }
+
+// 008-sqlite-storage T077: envelope mode for historic scroll-back.
+// The server responds with `{ entries, next_cursor?, count }` whenever
+// any of `since` / `until` / `cursor` is present. v0.7 array-root path
+// (above) is preserved for the live tail.
+
+export interface AuditEnvelopeQuery {
+  limit?: number;
+  outcome?: "allow" | "deny";
+  since?: string;
+  until?: string;
+  cursor?: string;
+}
+
+export interface AuditEnvelope {
+  entries: AuditEntry[];
+  next_cursor?: string;
+  count: number;
+}
+
+export async function fetchAuditEnvelope(query: AuditEnvelopeQuery): Promise<AuditEnvelope> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.outcome) params.set("outcome", query.outcome);
+  if (query.since) params.set("since", query.since);
+  if (query.until) params.set("until", query.until);
+  if (query.cursor) params.set("cursor", query.cursor);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch<AuditEnvelope>(`/v1/audit${suffix}`);
+}

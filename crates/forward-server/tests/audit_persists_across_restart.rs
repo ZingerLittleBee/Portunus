@@ -117,8 +117,8 @@ async fn audit_entries_survive_repeated_open_close_cycles() {
 
     for cycle in 0..5 {
         let store = Arc::new(Store::open(dir.path()).unwrap_or_else(|e| panic!("open cycle {cycle}: {e}")));
-        let drops = IntCounter::new(&format!("t_drops_{cycle}"), "test").unwrap();
-        let lag = Gauge::new(&format!("t_lag_{cycle}"), "test").unwrap();
+        let drops = IntCounter::new(format!("t_drops_{cycle}"), "test").unwrap();
+        let lag = Gauge::new(format!("t_lag_{cycle}"), "test").unwrap();
         let cancel = CancellationToken::new();
         let handle = audit_writer::spawn(Arc::clone(&store), drops, lag, cancel.clone());
 

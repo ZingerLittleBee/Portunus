@@ -7,7 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(no changes since v0.7.0)
+(no changes since v0.8.0)
+
+## [0.8.0] — 2026-05-08
+
+SQLite-storage release (008). Collapses every server-side persistent
+JSON file (`tokens.json`, `identity.json`, `rules.json`) and the
+in-memory audit ring buffer into one embedded SQLite database at
+`<data-dir>/state.db`. Single-binary deployment unchanged; closes the
+constitution-level `TODO(STORAGE_CHOICE)`. Forwarding hot path (TCP /
+UDP fast paths, wire protocol) and the auth seam are untouched.
+
+### Added (008-sqlite-storage)
+
+- **SQLite store** — bundled `rusqlite` (no system libsqlite3 dependency)
+  with WAL mode and `BEGIN IMMEDIATE` write transactions; `r2d2` pool
+  fronting every read; refinery-managed migrations. Schema lives under
+  `crates/forward-server/migrations/` and is verified at startup.
+- **`--data-dir` flag** — separate from `--config-dir` so operators can
+  move state to a dedicated volume. Defaults to
+  `$XDG_STATE_HOME/forward-rs` (or `$HOME/.local/state/forward-rs`) per
+  FHS.
+- **`backup` subcommand** — `forward-server backup --out <PATH>` runs
+  the SQLite Online Backup API (`rusqlite::backup::Backup`) so snapshots
+  are WAL-aware and consistent without quiescing writers. Refuses to
+  overwrite an existing destination.
+- **`restore` subcommand** — `forward-server restore --in <PATH>
+  [--force]` validates the SQLite header magic, refuses to clobber a
+  non-empty data dir without `--force`, copies the artefact in, and runs
+  the regular schema-version handshake. Backups whose schema is newer
+  than the binary's target version exit `78` with event
+  `startup.schema_version_too_new` (FR-014).
+- **`reset` subcommand** — `forward-server reset --confirm` removes the
+  state DB plus its sidecar `-wal` / `-shm` files. Without `--confirm`
+  prints a dry-run summary. Refuses to operate on a path that doesn't
+  start with the SQLite header — protects against typo'd `--data-dir`
+  (R-011).
+- **Audit envelope mode** — `GET /v1/audit?since=<RFC3339>&until=<RFC3339>
+  &cursor=<base64>&limit=N` returns `{ entries, next_cursor?, count }`
+  instead of the v0.7 array root, enabling cursor-based historic
+  scroll-back over the durable audit table. v0.7 callers (no
+  `since` / `until` / `cursor`) keep getting the array root unchanged —
+  byte-stable per FR-008.
+- **`audit prune` subcommand** — `forward-server audit prune --before
+  <RFC3339> [--dry-run]` deletes audit rows older than the cutoff under
+  `BEGIN IMMEDIATE` then runs `PRAGMA incremental_vacuum`; `--dry-run`
+  reports the count without mutating.
+- **`forward-client --bundle` is now optional (FR-020)** — when omitted
+  the client searches `$FORWARD_CLIENT_BUNDLE` →
+  `$XDG_CONFIG_HOME/forward-rs/client.bundle.json` →
+  `$HOME/.config/forward-rs/client.bundle.json` →
+  `./client.bundle.json` and exits `1` listing every attempted path
+  when none resolve.
+- **Web UI audit page** — adds a "Load earlier" button that pages
+  through history via the new envelope cursor. Live tail (`limit=100`,
+  no extra params) keeps the existing 5-second poll.
+
+### Changed
+
+- **State persistence** — every former JSON file is now a SQLite table:
+  `users`, `credentials`, `grants`, `rule_targets`, `audit`. Trait
+  seams (`OperatorIdentityStore`, `OperatorTokenStore`) are unchanged
+  so v0.7 call sites keep compiling.
+- **Audit retention** — durable storage replaces the in-memory ring;
+  size is bounded by the new prune CLI rather than a fixed in-memory
+  cap. The `audit` page live tail is unaffected.
+- **Grant lookup** — moved into a single SQL `SELECT` joined on
+  `credentials`, indexed on `(client_id, port, protocol)` to remain
+  timing-independent of user presence vs absence (Constitution
+  Principle V; verified by `grant_lookup_timing` integration test, 5×
+  ratio assertion).
+
+### Removed
+
+- `crates/forward-auth/src/file_store.rs` and
+  `crates/forward-auth/src/operator_store.rs` — JSON persistence is
+  retired. The cross-cutting types (`IdentityStoreError`,
+  `UserRemoveSummary`, `ProvisionedClient`) live in
+  `forward-auth::store_types`.
+- `tokens.json` / `identity.json` / `rules.json` artefacts. Cold start
+  on a clean checkout writes only `state.db`.
+
+### Migration
+
+This is a clean-slate schema — there is no upgrade path from a
+deployment that wrote v0.7 JSON files. The project is not yet deployed
+in production, so v0.7 → v0.8 expects a fresh `--data-dir`.
 
 ## [0.7.0] — 2026-05-08
 

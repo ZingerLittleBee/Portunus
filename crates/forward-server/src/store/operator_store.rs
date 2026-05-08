@@ -13,11 +13,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use forward_auth::operator_store::{IdentityStoreError, UserRemoveSummary};
 use forward_auth::{
     ActiveTag, ClientScope, Credential, CredentialId, CredentialStatus, Grant, GrantId,
-    OperatorAuthenticator, OperatorIdentity, OperatorRole, ProtocolSet, RbacError, RevokedDetails,
-    User, UserId, token::hash_token,
+    IdentityStoreError, OperatorAuthenticator, OperatorIdentity, OperatorRole, ProtocolSet,
+    RbacError, RevokedDetails, User, UserId, UserRemoveSummary, token::hash_token,
 };
 use forward_core::{ClientName, fingerprint};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -124,33 +123,30 @@ impl SqliteOperatorStore {
         self.store
             .with_conn(|c| {
                 let mut out = Vec::new();
-                match user_filter {
-                    Some(uid) => {
-                        let mut stmt = c
-                            .prepare(
-                                "SELECT grant_id, user_id, client, listen_port_start, listen_port_end, \
-                                        protocols, note, created_at FROM grants WHERE user_id = ? \
-                                 ORDER BY grant_id ASC",
-                            )
-                            .map_err(map_rusqlite)?;
-                        let rows = stmt
-                            .query_map(params![uid.as_str()], row_to_grant)
-                            .map_err(map_rusqlite)?;
-                        for r in rows {
-                            out.push(r.map_err(map_rusqlite)?);
-                        }
+                if let Some(uid) = user_filter {
+                    let mut stmt = c
+                        .prepare(
+                            "SELECT grant_id, user_id, client, listen_port_start, listen_port_end, \
+                                    protocols, note, created_at FROM grants WHERE user_id = ? \
+                             ORDER BY grant_id ASC",
+                        )
+                        .map_err(map_rusqlite)?;
+                    let rows = stmt
+                        .query_map(params![uid.as_str()], row_to_grant)
+                        .map_err(map_rusqlite)?;
+                    for r in rows {
+                        out.push(r.map_err(map_rusqlite)?);
                     }
-                    None => {
-                        let mut stmt = c
-                            .prepare(
-                                "SELECT grant_id, user_id, client, listen_port_start, listen_port_end, \
-                                        protocols, note, created_at FROM grants ORDER BY grant_id ASC",
-                            )
-                            .map_err(map_rusqlite)?;
-                        let rows = stmt.query_map([], row_to_grant).map_err(map_rusqlite)?;
-                        for r in rows {
-                            out.push(r.map_err(map_rusqlite)?);
-                        }
+                } else {
+                    let mut stmt = c
+                        .prepare(
+                            "SELECT grant_id, user_id, client, listen_port_start, listen_port_end, \
+                                    protocols, note, created_at FROM grants ORDER BY grant_id ASC",
+                        )
+                        .map_err(map_rusqlite)?;
+                    let rows = stmt.query_map([], row_to_grant).map_err(map_rusqlite)?;
+                    for r in rows {
+                        out.push(r.map_err(map_rusqlite)?);
                     }
                 }
                 Ok(out)
@@ -173,14 +169,6 @@ impl SqliteOperatorStore {
                 Ok(row)
             })
             .unwrap_or(None)
-    }
-
-    /// Compatibility shim for the v0.7 `FileOperatorStore::reload_from_disk`.
-    /// In SQLite mode every read pulls fresh state, so this is a no-op.
-    /// Kept so existing test scaffolding that simulated SIGHUP-style
-    /// reloads continues to compile until those tests are reworked.
-    pub fn reload_from_disk(&self) -> Result<(), IdentityStoreError> {
-        Ok(())
     }
 
     pub fn count_superadmins(&self) -> usize {

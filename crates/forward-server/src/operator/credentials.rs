@@ -16,7 +16,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use forward_auth::operator_store::IdentityStoreError;
+use forward_auth::IdentityStoreError;
 use forward_auth::{
     Credential, CredentialId, CredentialStatus, OperatorIdentity, OperatorRole, RbacError, UserId,
 };

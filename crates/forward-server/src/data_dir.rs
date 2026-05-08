@@ -56,20 +56,20 @@ where
     if let Some(p) = opt {
         return p;
     }
-    if let Some(state_dir) = get("STATE_DIRECTORY") {
-        if !state_dir.is_empty() {
-            return PathBuf::from(state_dir);
-        }
+    if let Some(state_dir) = get("STATE_DIRECTORY")
+        && !state_dir.is_empty()
+    {
+        return PathBuf::from(state_dir);
     }
-    if let Some(xdg) = get("XDG_STATE_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join(APP_NAME);
-        }
+    if let Some(xdg) = get("XDG_STATE_HOME")
+        && !xdg.is_empty()
+    {
+        return PathBuf::from(xdg).join(APP_NAME);
     }
-    if let Some(home) = get("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join(".local/state").join(APP_NAME);
-        }
+    if let Some(home) = get("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home).join(".local/state").join(APP_NAME);
     }
     PathBuf::from("./forward-rs.state")
 }
@@ -117,13 +117,13 @@ pub fn probe_fs_class(path: &Path) -> FsClass {
 }
 
 #[cfg(target_os = "macos")]
+#[must_use]
 pub fn probe_fs_class(path: &Path) -> FsClass {
     use nix::sys::statfs::statfs;
 
     let probe_target = nearest_existing_ancestor(path);
-    let stat = match statfs(probe_target.as_path()) {
-        Ok(s) => s,
-        Err(_) => return FsClass::Unknown,
+    let Ok(stat) = statfs(probe_target.as_path()) else {
+        return FsClass::Unknown;
     };
     let name = stat.filesystem_type_name().to_ascii_lowercase();
     match name.as_str() {

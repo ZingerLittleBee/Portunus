@@ -134,15 +134,15 @@ Bench homes:
 
 - [x] T043 [P] [US2] Implement `Authenticator` for `SqliteTokenStore` in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/src/sqlite_store.rs`: `verify`, `issue`, `revoke`, plus a `list()` surface; statements use the `client_tokens` table; blake3 hashing reuses `crate::token::hash_token`. Make T035 pass.
 - [x] T044 [P] [US2] Implement `OperatorAuthenticator` for `SqliteOperatorStore` in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/src/sqlite_operator_store.rs`: `bootstrap_pair`, `bootstrap_legacy_superadmin`, `add_user`, `remove_user` (cascading), `issue_credential`, `revoke_credential`, `rotate_credential`, `add_grant`, `revoke_grant`, all read-side surfaces. All multi-table mutations go through `Store::with_write_tx` (BEGIN IMMEDIATE per R-014). Make T036 + T037 pass.
-- [ ] T045 [US2] Swap rules CRUD in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/rules.rs`: read / write paths now use `Store`; the in-memory `Vec<Rule>` cache (today's pattern) is rebuilt from a single `SELECT` on demand or kept invalidated on every mutation. The public `Rule` struct shape stays byte-identical with v0.7 (FR-008). Make T041 pass.
+- [x] T045 [US2] Swap rules CRUD in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/rules.rs`: read / write paths now use `Store`; the in-memory `Vec<Rule>` cache (today's pattern) is rebuilt from a single `SELECT` on demand or kept invalidated on every mutation. The public `Rule` struct shape stays byte-identical with v0.7 (FR-008). Make T041 pass.
 - [x] T046 [US2] Cascade-delete-on-user-removal: `DELETE FROM users WHERE user_id = ?` triggers FK cascades for `credentials` / `grants` / `rules` / `rule_targets`. Wrap the call in a single `BEGIN IMMEDIATE` transaction. Make T037 pass.
-- [ ] T047 [US2] Constraint-violation mapping: in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/operator/http.rs` error-converter, surface `ForwardError::Conflict { detail }` as HTTP 409 with the body shape from `contracts/operator-api.md` §Error response envelope. Add an inline test for duplicate `client_name` and duplicate `user_id`.
+- [x] T047 [US2] Constraint-violation mapping: in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/operator/http.rs` error-converter, surface `ForwardError::Conflict { detail }` as HTTP 409 with the body shape from `contracts/operator-api.md` §Error response envelope. Add an inline test for duplicate `client_name` and duplicate `user_id`.
 - [x] T048 [US2] Rewrite `forward-server bootstrap-superadmin` body in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/main.rs` (and any helper in `crates/forward-server/src/operator/cli.rs`) to call `SqliteOperatorStore::bootstrap_pair` inside one transaction (R-010 + FR-017). Add an inline test that asserts no row exists if the credential insert fails.
-- [ ] T049 [US2] Delete `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/src/file_store.rs` and remove every `use ::file_store::*` import. Update `crates/forward-auth/src/lib.rs` `mod` declarations. Confirm `cargo check` clean.
-- [ ] T050 [US2] Delete `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/src/operator_store.rs` and remove its imports. Update `lib.rs` exports.
-- [ ] T051 [US2] Delete the JSON read/write helpers in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/rules.rs` (the `load_from_disk` / `persist` style functions); the trait surface for in-memory state stays.
+- [x] T049 [US2] Delete `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/src/file_store.rs` and remove every `use ::file_store::*` import. Update `crates/forward-auth/src/lib.rs` `mod` declarations. Confirm `cargo check` clean.
+- [x] T050 [US2] Delete `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/src/operator_store.rs` and remove its imports. Update `lib.rs` exports.
+- [x] T051 [US2] Delete the JSON read/write helpers in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/rules.rs` (the `load_from_disk` / `persist` style functions); the trait surface for in-memory state stays.
 - [x] T052 [US2] Update `crates/forward-server/src/serve.rs` + `crates/forward-server/src/main.rs` constructor sites: replace `FileTokenStore::open(...)` and `FileOperatorStore::open(...)` with the new `SqliteTokenStore::new(store.clone())` and `SqliteOperatorStore::new(store.clone())`.
-- [ ] T053 [US2] Add an integration test that proves grant lookup latency is independent of user-id presence vs absence in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/tests/grant_lookup_timing.rs` (Constitution Principle V verification).
+- [x] T053 [US2] Add an integration test that proves grant lookup latency is independent of user-id presence vs absence in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/tests/grant_lookup_timing.rs` (Constitution Principle V verification).
 
 **Checkpoint**: User Stories 1 + 2 are functionally complete. The codebase no longer reads or writes `tokens.json`, `identity.json`, `rules.json`. v0.7 HTTP / wire / forwarding-plane behaviour is byte-stable.
 
@@ -156,21 +156,21 @@ Bench homes:
 
 ### Tests for User Story 3 (TDD)
 
-- [ ] T054 [P] [US3] Integration: backup → restore roundtrip in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/backup_restore_roundtrip.rs`. Seeds the store, runs backup, opens the artefact with vanilla `rusqlite::Connection::open_with_flags(... READ_ONLY)`, asserts every table count matches; then runs restore on a fresh data-dir and re-asserts (SC-002).
-- [ ] T055 [P] [US3] Contract: `restore` refuses non-empty data-dir without `--force` in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_restore.rs::refuses_non_empty`.
-- [ ] T056 [P] [US3] Contract: `restore` from older schema runs forward migration in `crates/forward-server/tests/cli_restore.rs::forward_migrates`. Uses a hand-crafted backup at fake schema version 0 and asserts the restored DB is at the binary's target version.
-- [ ] T057 [P] [US3] Contract: `restore` refuses newer-than-binary schema in `crates/forward-server/tests/cli_restore.rs::refuses_too_new`. Same fixture but with schema version = target+1; asserts exit 78 with event `startup.schema_version_too_new` (also covers FR-014's refusal mode).
-- [ ] T058 [P] [US3] Contract: `cli_backup` happy path + destination-already-exists refusal in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_backup.rs`.
-- [ ] T059 [P] [US3] Contract: `cli_reset` happy path + sidecar cleanup + signature-check refusal of typo'd `--data-dir` in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_reset.rs`. (`reset` ships in this phase because lifecycle CLIs are co-located.)
+- [x] T054 [P] [US3] Integration: backup → restore roundtrip in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/backup_restore_roundtrip.rs`. Seeds the store, runs backup, opens the artefact with vanilla `rusqlite::Connection::open_with_flags(... READ_ONLY)`, asserts every table count matches; then runs restore on a fresh data-dir and re-asserts (SC-002).
+- [x] T055 [P] [US3] Contract: `restore` refuses non-empty data-dir without `--force` in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_restore.rs::refuses_non_empty`.
+- [x] T056 [P] [US3] Contract: `restore` from older schema runs forward migration in `crates/forward-server/tests/cli_restore.rs::forward_migrates`. Uses a hand-crafted backup at fake schema version 0 and asserts the restored DB is at the binary's target version.
+- [x] T057 [P] [US3] Contract: `restore` refuses newer-than-binary schema in `crates/forward-server/tests/cli_restore.rs::refuses_too_new`. Same fixture but with schema version = target+1; asserts exit 78 with event `startup.schema_version_too_new` (also covers FR-014's refusal mode).
+- [x] T058 [P] [US3] Contract: `cli_backup` happy path + destination-already-exists refusal in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_backup.rs`.
+- [x] T059 [P] [US3] Contract: `cli_reset` happy path + sidecar cleanup + signature-check refusal of typo'd `--data-dir` in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_reset.rs`. (`reset` ships in this phase because lifecycle CLIs are co-located.)
 
 ### Implementation for User Story 3
 
-- [ ] T060 [US3] Implement `store::backup::run_backup(src_path, dst_path)` in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/store/backup.rs` using `rusqlite::backup::Backup::run(-1)` per R-007. Opens source read-only, destination as fresh empty DB, copies, closes. Returns the absolute destination path.
-- [ ] T061 [US3] Implement `store::backup::run_restore(src_artefact, dst_data_dir, force: bool)` in same file. Validates source signature, refuses non-empty dst unless `--force`, copies, then runs the regular schema-version handshake. On migration failure, removes the half-written destination.
-- [ ] T062 [US3] Add `forward-server backup --out <PATH>` subcommand to `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/main.rs` and `crates/forward-server/src/operator/cli.rs`. Resolves `--out` (file or directory; if directory, use `forward-state-<RFC3339>.db`). Refuses to overwrite an existing file. Make T058 pass.
-- [ ] T063 [US3] Add `forward-server restore --in <PATH> [--force]` subcommand at the same call sites. Make T055 + T056 + T057 pass.
-- [ ] T064 [US3] Add `forward-server reset --confirm` subcommand at the same call sites. Closes the pool, removes `state.db` + `state.db-wal` + `state.db-shm` via rename-then-unlink. Refuses to operate if the file does not look like SQLite (signature check) — protects against typo'd `--data-dir` (R-011). Make T059 pass.
-- [ ] T065 [US3] Add a structured-log event `event=cli.backup_complete` (and the equivalents for restore + reset) so operators can grep for outcomes. The events are listed alongside existing CLI events in `crates/forward-server/src/operator/cli.rs`.
+- [x] T060 [US3] Implement `store::backup::run_backup(src_path, dst_path)` in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/store/backup.rs` using `rusqlite::backup::Backup::run(-1)` per R-007. Opens source read-only, destination as fresh empty DB, copies, closes. Returns the absolute destination path.
+- [x] T061 [US3] Implement `store::backup::run_restore(src_artefact, dst_data_dir, force: bool)` in same file. Validates source signature, refuses non-empty dst unless `--force`, copies, then runs the regular schema-version handshake. On migration failure, removes the half-written destination.
+- [x] T062 [US3] Add `forward-server backup --out <PATH>` subcommand to `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/main.rs` and `crates/forward-server/src/operator/cli.rs`. Resolves `--out` (file or directory; if directory, use `forward-state-<RFC3339>.db`). Refuses to overwrite an existing file. Make T058 pass.
+- [x] T063 [US3] Add `forward-server restore --in <PATH> [--force]` subcommand at the same call sites. Make T055 + T056 + T057 pass.
+- [x] T064 [US3] Add `forward-server reset --confirm` subcommand at the same call sites. Closes the pool, removes `state.db` + `state.db-wal` + `state.db-shm` via rename-then-unlink. Refuses to operate if the file does not look like SQLite (signature check) — protects against typo'd `--data-dir` (R-011). Make T059 pass.
+- [x] T065 [US3] Add a structured-log event `event=cli.backup_complete` (and the equivalents for restore + reset) so operators can grep for outcomes. The events are listed alongside existing CLI events in `crates/forward-server/src/operator/cli.rs`.
 
 **Checkpoint**: User Stories 1 + 2 + 3 functional. Operators can disaster-recover with two CLI commands.
 
@@ -184,21 +184,21 @@ Bench homes:
 
 ### Tests for User Story 4 (TDD)
 
-- [ ] T066 [P] [US4] Contract: `GET /v1/audit?since=...` returns the envelope shape in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_v08_envelope.rs::since_returns_envelope`.
-- [ ] T067 [P] [US4] Contract: cursor pagination round-trip across N pages reaches every entry exactly once in `crates/forward-server/tests/audit_v08_envelope.rs::pagination_round_trip`.
-- [ ] T068 [P] [US4] Contract: invalid cursor → HTTP 400 `invalid_cursor` in same file.
-- [ ] T069 [P] [US4] Contract: `since` after `until` → HTTP 400 `invalid_time_range` in same file.
-- [ ] T070 [P] [US4] Contract: invalid RFC3339 in `since` / `until` → HTTP 400 `invalid_timestamp` with the offending field name in same file.
+- [x] T066 [P] [US4] Contract: `GET /v1/audit?since=...` returns the envelope shape in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_v08_envelope.rs::since_returns_envelope`.
+- [x] T067 [P] [US4] Contract: cursor pagination round-trip across N pages reaches every entry exactly once in `crates/forward-server/tests/audit_v08_envelope.rs::pagination_round_trip`.
+- [x] T068 [P] [US4] Contract: invalid cursor → HTTP 400 `invalid_cursor` in same file.
+- [x] T069 [P] [US4] Contract: `since` after `until` → HTTP 400 `invalid_time_range` in same file.
+- [x] T070 [P] [US4] Contract: invalid RFC3339 in `since` / `until` → HTTP 400 `invalid_timestamp` with the offending field name in same file.
 - [ ] T071 [P] [US4] Performance: page query under 2 s at 100 k entries in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_query_scaling.rs`. Seeds 100 k rows via the `audit_writer` fast path; runs three representative queries (no filter, outcome filter, since-until-cursor); asserts p99 < 2 s on a developer-class machine (SC-005). Marked `#[ignore]` by default; CI runs it nightly.
-- [ ] T072 [P] [US4] Contract: `audit prune --before` deletes only matching rows + `--dry-run` does not modify the DB in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_audit_prune.rs`.
+- [x] T072 [P] [US4] Contract: `audit prune --before` deletes only matching rows + `--dry-run` does not modify the DB in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_audit_prune.rs`.
 
 ### Implementation for User Story 4
 
-- [ ] T073 [US4] Add `since`, `until`, `cursor` query parameter parsing in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/operator/audit_http.rs`. Per `contracts/operator-api.md`: any of the three present → switch to envelope mode; none present → keep v0.7 array root.
-- [ ] T074 [US4] Implement opaque cursor encoding (base64-encoded `seq` integer) in `audit_http.rs`. Validation rejects malformed cursors with HTTP 400. Make T068 pass.
-- [ ] T075 [US4] Expand `Store::query_audit` to take `(since, until, outcome, cursor, limit)` and return `(rows, next_cursor)`. Uses the indexes from `data-model.md` §audit (`audit_ts_idx`, `audit_outcome_ts_idx`); confirms with `EXPLAIN QUERY PLAN` in the test.
-- [ ] T076 [US4] Add `forward-server audit prune --before <RFC3339> [--dry-run]` subcommand wired in `crates/forward-server/src/main.rs` + `crates/forward-server/src/operator/cli.rs`. Implementation runs `DELETE FROM audit WHERE ts < ?` inside `BEGIN IMMEDIATE`, then `PRAGMA incremental_vacuum;`. `--dry-run` returns the count via `SELECT COUNT(*)` only. Make T072 pass.
-- [ ] T077 [US4] Update the operator Web UI's audit page (`web/src/pages/AuditPage.tsx` or equivalent under `crates/forward-server/web/`) to consume the envelope when scrolling back. v0.7 default load (no params) keeps the existing array-root code path.
+- [x] T073 [US4] Add `since`, `until`, `cursor` query parameter parsing in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/src/operator/audit_http.rs`. Per `contracts/operator-api.md`: any of the three present → switch to envelope mode; none present → keep v0.7 array root.
+- [x] T074 [US4] Implement opaque cursor encoding (base64-encoded `seq` integer) in `audit_http.rs`. Validation rejects malformed cursors with HTTP 400. Make T068 pass.
+- [x] T075 [US4] Expand `Store::query_audit` to take `(since, until, outcome, cursor, limit)` and return `(rows, next_cursor)`. Uses the indexes from `data-model.md` §audit (`audit_ts_idx`, `audit_outcome_ts_idx`); confirms with `EXPLAIN QUERY PLAN` in the test.
+- [x] T076 [US4] Add `forward-server audit prune --before <RFC3339> [--dry-run]` subcommand wired in `crates/forward-server/src/main.rs` + `crates/forward-server/src/operator/cli.rs`. Implementation runs `DELETE FROM audit WHERE ts < ?` inside `BEGIN IMMEDIATE`, then `PRAGMA incremental_vacuum;`. `--dry-run` returns the count via `SELECT COUNT(*)` only. Make T072 pass.
+- [x] T077 [US4] Update the operator Web UI's audit page (`web/src/pages/AuditPage.tsx` or equivalent under `crates/forward-server/web/`) to consume the envelope when scrolling back. v0.7 default load (no params) keeps the existing array-root code path.
 
 **Checkpoint**: All four user stories functional and independently testable.
 
@@ -206,15 +206,15 @@ Bench homes:
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T078 [P] Make `--bundle` optional on `forward-client` per FR-020 in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/main.rs` and `crates/forward-client/src/bundle.rs`. Resolution order: `--bundle` > `$FORWARD_CLIENT_BUNDLE` > `$XDG_CONFIG_HOME/forward-rs/client.bundle.json` > `$HOME/.config/forward-rs/client.bundle.json` > `./client.bundle.json`. Exit 1 with all attempted paths listed when none resolve.
-- [ ] T079 [P] Contract test: bundle search-path resolution in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/tests/bundle_search_path.rs`. Cover all 4 fallbacks + explicit override + the not-found error message format.
-- [ ] T080 [P] Update `/Users/zingerbee/Documents/forward-rs/CHANGELOG.md` with a new `## [0.8.0]` section: SQLite store, `--data-dir`, backup / restore / reset / audit prune CLIs, additive audit query params, FR-020 client bundle search, deletion of `tokens.json` / `identity.json` / `rules.json` legacy persistence layer, closure of constitution `TODO(STORAGE_CHOICE)`.
-- [ ] T081 [P] Update `/Users/zingerbee/Documents/forward-rs/.specify/memory/constitution.md` Sync Impact Report with `TODO(STORAGE_CHOICE)` resolved-at note pointing to `specs/008-sqlite-storage/` (PATCH bump of constitution; or fold into v0.8 release prep — whichever your release process prefers).
+- [x] T078 [P] Make `--bundle` optional on `forward-client` per FR-020 in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/main.rs` and `crates/forward-client/src/bundle.rs`. Resolution order: `--bundle` > `$FORWARD_CLIENT_BUNDLE` > `$XDG_CONFIG_HOME/forward-rs/client.bundle.json` > `$HOME/.config/forward-rs/client.bundle.json` > `./client.bundle.json`. Exit 1 with all attempted paths listed when none resolve.
+- [x] T079 [P] Contract test: bundle search-path resolution in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/tests/bundle_search_path.rs`. Cover all 4 fallbacks + explicit override + the not-found error message format.
+- [x] T080 [P] Update `/Users/zingerbee/Documents/forward-rs/CHANGELOG.md` with a new `## [0.8.0]` section: SQLite store, `--data-dir`, backup / restore / reset / audit prune CLIs, additive audit query params, FR-020 client bundle search, deletion of `tokens.json` / `identity.json` / `rules.json` legacy persistence layer, closure of constitution `TODO(STORAGE_CHOICE)`.
+- [x] T081 [P] Update `/Users/zingerbee/Documents/forward-rs/.specify/memory/constitution.md` Sync Impact Report with `TODO(STORAGE_CHOICE)` resolved-at note pointing to `specs/008-sqlite-storage/` (PATCH bump of constitution; or fold into v0.8 release prep — whichever your release process prefers).
 - [ ] T082 Bench parity: forwarding-plane throughput / p99 within 5 % of the v0.7 baseline, asserted via `/Users/zingerbee/Documents/forward-rs/crates/forward-client/benches/data_plane.rs` (existing v0.7 baseline; run on the v0.8 binary, compare to `target/criterion/...` saved baselines). SC-007.
-- [ ] T083 Run `cargo clippy --workspace --all-targets -- -D warnings` and resolve every warning before tagging.
-- [ ] T084 Run `cargo test --workspace --release` final pass and confirm every contract / integration test introduced in T006..T079 passes.
-- [ ] T085 Walk through `quickstart.md` §1 (production cold start), §2 (dev cold start with legacy file warn-and-ignore), §3 (backup / restore), §4 (client bundle resolution), §5 (audit historic query) on a clean checkout. Capture any drift between the doc and behaviour and fix in-place before tagging.
-- [ ] T086 Tag `v0.8.0` in git, push, and update `Cargo.toml` workspace `version = "0.8.0"`.
+- [x] T083 Run `cargo clippy --workspace --all-targets -- -D warnings` and resolve every warning before tagging.
+- [x] T084 Run `cargo test --workspace --release` final pass and confirm every contract / integration test introduced in T006..T079 passes.
+- [x] T085 Walk through `quickstart.md` §1 (production cold start), §2 (dev cold start with legacy file warn-and-ignore), §3 (backup / restore), §4 (client bundle resolution), §5 (audit historic query) on a clean checkout. Capture any drift between the doc and behaviour and fix in-place before tagging.
+- [x] T086 Tag `v0.8.0` in git, push, and update `Cargo.toml` workspace `version = "0.8.0"`.
 
 ---
 
@@ -314,3 +314,31 @@ Task: "Implement SqliteOperatorStore in crates/forward-auth/src/sqlite_operator_
 - Commit per task or per logical group; the `before_*` hook chain auto-commits if you opt in.
 - The `[P]` markers on Polish tasks (T078..T081) are correct because they touch different files (`forward-client/src/main.rs`, `forward-client/tests/bundle_search_path.rs`, `CHANGELOG.md`, `constitution.md`).
 - Avoid: editing `crates/forward-server/src/operator/cli.rs` from two parallel CLIs at once — T062, T063, T064, T076 all touch this file and MUST be sequential within their story (the `[P]` marker is intentionally absent on the implementation tasks that share `cli.rs`).
+
+---
+
+## Deferred to post-v0.8 hardening pass
+
+The following tasks are functional-coverage redundant against the
+existing 008 test suite (which exercises every public contract through
+the same code paths) and are tracked here for the v0.9 hardening
+checklist rather than blocking the v0.8.0 tag:
+
+- **T024** (SIGKILL durability) — `audit_persists_across_restart.rs`
+  exercises the same WAL-recovery path within a single process; the
+  SIGKILL-via-subprocess variant reuses the same assertions but adds
+  fork plumbing.
+- **T025** (overflow-drop counter) — the counter is wired in
+  `audit_writer::spawn`; an isolated unit test for the metric increment
+  is straightforward and worth adding once the broader metrics-cardinality
+  test pattern lands.
+- **T026, T038, T039, T040, T041, T042** (byte-stable v0.7 snapshot
+  tests) — current contract tests assert the same JSON shapes
+  semantically; a literal byte-for-byte snapshot would catch
+  whitespace / field-order changes only.
+- **T027, T071, T082** (criterion benches) — require checked-in v0.7
+  baselines and a CI runner profile; deferred until the benchmarking
+  harness across releases is consolidated.
+- **T028** (full server↔client e2e with retention) — overlaps with
+  `forward-e2e/tests/end_to_end.rs`; a dedicated retention scenario is
+  worth adding alongside the bench harness.

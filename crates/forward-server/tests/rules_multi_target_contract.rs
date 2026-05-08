@@ -27,7 +27,6 @@
 //! step doesn't 503 with `client_not_connected`), the test seeds the
 //! `ConnectedClients` registry with a fake outbound channel.
 
-use rusqlite;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};

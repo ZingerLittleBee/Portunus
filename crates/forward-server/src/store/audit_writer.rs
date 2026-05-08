@@ -128,12 +128,11 @@ async fn run_writer(
                 return;
             }
             entry = rx.recv() => {
-                match entry {
-                    Some(e) => batch.push(e),
-                    None => {
-                        debug!(event = "audit.writer_channel_closed");
-                        return;
-                    }
+                if let Some(e) = entry {
+                    batch.push(e);
+                } else {
+                    debug!(event = "audit.writer_channel_closed");
+                    return;
                 }
             }
         }
