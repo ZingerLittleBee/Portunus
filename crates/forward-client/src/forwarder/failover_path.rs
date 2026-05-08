@@ -106,16 +106,17 @@ pub async fn run_tcp<R: Resolve + 'static>(
         return;
     }
 
-    // Per-target health state, parallel to `rule.targets`. Wrapped in
-    // `Arc<Mutex<>>` so both the accept loop and the (eventual) active
-    // probe task can mutate them. `tokio::sync::Mutex` not `std`'s —
-    // we hold across awaits inside the dial loop.
-    let states: Arc<Vec<tokio::sync::Mutex<HealthState>>> = Arc::new(
-        (0..rule.targets.len())
-            .map(|_| tokio::sync::Mutex::new(HealthState::new()))
-            .collect(),
-    );
-    let target_failovers_total = Arc::new(AtomicU64::new(0));
+    // T033: per-target health + failover counter come from the
+    // control loop's pre-built observability handle so the periodic
+    // StatsReport tick can read the same state we mutate.
+    let obs = rule
+        .multi_target_obs
+        .as_ref()
+        .expect("failover_path::run_tcp requires multi_target_obs to be set")
+        .clone();
+    let states = Arc::clone(&obs.states);
+    let target_failovers_total = Arc::clone(&obs.target_failovers_total);
+    debug_assert_eq!(states.len(), rule.targets.len());
 
     let proxy_cancel = CancellationToken::new();
     let mut in_flight: JoinSet<()> = JoinSet::new();
@@ -309,6 +310,11 @@ async fn handle_connection<R: Resolve>(
     if let Ok((bin, bout)) = result.as_ref() {
         stats.record_in(listen_port, *bin);
         stats.record_out(listen_port, *bout);
+        // T034: per-target byte accumulation. Same atomicity as the
+        // global counters — `add_bytes_in/out` use Relaxed adds.
+        let state = states[idx].lock().await;
+        state.add_bytes_in(*bin);
+        state.add_bytes_out(*bout);
     }
     match result {
         Ok((bin, bout)) => {
@@ -506,12 +512,13 @@ pub async fn run_udp<R: Resolve + 'static>(
     let cap = super::resolve_udp_cap(rule.udp_max_flows);
     let idle_window = super::resolve_udp_idle_window(rule.udp_flow_idle_secs);
 
-    let states: Arc<Vec<tokio::sync::Mutex<HealthState>>> = Arc::new(
-        (0..rule.targets.len())
-            .map(|_| tokio::sync::Mutex::new(HealthState::new()))
-            .collect(),
-    );
-    let target_failovers_total = Arc::new(AtomicU64::new(0));
+    let obs = rule
+        .multi_target_obs
+        .as_ref()
+        .expect("failover_path::run_udp requires multi_target_obs to be set")
+        .clone();
+    let states = Arc::clone(&obs.states);
+    let target_failovers_total = Arc::clone(&obs.target_failovers_total);
     let targets = Arc::new(rule.targets.clone());
 
     let probe_handle = if let Some(interval) = rule.health_check_interval_secs {

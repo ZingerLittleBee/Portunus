@@ -101,6 +101,13 @@ enum Cmd {
         /// No-op for single-port rules.
         #[arg(long, default_value_t = false)]
         per_port: bool,
+        /// 007-multi-target-failover (US3): include per-target detail
+        /// for multi-target rules. Adds `?per_target=true` to the HTTP
+        /// request and renders the per-target table in text mode.
+        /// Single-target rules print a `(single-target rule, no
+        /// per-target state)` note and exit 0.
+        #[arg(long, default_value_t = false)]
+        per_target: bool,
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
@@ -325,8 +332,9 @@ fn run(cli: Cli) -> Result<(), u8> {
             rule_id,
             format,
             per_port,
+            per_target,
             http_endpoint,
-        } => rule_cli::stats(&http_endpoint, rule_id, format, per_port),
+        } => rule_cli::stats(&http_endpoint, rule_id, format, per_port, per_target),
         Cmd::BootstrapSuperadmin { name } => {
             std::fs::create_dir_all(&config_dir).map_err(|e| {
                 eprintln!("config dir: {e}");

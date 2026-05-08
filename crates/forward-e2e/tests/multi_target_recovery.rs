@@ -121,10 +121,10 @@ fn wait_for_target(listen_port: u16, expected_tag: &[u8], timeout: Duration) -> 
             conn.set_read_timeout(Some(Duration::from_secs(2))).ok();
             if conn.write_all(b"x").is_ok() {
                 let mut buf = [0u8; 8];
-                if let Ok(n) = conn.read(&mut buf) {
-                    if buf[..n].starts_with(expected_tag) {
-                        return true;
-                    }
+                if let Ok(n) = conn.read(&mut buf)
+                    && buf[..n].starts_with(expected_tag)
+                {
+                    return true;
                 }
             }
         }

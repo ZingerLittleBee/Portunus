@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use forward_core::{PortRange, RuleId};
 use forward_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, PerPortStats as ProtoPerPortStats, Protocol,
-    RuleAction, RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage,
-    StatsReport, client_message, control_client::ControlClient, server_message,
+    ActivationOutcome, ClientMessage, Hello, PerPortStats as ProtoPerPortStats,
+    PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction, RuleStats as ProtoRuleStats,
+    RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport, client_message,
+    control_client::ControlClient, server_message,
 };
 use rand::Rng;
 use thiserror::Error;
@@ -280,6 +281,15 @@ struct RuleSlot {
     /// `per_port` proto field — single-port rules always send empty
     /// per-port to preserve the v0.1.0 wire shape.
     is_range: bool,
+    /// 007-multi-target-failover (T033): per-target health + global
+    /// failover counter. `Some` for multi-target rules, `None` for
+    /// single-target — `send_stats_report` keys off this to decide
+    /// whether to populate `per_target[]` and `target_failovers_total`.
+    multi_target_obs: Option<Arc<crate::forwarder::MultiTargetObservability>>,
+    /// 007-multi-target-failover (T038): cached targets list so the
+    /// stats reporter can emit per-target host/port/priority alongside
+    /// the per-target HealthState snapshot.
+    targets_view: Vec<crate::forwarder::MultiTarget>,
 }
 
 async fn pump(
@@ -519,6 +529,33 @@ fn handle_server_message(
             } else {
                 Some(rule.health_check_interval_secs)
             };
+            // T033: build the per-target observability for multi-target
+            // rules ONCE, here. The same Arc lands in both the
+            // failover_path task (mutator) and the RuleSlot below
+            // (snapshot reader on the StatsReport tick). For
+            // single-target rules we build None so the legacy snapshot
+            // path stays byte-identical.
+            let multi_target_obs = if multi_targets.is_empty() {
+                None
+            } else {
+                let states: std::sync::Arc<
+                    Vec<tokio::sync::Mutex<crate::forwarder::failover::HealthState>>,
+                > = std::sync::Arc::new(
+                    (0..multi_targets.len())
+                        .map(|_| {
+                            tokio::sync::Mutex::new(crate::forwarder::failover::HealthState::new())
+                        })
+                        .collect(),
+                );
+                Some(std::sync::Arc::new(crate::forwarder::MultiTargetObservability {
+                    target_failovers_total: std::sync::Arc::new(
+                        std::sync::atomic::AtomicU64::new(0),
+                    ),
+                    states,
+                }))
+            };
+            let targets_view = multi_targets.clone();
+            let multi_target_obs_for_slot = multi_target_obs.clone();
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
@@ -531,6 +568,7 @@ fn handle_server_message(
                 udp_flow_idle_secs,
                 targets: multi_targets,
                 health_check_interval_secs,
+                multi_target_obs,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -559,6 +597,8 @@ fn handle_server_message(
                     remove_request_id: None,
                     stats,
                     is_range: listen_end > listen_port,
+                    multi_target_obs: multi_target_obs_for_slot,
+                    targets_view,
                 },
             );
         }
@@ -652,10 +692,55 @@ async fn forward_status(
 /// Snapshot every active rule's counters and emit a single `StatsReport` on
 /// the bidi stream. Sends only when at least one rule exists; an empty report
 /// would be wasteful chatter.
+/// 007-multi-target-failover T033: build the `per_target[]` array for
+/// a multi-target rule. Single-target rules return an empty Vec
+/// (invariant I-3 — single-target rules MUST emit `per_target: []`
+/// regardless of `?per_target=true`).
+fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
+    let Some(obs) = slot.multi_target_obs.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(slot.targets_view.len());
+    for (idx, t) in slot.targets_view.iter().enumerate() {
+        // try_lock — the mutator (failover_path / probe) holds
+        // the lock briefly. On contention we drop the snapshot for
+        // this target this tick; next tick will pick it up. This
+        // keeps the stats report off the data-plane critical path.
+        let Ok(state) = obs.states[idx].try_lock() else {
+            continue;
+        };
+        let last_failure_at_unix_ms = state
+            .last_failure_at()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let last_success_at_unix_ms = state
+            .last_success_at()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let (bytes_in, bytes_out) = state.snapshot_bytes();
+        let connections_accepted = state.snapshot_connections();
+        out.push(ProtoPerTargetStats {
+            index: u32::try_from(idx).unwrap_or(u32::MAX),
+            host: t.spec.host.clone(),
+            port: u32::from(t.spec.port),
+            priority: t.spec.priority,
+            health: state.health().as_wire(),
+            consecutive_failures: state.consecutive_failures(),
+            last_failure_at_unix_ms,
+            last_success_at_unix_ms,
+            bytes_in,
+            bytes_out,
+            connections_accepted,
+        });
+    }
+    out
+}
+
 async fn send_stats_report(
     rules: &HashMap<RuleId, RuleSlot>,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
+    use std::sync::atomic::Ordering;
     if rules.is_empty() {
         return;
     }
@@ -703,12 +788,15 @@ async fn send_stats_report(
                 datagrams_out: slot.stats.snapshot_datagrams_out(),
                 active_flows: slot.stats.snapshot_active_flows(),
                 flows_dropped_overflow: slot.stats.snapshot_flows_dropped_overflow(),
-                // 007-multi-target-failover (Phase 2 stub): single-target
-                // rules emit 0 / empty for both fields. Multi-target
-                // rules will populate these from per-target HealthState
-                // in Phase 5 (T033).
-                target_failovers_total: 0,
-                per_target: Vec::new(),
+                // 007-multi-target-failover T033: multi-target rules
+                // emit per-target snapshots from the shared
+                // observability handle. Single-target rules emit 0 /
+                // empty per the wire-compat invariant I-3.
+                target_failovers_total: slot
+                    .multi_target_obs
+                    .as_ref()
+                    .map_or(0, |o| o.target_failovers_total.load(Ordering::Relaxed)),
+                per_target: build_per_target(slot),
             }
         })
         .collect();

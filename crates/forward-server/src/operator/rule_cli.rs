@@ -256,6 +256,30 @@ struct StatsResponse {
     /// (002-port-range-forward, T046).
     #[serde(default)]
     per_port: Option<Vec<PerPortStat>>,
+    /// 007-multi-target-failover T039: lifetime count of target
+    /// Healthy↔Failed transitions. Always present in v0.7+ server
+    /// responses; default-zero for single-target rules (I-3).
+    #[serde(default)]
+    target_failovers_total: u64,
+    /// 007-multi-target-failover T039: per-target detail; populated
+    /// only when `?per_target=true` AND the rule has targets.
+    #[serde(default)]
+    per_target: Option<Vec<PerTargetStat>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PerTargetStat {
+    index: u32,
+    host: String,
+    port: u32,
+    priority: u32,
+    health: u32,
+    consecutive_failures: u32,
+    last_failure_at_unix_ms: u64,
+    last_success_at_unix_ms: u64,
+    bytes_in: u64,
+    bytes_out: u64,
+    connections_accepted: u64,
 }
 
 fn default_protocol_str() -> String {
@@ -276,10 +300,24 @@ struct PerPortStat {
     datagrams_out: u64,
 }
 
-pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool) -> Result<(), u8> {
+pub fn stats(
+    endpoint: &str,
+    rule_id: u64,
+    format: OutputFormat,
+    per_port: bool,
+    per_target: bool,
+) -> Result<(), u8> {
     let mut url = format!("http://{endpoint}/v1/rules/{rule_id}/stats");
+    let mut query: Vec<&str> = Vec::new();
     if per_port {
-        url.push_str("?per_port=true");
+        query.push("per_port=true");
+    }
+    if per_target {
+        query.push("per_target=true");
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
     }
     let resp = apply_auth(client()?.get(&url)).send().map_err(|e| {
         eprintln!("error: http: {e}");
@@ -318,7 +356,7 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool)
                 );
             } else {
                 println!(
-                    "rule_id={} client={} protocol={} bytes_in={} bytes_out={} active={} dns_failures={} updated_at={}",
+                    "rule_id={} client={} protocol={} bytes_in={} bytes_out={} active={} dns_failures={} target_failovers_total={} updated_at={}",
                     body.rule_id,
                     body.client_name,
                     body.protocol,
@@ -326,8 +364,39 @@ pub fn stats(endpoint: &str, rule_id: u64, format: OutputFormat, per_port: bool)
                     body.bytes_out,
                     body.active_connections,
                     body.dns_failures,
+                    body.target_failovers_total,
                     body.updated_at.format("%Y-%m-%dT%H:%M:%SZ"),
                 );
+            }
+            if let Some(rows) = body.per_target.as_ref() {
+                use std::fmt::Write as _;
+                if rows.is_empty() {
+                    println!("(single-target rule, no per-target state)");
+                } else {
+                    let mut buf = String::new();
+                    let _ = writeln!(
+                        buf,
+                        "{:<3} {:<24} {:<6} {:<4} {:<8} {:<5} {:<14} {:<14} {:<6}",
+                        "IDX", "HOST", "PORT", "PRIO", "HEALTH", "FAILS", "BYTES_IN", "BYTES_OUT", "CONNS",
+                    );
+                    for r in rows {
+                        let h = if r.health == 0 { "Healthy" } else { "Failed" };
+                        let _ = writeln!(
+                            buf,
+                            "{:<3} {:<24} {:<6} {:<4} {:<8} {:<5} {:<14} {:<14} {:<6}",
+                            r.index,
+                            r.host,
+                            r.port,
+                            r.priority,
+                            h,
+                            r.consecutive_failures,
+                            r.bytes_in,
+                            r.bytes_out,
+                            r.connections_accepted,
+                        );
+                    }
+                    print!("{buf}");
+                }
             }
             if let Some(rows) = body.per_port.as_ref() {
                 use std::fmt::Write as _;
@@ -382,8 +451,33 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
         "datagrams_out": body.datagrams_out,
         "active_flows": body.active_flows,
         "flows_dropped_overflow": body.flows_dropped_overflow,
+        // 007-multi-target-failover T039: present-but-zero for legacy
+        // single-target rules (I-3) so generic tooling can read it
+        // without a conditional.
+        "target_failovers_total": body.target_failovers_total,
         "updated_at": body.updated_at,
     });
+    if let Some(rows) = body.per_target.as_ref() {
+        v["per_target"] = serde_json::Value::Array(
+            rows.iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "index": r.index,
+                        "host": r.host,
+                        "port": r.port,
+                        "priority": r.priority,
+                        "health": if r.health == 0 { "Healthy" } else { "Failed" },
+                        "consecutive_failures": r.consecutive_failures,
+                        "last_failure_at_unix_ms": r.last_failure_at_unix_ms,
+                        "last_success_at_unix_ms": r.last_success_at_unix_ms,
+                        "bytes_in": r.bytes_in,
+                        "bytes_out": r.bytes_out,
+                        "connections_accepted": r.connections_accepted,
+                    })
+                })
+                .collect(),
+        );
+    }
     if let Some(rows) = body.per_port.as_ref() {
         v["per_port"] = serde_json::Value::Array(
             rows.iter()

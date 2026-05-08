@@ -522,6 +522,28 @@ async fn get_rule_stats(
             })?,
         );
     }
+    // 007-multi-target-failover T036: when `?per_target=true`, surface
+    // the per-target snapshot stamped onto the cache entry by
+    // `RuleStatsCache::observe`. Default behavior (no query param)
+    // strips `per_target` from the JSON via `skip_serializing_if`. I-3
+    // (single-target rules emit empty per_target) means the array is
+    // present-but-empty for legacy rules.
+    let per_target_requested = params
+        .get("per_target")
+        .is_some_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+    if per_target_requested
+        && let serde_json::Value::Object(ref mut map) = body
+    {
+        let per_target = snap.per_target.clone();
+        map.insert(
+            "per_target".to_string(),
+            serde_json::to_value(&per_target).map_err(|e| ApiError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "internal".into(),
+                message: e.to_string(),
+            })?,
+        );
+    }
     Ok(Json(body))
 }
 

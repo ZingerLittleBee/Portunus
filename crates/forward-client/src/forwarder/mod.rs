@@ -96,6 +96,14 @@ pub struct ClientRule {
     /// prober task that probes each target round-robin at the
     /// configured cadence. Single-target rules ignore this field.
     pub health_check_interval_secs: Option<u32>,
+    /// 007-multi-target-failover (T033): externally-provided per-target
+    /// observability handles. `Some` for multi-target rules — built by
+    /// the control loop so the periodic StatsReport tick can read the
+    /// same `target_failovers_total` + `HealthState` slots the failover
+    /// loop mutates. `None` for single-target rules. failover_path
+    /// asserts `Some` on entry; if a multi-target rule reaches the
+    /// failover_path with `None`, that's a wiring bug.
+    pub multi_target_obs: Option<Arc<MultiTargetObservability>>,
 }
 
 /// One entry in `ClientRule.targets`. Holds both the wire-shape
@@ -107,6 +115,19 @@ pub struct ClientRule {
 pub struct MultiTarget {
     pub spec: forward_core::RuleTarget,
     pub target: Target,
+}
+
+/// 007-multi-target-failover (T033): the per-rule observability
+/// surface for multi-target rules. Built ONCE per rule activation
+/// and shared by reference between the failover_path task (which
+/// mutates) and the periodic StatsReport tick (which reads).
+///
+/// Single-target rules carry `None` here so the legacy snapshot path
+/// runs without ever touching per-target state.
+#[derive(Debug)]
+pub struct MultiTargetObservability {
+    pub target_failovers_total: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub states: std::sync::Arc<Vec<tokio::sync::Mutex<failover::HealthState>>>,
 }
 
 /// Run the forwarder until `cancel` fires. Sends exactly one
@@ -722,7 +743,7 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
-            targets: Vec::new(), health_check_interval_secs: None,
+            targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
         }
     }
 
@@ -792,7 +813,7 @@ mod tests {
                 protocol: Protocol::Tcp,
                 udp_max_flows: 0,
                 udp_flow_idle_secs: 0,
-                targets: Vec::new(), health_check_interval_secs: None,
+                targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
             },
             ip_resolver(),
             tx,
@@ -1089,7 +1110,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
-                    targets: Vec::new(), health_check_interval_secs: None,
+                    targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1167,7 +1188,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
-                    targets: Vec::new(), health_check_interval_secs: None,
+                    targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1328,7 +1349,7 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
-            targets: Vec::new(), health_check_interval_secs: None,
+            targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);
