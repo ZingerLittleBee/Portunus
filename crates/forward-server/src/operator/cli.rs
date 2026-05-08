@@ -586,6 +586,10 @@ pub async fn push_rule(
                 // Phase 6 (T043).
                 targets: Vec::new(),
                 health_check_interval_secs: 0,
+                // 009-tls-sni-routing T015: legacy (pre-009) push helpers
+                // never set sni_pattern. The new SNI-aware push path
+                // (added in T026/T043) plumbs this from rule.sni_pattern.
+                sni_pattern: None,
             }),
         })),
     };
@@ -791,6 +795,10 @@ pub async fn push_rule_multi_target(
                 prefer_ipv6,
                 targets: proto_targets,
                 health_check_interval_secs: health_check_interval_secs.unwrap_or(0),
+                // 009-tls-sni-routing T015: multi-target legacy push
+                // never carries SNI; the SNI-aware path plumbs this
+                // from rule.sni_pattern (T043).
+                sni_pattern: None,
             }),
         })),
     };
@@ -912,6 +920,9 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     // shape canonical. Empty/zero on the wire.
                     targets: Vec::new(),
                     health_check_interval_secs: 0,
+                    // 009-tls-sni-routing T015: REMOVE only reads rule_id
+                    // on the receiving side; SNI is irrelevant here.
+                    sni_pattern: None,
                 }),
             })),
         };

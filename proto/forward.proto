@@ -160,6 +160,19 @@ message Rule {
   // "passive only — do not schedule any probe task" (FR-015).
   // Server enforces: 1..=3600 when nonzero.
   uint32 health_check_interval_secs = 10;
+
+  // Additive in v1.5 (spec 009-tls-sni-routing). Wire field number 11.
+  // Absent → plain TCP forward / TLS-only fallback (depending on listener
+  // mode). Present → host or `*.suffix` pattern; ASCII, lowercased,
+  // ≤ 253 chars. Validated server-side per
+  // `specs/009-tls-sni-routing/data-model.md` §V-3.
+  //
+  // v0.8 readers (no awareness of field 11) drop it on decode and see a
+  // plain-TCP rule. The v0.9 forward-server's capability gate (HTTP 422
+  // `sni_unsupported_by_client`) prevents a server from ever sending
+  // such a rule down a v0.8 channel — see
+  // `crates/forward-server/src/operator/http.rs::push_rule`.
+  optional string sni_pattern = 11;
 }
 
 // New in v1.4 (spec 007-multi-target-failover).
@@ -276,6 +289,19 @@ message RuleStats {
   // UI queries from the same in-memory snapshot, never re-exported as
   // Prometheus series (cardinality budget — SC-006).
   repeated PerTargetStats per_target = 12;
+
+  // Additive in v1.5 (spec 009-tls-sni-routing). Field numbers 13/14/15
+  // continue after v0.7 (fields 11 and 12). All three are monotonic;
+  // proto3 default-zero on the wire. Reset on rule replace / client
+  // restart, matching the v0.7 convention for runtime counters.
+  //
+  // The v0.9 forward-server `/metrics` endpoint folds these into one
+  // labelled collector
+  // `forward_tls_sni_route_total{client,rule,owner,result=exact|wildcard|fallback}`
+  // (see `specs/009-tls-sni-routing/contracts/operator-api.md` §4).
+  uint64 sni_route_exact_total    = 13;
+  uint64 sni_route_wildcard_total = 14;
+  uint64 sni_route_fallback_total = 15;
 }
 
 // New in v1.4 (spec 007-multi-target-failover).
@@ -319,10 +345,24 @@ message PerPortStats {
   uint64 datagrams_out = 6;
 }
 
-// 009-tls-sni-routing field-number reservation (Phase 1 / T001):
-//   - field 3 is reserved for `repeated SniListenerStats sni_listener_stats`
-//     (T018 in Phase 2 fills it in).
+// New in v1.5 (spec 009-tls-sni-routing). One per active SNI listener
+// on the client. Carried alongside RuleStats in StatsReport, because
+// miss and parse-failure events have no rule_id attribution — they
+// happen before rule selection.
+message SniListenerStats {
+  uint32 listen_port                       = 1;
+  uint64 sni_route_miss_total              = 2;
+  uint64 client_hello_parse_failures_total = 3;
+}
+
 message StatsReport {
   uint64 sent_at_unix_ms = 1;
   repeated RuleStats stats = 2; // one entry per Active rule on this client
+
+  // Additive in v1.5 (spec 009-tls-sni-routing). Empty for clients with
+  // no SNI listener active. The server folds each entry into
+  // `forward_tls_sni_listener_miss_total{client,port}` and
+  // `forward_tls_client_hello_parse_failures_total{client,port}` in
+  // the existing StatsReport handler.
+  repeated SniListenerStats sni_listener_stats = 3;
 }

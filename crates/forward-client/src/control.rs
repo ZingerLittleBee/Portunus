@@ -796,6 +796,13 @@ async fn send_stats_report(
                     .as_ref()
                     .map_or(0, |o| o.target_failovers_total.load(Ordering::Relaxed)),
                 per_target: build_per_target(slot),
+                // 009-tls-sni-routing T015: SNI hit counters default to 0
+                // until T077 wires them to the live SniListener bumps.
+                // Phase-2 wire shape is byte-stable with v0.8 (verified
+                // by sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
+                sni_route_exact_total: 0,
+                sni_route_wildcard_total: 0,
+                sni_route_fallback_total: 0,
             }
         })
         .collect();
@@ -807,6 +814,11 @@ async fn send_stats_report(
         payload: Some(client_message::Payload::StatsReport(StatsReport {
             sent_at_unix_ms: now_ms,
             stats,
+            // 009-tls-sni-routing T015: empty until T078 aggregates
+            // SniListener counters into wire SniListenerStats. Empty
+            // list elides field 3 on the wire (verified by
+            // sni_wire_compat::t009_stats_report_empty_sni_list_omits_field_3).
+            sni_listener_stats: Vec::new(),
         })),
     };
     if let Err(e) = outbound.send(msg).await {
