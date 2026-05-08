@@ -67,3 +67,8 @@ harness = false
 [[bench]]
 name = "udp_data_plane"
 harness = false
+
+# 009-tls-sni-routing T005 (placeholder); T087/T088 land the real benches.
+[[bench]]
+name = "sni_route"
+harness = false

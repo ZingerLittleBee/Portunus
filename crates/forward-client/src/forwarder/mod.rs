@@ -22,6 +22,7 @@ pub mod failover_path;
 pub mod probe;
 pub mod proxy;
 pub mod range;
+pub mod sni;
 pub mod stats;
 pub mod udp;
 

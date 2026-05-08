@@ -3,6 +3,7 @@
 mod bundle;
 mod control;
 mod forwarder;
+mod port_groups;
 mod resolver;
 mod shutdown;
 

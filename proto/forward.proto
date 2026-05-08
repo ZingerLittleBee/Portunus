@@ -103,6 +103,10 @@ enum Protocol {
   UDP = 2;
 }
 
+// 009-tls-sni-routing field-number reservation (Phase 1 / T001):
+//   - field 11 is reserved for `optional string sni_pattern` (T015 in
+//     Phase 2 fills it in).
+//   - fields 1..=10 are unchanged from v0.7 (multi-target failover).
 message Rule {
   uint64 rule_id = 1;
   uint32 listen_port = 2;       // 1-65535; for ranges this is the start (inclusive)
@@ -203,6 +207,12 @@ message RuleStatus {
 // Stats reporting
 // ============================================================================
 
+// 009-tls-sni-routing field-number reservation (Phase 1 / T001):
+//   - fields 13/14/15 are reserved for `sni_route_exact_total /
+//     sni_route_wildcard_total / sni_route_fallback_total` (T016 in
+//     Phase 2 fills them in).
+//   - fields 11 and 12 belong to v0.7 (`target_failovers_total`,
+//     `per_target`) and MUST NOT be touched by 009.
 message RuleStats {
   uint64 rule_id = 1;
   uint64 bytes_in = 2;          // cumulative, aggregate across all ports
@@ -309,6 +319,9 @@ message PerPortStats {
   uint64 datagrams_out = 6;
 }
 
+// 009-tls-sni-routing field-number reservation (Phase 1 / T001):
+//   - field 3 is reserved for `repeated SniListenerStats sni_listener_stats`
+//     (T018 in Phase 2 fills it in).
 message StatsReport {
   uint64 sent_at_unix_ms = 1;
   repeated RuleStats stats = 2; // one entry per Active rule on this client
