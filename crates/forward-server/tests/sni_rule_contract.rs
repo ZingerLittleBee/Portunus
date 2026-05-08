@@ -318,6 +318,64 @@ async fn sni_pattern_illegal_char_rejected() {
     assert_eq!(err_code(resp).await, "validation.sni_pattern_malformed");
 }
 
+// 009-tls-sni-routing T050: extended wildcard grammar — `*` must be
+// the entire leftmost label. Patterns where `*` is glued to other
+// chars (`foo*.example.com`) or appears with no following dot
+// (`*example.com`) MUST be refused at validation time, never reach
+// the routing table.
+
+#[tokio::test]
+async fn sni_pattern_partial_label_wildcard_rejected() {
+    // `foo*.example.com`: `*` is not the full leftmost label.
+    let f = build_fixture();
+    register_fake_client(&f, CLIENT, Some("0.9.0"), false).await;
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": CLIENT,
+                "listen_port": 30014,
+                "target_host": "127.0.0.1",
+                "target_port": 9000,
+                "protocol": "tcp",
+                "sni_pattern": "foo*.example.com",
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(err_code(resp).await, "validation.sni_pattern_malformed");
+}
+
+#[tokio::test]
+async fn sni_pattern_wildcard_without_dot_rejected() {
+    // `*example.com`: no dot after `*`, so `*.` strip never happens
+    // and the body still contains `*` — caught by the illegal-char
+    // check.
+    let f = build_fixture();
+    register_fake_client(&f, CLIENT, Some("0.9.0"), false).await;
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": CLIENT,
+                "listen_port": 30015,
+                "target_host": "127.0.0.1",
+                "target_port": 9000,
+                "protocol": "tcp",
+                "sni_pattern": "*example.com",
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(err_code(resp).await, "validation.sni_pattern_malformed");
+}
+
 // ============================================================
 //   T012 — `sni_pattern` capability gate (HTTP 422)
 // ============================================================

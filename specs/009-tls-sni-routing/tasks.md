@@ -146,15 +146,15 @@ Bench home:
 - [x] T047 [P] [US2] Unit test — wildcard match + single-label remainder — in `crates/forward-client/src/forwarder/sni/route_table.rs::tests::wildcard_single_label_only`. Assert `*.example.com` matches `foo.example.com`; rejects `example.com` (no left label) and `a.b.example.com` (extra label).
 - [x] T048 [P] [US2] Unit test — wildcard specificity — `::tests::longest_wildcard_wins`. Two rules `*.team.example.com` and `*.example.com`; assert `x.team.example.com` matches the more specific one.
 - [x] T049 [P] [US2] Unit test — exact vs. wildcard priority — `::tests::exact_beats_wildcard`. One exact `api.example.com`, one wildcard `*.example.com`; assert `api.example.com` matches exact.
-- [ ] T050 [P] [US2] Validation test — wildcard grammar — extend `crates/forward-server/tests/sni_rule_validation.rs::wildcard_grammar` to include rejections for `*.com` (single-label suffix), `*.*.example.com` (multi-`*`), `foo*.example.com` (`*` not at leftmost), `*example.com` (no dot after `*`).
-- [ ] T051 [P] [US2] Integration test — wildcard end-to-end — `crates/forward-client/tests/sni_route_e2e_wildcard.rs`. Push `*.web.example.com`; rustls clients with three SNIs; assert correct routing decisions.
+- [x] T050 [P] [US2] Validation test — wildcard grammar — extend `crates/forward-server/tests/sni_rule_validation.rs::wildcard_grammar` to include rejections for `*.com` (single-label suffix), `*.*.example.com` (multi-`*`), `foo*.example.com` (`*` not at leftmost), `*example.com` (no dot after `*`).
+- [x] T051 [P] [US2] Integration test — wildcard end-to-end — `crates/forward-client/tests/sni_route_e2e_wildcard.rs`. Push `*.web.example.com`; rustls clients with three SNIs; assert correct routing decisions.
 
 ### Implementation for User Story 2
 
 - [x] T052 [US2] Extend `SniRoutingTable::from_members` in `crates/forward-client/src/forwarder/sni/route_table.rs` to populate `wildcards: Vec<(String, RuleId)>` sorted by suffix length descending. The suffix stored is the part **after** `*.`.
 - [x] T053 [US2] Extend `SniRoutingTable::lookup` to walk `wildcards` after `exact` miss; for each `(suffix, rule_id)` apply the data-model.md §2.2 algorithm: `host.ends_with("." + suffix) && prefix_before_suffix.contains('.') == false`. Make T047..T049 pass.
-- [ ] T054 [US2] Tighten the grammar check in `crates/forward-server/src/operator/http.rs::validate_rule` per data-model.md §V-3 (T029 covers the basics; this task adds wildcard-specific checks: `*` must be the first label; suffix must have ≥ 2 labels; no other `*`). Make T050 pass.
-- [ ] T055 [US2] Make `sni_route_e2e_wildcard.rs` (T051) pass.
+- [x] T054 [US2] Tighten the grammar check in `crates/forward-server/src/operator/http.rs::validate_rule` per data-model.md §V-3 (T029 covers the basics; this task adds wildcard-specific checks: `*` must be the first label; suffix must have ≥ 2 labels; no other `*`). Make T050 pass.
+- [x] T055 [US2] Make `sni_route_e2e_wildcard.rs` (T051) pass.
 
 **Checkpoint**: US2 functional. Operators get production-grade subdomain fan-out.
 
@@ -214,13 +214,13 @@ Bench home:
 
 ### Tests for User Story 5 (TDD)
 
-- [ ] T070 [P] [US5] Per-rule counter emission test — `crates/forward-client/tests/sni_stats_emitted.rs::per_rule_hit_counters`. Run 10 exact-hit / 5 wildcard / 3 fallback connections; assert that the next `StatsReport` carries the expected `RuleStats.sni_route_*_total` values (fields 13/14/15) per rule.
-- [ ] T071 [P] [US5] Listener-level counter emission test — `…::listener_miss_and_parse`. Drive 4 SNI miss + 2 plain-HTTP + 1 timeout connections; assert the next `StatsReport.sni_listener_stats[port=443]` carries `sni_route_miss_total = 4` and `client_hello_parse_failures_total = 3`.
+- [x] T070 [P] [US5] Per-rule counter emission test — `crates/forward-client/tests/sni_stats_emitted.rs::per_rule_hit_counters`. Run 10 exact-hit / 5 wildcard / 3 fallback connections; assert that the next `StatsReport` carries the expected `RuleStats.sni_route_*_total` values (fields 13/14/15) per rule.
+- [x] T071 [P] [US5] Listener-level counter emission test — `…::listener_miss_and_parse`. Drive 4 SNI miss + 2 plain-HTTP + 1 timeout connections; assert the next `StatsReport.sni_listener_stats[port=443]` carries `sni_route_miss_total = 4` and `client_hello_parse_failures_total = 3`.
 - [ ] T072 [P] [US5] Hot-reload preserves in-flight test — `crates/forward-client/tests/sni_hot_reload.rs`. Open a long-running SNI connection; mutate the route group; assert the open connection completes its bytes; new connections see the new table.
-- [ ] T073 [P] [US5] REMOVE-by-rule_id consistency — `crates/forward-client/tests/sni_remove_by_rule_id.rs`. Push two SNI rules on `:443`; REMOVE the second by rule_id (no port hint); assert the listener still has the first rule and the reverse index is consistent (data-model.md INV-2).
+- [x] T073 [P] [US5] REMOVE-by-rule_id consistency — `crates/forward-client/tests/sni_remove_by_rule_id.rs`. Push two SNI rules on `:443`; REMOVE the second by rule_id (no port hint); assert the listener still has the first rule and the reverse index is consistent (data-model.md INV-2).
 - [ ] T074 [P] [US5] Server-side metrics surface — `crates/forward-server/tests/sni_metrics_surface.rs`. Same scenario as T070..T071; scrape `/metrics`; assert `forward_tls_sni_route_total{client,rule,owner,result}` and `forward_tls_sni_listener_miss_total{client,port}` are present with expected values.
 - [ ] T075 [P] [US5] Audit-ring isolation — `crates/forward-server/tests/sni_audit_ring_isolation.rs`. Drive every tracing event listed in contracts/operator-api.md §5; assert `GET /v1/audit` returns the same result before and after.
-- [ ] T076 [P] [US5] Timeout / not-TLS rejection events — `crates/forward-client/tests/sni_route_timeout.rs` and `…/sni_route_not_tls.rs`. Open TCP without sending bytes (3 s) → connection reset + `tls.client_hello_timeout`. Send `GET / HTTP/1.1\r\n\r\n` → reset + `tls.parse_failed`.
+- [x] T076 [P] [US5] Timeout / not-TLS rejection events — `crates/forward-client/tests/sni_route_timeout.rs` and `…/sni_route_not_tls.rs`. Open TCP without sending bytes (3 s) → connection reset + `tls.client_hello_timeout`. Send `GET / HTTP/1.1\r\n\r\n` → reset + `tls.parse_failed`.
 
 ### Implementation for User Story 5
 
