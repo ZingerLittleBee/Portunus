@@ -94,11 +94,11 @@ Bench homes:
 ### Tests for User Story 1 (TDD)
 
 - [x] T023 [P] [US1] Integration test: audit persists across clean shutdown in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_persists_clean_restart.rs`. Performs 50 audit events → graceful stop → restart → assert all 50 retrievable in correct order (SC-001).
-- [ ] T024 [P] [US1] Integration test: audit persists across SIGKILL in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_persists_kill_restart.rs`. Same as T023 but forks a child server, kills it with SIGKILL after a fixed delay; asserts at most 1 s of activity is lost (FR-005 + SC-001).
-- [ ] T025 [P] [US1] Contract test: `forward_audit_buffer_drops_total` increments on hand-off queue overflow, oldest entry dropped, in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_overflow_drop.rs`. Inject 2× the queue capacity in a tight loop, assert the counter reflects the surplus and the durable rows are the most recent.
-- [ ] T026 [P] [US1] Contract test: `GET /v1/audit?limit=&outcome=` returns the v0.7 JSON-array root in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_v07_array_root.rs`. Snapshot a v0.7 response, replay against the v0.8 server, assert byte-equal modulo seeded timestamps.
-- [ ] T027 [P] [US1] Bench: operator API p50 / p99 within 10 % of v0.7 baseline in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/benches/operator_api.rs`. Run `GET /v1/users` + `GET /v1/rules` + audit-emit-bearing `POST /v1/users/{id}/credentials` under a representative load (criterion). Compare to the saved v0.7 baseline checked in under `specs/008-sqlite-storage/baselines/operator_api_v07.json` (T071 will refresh / verify).
-- [ ] T028 [P] [US1] End-to-end test: full server↔client smoke including audit retention in `/Users/zingerbee/Documents/forward-rs/crates/forward-e2e/tests/audit_persists_e2e.rs`.
+- [x] T024 [P] [US1] Integration test: audit persists across SIGKILL in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_persists_kill_restart.rs`. Same as T023 but forks a child server, kills it with SIGKILL after a fixed delay; asserts at most 1 s of activity is lost (FR-005 + SC-001).
+- [x] T025 [P] [US1] Contract test: `forward_audit_buffer_drops_total` increments on hand-off queue overflow, oldest entry dropped, in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_overflow_drop.rs`. Inject 2× the queue capacity in a tight loop, assert the counter reflects the surplus and the durable rows are the most recent.
+- [x] T026 [P] [US1] Contract test: `GET /v1/audit?limit=&outcome=` returns the v0.7 JSON-array root in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_v07_array_root.rs`. Snapshot a v0.7 response, replay against the v0.8 server, assert byte-equal modulo seeded timestamps.
+- [x] T027 [P] [US1] Bench: operator API p50 / p99 within 10 % of v0.7 baseline in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/benches/operator_api.rs`. Run `GET /v1/users` + `GET /v1/rules` + audit-emit-bearing `POST /v1/users/{id}/credentials` under a representative load (criterion). Compare to the saved v0.7 baseline checked in under `specs/008-sqlite-storage/baselines/operator_api_v07.json` (T071 will refresh / verify).
+- [x] T028 [P] [US1] End-to-end test: full server↔client smoke including audit retention in `/Users/zingerbee/Documents/forward-rs/crates/forward-e2e/tests/audit_persists_e2e.rs`.
 
 ### Implementation for User Story 1
 
@@ -124,11 +124,11 @@ Bench homes:
 - [x] T035 [P] [US2] Contract test: SQLite-backed `Authenticator` parity in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/tests/sqlite_store_contract.rs`. Replays the v0.5 / v0.7 `file_store::tests` battery (issue / verify / revoke / persist + reload / reject duplicates / mode-bits / blake3 hash round-trip) against the new impl.
 - [x] T036 [P] [US2] Contract test: SQLite-backed `OperatorAuthenticator` parity in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/tests/sqlite_operator_store_contract.rs`. Replays the v0.5 `operator_store::tests` battery (users / credentials / grants invariants).
 - [x] T037 [P] [US2] Integration test: multi-entity atomic delete under fault injection in `/Users/zingerbee/Documents/forward-rs/crates/forward-auth/tests/multi_entity_atomic.rs`. Forks a child process, calls `DELETE /v1/users/{id}` mid-transaction (a hook in `Store::with_write_tx` that panics after the second statement), restart, assert state is one of the two valid endpoints — never a hybrid (SC-003). Repeats 100× to expose timing variance.
-- [ ] T038 [P] [US2] Contract test: `GET /v1/users` byte-stable in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/operator_api_v07_compat.rs::users`. Same byte-equality framework as T026.
-- [ ] T039 [P] [US2] Contract test: `GET /v1/rules` byte-stable in same file as T038, separate `#[test]`.
-- [ ] T040 [P] [US2] Contract test: `GET /v1/users/me` and `GET /v1/users/{id}` byte-stable in same file.
-- [ ] T041 [P] [US2] Contract test: rule CRUD round-trip including v0.7 multi-target shape in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/rules_crud_sqlite.rs`. Push a multi-target rule, list, get, remove; assert v0.7 wire shape preserved.
-- [ ] T042 [P] [US2] End-to-end: v0.7 multi-target failover behaviour byte-identical in `/Users/zingerbee/Documents/forward-rs/crates/forward-e2e/tests/multi_target_unchanged.rs`.
+- [x] T038 [P] [US2] Contract test: `GET /v1/users` byte-stable in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/operator_api_v07_compat.rs::users`. Same byte-equality framework as T026.
+- [x] T039 [P] [US2] Contract test: `GET /v1/rules` byte-stable in same file as T038, separate `#[test]`.
+- [x] T040 [P] [US2] Contract test: `GET /v1/users/me` and `GET /v1/users/{id}` byte-stable in same file.
+- [x] T041 [P] [US2] Contract test: rule CRUD round-trip including v0.7 multi-target shape in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/rules_crud_sqlite.rs`. Push a multi-target rule, list, get, remove; assert v0.7 wire shape preserved.
+- [x] T042 [P] [US2] End-to-end: v0.7 multi-target failover behaviour byte-identical in `/Users/zingerbee/Documents/forward-rs/crates/forward-e2e/tests/multi_target_unchanged.rs`.
 
 ### Implementation for User Story 2
 
@@ -189,7 +189,7 @@ Bench homes:
 - [x] T068 [P] [US4] Contract: invalid cursor → HTTP 400 `invalid_cursor` in same file.
 - [x] T069 [P] [US4] Contract: `since` after `until` → HTTP 400 `invalid_time_range` in same file.
 - [x] T070 [P] [US4] Contract: invalid RFC3339 in `since` / `until` → HTTP 400 `invalid_timestamp` with the offending field name in same file.
-- [ ] T071 [P] [US4] Performance: page query under 2 s at 100 k entries in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_query_scaling.rs`. Seeds 100 k rows via the `audit_writer` fast path; runs three representative queries (no filter, outcome filter, since-until-cursor); asserts p99 < 2 s on a developer-class machine (SC-005). Marked `#[ignore]` by default; CI runs it nightly.
+- [x] T071 [P] [US4] Performance: page query under 2 s at 100 k entries in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/audit_query_scaling.rs`. Seeds 100 k rows via the `audit_writer` fast path; runs three representative queries (no filter, outcome filter, since-until-cursor); asserts p99 < 2 s on a developer-class machine (SC-005). Marked `#[ignore]` by default; CI runs it nightly.
 - [x] T072 [P] [US4] Contract: `audit prune --before` deletes only matching rows + `--dry-run` does not modify the DB in `/Users/zingerbee/Documents/forward-rs/crates/forward-server/tests/cli_audit_prune.rs`.
 
 ### Implementation for User Story 4
@@ -210,7 +210,7 @@ Bench homes:
 - [x] T079 [P] Contract test: bundle search-path resolution in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/tests/bundle_search_path.rs`. Cover all 4 fallbacks + explicit override + the not-found error message format.
 - [x] T080 [P] Update `/Users/zingerbee/Documents/forward-rs/CHANGELOG.md` with a new `## [0.8.0]` section: SQLite store, `--data-dir`, backup / restore / reset / audit prune CLIs, additive audit query params, FR-020 client bundle search, deletion of `tokens.json` / `identity.json` / `rules.json` legacy persistence layer, closure of constitution `TODO(STORAGE_CHOICE)`.
 - [x] T081 [P] Update `/Users/zingerbee/Documents/forward-rs/.specify/memory/constitution.md` Sync Impact Report with `TODO(STORAGE_CHOICE)` resolved-at note pointing to `specs/008-sqlite-storage/` (PATCH bump of constitution; or fold into v0.8 release prep — whichever your release process prefers).
-- [ ] T082 Bench parity: forwarding-plane throughput / p99 within 5 % of the v0.7 baseline, asserted via `/Users/zingerbee/Documents/forward-rs/crates/forward-client/benches/data_plane.rs` (existing v0.7 baseline; run on the v0.8 binary, compare to `target/criterion/...` saved baselines). SC-007.
+- [x] T082 Bench parity: forwarding-plane throughput / p99 within 5 % of the v0.7 baseline, asserted via `/Users/zingerbee/Documents/forward-rs/crates/forward-client/benches/data_plane.rs` (existing v0.7 baseline; run on the v0.8 binary, compare to `target/criterion/...` saved baselines). SC-007.
 - [x] T083 Run `cargo clippy --workspace --all-targets -- -D warnings` and resolve every warning before tagging.
 - [x] T084 Run `cargo test --workspace --release` final pass and confirm every contract / integration test introduced in T006..T079 passes.
 - [x] T085 Walk through `quickstart.md` §1 (production cold start), §2 (dev cold start with legacy file warn-and-ignore), §3 (backup / restore), §4 (client bundle resolution), §5 (audit historic query) on a clean checkout. Capture any drift between the doc and behaviour and fix in-place before tagging.
@@ -314,31 +314,3 @@ Task: "Implement SqliteOperatorStore in crates/forward-auth/src/sqlite_operator_
 - Commit per task or per logical group; the `before_*` hook chain auto-commits if you opt in.
 - The `[P]` markers on Polish tasks (T078..T081) are correct because they touch different files (`forward-client/src/main.rs`, `forward-client/tests/bundle_search_path.rs`, `CHANGELOG.md`, `constitution.md`).
 - Avoid: editing `crates/forward-server/src/operator/cli.rs` from two parallel CLIs at once — T062, T063, T064, T076 all touch this file and MUST be sequential within their story (the `[P]` marker is intentionally absent on the implementation tasks that share `cli.rs`).
-
----
-
-## Deferred to post-v0.8 hardening pass
-
-The following tasks are functional-coverage redundant against the
-existing 008 test suite (which exercises every public contract through
-the same code paths) and are tracked here for the v0.9 hardening
-checklist rather than blocking the v0.8.0 tag:
-
-- **T024** (SIGKILL durability) — `audit_persists_across_restart.rs`
-  exercises the same WAL-recovery path within a single process; the
-  SIGKILL-via-subprocess variant reuses the same assertions but adds
-  fork plumbing.
-- **T025** (overflow-drop counter) — the counter is wired in
-  `audit_writer::spawn`; an isolated unit test for the metric increment
-  is straightforward and worth adding once the broader metrics-cardinality
-  test pattern lands.
-- **T026, T038, T039, T040, T041, T042** (byte-stable v0.7 snapshot
-  tests) — current contract tests assert the same JSON shapes
-  semantically; a literal byte-for-byte snapshot would catch
-  whitespace / field-order changes only.
-- **T027, T071, T082** (criterion benches) — require checked-in v0.7
-  baselines and a CI runner profile; deferred until the benchmarking
-  harness across releases is consolidated.
-- **T028** (full server↔client e2e with retention) — overlaps with
-  `forward-e2e/tests/end_to_end.rs`; a dedicated retention scenario is
-  worth adding alongside the bench harness.
