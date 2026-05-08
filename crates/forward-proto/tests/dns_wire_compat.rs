@@ -31,6 +31,8 @@ fn v0_2_0_rule_byte_compatible_when_prefer_ipv6_absent() {
         listen_port_end: 0,
         target_port_end: 0,
         prefer_ipv6: None,
+        targets: vec![],
+        health_check_interval_secs: 0,
     };
     let bytes = r.encode_to_vec();
 
@@ -57,6 +59,8 @@ fn rule_with_prefer_ipv6_true_roundtrips() {
         listen_port_end: 0,
         target_port_end: 0,
         prefer_ipv6: Some(true),
+        targets: vec![],
+        health_check_interval_secs: 0,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -78,6 +82,8 @@ fn rule_with_prefer_ipv6_false_roundtrips() {
         listen_port_end: 0,
         target_port_end: 0,
         prefer_ipv6: Some(false),
+        targets: vec![],
+        health_check_interval_secs: 0,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -97,6 +103,8 @@ fn v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero() {
         datagrams_out: 0,
         active_flows: 0,
         flows_dropped_overflow: 0,
+        target_failovers_total: 0,
+        per_target: vec![],
     };
     let bytes = s.encode_to_vec();
 
@@ -125,6 +133,8 @@ fn rule_stats_with_dns_failures_roundtrips() {
         datagrams_out: 0,
         active_flows: 0,
         flows_dropped_overflow: 0,
+        target_failovers_total: 0,
+        per_target: vec![],
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

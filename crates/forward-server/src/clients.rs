@@ -42,6 +42,15 @@ pub struct ConnectedClient {
     /// Used by `push-rule` validation to reject UDP rules pre-wire
     /// (HIGH-1 review fix). See `data-model.md` § Capability negotiation.
     pub supported_protocols: HashSet<Protocol>,
+
+    /// Client binary version (007-multi-target-failover, R-007).
+    /// Populated from `Hello.client_version` once the service layer has
+    /// parsed the first inbound message; `None` for clients that have
+    /// not yet sent (or never send) a Hello. Used by the operator HTTP
+    /// guard to refuse multi-target push to a `< 0.7.0` client (which
+    /// cannot decode `Rule.targets` and would activate a broken
+    /// single-target rule with empty `target_host`).
+    pub client_version: Option<String>,
 }
 
 impl ConnectedClient {
@@ -107,6 +116,7 @@ impl ConnectedClients {
             outbound,
             status_waiters,
             supported_protocols: default_caps,
+            client_version: None,
         };
         let mut guard = self.inner.write().await;
         if let Some(prev) = guard.insert(client_name, entry) {
@@ -143,6 +153,38 @@ impl ConnectedClients {
     pub async fn supports(&self, client_name: &ClientName, protocol: Protocol) -> Option<bool> {
         let guard = self.inner.read().await;
         guard.get(client_name).map(|c| c.supports(protocol))
+    }
+
+    /// Replace the registered client's `client_version` (called by the
+    /// service layer once it has parsed the first Hello). Mirrors
+    /// `set_supported_protocols` semantics — the `session_id` guard
+    /// rejects late-arriving Hellos from a torn-down session.
+    /// 007-multi-target-failover (R-007).
+    pub async fn set_client_version(
+        &self,
+        client_name: &ClientName,
+        session_id: u64,
+        version: String,
+    ) -> bool {
+        let mut guard = self.inner.write().await;
+        if let Some(existing) = guard.get_mut(client_name)
+            && existing.session_id == session_id
+        {
+            existing.client_version = Some(version);
+            return true;
+        }
+        false
+    }
+
+    /// Snapshot the connected client's last-known `client_version`.
+    /// Returns `None` when the client is not connected, OR when the
+    /// client has not yet sent a Hello with `client_version`.
+    /// 007-multi-target-failover (R-007).
+    pub async fn client_version_of(&self, client_name: &ClientName) -> Option<String> {
+        let guard = self.inner.read().await;
+        guard
+            .get(client_name)
+            .and_then(|c| c.client_version.clone())
     }
 
     /// Snapshot the (outbound, waiters) handles for a connected client, used
@@ -224,6 +266,7 @@ mod tests {
             outbound: tx,
             status_waiters: Arc::default(),
             supported_protocols: caps,
+            client_version: None,
         }
     }
 

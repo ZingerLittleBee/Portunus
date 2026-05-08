@@ -51,7 +51,34 @@ pub struct RuleStatsSnapshot {
     pub datagrams_out: u64,
     pub active_flows: u32,
     pub flows_dropped_overflow: u64,
+    /// 007-multi-target-failover T033: cumulative count of
+    /// Healthy↔Failed transitions on multi-target rules. Always 0 for
+    /// single-target rules (invariant I-3).
+    #[serde(default)]
+    pub target_failovers_total: u64,
+    /// 007-multi-target-failover T033: per-target health + byte
+    /// counter snapshots. Always empty for single-target rules (I-3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub per_target: Vec<PerTargetSnapshot>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// 007-multi-target-failover T033: per-target snapshot. Shape mirrors
+/// the proto `PerTargetStats` so wire ↔ JSON conversion is mechanical.
+#[derive(Debug, Clone, Serialize)]
+pub struct PerTargetSnapshot {
+    pub index: u32,
+    pub host: String,
+    pub port: u32,
+    pub priority: u32,
+    /// 0 = Healthy, 1 = Failed (mirrors proto wire encoding).
+    pub health: u32,
+    pub consecutive_failures: u32,
+    pub last_failure_at_unix_ms: u64,
+    pub last_success_at_unix_ms: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub connections_accepted: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +115,12 @@ pub struct Metrics {
     /// label set (≤ enum size + 1) keeps cardinality predictable
     /// regardless of traffic shape (R-009).
     pub operator_requests_total: IntCounterVec,
+    /// 007-multi-target-failover T035: per-rule cumulative count of
+    /// target Healthy↔Failed transitions. EXACTLY one row per
+    /// multi-target rule (single-target rules never emit because
+    /// their delta stays 0 — observe() skips zero-delta writes —
+    /// preserving the SC-006 cardinality budget).
+    pub rule_target_failovers_total: IntCounterVec,
     /// 006-management-web-ui T009: cumulative count of audit-ring
     /// evictions. Bumped by `AuditRing::push` when the ring is at
     /// capacity and the oldest entry is dropped to make room.
@@ -174,6 +207,13 @@ impl Metrics {
             "forward_audit_buffer_drops_total",
             "Cumulative count of audit-ring entries evicted because the buffer was at capacity (006-management-web-ui T009)",
         )?;
+        let rule_target_failovers_total = IntCounterVec::new(
+            opts!(
+                "forward_rule_target_failovers_total",
+                "Cumulative count of target Healthy↔Failed transitions per multi-target rule (007-multi-target-failover T035)"
+            ),
+            &["client", "rule", "owner"],
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
@@ -186,6 +226,7 @@ impl Metrics {
         registry.register(Box::new(rule_flows_dropped_overflow_total.clone()))?;
         registry.register(Box::new(operator_requests_total.clone()))?;
         registry.register(Box::new(audit_buffer_drops_total.clone()))?;
+        registry.register(Box::new(rule_target_failovers_total.clone()))?;
 
         Ok(Self {
             registry,
@@ -200,6 +241,7 @@ impl Metrics {
             rule_udp_datagrams_out_total,
             rule_flows_dropped_overflow_total,
             operator_requests_total,
+            rule_target_failovers_total,
             audit_buffer_drops_total,
         })
     }
@@ -255,6 +297,9 @@ struct CachedEntry {
     prev_datagrams_in: u64,
     prev_datagrams_out: u64,
     prev_flows_dropped_overflow: u64,
+    /// 007-multi-target-failover T033/T035: previous failovers count
+    /// for monotonic delta into the new collector.
+    prev_target_failovers_total: u64,
 }
 
 impl RuleStatsCache {
@@ -291,6 +336,49 @@ impl RuleStatsCache {
         flows_dropped_overflow: u64,
         metrics: &Metrics,
     ) {
+        self.observe_with_targets(
+            client_name,
+            rule_id,
+            owner,
+            bytes_in,
+            bytes_out,
+            active_connections,
+            dns_failures,
+            datagrams_in,
+            datagrams_out,
+            active_flows,
+            flows_dropped_overflow,
+            0,
+            Vec::new(),
+            metrics,
+        )
+        .await;
+    }
+
+    /// 007-multi-target-failover (T033) extension to `observe`. Adds
+    /// `target_failovers_total` (drives the new Prometheus collector)
+    /// and `per_target` (cached for `?per_target=true` HTTP reads).
+    /// Single-target rules pass `0 + Vec::new()` which yields a no-op
+    /// delta — no extra series in `/metrics`, no per-target body in
+    /// the JSON snapshot.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn observe_with_targets(
+        &self,
+        client_name: &ClientName,
+        rule_id: RuleId,
+        owner: &str,
+        bytes_in: u64,
+        bytes_out: u64,
+        active_connections: u32,
+        dns_failures: u64,
+        datagrams_in: u64,
+        datagrams_out: u64,
+        active_flows: u32,
+        flows_dropped_overflow: u64,
+        target_failovers_total: u64,
+        per_target: Vec<PerTargetSnapshot>,
+        metrics: &Metrics,
+    ) {
         let mut guard = self.inner.write().await;
         let entry = guard.entry(rule_id).or_insert_with(|| CachedEntry {
             snapshot: RuleStatsSnapshot {
@@ -304,6 +392,8 @@ impl RuleStatsCache {
                 datagrams_out: 0,
                 active_flows: 0,
                 flows_dropped_overflow: 0,
+                target_failovers_total: 0,
+                per_target: Vec::new(),
                 updated_at: Utc::now(),
             },
             prev_bytes_in: 0,
@@ -312,6 +402,7 @@ impl RuleStatsCache {
             prev_datagrams_in: 0,
             prev_datagrams_out: 0,
             prev_flows_dropped_overflow: 0,
+            prev_target_failovers_total: 0,
         });
 
         let rule_id_str = rule_id.0.to_string();
@@ -322,6 +413,8 @@ impl RuleStatsCache {
         let dgin_delta = datagrams_in.saturating_sub(entry.prev_datagrams_in);
         let dgout_delta = datagrams_out.saturating_sub(entry.prev_datagrams_out);
         let drop_delta = flows_dropped_overflow.saturating_sub(entry.prev_flows_dropped_overflow);
+        let failover_delta =
+            target_failovers_total.saturating_sub(entry.prev_target_failovers_total);
         if in_delta > 0 {
             metrics
                 .rule_bytes_in_total
@@ -358,6 +451,12 @@ impl RuleStatsCache {
                 .with_label_values(&labels)
                 .inc_by(drop_delta);
         }
+        if failover_delta > 0 {
+            metrics
+                .rule_target_failovers_total
+                .with_label_values(&labels)
+                .inc_by(failover_delta);
+        }
         metrics
             .rule_active_connections
             .with_label_values(&labels)
@@ -373,6 +472,7 @@ impl RuleStatsCache {
         entry.prev_datagrams_in = datagrams_in;
         entry.prev_datagrams_out = datagrams_out;
         entry.prev_flows_dropped_overflow = flows_dropped_overflow;
+        entry.prev_target_failovers_total = target_failovers_total;
         entry.snapshot.bytes_in = bytes_in;
         entry.snapshot.bytes_out = bytes_out;
         entry.snapshot.active_connections = active_connections;
@@ -381,6 +481,8 @@ impl RuleStatsCache {
         entry.snapshot.datagrams_out = datagrams_out;
         entry.snapshot.active_flows = active_flows;
         entry.snapshot.flows_dropped_overflow = flows_dropped_overflow;
+        entry.snapshot.target_failovers_total = target_failovers_total;
+        entry.snapshot.per_target = per_target;
         entry.snapshot.updated_at = Utc::now();
         entry.snapshot.client_name = client_name.clone();
         let snap_clone = entry.snapshot.clone();
@@ -464,6 +566,9 @@ impl RuleStatsCache {
                 .remove_label_values(&labels);
             let _ = metrics
                 .rule_flows_dropped_overflow_total
+                .remove_label_values(&labels);
+            let _ = metrics
+                .rule_target_failovers_total
                 .remove_label_values(&labels);
         }
     }

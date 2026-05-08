@@ -18,6 +18,10 @@ interface UseRuleStatsStreamOptions {
   /// Falls back to plain `useRuleStats(id)` polling if `EventSource`-style
   /// streaming hits a transport error this many times. Default 3.
   maxReconnects?: number;
+  /// 007-multi-target-failover T045: opt into the per-target body via
+  /// `?per_target=true`. Default off so the byte-identical v0.6.0 wire
+  /// shape is preserved.
+  perTarget?: boolean;
 }
 
 export function useRuleStatsStream(
@@ -25,6 +29,7 @@ export function useRuleStatsStream(
   options: UseRuleStatsStreamOptions = {},
 ): LiveStatsState {
   const maxReconnects = options.maxReconnects ?? 3;
+  const perTarget = options.perTarget ?? false;
   const [state, setState] = useState<LiveStatsState>({
     snapshot: null,
     source: "sse",
@@ -39,8 +44,9 @@ export function useRuleStatsStream(
     reconnectsRef.current = 0;
     setState((s) => ({ ...s, source: "sse", reconnectAttempts: 0, error: null }));
 
+    const qs = perTarget ? "?per_target=true" : "";
     const handle = streamSse<RuleStatsSnapshot>(
-      `/v1/rules/${ruleId}/stats/stream`,
+      `/v1/rules/${ruleId}/stats/stream${qs}`,
       (snap) => {
         setState({
           snapshot: snap,
@@ -65,7 +71,7 @@ export function useRuleStatsStream(
     );
 
     return () => handle.close();
-  }, [ruleId, maxReconnects]);
+  }, [ruleId, maxReconnects, perTarget]);
 
   // Polling fallback: when SSE has failed enough times, layer the
   // standard `useRuleStats` interval poll on top so the UI never sits
@@ -73,6 +79,7 @@ export function useRuleStatsStream(
   const pollingActive = state.source === "polling";
   const polled = useRuleStats(pollingActive ? ruleId : undefined, {
     refetchIntervalMs: 5_000,
+    perTarget,
   });
   useEffect(() => {
     if (!pollingActive) return;

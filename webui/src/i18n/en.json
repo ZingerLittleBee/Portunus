@@ -128,7 +128,8 @@
     "remove": "Remove",
     "ownerFilter": "Owner",
     "emptyTitle": "No rules yet",
-    "emptyBody": "Push your first rule to start forwarding traffic."
+    "emptyBody": "Push your first rule to start forwarding traffic.",
+    "multiTargetPill": "MT ×{{count}}"
   },
   "rulePush": {
     "title": "Push rule",
@@ -136,9 +137,20 @@
     "listenStart": "Listen port (start)",
     "listenEnd": "Listen port (end)",
     "targetHost": "Target host or IP",
+    "targetPort": "Port",
     "targetStart": "Target port (start)",
     "targetEnd": "Target port (end)",
-    "optional": "optional"
+    "optional": "optional",
+    "targetMode": "Target mode",
+    "targetMode_single": "Single target",
+    "targetMode_multi": "Multi-target (failover)",
+    "targets": "Targets (priority-ordered)",
+    "addTarget": "Add another target",
+    "removeTarget": "Remove this target",
+    "priority": "priority",
+    "healthCheckInterval": "Active health-check interval (seconds)",
+    "healthCheckIntervalPlaceholder": "leave blank for passive only",
+    "healthCheckIntervalHelp": "Optional. When set, the client opens a TCP-connect probe to each target on this cadence. Range: 1–3600 seconds."
   },
   "ruleDetail": {
     "title": "Rule",
@@ -157,7 +169,27 @@
     "flowsDropped": "Flows dropped (overflow)",
     "datagramsIn": "Datagrams in",
     "datagramsOut": "Datagrams out",
-    "updatedAt": "Updated"
+    "targetFailovers": "Target failovers",
+    "updatedAt": "Updated",
+    "multiTargetBadge": "{{count}} targets",
+    "multiTargetTooltip": "Multi-target rule — priority-ordered failover with per-target health tracking.",
+    "targetsTitle": "Targets",
+    "targetCol": {
+      "host": "Host",
+      "port": "Port",
+      "priority": "Priority",
+      "health": "Health",
+      "consecutiveFailures": "Failures",
+      "bytesIn": "Bytes in",
+      "bytesOut": "Bytes out",
+      "connections": "Connections",
+      "lastFailure": "Last failure"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "failed": "Failed",
+      "unknown": "Unknown"
+    }
   },
   "clients": {
     "title": "Clients",

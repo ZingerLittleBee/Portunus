@@ -12,6 +12,19 @@
 //! Token hygiene (Constitution IV): callers MUST NOT push raw bearer
 //! tokens. This is enforced by construction — `AuditEntry` only carries
 //! the post-verify `actor` / `role`.
+//!
+//! 007-multi-target-failover T052: per-target health transitions
+//! (`event = "rule.target.health_changed"` from
+//! `forward-client::forwarder::failover::record_failure / record_success`)
+//! flow through the structured tracing log alongside the operator
+//! allow/deny events recorded here. They are NOT pushed onto this ring
+//! because they originate on the client side and are emitted on every
+//! Healthy↔Failed transition (potentially many per minute under
+//! sustained instability) — putting them on the same drop-oldest ring
+//! would evict legitimate operator events under churn. Correlate via
+//! the structured log: filter `event = "rule.target.health_changed"`
+//! together with `rule_id` to tie a failover to the operator that
+//! pushed the rule (whose `actor` is in this ring).
 
 use std::collections::VecDeque;
 use std::sync::Arc;

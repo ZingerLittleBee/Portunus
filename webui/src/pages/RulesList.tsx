@@ -64,10 +64,30 @@ export function RulesList() {
     {
       key: "target",
       header: t("rules.target"),
-      render: (r) =>
-        r.target_port_end && r.target_port_end !== r.target_port
-          ? `${r.target_host}:${r.target_port}–${r.target_port_end}`
-          : `${r.target_host}:${r.target_port}`,
+      render: (r) => {
+        // 007-multi-target-failover T049: render an "MT" pill plus the
+        // primary target when the rule carries ≥ 2 targets. Single-target
+        // rules render as before — preserves v0.6.0 row layout.
+        const targetCount = r.targets?.length ?? 1;
+        const base =
+          r.target_port_end && r.target_port_end !== r.target_port
+            ? `${r.target_host}:${r.target_port}–${r.target_port_end}`
+            : `${r.target_host}:${r.target_port}`;
+        if (targetCount > 1) {
+          return (
+            <span className="flex items-center gap-2">
+              <span className="font-mono">{base}</span>
+              <Badge
+                variant="outline"
+                title={t("ruleDetail.multiTargetTooltip")}
+              >
+                {t("rules.multiTargetPill", { count: targetCount })}
+              </Badge>
+            </span>
+          );
+        }
+        return base;
+      },
     },
     {
       key: "protocol",

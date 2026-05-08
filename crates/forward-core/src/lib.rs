@@ -11,10 +11,12 @@ pub mod hostname;
 pub mod id;
 pub mod log_redact;
 pub mod port_range;
+pub mod rule_target;
 pub mod target;
 
 pub use error::ForwardError;
 pub use hostname::{Hostname, HostnameError};
 pub use id::{ClientName, ClientNameError, RequestId, RuleId};
 pub use port_range::{PortRange, PortRangeError};
+pub use rule_target::{MAX_TARGETS_PER_RULE, RuleTarget, RuleTargetError};
 pub use target::{Target, TargetError};

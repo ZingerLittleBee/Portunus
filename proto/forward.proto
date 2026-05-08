@@ -129,6 +129,45 @@ message Rule {
   // For IP-literal targets the field is silently ignored. Wire field
   // number 8 is the next free slot after v1.1.
   optional bool prefer_ipv6 = 8;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  //
+  // Encoding contract (back-compat):
+  //   - Single-target rule: `targets` is empty; `target_host` /
+  //     `target_port` carry the upstream. Wire bytes identical to
+  //     v0.6.0.
+  //   - Multi-target rule (length >= 2): `targets` carries every
+  //     upstream including index 0; `target_host` is "" and
+  //     `target_port` is 0. Readers detect "multi-target" by
+  //     `!targets.is_empty()`.
+  //
+  // A v0.6.0 reader (no awareness of field 9) drops `targets` on
+  // decode and sees a rule with empty target_host / 0 target_port —
+  // which is invalid by v0.6.0 validation. The server-side guard
+  // (R-007 in research.md) refuses to push a multi-target rule down
+  // a channel whose Hello.client_version is < 0.7.0, returning HTTP
+  // 422 `multi_target_unsupported_by_client` instead.
+  //
+  // Server enforces: targets.len() in 1..=8 (for the new shape).
+  repeated Target targets = 9;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  // Active TCP-connect probe interval. 0 (proto3 default) means
+  // "passive only — do not schedule any probe task" (FR-015).
+  // Server enforces: 1..=3600 when nonzero.
+  uint32 health_check_interval_secs = 10;
+}
+
+// New in v1.4 (spec 007-multi-target-failover).
+// One upstream within a Rule. Inline-on-rule, not addressable on its
+// own. The client maintains a Healthy/Failed state machine per Target
+// (see specs/007-multi-target-failover/data-model.md §3).
+message Target {
+  string host     = 1;  // IP literal or DNS name (resolver applies
+                        // per-target, same TTL clamp as v0.3.0).
+  uint32 port     = 2;  // 1..=65535
+  uint32 priority = 3;  // lower = higher priority. Two targets MAY
+                        // share a value; row order breaks ties.
 }
 
 enum RuleAction {
@@ -208,6 +247,52 @@ message RuleStats {
   // per-rule flow table was at `udp_max_flows_per_rule`. Always 0 for
   // TCP rules.
   uint64 flows_dropped_overflow = 10;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  //
+  // Cumulative count of Healthy <-> Failed transitions across all
+  // targets of this rule. Feeds the
+  // `forward_rule_target_failovers_total{client,rule}` Prometheus
+  // counter (FR-018). Always 0 for single-target rules (no target
+  // health state allocated).
+  uint64 target_failovers_total = 11;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  //
+  // Per-target detail. Empty for single-target rules. For multi-
+  // target rules, the client populates this on every 5 s
+  // StatsReport tick. Mirrors the per-port pattern from v1.1: present
+  // in StatsReport so the server can answer `--per-target` CLI / Web
+  // UI queries from the same in-memory snapshot, never re-exported as
+  // Prometheus series (cardinality budget — SC-006).
+  repeated PerTargetStats per_target = 12;
+}
+
+// New in v1.4 (spec 007-multi-target-failover).
+// One per Rule.targets entry, in priority order. Indexes are stable
+// for the rule's lifetime — clients of this message can pair `index`
+// with `Rule.targets[index]`.
+message PerTargetStats {
+  uint32 index    = 1;     // row index in Rule.targets
+  string host     = 2;     // mirror of Target.host
+  uint32 port     = 3;     // mirror of Target.port
+  uint32 priority = 4;     // mirror of Target.priority
+
+  // Health state. 0 = Healthy (default), 1 = Failed. Encoded as a
+  // uint32 instead of an enum so future states (Degraded, etc.)
+  // extend the values without bumping the wire schema.
+  uint32 health = 5;       // 0 = Healthy, 1 = Failed
+
+  uint32 consecutive_failures = 6;
+  // SystemTime since UNIX epoch in ms. 0 → never observed.
+  uint64 last_failure_at_unix_ms = 7;
+  uint64 last_success_at_unix_ms = 8;
+
+  // Per-target lifetime byte counters (rule-lifetime, reset on
+  // rule replace / client restart).
+  uint64 bytes_in              = 9;
+  uint64 bytes_out             = 10;
+  uint64 connections_accepted  = 11;  // TCP connections OR UDP flows
 }
 
 // New in v1.1 (spec 002-port-range-forward).

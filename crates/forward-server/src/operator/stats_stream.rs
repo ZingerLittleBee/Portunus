@@ -13,13 +13,14 @@
 //! - Keepalive comment every 30 s so middleboxes don't drop the
 //!   connection. Browsers ignore comment frames.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
     Extension,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::sse::{Event, KeepAlive, Sse},
 };
 use forward_auth::OperatorIdentity;
@@ -35,10 +36,17 @@ use crate::state::AppState;
 
 /// Subscribe to live snapshots for a rule. Auth at connect time;
 /// stream closes when the rule is removed (broadcast sender dropped).
+///
+/// 007-multi-target-failover T037: `?per_target=true` opts the
+/// subscriber into the per-target detail block; default behavior
+/// strips it from the serialized event so v0.6.0 consumers see the
+/// identical wire shape.
+#[allow(clippy::implicit_hasher)]
 pub async fn get_rule_stats_stream(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
     Path(rule_id): Path<u64>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let rule = state
         .rules
@@ -46,6 +54,10 @@ pub async fn get_rule_stats_stream(
         .await
         .ok_or_else(|| ApiError::from(crate::operator::cli::OperatorError::RuleNotFound))?;
     rbac::enforce_read(&identity, &rule.owner_user_id)?;
+
+    let per_target_requested = params
+        .get("per_target")
+        .is_some_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
 
     let initial_snapshot = state.stats_cache.get(RuleId(rule_id)).await;
     let receiver = state.stats_cache.subscribe(RuleId(rule_id)).await;
@@ -67,7 +79,9 @@ pub async fn get_rule_stats_stream(
         }
     });
 
-    let combined = initial_stream.chain(live_stream).map(snapshot_to_event);
+    let combined = initial_stream
+        .chain(live_stream)
+        .map(move |item| snapshot_to_event(item, per_target_requested));
 
     Ok(Sse::new(combined).keep_alive(
         KeepAlive::new()
@@ -76,8 +90,16 @@ pub async fn get_rule_stats_stream(
     ))
 }
 
-fn snapshot_to_event(item: Result<RuleStatsSnapshot, Infallible>) -> Result<Event, Infallible> {
-    item.map(|snap| {
+fn snapshot_to_event(
+    item: Result<RuleStatsSnapshot, Infallible>,
+    per_target: bool,
+) -> Result<Event, Infallible> {
+    item.map(|mut snap| {
+        if !per_target {
+            // Strip per-target detail from the wire view; default
+            // subscribers see the byte-identical v0.6.0 shape.
+            snap.per_target = Vec::new();
+        }
         Event::default()
             .event("stats")
             .json_data(snap)

@@ -20,6 +20,8 @@
 .claude/settings.local.json
 .claude/local/
 .claude/.credentials*
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
 
 # macOS
 .DS_Store

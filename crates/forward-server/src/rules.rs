@@ -104,6 +104,33 @@ pub struct Rule {
     /// rules are stamped with `UserId::superadmin()`. In-memory only;
     /// rules don't persist across restart, so neither does this field.
     pub owner_user_id: forward_auth::UserId,
+
+    /// Multi-target failover entries (007-multi-target-failover, FR-001).
+    ///
+    /// Empty `Vec` (the default) means "single-target rule —
+    /// `target_host`/`target_port` carry the upstream and the
+    /// single-target hot path applies, byte-identical to v0.6.0".
+    /// Non-empty means a multi-target rule; in that case
+    /// `target_host`/`target_port` are NOT mirrored from `targets[0]`
+    /// — readers detect "multi-target" by `!targets.is_empty()`
+    /// (encoding contract R-002 in `research.md`).
+    ///
+    /// Persistence: a v0.6.0 rules.json (no `targets` key, single-
+    /// target only) deserialises with `targets: vec![]`, which the
+    /// `targets_view()` helper promotes to a one-element view at
+    /// read time. New multi-target rules persist with the field
+    /// populated (atomic write, mode 0600 — same as v0.6.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<forward_core::RuleTarget>,
+
+    /// Optional active TCP-connect probe interval, seconds
+    /// (007-multi-target-failover, FR-013). `None` (the default)
+    /// means "passive failure detection only — no probe task is
+    /// scheduled" (FR-015). When `Some(n)`, the client spawns a
+    /// per-rule prober that probes each target round-robin at the
+    /// configured cadence; `n` MUST be in `1..=3600`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_interval_secs: Option<u32>,
 }
 
 impl crate::operator::rbac::HasOwner for Rule {
@@ -153,6 +180,39 @@ impl Rule {
     #[allow(dead_code)]
     pub fn is_range(&self) -> bool {
         self.range_size() > 1
+    }
+
+    /// Read-side view of the rule's targets. Synthesises a one-element
+    /// list from the legacy `target_host`/`target_port` fields when
+    /// `targets` is empty (back-compat for v0.6.0-shaped rules — both
+    /// freshly-pushed legacy rules AND rules loaded from a v0.6.0
+    /// `rules.json`).
+    ///
+    /// Returns `None` only for the impossible case of an empty `targets`
+    /// list combined with an empty `target_host` — which the validator
+    /// would have rejected at push time.
+    ///
+    /// 007-multi-target-failover Phase 2 (T009).
+    #[must_use]
+    pub fn targets_view(&self) -> Vec<forward_core::RuleTarget> {
+        if self.targets.is_empty() {
+            vec![forward_core::RuleTarget {
+                host: self.target_host.clone(),
+                port: self.target_port,
+                priority: 0,
+            }]
+        } else {
+            self.targets.clone()
+        }
+    }
+
+    /// True for rules that opt into the multi-target failover code
+    /// path (i.e. carry an explicit `targets` list). Single-target
+    /// rules — including the v0.6.0 legacy shape — return `false` and
+    /// stay on the byte-identical hot path (Constitution Principle II).
+    #[must_use]
+    pub fn is_multi_target(&self) -> bool {
+        !self.targets.is_empty()
     }
 }
 
@@ -262,6 +322,12 @@ impl ServerRuleStore {
     /// the configured cap, and rejects overlaps with any existing
     /// `Active`/`Failed` rule on the same client. The `owner_user_id`
     /// is stamped on the new rule (005-multi-user-rbac, FR-014).
+    ///
+    /// 007-multi-target-failover (Phase 3 / T022): single-target callers
+    /// use this thin shim which forwards `targets: vec![]` and
+    /// `health_check_interval_secs: None`, preserving the v0.6.0
+    /// behaviour byte-for-byte. Multi-target callers use
+    /// `push_range_with_targets` directly.
     #[allow(clippy::too_many_arguments)]
     pub async fn push_range(
         &self,
@@ -273,6 +339,43 @@ impl ServerRuleStore {
         prefer_ipv6: Option<bool>,
         range_cap: u32,
         owner_user_id: forward_auth::UserId,
+    ) -> Result<Rule, RuleStoreError> {
+        self.push_range_with_targets(
+            client_name,
+            listen,
+            target_host,
+            target,
+            protocol,
+            prefer_ipv6,
+            range_cap,
+            owner_user_id,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    /// Multi-target-aware variant of `push_range` (007-multi-target-failover).
+    /// Pass `targets: Vec::new()` for the legacy single-target shape — the
+    /// stored `Rule` will carry no `targets` entries and downstream
+    /// readers see the byte-identical v0.6.0 shape.
+    ///
+    /// `health_check_interval_secs` is forwarded verbatim — `None` keeps
+    /// passive-only failover (FR-015), `Some(n)` opts the rule into the
+    /// active TCP-connect probe at the configured cadence.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn push_range_with_targets(
+        &self,
+        client_name: ClientName,
+        listen: PortRange,
+        target_host: String,
+        target: PortRange,
+        protocol: Protocol,
+        prefer_ipv6: Option<bool>,
+        range_cap: u32,
+        owner_user_id: forward_auth::UserId,
+        targets: Vec<forward_core::RuleTarget>,
+        health_check_interval_secs: Option<u32>,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
         let (listen, target) =
@@ -341,6 +444,8 @@ impl ServerRuleStore {
             created_at: now,
             last_state_change_at: now,
             owner_user_id,
+            targets,
+            health_check_interval_secs,
         };
         guard
             .by_client_listen_start

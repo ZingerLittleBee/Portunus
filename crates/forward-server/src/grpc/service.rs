@@ -91,6 +91,19 @@ impl Control for ControlService {
                         .clients
                         .set_supported_protocols(&identity.client_name, session_id, caps.clone())
                         .await;
+                    // 007-multi-target-failover (R-007): track the
+                    // client binary version so the operator HTTP guard
+                    // can refuse multi-target push to a < 0.7.0 client.
+                    if !h.client_version.is_empty() {
+                        state
+                            .clients
+                            .set_client_version(
+                                &identity.client_name,
+                                session_id,
+                                h.client_version.clone(),
+                            )
+                            .await;
+                    }
                     info!(
                         event = "client.hello",
                         client_name = %identity.client_name,
@@ -326,7 +339,7 @@ async fn handle_client_message(
                     .map_or_else(|| "_unknown".to_string(), |r| r.owner_user_id.to_string());
                 state
                     .stats_cache
-                    .observe(
+                    .observe_with_targets(
                         &identity.client_name,
                         rule_id,
                         owner.as_str(),
@@ -347,6 +360,24 @@ async fn handle_client_message(
                         entry.datagrams_out,
                         entry.active_flows,
                         entry.flows_dropped_overflow,
+                        entry.target_failovers_total,
+                        entry
+                            .per_target
+                            .iter()
+                            .map(|p| crate::metrics::PerTargetSnapshot {
+                                index: p.index,
+                                host: p.host.clone(),
+                                port: p.port,
+                                priority: p.priority,
+                                health: p.health,
+                                consecutive_failures: p.consecutive_failures,
+                                last_failure_at_unix_ms: p.last_failure_at_unix_ms,
+                                last_success_at_unix_ms: p.last_success_at_unix_ms,
+                                bytes_in: p.bytes_in,
+                                bytes_out: p.bytes_out,
+                                connections_accepted: p.connections_accepted,
+                            })
+                            .collect(),
                         &state.metrics,
                     )
                     .await;

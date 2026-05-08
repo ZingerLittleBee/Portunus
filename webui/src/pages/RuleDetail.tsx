@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatBytes, formatTimestamp } from "@/lib/format";
-import { parseRuleState } from "@/api/types";
+import { parseRuleState, type PerTargetStats, type TargetWithHealth } from "@/api/types";
 
 export function RuleDetail() {
   const { t } = useTranslation();
@@ -16,7 +16,11 @@ export function RuleDetail() {
   const ruleId = ruleIdRaw ? Number(ruleIdRaw) : undefined;
 
   const rule = useRule(ruleId);
-  const live = useRuleStatsStream(ruleId);
+  // 007-multi-target-failover T047: opt into per-target stats. Rules
+  // with `targets[]` need the per-target byte counters surfaced; the
+  // stream still works for legacy single-target rules (the per_target
+  // body is just empty).
+  const live = useRuleStatsStream(ruleId, { perTarget: true });
 
   if (rule.isLoading) {
     return <p className="text-muted-foreground">{t("table.loading")}</p>;
@@ -35,6 +39,7 @@ export function RuleDetail() {
   const r = rule.data;
   const state = parseRuleState(r.state);
   const snap = live.snapshot;
+  const isMultiTarget = (r.targets?.length ?? 0) > 1;
 
   return (
     <div className="space-y-6">
@@ -48,6 +53,11 @@ export function RuleDetail() {
             {state.kind}
             {state.kind === "Failed" && `: ${state.reason}`}
           </Badge>
+          {isMultiTarget && (
+            <Badge variant="outline" title={t("ruleDetail.multiTargetTooltip")}>
+              {t("ruleDetail.multiTargetBadge", { count: r.targets?.length ?? 0 })}
+            </Badge>
+          )}
           <span className="text-muted-foreground">
             {r.client_name} · {r.listen_port}
             {r.listen_port_end && r.listen_port_end !== r.listen_port ? `–${r.listen_port_end}` : ""} →{" "}
@@ -87,6 +97,12 @@ export function RuleDetail() {
               <Stat label={t("ruleDetail.flowsDropped")} value={String(snap.flows_dropped_overflow)} />
               <Stat label={t("ruleDetail.datagramsIn")} value={String(snap.datagrams_in)} />
               <Stat label={t("ruleDetail.datagramsOut")} value={String(snap.datagrams_out)} />
+              {isMultiTarget && (
+                <Stat
+                  label={t("ruleDetail.targetFailovers")}
+                  value={String(snap.target_failovers_total ?? 0)}
+                />
+              )}
               <Stat label={t("ruleDetail.updatedAt")} value={formatTimestamp(snap.updated_at)} />
             </div>
           ) : (
@@ -94,7 +110,112 @@ export function RuleDetail() {
           )}
         </CardContent>
       </Card>
+
+      {(r.targets?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("ruleDetail.targetsTitle")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <TargetsTable
+              targets={r.targets ?? []}
+              perTarget={snap?.per_target ?? []}
+            />
+          </CardContent>
+        </Card>
+      )}
     </div>
+  );
+}
+
+function TargetsTable({
+  targets,
+  perTarget,
+}: {
+  targets: TargetWithHealth[];
+  perTarget: PerTargetStats[];
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+            <th className="px-2 py-2">#</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.host")}</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.port")}</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.priority")}</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.health")}</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.consecutiveFailures")}</th>
+            <th className="px-2 py-2 text-right">{t("ruleDetail.targetCol.bytesIn")}</th>
+            <th className="px-2 py-2 text-right">{t("ruleDetail.targetCol.bytesOut")}</th>
+            <th className="px-2 py-2 text-right">{t("ruleDetail.targetCol.connections")}</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.lastFailure")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {targets.map((target, idx) => {
+            const stats = perTarget.find((p) => p.index === idx);
+            const healthBadge = renderHealthBadge(target, stats, t);
+            const lastFailure =
+              stats?.last_failure_at_unix_ms && stats.last_failure_at_unix_ms > 0
+                ? new Date(stats.last_failure_at_unix_ms).toLocaleString()
+                : "—";
+            return (
+              <tr key={`${target.host}:${target.port}-${idx}`} className="border-b">
+                <td className="px-2 py-2 font-mono">{idx}</td>
+                <td className="px-2 py-2 font-mono">{target.host}</td>
+                <td className="px-2 py-2 font-mono">{target.port}</td>
+                <td className="px-2 py-2 font-mono">{target.priority}</td>
+                <td className="px-2 py-2">{healthBadge}</td>
+                <td className="px-2 py-2 font-mono">
+                  {stats?.consecutive_failures ?? target.health?.consecutive_failures ?? 0}
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {stats ? formatBytes(stats.bytes_in) : "—"}
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {stats ? formatBytes(stats.bytes_out) : "—"}
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {stats?.connections_accepted ?? "—"}
+                </td>
+                <td className="px-2 py-2 text-xs text-muted-foreground">{lastFailure}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderHealthBadge(
+  target: TargetWithHealth,
+  stats: PerTargetStats | undefined,
+  t: (key: string) => string,
+) {
+  // Per-target stats (when available) win — they're populated from the
+  // live HealthState. Fall back to the rule-listing snapshot, then to
+  // "unknown" before any observation has landed.
+  let healthy: boolean | undefined;
+  if (stats) {
+    healthy = stats.health === 0;
+  } else if (target.health) {
+    healthy = target.health.healthy;
+  }
+  if (healthy === undefined) {
+    return (
+      <Badge variant="secondary">{t("ruleDetail.health.unknown")}</Badge>
+    );
+  }
+  if (healthy) {
+    return (
+      <Badge variant={"success" as never}>{t("ruleDetail.health.healthy")}</Badge>
+    );
+  }
+  return (
+    <Badge variant="destructive">{t("ruleDetail.health.failed")}</Badge>
   );
 }
 
