@@ -55,8 +55,10 @@ only. Therefore:
 | D8 | Wire compat | `optional string sni_pattern = 11;` (proto3 optional); RuleUpdate stays single-rule | Old clients drop the field on decode → silently treated as plain TCP. Mitigated by D9 gate + Mode-Locked Lifetime. |
 | D9 | Client capability gate | Refuse `push-rule` with `sni_pattern.is_some()` to a client whose last `Hello.client_version < 0.9.0` → HTTP 422 `sni_unsupported_by_client` | Mirrors R-007 (v0.7 multi-target gate). Without it an old client would activate the rule as plain TCP. |
 | D10 | SQL uniqueness | **No SQL UNIQUE** on `(listen_port, sni_pattern)`; uniqueness enforced by `ServerRuleStore` per `(client_name, listen_port)` | `rules` has no `client_name` column; adding one for v0.9 is out-of-scope. App-layer index is already client-scoped. |
-| D11 | RuleStats wire | Add five `uint64` counter fields to `RuleStats` (proto field numbers 11–15) | Reuses the existing client→server stats stream; no new endpoint needed. |
-| D12 | Peek-duration histogram | **Deferred to v0.10+** | Histogram doesn't fit `RuleStats`'s monotonic-counter shape; needs a separate channel. Counters give us enough operational signal for v0.9. |
+| D11a | RuleStats wire (hits) | Add three `uint64` counter fields to `RuleStats` at field numbers **13, 14, 15** (`sni_route_exact_total`, `sni_route_wildcard_total`, `sni_route_fallback_total`) | Fields 11 (`target_failovers_total`) and 12 (`per_target`) are taken by v0.7. Hits are attributable to the matched `rule_id`, so they belong on `RuleStats`. |
+| D11b | Listener-level counters | Add a new `SniListenerStats { listen_port, sni_route_miss_total, client_hello_parse_failures_total }` message; carry it in `StatsReport.sni_listener_stats = 3` | Miss / parse-failure happen *before* a rule is selected and have no `rule_id`. Forcing them onto `RuleStats` would require a fake rule attribution and confuse operators. |
+| D12 | Peek-duration histogram | **Deferred to v0.10+** | Histogram doesn't fit the monotonic-counter shape of `RuleStats` / `SniListenerStats`; needs a separate channel. Counters give enough operational signal for v0.9. |
+| D13 | Data-plane events surface | client `tracing` events + Prometheus counters **only**; **NOT** the SQLite `audit` ring | `crates/forward-server/src/operator/audit.rs:16-31` documents that high-frequency client-side events stay in the structured tracing log; SQLite `audit` is reserved for operator allow/deny actions. Same precedent as v0.7's `rule.target.health_changed`. |
 
 ## Mode-Locked Listener Lifetime (replaces "atomic group rebroadcast")
 
@@ -151,18 +153,24 @@ listener mode (set at first activation, immutable for lifetime)
   `SNI Pattern` input only when Protocol = TCP and Port mode = Single, with
   helper text covering exact / wildcard / blank-fallback semantics.
 
-### Failure handling (audit events)
+### Failure handling — client tracing events (NOT audit ring)
 
-| Event | When |
-|---|---|
-| `tls.client_hello_timeout` | 3 s elapsed before a parseable ClientHello arrived |
-| `tls.parse_failed` | Bytes are not TLS or ClientHello structure is malformed |
-| `tls.no_sni` | ClientHello valid but no `server_name` extension; carries `fallback_used: bool` |
-| `tls.sni_no_match` | Has SNI, no rule matches, no fallback present |
-| `tls.sni_routed` | Successful routing on a SNI listener |
+All five events below are emitted as forward-client structured tracing
+events with `target = "tls_sni"`. They do **not** flow into the SQLite
+`audit` ring (D13 / R-AUDIT precedent at `audit.rs:16-31`). Operators
+correlate via the structured log and the Prometheus counters below.
 
-`tls.sni_routed` is the only per-connection audit event introduced; legacy
-plain-TCP listeners continue to emit zero per-connection events.
+| Tracing event | Level | When |
+|---|---|---|
+| `tls.client_hello_timeout` | WARN | 3 s elapsed before a parseable ClientHello arrived |
+| `tls.parse_failed` | WARN | Bytes are not TLS or ClientHello structure is malformed |
+| `tls.no_sni` | INFO | ClientHello valid but no `server_name` extension; carries `fallback_used: bool` |
+| `tls.sni_no_match` | WARN | Has SNI, no rule matches, no fallback present |
+| `tls.sni_routed` | INFO | Successful routing on a SNI listener |
+
+Legacy plain-TCP listeners emit no per-connection tracing events on the
+`tls_sni` target (preserving v0.7's "control-plane changes + exceptions only"
+audit budget).
 
 ### "None" Semantics — disambiguated
 
@@ -189,20 +197,48 @@ live listener.
 optional string sni_pattern = 11;
 ```
 
-`proto/forward.proto` RuleStats (D11):
+`proto/forward.proto` RuleStats (D11a — hits only):
 ```proto
-// Additive in v1.5. Per-rule SNI counters; monotonic; absent = 0.
-uint64 sni_route_exact_total            = 11;
-uint64 sni_route_wildcard_total         = 12;
-uint64 sni_route_fallback_total         = 13;
-uint64 sni_route_miss_total             = 14;
-uint64 client_hello_parse_failures_total = 15;
+// Additive in v1.5 (spec 009-tls-sni-routing). Field numbers continue
+// after v0.7's `target_failovers_total = 11` and `per_target = 12`.
+// All three are monotonic; default-zero on the wire.
+uint64 sni_route_exact_total    = 13;
+uint64 sni_route_wildcard_total = 14;
+uint64 sni_route_fallback_total = 15;
 ```
 
-Wire-compat test (`crates/forward-proto/tests/sni_wire_compat.rs`):
-- v0.8 binary encoding round-trips through v0.9 deserialiser → fields absent.
-- v0.9 encoding with all SNI fields zero/absent is byte-identical to v0.8.
-- Field 11 round-trip on `Rule`; fields 11–15 round-trip on `RuleStats`.
+`proto/forward.proto` new SniListenerStats (D11b — listener-level events
+that have no rule attribution):
+```proto
+// New in v1.5 (spec 009-tls-sni-routing). One per active SNI listener
+// on the client. Carried alongside RuleStats in StatsReport.
+message SniListenerStats {
+  uint32 listen_port                       = 1;
+  uint64 sni_route_miss_total              = 2;
+  uint64 client_hello_parse_failures_total = 3;
+}
+```
+
+`proto/forward.proto` StatsReport gains field 3:
+```proto
+message StatsReport {
+  uint64 sent_at_unix_ms = 1;
+  repeated RuleStats stats = 2;
+  // Additive in v1.5; empty for clients with no SNI listener.
+  repeated SniListenerStats sni_listener_stats = 3;
+}
+```
+
+Wire-compat tests (`crates/forward-proto/tests/sni_wire_compat.rs`):
+- v0.8 binary encoding round-trips through v0.9 deserialiser → all new
+  fields absent / zero.
+- v0.9 encoding with sni fields zero / `sni_listener_stats` empty is
+  byte-identical to v0.8 for the same logical content.
+- Round-trip: `Rule.sni_pattern = 11`; `RuleStats.sni_route_*_total =
+  13/14/15`; `StatsReport.sni_listener_stats = 3` carrying `SniListenerStats`
+  with fields 1/2/3.
+- **Negative**: explicitly assert that nothing in this spec touches
+  `RuleStats` field 11 (`target_failovers_total`) or 12 (`per_target`).
 
 ### forward-client (data plane)
 
@@ -221,27 +257,35 @@ crates/forward-client/src/forwarder/
 ```
 
 `PortGroupManager` is the single place that materialises rules into running
-listeners. The control loop sends rule deltas to it. For each
-`(client, listen_port)` it tracks:
+listeners. The control loop sends rule deltas to it. State per
+`(client, listen_port)` group:
 - `mode: Legacy | Sni`
 - For legacy: the existing v0.7 forwarder task handle
-- For SNI: a `tokio::sync::watch::Sender<Arc<SniRoutingTable>>` and the
-  listener task handle
+- For SNI: a `tokio::sync::watch::Sender<Arc<SniRoutingTable>>`, the listener
+  task handle, and the cumulative `SniListenerStats` (D11b) — incremented
+  by the listener's accept handler and drained on the StatsReport tick.
 
-On each `RuleUpdate(PUSH | REMOVE)`:
-1. Look up the group by listen port.
-2. If empty and PUSH → bind listener in the appropriate mode (the rule's
-   `sni_pattern` decides).
-3. If non-empty and PUSH/REMOVE same-mode → update the local rule set; for
-   SNI mode, build a fresh `SniRoutingTable` from current members and
-   `watch::Sender::send_replace`. The accept loop's per-connection task
-   borrows `Arc<SniRoutingTable>` once at accept time; in-flight connections
-   are unaffected.
-4. If group goes empty → cancel the listener task, drain, drop the watch.
-5. PUSH that would change mode is impossible by D9 + the server-side overlap
-   rules; if one ever leaks through, the client emits
-   `event = "control.mode_change_attempt_rejected"` and rejects via the
-   existing `RuleStatus { outcome = Failed, reason = "mode_change_unsupported" }`.
+The manager also keeps a **reverse index** `HashMap<RuleId, ListenPort>`
+because `RuleUpdate(REMOVE)` carries only `rule_id` (per
+`proto/forward.proto:179`). Without it, REMOVE can't find which group owns
+the rule. Index is updated on every PUSH/REMOVE.
+
+On each `RuleUpdate`:
+1. **PUSH**: index `(client, candidate.listen_port)` → group.
+   - Empty group → bind listener in the mode dictated by `sni_pattern`.
+   - Non-empty same-mode group → add to membership; for SNI mode, build a
+     fresh `SniRoutingTable` from current members and
+     `watch::Sender::send_replace`. The accept loop's per-connection task
+     borrows `Arc<SniRoutingTable>` once at accept time; in-flight
+     connections are unaffected.
+   - Mode-change attempt: refused at the server (D9 + overlap table) so the
+     client should never see one; if it does, emit
+     `event = "control.mode_change_attempt_rejected"` and answer with
+     `RuleStatus { outcome = Failed, reason = "mode_change_unsupported" }`.
+2. **REMOVE**: look up `rule_id` in the reverse index → group → drop member.
+   - Group empty → cancel listener task, drain, drop the watch + reverse
+     index entry.
+   - Group non-empty SNI → rebuild table + `send_replace`.
 
 `ClientRule` gains:
 ```rust
@@ -262,8 +306,16 @@ pub struct ClientRule {
   `version_at_least_0_9` next to `version_at_least_0_7`.
 - `crates/forward-server/src/main.rs` — `push-rule --sni <pattern>` flag.
 - `crates/forward-server/src/grpc/service.rs` — extend the existing
-  `StatsReport` fold to write the five new SNI counters into per-rule
-  Prometheus collectors.
+  `StatsReport` fold (around `:317`) to:
+  - read the three new `RuleStats` SNI counters and update per-rule
+    collectors with `client, rule, owner, result` labels;
+  - read the new `StatsReport.sni_listener_stats` repeated field and update
+    listener-level collectors with `client, port` labels.
+- `crates/forward-server/src/metrics.rs` — register the new collectors,
+  reusing the existing `client, rule, owner` label triple for hits and a
+  new `client, port` pair for listener-level counters (no `rule_id` /
+  `owner_user_id` labels — kept consistent with v0.7 conventions at
+  `metrics.rs:156`).
 
 ### Component contracts (new code)
 
@@ -326,32 +378,33 @@ data migration (additive column).
 
 ### Prometheus metrics (server-side, surfaced via existing `/metrics`)
 
-The five new `RuleStats` counters (D11) are folded by the server's existing
-StatsReport handler (`crates/forward-server/src/grpc/service.rs:317`) into
-labelled Prometheus collectors registered alongside the v0.7 per-rule
-counters:
+Labels follow the v0.5+ convention used everywhere else in
+`crates/forward-server/src/metrics.rs:156` — `client`, `rule`, `owner` for
+per-rule, plus `result` where applicable. We deliberately do **not** invent
+`rule_id` or `owner_user_id` labels.
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `forward_tls_sni_route_total` | counter | `rule_id`, `result=exact|wildcard|fallback|miss` | sum of the four `sni_route_*_total` fields per rule |
-| `forward_tls_client_hello_parse_failures_total` | counter | `rule_id` | `client_hello_parse_failures_total` field |
+| `forward_tls_sni_route_total` | counter | `client`, `rule`, `owner`, `result=exact|wildcard|fallback` | three `RuleStats.sni_route_*_total` fields, one fold per row |
+| `forward_tls_sni_listener_miss_total` | counter | `client`, `port` | `SniListenerStats.sni_route_miss_total` |
+| `forward_tls_client_hello_parse_failures_total` | counter | `client`, `port` | `SniListenerStats.client_hello_parse_failures_total` |
+| `forward_tls_sni_routes_active` | gauge | — | `ServerRuleStore` count of rules with `sni_pattern.is_some()` (server-side, no client plumbing) |
 
-A single existing `owner_user_id` label is included for cardinality consistency
-with v0.5+ (see `state.rules.get(...).owner_user_id`).
+Why the listener-level metrics use `port` (not `rule`): miss / parse-failure
+happen before a rule is selected, so there is no honest `rule` label to
+attach. `client` keeps cardinality bounded — one client × one listener port
+per series.
 
 `forward_tls_client_hello_peek_duration_seconds` (histogram, D12) is
-**deferred** to v0.10+ — `RuleStats` carries monotonic counters only and a
-new channel just for histograms isn't justified for v0.9.
-
-`forward_tls_sni_routes_active` (gauge) is sourced server-side from
-`ServerRuleStore` (count of rules with `sni_pattern.is_some()`); no client
-plumbing required.
+**deferred** to v0.10+.
 
 ### Logs
 
-forward-client `tracing` events with `target = "tls_sni"`, INFO for routed
-connections, WARN for parse failures and unmatched SNI. forward-server
-mirrors structured audit events into the SQLite `audit` table per v0.8.
+forward-client emits all five `tls_sni` tracing events listed in §Failure
+handling. forward-server does **not** mirror them into the SQLite `audit`
+ring — that ring is reserved for operator allow/deny actions per
+`audit.rs:16-31`. Operators correlate via the structured tracing log plus
+the Prometheus counters above.
 
 ## Testing Strategy
 
@@ -393,13 +446,14 @@ forward-client (`crates/forward-client/tests/`):
 | `sni_route_not_tls.rs` | Plain HTTP on the port → reset + `tls.parse_failed` |
 | `sni_byte_passthrough.rs` | sha256 of upstream-received bytes equals client-sent bytes |
 | `sni_hot_reload.rs` | In-flight connection unaffected when group members change |
-| `sni_stats_emitted.rs` | After mixed traffic, `RuleStats` carries the expected counter values for fields 11–15 |
+| `sni_stats_emitted.rs` | After mixed traffic, `RuleStats` carries the expected counter values for fields 13/14/15 and `StatsReport.sni_listener_stats` carries non-zero miss / parse-failure counts |
+| `sni_remove_by_rule_id.rs` | RuleUpdate(REMOVE) with only rule_id removes the right group member; reverse index stays consistent |
 | `legacy_plain_tcp_unchanged.rs` | A non-SNI port on the same client is byte-identical to v0.7 (no peek path entered) |
 
 forward-server end-to-end (`crates/forward-server/tests/`):
 | File | Covers |
 |---|---|
-| `sni_metrics_surface.rs` | After a forward-client emits SNI counters, server `/metrics` exposes `forward_tls_sni_route_total{rule_id=..,result=..}` |
+| `sni_metrics_surface.rs` | After a forward-client emits SNI counters, server `/metrics` exposes `forward_tls_sni_route_total{client,rule,owner,result}` and `forward_tls_sni_listener_miss_total{client,port}` |
 
 forward-proto (`crates/forward-proto/tests/`):
 | File | Covers |
@@ -419,8 +473,12 @@ forward-proto (`crates/forward-proto/tests/`):
 - **II. Single binary** — pure-Rust parser, **zero new deps**. `tokio::sync::watch`
   replaces ArcSwap; `Vec<RuleId>` replaces SmallVec; `parking_lot` not used.
 - **III. Test-first** — every FR / SC has a failing test before implementation.
-- **IV. Observability** — counters via `RuleStats` → server `/metrics`; legacy
-  plain ports retain zero per-connection audit cost; histogram deferred.
+- **IV. Observability** — three per-rule SNI hit counters via `RuleStats`
+  (fields 13/14/15) and a separate `SniListenerStats` for listener-level
+  miss / parse-failure counters; both surface through the server's existing
+  `/metrics` with `client/rule/owner/result` and `client/port` labels
+  respectively. Data-plane events are tracing-only — they don't pollute the
+  SQLite operator audit ring (D13). Histogram deferred.
 - **V. byte-stable control plane** — proto fields 11 (Rule) and 11–15
   (RuleStats) are `optional` / default-zero; D9 prevents silent SNI
   activation on v0.8 clients; schema migration is purely additive.
@@ -441,16 +499,20 @@ forward-proto (`crates/forward-proto/tests/`):
 
 ## Open Questions
 
-1. Should the `tls.sni_routed` audit event include the matched `server_name`
-   in clear text? (Privacy vs. observability.) Recommendation: yes — the
-   value is already on the wire in clear, and operators need it for routing
-   audits.
+1. Should the `tls.sni_routed` tracing event include the matched
+   `server_name` in clear text? (Privacy vs. observability.) Recommendation:
+   yes — the value is already on the wire in clear, and operators need it
+   for routing diagnostics.
 2. Should v0.9 ship a `forward-client-bundle.json` field for SNI defaults
    (e.g. operator-side timeout override per client)? Recommendation: no —
    keep tunables server-side; revisit if real deployments ask.
 3. Histogram deferral (D12) — confirm during `/speckit-specify` whether
    peek-duration is required for any SC; if so we add a separate stats
    channel.
+4. Listener-level metric labels — `client, port` (chosen) keeps cardinality
+   bounded but loses owner attribution for listener-level events. Acceptable
+   because operator allow/deny on the *rule* is already audited;
+   listener-level events are diagnostic. Confirm during speckit-specify.
 
 Anything else surprising during plan-writing or implementation can be parked
 here.
