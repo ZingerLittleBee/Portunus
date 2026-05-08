@@ -131,6 +131,15 @@ pub struct Rule {
     /// configured cadence; `n` MUST be in `1..=3600`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_interval_secs: Option<u32>,
+
+    /// 009-tls-sni-routing FR-001: optional Server Name Indication
+    /// pattern for TLS dispatch. Only valid on TCP single-port rules
+    /// (FR-002). `None` means plain TCP forward / TLS-only fallback,
+    /// depending on listener mode (Mode-Locked Lifetime, FR-014).
+    /// Always lowercased ASCII; grammar validated by the operator
+    /// HTTP handler before persistence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sni_pattern: Option<String>,
 }
 
 impl crate::operator::rbac::HasOwner for Rule {
@@ -259,6 +268,38 @@ pub enum RuleStoreError {
         client_name: ClientName,
         protocol: &'static str,
     },
+
+    /// 009-tls-sni-routing: a candidate SNI rule has the same
+    /// `sni_pattern` as an existing sibling on `(client, listen_port)`.
+    /// Surfaced to the operator as HTTP 409 / `conflict.sni_route_duplicate`.
+    #[error("sni_route_duplicate: client {client_name} listen_port {listen_port} sni_pattern {sni_pattern} already in use")]
+    SniRouteDuplicate {
+        client_name: ClientName,
+        listen_port: u16,
+        sni_pattern: String,
+    },
+
+    /// 009-tls-sni-routing: a candidate fallback rule (`sni_pattern = None`)
+    /// is being pushed to a listener that already has a fallback slot.
+    /// Surfaced as HTTP 409 / `conflict.sni_fallback_duplicate`.
+    #[error("sni_fallback_duplicate: client {client_name} listen_port {listen_port} already has a fallback rule")]
+    SniFallbackDuplicate {
+        client_name: ClientName,
+        listen_port: u16,
+    },
+
+    /// 009-tls-sni-routing FR-015: a candidate would flip an active
+    /// listener's mode (legacy plain-TCP ↔ SNI dispatch). Refused with
+    /// HTTP 409 / `conflict.legacy_to_sni_unsupported`. Operator must
+    /// remove the existing rule first, then push the new shape onto a
+    /// freshly bound listener.
+    #[error("legacy_to_sni_unsupported: client {client_name} listen_port {listen_port} has an active rule in {existing_mode} mode; remove it first before pushing in {candidate_mode} mode")]
+    LegacyToSniUnsupported {
+        client_name: ClientName,
+        listen_port: u16,
+        existing_mode: &'static str,
+        candidate_mode: &'static str,
+    },
 }
 
 /// In-memory rule store. Cheap to clone (`Arc` internal); thread-safe via
@@ -277,7 +318,13 @@ struct Inner {
     /// overlaps in O(log N + matches). Tracks rules in `Active` or
     /// `Failed` state per Q4 (002-port-range-forward extends the same
     /// semantics to ranges).
-    by_client_listen_start: HashMap<ClientName, BTreeMap<u16, RuleId>>,
+    ///
+    /// 009-tls-sni-routing T026: the value is `Vec<RuleId>` so a SNI
+    /// listener can hold multiple TCP-single-port rules sharing the
+    /// same `(client, listen_port)` (each with a distinct
+    /// `sni_pattern`). For range rules and UDP rules the vec stays
+    /// length-1 (overlap is still rejected the v0.7 way).
+    by_client_listen_start: HashMap<ClientName, BTreeMap<u16, Vec<RuleId>>>,
 }
 
 impl ServerRuleStore {
@@ -318,6 +365,38 @@ impl ServerRuleStore {
         .await
     }
 
+    /// 009-tls-sni-routing: same as [`push`] but with an explicit
+    /// `sni_pattern`. Used by the SNI overlap-matrix tests.
+    /// 009-tls-sni-routing: push a single-port TCP rule with an
+    /// optional `sni_pattern`. Thin shim over `push_range_with_targets`
+    /// for tests and future SNI-aware callers. Available outside the
+    /// test cfg so integration tests in `tests/` can reach it.
+    #[allow(dead_code)]
+    pub async fn push_with_sni(
+        &self,
+        client_name: ClientName,
+        listen_port: u16,
+        target_host: String,
+        target_port: u16,
+        protocol: Protocol,
+        sni_pattern: Option<String>,
+    ) -> Result<Rule, RuleStoreError> {
+        self.push_range_with_targets(
+            client_name,
+            PortRange::single(listen_port),
+            target_host,
+            PortRange::single(target_port),
+            protocol,
+            None,
+            u32::MAX,
+            forward_auth::UserId::superadmin(),
+            Vec::new(),
+            None,
+            sni_pattern,
+        )
+        .await
+    }
+
     /// Push a (potentially range) rule. Validates structure, enforces
     /// the configured cap, and rejects overlaps with any existing
     /// `Active`/`Failed` rule on the same client. The `owner_user_id`
@@ -351,6 +430,7 @@ impl ServerRuleStore {
             owner_user_id,
             Vec::new(),
             None,
+            None,
         )
         .await
     }
@@ -364,6 +444,7 @@ impl ServerRuleStore {
     /// passive-only failover (FR-015), `Some(n)` opts the rule into the
     /// active TCP-connect probe at the configured cadence.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn push_range_with_targets(
         &self,
         client_name: ClientName,
@@ -376,6 +457,7 @@ impl ServerRuleStore {
         owner_user_id: forward_auth::UserId,
         targets: Vec<forward_core::RuleTarget>,
         health_check_interval_secs: Option<u32>,
+        sni_pattern: Option<String>,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
         let (listen, target) =
@@ -389,6 +471,9 @@ impl ServerRuleStore {
             });
         }
 
+        let candidate_is_single_tcp = protocol == Protocol::Tcp && listen.len() == 1;
+        let candidate_listen_port = listen.start();
+
         let mut guard = self.inner.write().await;
 
         // Conflict check via the per-client interval index. We walk
@@ -398,22 +483,133 @@ impl ServerRuleStore {
         // protocol blocks the push. 004-udp-forward T036: cross-protocol
         // rules on the same port coexist (UDP:6000 alongside TCP:6000
         // is legal because the kernel demuxes by protocol).
+        //
+        // 009-tls-sni-routing T026: TCP single-port candidates are
+        // evaluated against the §Overlap matrix
+        // (`specs/009-tls-sni-routing/data-model.md`):
+        //   * legacy plain (None) ↔ SNI (Some) on the same port → reject
+        //     with LegacyToSniUnsupported (mode-locked lifetime)
+        //   * sni_pattern collision (same Some value or two None
+        //     fallbacks) → reject with SniRouteDuplicate /
+        //     SniFallbackDuplicate
+        //   * distinct sni_pattern siblings → ACCEPT (the listener fans
+        //     them out into one SniRoutingTable)
         if let Some(index) = guard.by_client_listen_start.get(&client_name) {
-            for (_start, existing_id) in index.range(..=listen.end()) {
-                let Some(existing) = guard.rules.get(existing_id) else {
-                    continue;
-                };
-                if existing.protocol != protocol {
-                    continue;
-                }
-                let existing_range = existing.listen_range();
-                if existing_range.overlaps(listen)
-                    && matches!(existing.state, RuleState::Active | RuleState::Failed { .. })
-                {
-                    let offending = listen.start().max(existing_range.start());
-                    return Err(RuleStoreError::PortInUse {
-                        offending_port: offending,
-                    });
+            for (_start, existing_ids) in index.range(..=listen.end()) {
+                for existing_id in existing_ids {
+                    let Some(existing) = guard.rules.get(existing_id) else {
+                        continue;
+                    };
+                    if existing.protocol != protocol {
+                        continue;
+                    }
+                    if !matches!(existing.state, RuleState::Active | RuleState::Failed { .. }) {
+                        continue;
+                    }
+                    let existing_range = existing.listen_range();
+                    if !existing_range.overlaps(listen) {
+                        continue;
+                    }
+
+                    // 009-tls-sni-routing: SNI-aware overlap matrix
+                    // applies only when BOTH sides are TCP single-port
+                    // rules on the same listen_port. Anything else
+                    // falls back to the v0.7 PortInUse decision.
+                    let existing_is_single_tcp =
+                        existing.protocol == Protocol::Tcp && existing.listen_port_end.is_none();
+                    let existing_listen_port = existing.listen_port;
+                    let same_single_port = candidate_is_single_tcp
+                        && existing_is_single_tcp
+                        && existing_listen_port == candidate_listen_port;
+
+                    if same_single_port {
+                        match (&existing.sni_pattern, &sni_pattern) {
+                            (None, None) => {
+                                // Two legacy fallback rules — duplicate.
+                                // Caller will surface this as either
+                                // PortInUse (back-compat) or
+                                // SniFallbackDuplicate (sibling case).
+                                // We default to PortInUse to preserve
+                                // v0.7 behaviour for pure-legacy ports;
+                                // the sni_fallback_duplicate code is
+                                // reserved for the case where the
+                                // EXISTING listener already carries SNI
+                                // siblings — which can't happen here
+                                // because both rules are None.
+                                return Err(RuleStoreError::PortInUse {
+                                    offending_port: candidate_listen_port,
+                                });
+                            }
+                            (None, Some(_)) => {
+                                return Err(RuleStoreError::LegacyToSniUnsupported {
+                                    client_name: client_name.clone(),
+                                    listen_port: candidate_listen_port,
+                                    existing_mode: "legacy",
+                                    candidate_mode: "sni",
+                                });
+                            }
+                            (Some(_), None) => {
+                                // Existing port is SNI mode; candidate
+                                // is a fallback (None). Two outcomes:
+                                //   - existing port already has a
+                                //     fallback sibling (some other rule
+                                //     with sni_pattern = None on this
+                                //     port) → SniFallbackDuplicate.
+                                //   - existing port has only SNI rules
+                                //     and no fallback → ACCEPT (the
+                                //     candidate becomes the fallback).
+                                let mut has_fallback = false;
+                                if let Some(siblings) =
+                                    guard.by_client_listen_start.get(&client_name)
+                                    && let Some(sibling_ids) =
+                                        siblings.get(&candidate_listen_port)
+                                {
+                                    for sid in sibling_ids {
+                                        if let Some(sib) = guard.rules.get(sid)
+                                            && sib.protocol == Protocol::Tcp
+                                            && sib.listen_port_end.is_none()
+                                            && sib.sni_pattern.is_none()
+                                        {
+                                            has_fallback = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if has_fallback {
+                                    return Err(RuleStoreError::SniFallbackDuplicate {
+                                        client_name: client_name.clone(),
+                                        listen_port: candidate_listen_port,
+                                    });
+                                }
+                                // Else fall through; outer loop
+                                // continues and ultimately the rule is
+                                // accepted because no further conflict
+                                // exists. Mark by setting a flag below.
+                            }
+                            (Some(existing_pat), Some(candidate_pat)) => {
+                                if existing_pat == candidate_pat {
+                                    return Err(RuleStoreError::SniRouteDuplicate {
+                                        client_name: client_name.clone(),
+                                        listen_port: candidate_listen_port,
+                                        sni_pattern: candidate_pat.clone(),
+                                    });
+                                }
+                                // Distinct SNI siblings — accept; the
+                                // outer loop continues only to surface
+                                // OTHER conflicts (e.g. an overlapping
+                                // range rule on the same client/port).
+                            }
+                        }
+                    } else {
+                        // Either sides are not both TCP single-port,
+                        // or the listen ports differ within an
+                        // overlapping range. v0.7 semantics apply:
+                        // any overlap of an Active/Failed rule blocks.
+                        let offending = listen.start().max(existing_range.start());
+                        return Err(RuleStoreError::PortInUse {
+                            offending_port: offending,
+                        });
+                    }
                 }
             }
         }
@@ -446,12 +642,15 @@ impl ServerRuleStore {
             owner_user_id,
             targets,
             health_check_interval_secs,
+            sni_pattern,
         };
         guard
             .by_client_listen_start
             .entry(client_name)
             .or_default()
-            .insert(listen.start(), id);
+            .entry(listen.start())
+            .or_default()
+            .push(id);
         guard.rules.insert(id, rule.clone());
         Ok(rule)
     }
@@ -485,11 +684,20 @@ impl ServerRuleStore {
     /// Remove the rule and free its conflict-index entry. Returns
     /// `NotFound` if the id is unknown — callers (the operator CLI)
     /// map that to exit 8.
+    ///
+    /// 009-tls-sni-routing T026: with multiple SNI rules per port, the
+    /// per-(client, port) slot is a `Vec<RuleId>`; we drop only the
+    /// matching id and remove the slot when the vec becomes empty.
     pub async fn remove(&self, id: RuleId) -> Result<Rule, RuleStoreError> {
         let mut guard = self.inner.write().await;
         let rule = guard.rules.remove(&id).ok_or(RuleStoreError::NotFound)?;
         if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_name) {
-            index.remove(&rule.listen_port);
+            if let Some(ids) = index.get_mut(&rule.listen_port) {
+                ids.retain(|x| *x != id);
+                if ids.is_empty() {
+                    index.remove(&rule.listen_port);
+                }
+            }
             if index.is_empty() {
                 guard.by_client_listen_start.remove(&rule.client_name);
             }
@@ -530,7 +738,12 @@ impl ServerRuleStore {
         for id in to_remove {
             if let Some(rule) = guard.rules.remove(&id) {
                 if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_name) {
-                    index.remove(&rule.listen_port);
+                    if let Some(ids) = index.get_mut(&rule.listen_port) {
+                        ids.retain(|x| *x != id);
+                        if ids.is_empty() {
+                            index.remove(&rule.listen_port);
+                        }
+                    }
                     if index.is_empty() {
                         guard.by_client_listen_start.remove(&rule.client_name);
                     }

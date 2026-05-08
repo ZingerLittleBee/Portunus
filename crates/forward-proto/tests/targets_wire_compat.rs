@@ -42,6 +42,7 @@ fn v06_single_target_rule_emits_no_new_field_tags() {
         prefer_ipv6: None,
         targets: vec![],
         health_check_interval_secs: 0,
+        sni_pattern: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -78,6 +79,9 @@ fn v06_single_target_rule_stats_emits_no_new_field_tags() {
         flows_dropped_overflow: 0,
         target_failovers_total: 0,
         per_target: vec![],
+        sni_route_exact_total: 0,
+        sni_route_wildcard_total: 0,
+        sni_route_fallback_total: 0,
     };
     let bytes = s.encode_to_vec();
 
@@ -125,6 +129,7 @@ fn multi_target_rule_roundtrips() {
             },
         ],
         health_check_interval_secs: 30,
+        sni_pattern: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -156,6 +161,7 @@ fn multi_target_rule_with_legacy_fields_clear_keeps_back_compat_shape() {
             priority: 0,
         }],
         health_check_interval_secs: 0,
+        sni_pattern: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -222,6 +228,9 @@ fn rule_stats_per_target_roundtrips() {
                 connections_accepted: 2,
             },
         ],
+        sni_route_exact_total: 0,
+        sni_route_wildcard_total: 0,
+        sni_route_fallback_total: 0,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

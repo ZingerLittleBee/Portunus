@@ -173,6 +173,14 @@ struct PushRuleBody {
     /// `targets[]`.
     #[serde(default)]
     health_check_interval_secs: Option<u32>,
+    /// 009-tls-sni-routing (FR-009..FR-012): optional SNI selector for
+    /// TCP single-port rules. Absent → fallback / legacy behaviour
+    /// preserved. Present → exact host (`api.example.com`) or
+    /// single-label wildcard (`*.example.com`). Lowercased and
+    /// grammar-validated by `post_rules`. UDP and range rules carrying
+    /// `sni_pattern` are rejected with 400 / `validation.sni_on_unsupported_rule`.
+    #[serde(default)]
+    sni_pattern: Option<String>,
 }
 
 /// One entry in the new `targets[]` shape. `priority` defaults to the
@@ -239,8 +247,39 @@ async fn post_rules(
         .ack_timeout_secs
         .map_or(DEFAULT_ACK_TIMEOUT, Duration::from_secs);
 
+    // 009-tls-sni-routing T029: SNI grammar + applicability gate.
+    // Applies to BOTH legacy and new shapes — `sni_pattern` is only
+    // valid on TCP single-port rules. UDP and range rules carrying
+    // a non-null `sni_pattern` are rejected with a 400.
+    let sni_pattern: Option<String> = if let Some(raw) = body.sni_pattern.as_deref() {
+        if !body.protocol.eq_ignore_ascii_case("tcp") {
+            return Err(OperatorError::SniValidation {
+                code: "validation.sni_on_unsupported_rule",
+                message: format!(
+                    "sni_pattern is only valid on tcp single-port rules; got protocol `{}`",
+                    body.protocol
+                ),
+            }
+            .into());
+        }
+        if listen.len() > 1 {
+            return Err(OperatorError::SniValidation {
+                code: "validation.sni_on_unsupported_rule",
+                message: format!(
+                    "sni_pattern is only valid on single-port rules, not ranges (listen {}..={})",
+                    listen.start(),
+                    listen.end()
+                ),
+            }
+            .into());
+        }
+        Some(validate_sni_pattern(raw)?)
+    } else {
+        None
+    };
+
     if has_new {
-        return push_multi_target(&state, &identity, &body, listen, timeout).await;
+        return push_multi_target(&state, &identity, &body, listen, timeout, sni_pattern).await;
     }
 
     // Legacy single-target shape (v0.6.0).
@@ -253,6 +292,27 @@ async fn post_rules(
         .expect("has_legacy true → target_port present");
     let target =
         build_range(target_port, body.target_port_end).map_err(OperatorError::RangeInvalid)?;
+
+    // 009-tls-sni-routing: legacy single-target shape carrying
+    // `sni_pattern` is reshaped into a 1-element `targets[]` and routed
+    // through the multi-target path so the SNI selector reaches
+    // `Rule.sni_pattern` and the wire emitter. The capability gate
+    // (T028) lives inside `push_multi_target_with_sni`.
+    if let Some(pat) = sni_pattern.clone() {
+        return push_legacy_with_sni(
+            &state,
+            &identity,
+            &body.client,
+            &body.protocol,
+            listen,
+            target_host,
+            target,
+            body.prefer_ipv6,
+            timeout,
+            pat,
+        )
+        .await;
+    }
 
     let rule = cli::push_rule(
         &state,
@@ -296,6 +356,7 @@ async fn push_multi_target(
     body: &PushRuleBody,
     listen: PortRange,
     timeout: Duration,
+    sni_pattern: Option<String>,
 ) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
     use crate::operator::rbac;
     use forward_core::rule_target;
@@ -366,6 +427,21 @@ async fn push_multi_target(
         .into());
     }
 
+    // 009-tls-sni-routing T028: SNI capability gate. A rule carrying
+    // `sni_pattern` requires a v0.9+ client; older clients cannot
+    // decode the field and would silently fall through to the
+    // pre-009 plain-TCP forwarding plane.
+    if sni_pattern.is_some()
+        && let Some(v) = state.clients.client_version_of(&client_name).await
+        && !version_at_least_0_9(&v)
+    {
+        return Err(OperatorError::SniUnsupportedByClient {
+            client_name: client_name.clone(),
+            client_version: v,
+        }
+        .into());
+    }
+
     // Phase 3 (T022): hand off to the multi-target push helper which
     // emits the new wire shape and waits for activation.
     let proto_internal = match proto {
@@ -383,6 +459,103 @@ async fn push_multi_target(
         body.prefer_ipv6,
         state.range_rule_max_ports,
         timeout,
+        sni_pattern,
+    )
+    .await?;
+    let status = match &rule.state {
+        crate::rules::RuleState::Pending => "Pending".to_string(),
+        crate::rules::RuleState::Active => "Active".to_string(),
+        crate::rules::RuleState::Failed { reason } => format!("Failed:{reason}"),
+        crate::rules::RuleState::Removed => "Removed".to_string(),
+    };
+    Ok((
+        StatusCode::CREATED,
+        Json(PushRuleResponse {
+            rule_id: rule.id.0,
+            status,
+            target_host: rule.target_host.clone(),
+            prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
+            protocol: rule.protocol.as_str().to_string(),
+            owner: rule.owner_user_id.to_string(),
+        }),
+    ))
+}
+
+/// 009-tls-sni-routing: legacy single-target shape carrying
+/// `sni_pattern` is internally upgraded to the 1-element `targets[]`
+/// form so the SNI selector reaches `Rule.sni_pattern` and the wire
+/// emitter via `cli::push_rule_multi_target`. Validation, RBAC and
+/// the v0.9 capability gate run here just like in `push_multi_target`.
+#[allow(clippy::too_many_arguments)]
+async fn push_legacy_with_sni(
+    state: &Arc<AppState>,
+    identity: &OperatorIdentity,
+    raw_client: &str,
+    protocol: &str,
+    listen: PortRange,
+    target_host: &str,
+    target: PortRange,
+    prefer_ipv6: Option<bool>,
+    timeout: Duration,
+    sni_pattern: String,
+) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
+    use crate::operator::rbac;
+    use std::str::FromStr;
+
+    let client_name =
+        forward_core::ClientName::from_str(raw_client).map_err(OperatorError::InvalidName)?;
+    let proto_wire = parse_protocol_str(protocol)?;
+    let push_proto = match proto_wire {
+        ProtocolWire::Tcp => rbac::PushProtocol::Tcp,
+        ProtocolWire::Udp => rbac::PushProtocol::Udp,
+    };
+    let push_req = rbac::PushRequest {
+        client: &client_name,
+        listen_port_start: listen.start(),
+        listen_port_end: listen.end(),
+        protocol: push_proto,
+    };
+    let grants = state.operator_auth.grants_for(&identity.user_id);
+    rbac::enforce_push(identity, &push_req, &grants).map_err(OperatorError::Rbac)?;
+
+    // SNI rules are TCP-only — the grammar gate already rejects UDP
+    // before we get here, but be defensive.
+    debug_assert!(matches!(proto_wire, ProtocolWire::Tcp));
+
+    // Capability gate (T028): client must be >= 0.9.0.
+    if let Some(v) = state.clients.client_version_of(&client_name).await
+        && !version_at_least_0_9(&v)
+    {
+        return Err(OperatorError::SniUnsupportedByClient {
+            client_name: client_name.clone(),
+            client_version: v,
+        }
+        .into());
+    }
+
+    let synth = vec![forward_core::RuleTarget {
+        host: target_host.to_string(),
+        port: target.start(),
+        priority: 0,
+    }];
+    forward_core::rule_target::validate(&synth).map_err(OperatorError::TargetsInvalid)?;
+
+    let proto_internal = match proto_wire {
+        ProtocolWire::Tcp => crate::rules::Protocol::Tcp,
+        ProtocolWire::Udp => crate::rules::Protocol::Udp,
+    };
+    let rule = cli::push_rule_multi_target(
+        state,
+        identity,
+        client_name,
+        listen,
+        synth,
+        None,
+        proto_internal,
+        prefer_ipv6,
+        state.range_rule_max_ports,
+        timeout,
+        Some(sni_pattern),
     )
     .await?;
     let status = match &rule.state {
@@ -431,6 +604,105 @@ fn version_at_least_0_7(version: &str) -> bool {
     let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     (major, minor) >= (0, 7)
+}
+
+/// 009-tls-sni-routing T027: semver-prefix comparison `version >= 0.9.0`
+/// for the SNI capability guard (FR-018). Same parsing semantics as
+/// `version_at_least_0_7` — malformed input gates conservatively.
+fn version_at_least_0_9(version: &str) -> bool {
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (0, 9)
+}
+
+/// 009-tls-sni-routing T029: validate + lowercase a candidate
+/// `sni_pattern`. Accepts:
+/// - exact host: `example.com`, `api.svc.example.com`
+/// - single-label wildcard: `*.example.com`, `*.svc.example.com`
+///
+/// Rejects: empty / whitespace; total length > 253; any label > 63;
+/// labels with leading/trailing hyphens; characters outside
+/// `[a-z0-9-]` (post-lowercase); `*.x` where `x` has no dot
+/// (single-label wildcard requires at least one inner label per
+/// FR-011); `*` anywhere except as the leftmost full label;
+/// IDN/punycode is accepted as raw ASCII (operator pre-encodes per
+/// research.md R-001).
+///
+/// Returns the normalised lowercased pattern on success.
+fn validate_sni_pattern(raw: &str) -> Result<String, OperatorError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(OperatorError::SniValidation {
+            code: "validation.sni_pattern_malformed",
+            message: "sni_pattern is empty".into(),
+        });
+    }
+    if trimmed.len() > 253 {
+        return Err(OperatorError::SniValidation {
+            code: "validation.sni_pattern_malformed",
+            message: format!("sni_pattern total length {} exceeds 253", trimmed.len()),
+        });
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let (is_wildcard, body) = if let Some(rest) = lower.strip_prefix("*.") {
+        (true, rest)
+    } else {
+        (false, lower.as_str())
+    };
+    if body.is_empty() {
+        return Err(OperatorError::SniValidation {
+            code: "validation.sni_pattern_malformed",
+            message: "sni_pattern body is empty after wildcard prefix".into(),
+        });
+    }
+    // Wildcard requires at least one inner dot (single-label wildcard
+    // must have a multi-label parent: `*.example.com` ok, `*.com` NOT ok
+    // per design §wildcards / FR-011 — top-level domain wildcards are
+    // refused as too broad).
+    if is_wildcard && !body.contains('.') {
+        return Err(OperatorError::SniValidation {
+            code: "validation.sni_pattern_malformed",
+            message: format!("wildcard sni_pattern `{trimmed}` requires a multi-label parent"),
+        });
+    }
+    // Validate every label.
+    for label in body.split('.') {
+        if label.is_empty() {
+            return Err(OperatorError::SniValidation {
+                code: "validation.sni_pattern_malformed",
+                message: format!("sni_pattern `{trimmed}` has an empty label"),
+            });
+        }
+        if label.len() > 63 {
+            return Err(OperatorError::SniValidation {
+                code: "validation.sni_pattern_malformed",
+                message: format!("sni_pattern label `{label}` exceeds 63 chars"),
+            });
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(OperatorError::SniValidation {
+                code: "validation.sni_pattern_malformed",
+                message: format!("sni_pattern label `{label}` has leading/trailing hyphen"),
+            });
+        }
+        for ch in label.chars() {
+            if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') {
+                return Err(OperatorError::SniValidation {
+                    code: "validation.sni_pattern_malformed",
+                    message: format!(
+                        "sni_pattern label `{label}` has illegal character `{ch}`"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(if is_wildcard {
+        format!("*.{body}")
+    } else {
+        body.to_string()
+    })
 }
 
 /// Build a `PortRange` from a `(start, optional end)` pair. Returns
@@ -636,7 +908,14 @@ impl From<OperatorError> for ApiError {
         let status = match &e {
             OperatorError::ClientAlreadyExists(_)
             | OperatorError::Auth(forward_auth::AuthError::ClientAlreadyExists(_))
-            | OperatorError::PortInUse { .. } => StatusCode::CONFLICT,
+            | OperatorError::PortInUse { .. }
+            // 009-tls-sni-routing (operator-api.md §1): SNI overlap
+            // failures share the 409 family with PortInUse — the
+            // listener committed to a shape that the candidate would
+            // violate.
+            | OperatorError::SniRouteDuplicate { .. }
+            | OperatorError::SniFallbackDuplicate { .. }
+            | OperatorError::LegacyToSniUnsupported { .. } => StatusCode::CONFLICT,
             OperatorError::InvalidName(_)
             | OperatorError::InvalidProtocol(_)
             | OperatorError::InvalidTarget(_)
@@ -648,7 +927,10 @@ impl From<OperatorError> for ApiError {
             | OperatorError::RuleShapeConflict
             | OperatorError::RuleShapeMissing
             | OperatorError::TargetsInvalid(_)
-            | OperatorError::HealthCheckIntervalOutOfRange { .. } => StatusCode::BAD_REQUEST,
+            | OperatorError::HealthCheckIntervalOutOfRange { .. }
+            // 009-tls-sni-routing T029: sni_pattern grammar / applicability
+            // failures share the 400 family.
+            | OperatorError::SniValidation { .. } => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_)
             | OperatorError::ActivationFailed(_)
             // 004-udp-forward T019: capability mismatch surfaces as 422
@@ -658,7 +940,10 @@ impl From<OperatorError> for ApiError {
             // 007-multi-target-failover (R-007): client connected but
             // its version cannot decode the new wire shape. Same
             // semantic class as UnsupportedProtocol.
-            | OperatorError::MultiTargetUnsupportedByClient { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            | OperatorError::MultiTargetUnsupportedByClient { .. }
+            // 009-tls-sni-routing (T028): SNI capability gate mirrors
+            // the v0.7 multi-target gate — same semantic class.
+            | OperatorError::SniUnsupportedByClient { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
             OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
             // 005-multi-user-rbac: RBAC failures use the auth_layer's
