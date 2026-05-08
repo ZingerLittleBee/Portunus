@@ -1439,4 +1439,208 @@ mod tests {
         cancel.cancel();
         task.await.unwrap();
     }
+
+    // =================================================================
+    // 009-tls-sni-routing — Phase 6 (US4) byte-stability suite.
+    //
+    // T063: legacy plain-TCP rules (`sni_pattern = None` AND no port-
+    //   group sharing) MUST never enter the SNI path. Verified
+    //   structurally by capturing every tracing event during a
+    //   forward and asserting none carry `target = "tls_sni"`.
+    //
+    // T065: byte-identity through `forwarder::run`. We deliberately
+    //   skip a hash digest — proto-style equality on the captured
+    //   `Vec<u8>` is the same byte-stability guarantee with fewer
+    //   moving parts (R-006: zero new workspace deps).
+    // =================================================================
+
+    use std::sync::Mutex as StdMutex;
+    use tracing::Subscriber;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context as TsContext;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry::LookupSpan;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    /// Captures every event's `target` string. Used to prove the
+    /// legacy path emits zero `tls_sni`-targeted events.
+    #[derive(Default)]
+    struct TargetCapture {
+        targets: StdMutex<Vec<String>>,
+    }
+    impl TargetCapture {
+        fn snapshot(&self) -> Vec<String> {
+            self.targets.lock().unwrap().clone()
+        }
+    }
+
+    struct CaptureLayer(Arc<TargetCapture>);
+    impl<S> Layer<S> for CaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: TsContext<'_, S>) {
+            self.0
+                .targets
+                .lock()
+                .unwrap()
+                .push(event.metadata().target().to_string());
+        }
+    }
+
+    /// Spawn a TCP backend that records every byte it reads into a
+    /// shared `Vec`. Used for byte-identity assertions instead of
+    /// the echo backend (we want to compare against what the *client*
+    /// sent, not what the echo bounced back).
+    async fn spawn_capture_backend() -> (
+        std::net::SocketAddr,
+        Arc<tokio::sync::Mutex<Vec<u8>>>,
+    ) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured: Arc<tokio::sync::Mutex<Vec<u8>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let task_cap = Arc::clone(&captured);
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => task_cap.lock().await.extend_from_slice(&buf[..n]),
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+        (addr, captured)
+    }
+
+    /// 009-tls-sni-routing T063: a legacy plain-TCP rule MUST forward
+    /// without ever emitting a `target = "tls_sni"` event. The dual
+    /// guarantee is that the SNI peek code path is never entered for
+    /// rules whose `sni_pattern = None` AND whose port has no other
+    /// SNI sibling.
+    #[tokio::test]
+    async fn t063_legacy_tcp_emits_no_tls_sni_events() {
+        let _guard = port_pool_lock().lock().await;
+
+        let capture = Arc::new(TargetCapture::default());
+        let layer = CaptureLayer(Arc::clone(&capture));
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _sub_guard = subscriber.set_default();
+
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let task = tokio::spawn(async move {
+            run(
+                single_rule(63, port, echo),
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(63)));
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        client.write_all(b"plain-tcp-bytes").await.unwrap();
+        let mut echoed = [0u8; 15];
+        client.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(&echoed, b"plain-tcp-bytes");
+        drop(client);
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+
+        let targets = capture.snapshot();
+        assert!(
+            !targets.iter().any(|t| t == "tls_sni"),
+            "legacy plain-TCP rule must not emit any tls_sni event; got targets: {targets:?}"
+        );
+    }
+
+    /// 009-tls-sni-routing T065: byte-identity regression. A 4 KiB
+    /// deterministic payload survives the legacy forward verbatim.
+    /// Vec equality is the same byte-stability guarantee as a sha256
+    /// digest match for in-process comparison (and avoids a new dep —
+    /// R-006).
+    #[tokio::test]
+    async fn t065_legacy_tcp_byte_identical_passthrough() {
+        let _guard = port_pool_lock().lock().await;
+
+        let (backend_addr, captured) = spawn_capture_backend().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let task = tokio::spawn(async move {
+            run(
+                single_rule(65, port, backend_addr),
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(65)));
+
+        let payload: Vec<u8> = (0..4096_u32).map(|i| (i & 0xff) as u8).collect();
+        {
+            let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
+            client.write_all(&payload).await.unwrap();
+            client.shutdown().await.ok();
+            // Drain any echo so the backend can finish; the capture
+            // backend doesn't echo, but the read keeps the connection
+            // alive while bytes are still in flight.
+            let mut sink = [0u8; 32];
+            let _ = client.read(&mut sink).await;
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if captured.lock().await.len() >= payload.len() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "timeout waiting for backend to capture all bytes ({} / {})",
+                    captured.lock().await.len(),
+                    payload.len()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            captured.lock().await.as_slice(),
+            payload.as_slice(),
+            "byte-stability: upstream must receive the exact bytes the client sent"
+        );
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+    }
 }

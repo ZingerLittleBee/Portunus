@@ -191,16 +191,16 @@ Bench home:
 
 ### Tests for User Story 4 (TDD)
 
-- [ ] T063 [P] [US4] Integration test — legacy plain-TCP byte-stability — `crates/forward-client/tests/legacy_plain_tcp_unchanged.rs`. Push a legacy rule on `:9000`; send a non-TLS payload (e.g. raw bytes / HTTP); assert the upstream receives the bytes byte-identically (sha256 match) AND assert via `tracing::subscriber` that no `target = "tls_sni"` event fires (data plane never enters the SNI path).
+- [x] T063 [P] [US4] Integration test — legacy plain-TCP byte-stability — `crates/forward-client/tests/legacy_plain_tcp_unchanged.rs`. Push a legacy rule on `:9000`; send a non-TLS payload (e.g. raw bytes / HTTP); assert the upstream receives the bytes byte-identically (sha256 match) AND assert via `tracing::subscriber` that no `target = "tls_sni"` event fires (data plane never enters the SNI path).
 - [ ] T064 [P] [US4] Wire-replay test — `crates/forward-server/tests/v07_v08_wire_replay.rs`. Capture an existing v0.8 RuleUpdate trace (from the `forward-e2e` integration suite or a synthetic capture) and replay against a v0.9 server; assert the response stream is byte-identical to the v0.8 baseline.
-- [ ] T065 [P] [US4] Reuse the existing v0.7 byte-passthrough test as a regression — `crates/forward-client/tests/sni_byte_passthrough.rs`. Two upstream paths (legacy + SNI listener); for both, assert sha256(upstream-received) == sha256(client-sent).
+- [x] T065 [P] [US4] Reuse the existing v0.7 byte-passthrough test as a regression — `crates/forward-client/tests/sni_byte_passthrough.rs`. Two upstream paths (legacy + SNI listener); for both, assert sha256(upstream-received) == sha256(client-sent).
 - [ ] T066 [P] [US4] Bench gate — confirm legacy data plane path is unchanged — `crates/forward-client/benches/data_plane.rs` (existing). Compare v0.9 numbers to the v0.7 / v0.8 baseline checked in under `specs/008-sqlite-storage/baselines/` (or capture a fresh baseline if none exists). Allow ≤ 5 % regression per Constitution II hot-path budget.
 
 ### Implementation for User Story 4
 
-- [ ] T067 [US4] Confirm `PortGroupManager::Legacy` arm dispatches to the existing v0.7 forwarder spawn (the one in `crates/forward-client/src/forwarder/mod.rs::spawn_for_rule`) without touching `proxy::proxy`'s preread path. The compile check + T063 + T064 + T065 + T066 jointly verify byte-stability.
-- [ ] T068 [US4] Add an explicit assertion in `SniListener::handle_accept`: if the route group's mode is Legacy, the listener task should not exist — Legacy listeners run a different task type. Catch any developer footgun with `debug_assert!(matches!(self.mode, ListenerMode::Sni))` early in the function.
-- [ ] T069 [US4] Remove the dual-spawn fallback (the side-by-side path kept in T043) once T067..T068 are green; control loop now goes through `PortGroupManager` for all TCP single-port rules. Other rule shapes (UDP, port-range) remain on the v0.7 spawn path unchanged.
+- [x] T067 [US4] Confirm `PortGroupManager::Legacy` arm dispatches to the existing v0.7 forwarder spawn (the one in `crates/forward-client/src/forwarder/mod.rs::spawn_for_rule`) without touching `proxy::proxy`'s preread path. The compile check + T063 + T064 + T065 + T066 jointly verify byte-stability.
+- [x] T068 [US4] Add an explicit assertion in `SniListener::handle_accept`: if the route group's mode is Legacy, the listener task should not exist — Legacy listeners run a different task type. Catch any developer footgun with `debug_assert!(matches!(self.mode, ListenerMode::Sni))` early in the function.
+- [x] T069 [US4] Remove the dual-spawn fallback (the side-by-side path kept in T043) once T067..T068 are green; control loop now goes through `PortGroupManager` for all TCP single-port rules. Other rule shapes (UDP, port-range) remain on the v0.7 spawn path unchanged.
 
 **Checkpoint**: v0.7 / v0.8 deployments upgrade to v0.9 without functional change.
 

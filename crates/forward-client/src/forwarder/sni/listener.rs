@@ -162,6 +162,17 @@ async fn handle_accept<R: Resolve + 'static>(
     resolver: Arc<LiveResolver<R>>,
     cancel: CancellationToken,
 ) {
+    // 009-tls-sni-routing T068: structural mode-lock guard. The
+    // PortGroupManager only constructs an `SniListener` for ports
+    // running in SNI dispatch mode (R-004). A non-empty routing
+    // table (or a populated resolver) is the live invariant; if a
+    // future "Legacy mode" gets bolted onto the same listener type,
+    // this assertion trips before any byte is peeked. Cheap in
+    // release builds (debug_assert!).
+    debug_assert!(
+        !routes.slots.is_empty(),
+        "SniListener::handle_accept invoked with no rule slots — legacy listeners must run a different task type (R-004)"
+    );
     let (preread, sni) = match peek::read_client_hello(&mut stream).await {
         Ok((buf, sni)) => (buf, sni),
         Err(PeekError::Timeout { bytes_read }) => {
