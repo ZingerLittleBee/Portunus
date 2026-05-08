@@ -62,8 +62,9 @@ enum Cmd {
         client: String,
         /// Listen port or `start-end` range.
         listen: String,
-        /// `host:port` or `host:start-end`.
-        target: String,
+        /// `host:port` or `host:start-end`. Legacy single-target form.
+        /// Omit when supplying `--target` or `--targets-json` (007).
+        target: Option<String>,
         #[arg(long, default_value = "tcp")]
         protocol: String,
         #[arg(long, default_value_t = 2)]
@@ -74,6 +75,22 @@ enum Cmd {
         /// AAAA is available — "prefer" is not "only".
         #[arg(long, default_value_t = false)]
         prefer_ipv6: bool,
+        /// 007-multi-target-failover: repeatable target spec
+        /// `host:port[@priority]`. When provided two or more times,
+        /// the rule activates with priority-ordered failover.
+        /// Mutually exclusive with the positional `target`.
+        #[arg(long = "target", conflicts_with_all = ["targets_json"])]
+        target_specs: Vec<String>,
+        /// 007-multi-target-failover: JSON array of targets:
+        /// `[{"host":"...","port":N,"priority":N?}, ...]`. Mutually
+        /// exclusive with `--target` and the positional `target`.
+        #[arg(long, conflicts_with_all = ["target_specs"])]
+        targets_json: Option<String>,
+        /// 007-multi-target-failover: per-rule active TCP-connect
+        /// probe interval, in seconds (1..=3600). Omit to keep
+        /// passive-only failover detection (FR-015).
+        #[arg(long)]
+        health_check_interval_secs: Option<u32>,
         /// Operator HTTP endpoint of the running server.
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
@@ -309,15 +326,21 @@ fn run(cli: Cli) -> Result<(), u8> {
             protocol,
             ack_timeout,
             prefer_ipv6,
+            target_specs,
+            targets_json,
+            health_check_interval_secs,
             http_endpoint,
         } => rule_cli::push(
             &http_endpoint,
             &client,
             &listen,
-            &target,
+            target.as_deref(),
             &protocol,
             ack_timeout,
             prefer_ipv6,
+            &target_specs,
+            targets_json.as_deref(),
+            health_check_interval_secs,
         ),
         Cmd::RemoveRule {
             rule_id,

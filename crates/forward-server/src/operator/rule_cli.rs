@@ -113,48 +113,101 @@ struct PushResponse {
     rule_id: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn push(
     endpoint: &str,
     raw_client: &str,
     listen_spec: &str,
-    target: &str,
+    target: Option<&str>,
     protocol: &str,
     ack_timeout_secs: u64,
     prefer_ipv6: bool,
+    target_specs: &[String],
+    targets_json: Option<&str>,
+    health_check_interval_secs: Option<u32>,
 ) -> Result<(), u8> {
     let listen = parse_listen(listen_spec).map_err(|e| {
         eprintln!("error: {e}");
         e.exit_code()
     })?;
-    let (target_host, target_range) = parse_target(target).map_err(|e| {
-        eprintln!("error: {e}");
-        e.exit_code()
-    })?;
-    // 003-domain-name-forward T021: validate the host before we open
-    // the HTTP socket so the operator gets exit-3 immediately on
-    // malformed input, instead of a round-trip and a server-side
-    // 400. The HTTP path validates again as a backstop.
-    if let Err(e) = Target::parse(&target_host) {
-        let op_err: OperatorError = e.into();
-        eprintln!("error: {op_err}");
-        return Err(op_err.exit_code());
+
+    // 007-multi-target-failover T043: shape detection — exactly one
+    // of {positional target, --target, --targets-json} must be set.
+    // Clap already enforces conflict between --target and
+    // --targets-json; we still need to reject "neither" and "all
+    // three" early so the operator gets exit-3 instead of a network
+    // round-trip + 400.
+    let multi_form = !target_specs.is_empty() || targets_json.is_some();
+    let legacy_form = target.is_some();
+    if multi_form && legacy_form {
+        eprintln!(
+            "error: rule_shape_conflict (mix of positional target + --target/--targets-json)"
+        );
+        return Err(3);
     }
+    if !multi_form && !legacy_form {
+        eprintln!("error: rule_shape_missing (provide a positional target, --target, or --targets-json)");
+        return Err(3);
+    }
+
     let url = format!("http://{endpoint}/v1/rules");
     let mut body = serde_json::json!({
         "client": raw_client,
         "listen_port": listen.start(),
-        "target_host": target_host,
-        "target_port": target_range.start(),
         "protocol": protocol,
         "ack_timeout_secs": ack_timeout_secs,
     });
-    // Co-presence enforced by the server: send both `*_port_end` fields
-    // together, only when the user actually requested a range.
-    if listen.len() > 1 || target_range.len() > 1 {
+
+    if multi_form {
+        let targets = if let Some(json) = targets_json {
+            // Parse the JSON array verbatim — server validates V-T1..V-T4.
+            serde_json::from_str::<serde_json::Value>(json).map_err(|e| {
+                eprintln!("error: --targets-json: {e}");
+                3u8
+            })?
+        } else {
+            let mut arr: Vec<serde_json::Value> = Vec::with_capacity(target_specs.len());
+            for spec in target_specs {
+                let (host, port, priority) = parse_target_spec(spec).map_err(|e| {
+                    eprintln!("error: --target {spec:?}: {e}");
+                    3u8
+                })?;
+                let mut entry = serde_json::json!({"host": host, "port": port});
+                if let Some(p) = priority {
+                    entry["priority"] = serde_json::Value::Number(p.into());
+                }
+                arr.push(entry);
+            }
+            serde_json::Value::Array(arr)
+        };
         let obj = body.as_object_mut().expect("just built a json object");
-        obj.insert("listen_port_end".into(), listen.end().into());
-        obj.insert("target_port_end".into(), target_range.end().into());
+        obj.insert("targets".into(), targets);
+        if let Some(hci) = health_check_interval_secs {
+            obj.insert(
+                "health_check_interval_secs".into(),
+                serde_json::Value::Number(hci.into()),
+            );
+        }
+    } else {
+        let target_str = target.expect("legacy_form true");
+        let (target_host, target_range) = parse_target(target_str).map_err(|e| {
+            eprintln!("error: {e}");
+            e.exit_code()
+        })?;
+        if let Err(e) = Target::parse(&target_host) {
+            let op_err: OperatorError = e.into();
+            eprintln!("error: {op_err}");
+            return Err(op_err.exit_code());
+        }
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("target_host".into(), target_host.into());
+        obj.insert("target_port".into(), target_range.start().into());
+        if listen.len() > 1 || target_range.len() > 1 {
+            obj.insert("listen_port_end".into(), listen.end().into());
+            obj.insert("target_port_end".into(), target_range.end().into());
+        }
     }
+
     // 003-domain-name-forward T041: only emit `prefer_ipv6` when the
     // operator explicitly opted in. Absence on the wire decodes to
     // default `false` server-side per `contracts/operator-api.md`,
@@ -179,6 +232,32 @@ pub fn push(
     } else {
         Err(extract_error(resp))
     }
+}
+
+/// 007-multi-target-failover T043: parse `host:port[@priority]`.
+/// Returns the components for `--target` CLI assembly.
+fn parse_target_spec(spec: &str) -> Result<(String, u16, Option<u32>), String> {
+    let (rest, priority) = if let Some((before, after)) = spec.rsplit_once('@') {
+        let p: u32 = after
+            .parse()
+            .map_err(|_| format!("invalid priority {after:?} (must be u32)"))?;
+        (before, Some(p))
+    } else {
+        (spec, None)
+    };
+    let (host, port_str) = rest
+        .rsplit_once(':')
+        .ok_or_else(|| "expected host:port[@priority]".to_string())?;
+    if host.is_empty() {
+        return Err("host must be non-empty".to_string());
+    }
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| format!("invalid port {port_str:?}"))?;
+    if port == 0 {
+        return Err("port must be 1..=65535".to_string());
+    }
+    Ok((host.to_string(), port, priority))
 }
 
 pub fn remove(endpoint: &str, rule_id: u64) -> Result<(), u8> {
