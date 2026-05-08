@@ -629,10 +629,12 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
 fn render_rules_text(rules: &[Rule]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
+    // 009-tls-sni-routing T085: SNI column. Rules without an SNI
+    // selector render `-` so the column width stays stable.
     let _ = writeln!(
         s,
-        "{:<6} {:<20} {:<6} {:<32} {:<10}",
-        "ID", "CLIENT", "PORT", "TARGET", "STATE"
+        "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
+        "ID", "CLIENT", "PORT", "TARGET", "SNI", "STATE"
     );
     for r in rules {
         let state = match &r.state {
@@ -641,13 +643,15 @@ fn render_rules_text(rules: &[Rule]) -> String {
             RuleState::Failed { reason } => format!("failed:{reason}"),
             RuleState::Removed => "removed".to_string(),
         };
+        let sni = r.sni_pattern.as_deref().unwrap_or("-");
         let _ = writeln!(
             s,
-            "{:<6} {:<20} {:<6} {:<32} {:<10}",
+            "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
             r.id.0,
             r.client_name,
             r.listen_port,
             format!("{}:{}", r.target_host, r.target_port),
+            sni,
             state,
         );
     }

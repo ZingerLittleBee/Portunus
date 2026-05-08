@@ -123,6 +123,7 @@
     "listenPort": "Listen",
     "target": "Target",
     "protocol": "Protocol",
+    "sni": "SNI",
     "state": "State",
     "newRule": "Push rule",
     "remove": "Remove",
@@ -150,7 +151,10 @@
     "priority": "priority",
     "healthCheckInterval": "Active health-check interval (seconds)",
     "healthCheckIntervalPlaceholder": "leave blank for passive only",
-    "healthCheckIntervalHelp": "Optional. When set, the client opens a TCP-connect probe to each target on this cadence. Range: 1–3600 seconds."
+    "healthCheckIntervalHelp": "Optional. When set, the client opens a TCP-connect probe to each target on this cadence. Range: 1–3600 seconds.",
+    "sniPattern": "SNI pattern (optional)",
+    "sniPatternPlaceholder": "api.example.com or *.example.com",
+    "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules."
   },
   "ruleDetail": {
     "title": "Rule",

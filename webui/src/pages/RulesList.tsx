@@ -96,6 +96,20 @@ export function RulesList() {
       render: (r) => <Badge variant="outline">{r.protocol}</Badge>,
     },
     {
+      // 009-tls-sni-routing T083: SNI selector column. `—` (em-dash)
+      // for legacy / fallback rules; rendered in a monospace pill so
+      // wildcards line up visually with exact hosts.
+      key: "sni",
+      header: t("rules.sni"),
+      width: "200px",
+      render: (r) =>
+        r.sni_pattern ? (
+          <span className="font-mono text-xs">{r.sni_pattern}</span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
       key: "state",
       header: t("rules.state"),
       width: "120px",

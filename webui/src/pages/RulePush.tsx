@@ -28,7 +28,15 @@ export function RulePush() {
   const [targetStart, setTargetStart] = useState("9000");
   const [targetEnd, setTargetEnd] = useState("");
   const [protocol, setProtocol] = useState<"tcp" | "udp">("tcp");
+  // 009-tls-sni-routing T084: optional TLS Server Name Indication
+  // selector. Server-side validation rejects this on UDP / range
+  // rules, so the input is rendered only when those constraints
+  // hold. The empty string maps to "absent" — the wire field is
+  // serialised only when non-empty.
+  const [sniPattern, setSniPattern] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const sniEligible = protocol === "tcp" && !listenEnd;
 
   // 007-multi-target-failover T046: opt into the multi-target form. The
   // legacy single-target shape stays the default to keep operator
@@ -56,11 +64,17 @@ export function RulePush() {
     e.preventDefault();
     setError(null);
     try {
+      const trimmedSni = sniPattern.trim();
       const baseBody = {
         client,
         listen_port: Number(listenStart),
         ...(listenEnd ? { listen_port_end: Number(listenEnd) } : {}),
         protocol,
+        // 009-tls-sni-routing T084: thread the SNI selector through
+        // the wire body. Empty / non-eligible inputs are omitted so
+        // the server applies its grammar-validated default (legacy
+        // shape).
+        ...(sniEligible && trimmedSni ? { sni_pattern: trimmedSni } : {}),
       };
       const body =
         mode === "single"
@@ -211,6 +225,25 @@ export function RulePush() {
               ))}
             </div>
           </div>
+
+          {/* 009-tls-sni-routing T084: SNI selector input. Only
+              rendered when the rule is TCP single-port; UDP and
+              port-range rules would be rejected at the API layer. */}
+          {sniEligible && (
+            <div className="space-y-2">
+              <Label htmlFor="sni">{t("rulePush.sniPattern")}</Label>
+              <Input
+                id="sni"
+                value={sniPattern}
+                onChange={(e) => setSniPattern(e.target.value)}
+                placeholder={t("rulePush.sniPatternPlaceholder")}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("rulePush.sniPatternHelp")}
+              </p>
+            </div>
+          )}
+
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">
             <Button type="submit" disabled={push.isPending}>
