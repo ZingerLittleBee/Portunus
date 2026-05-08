@@ -1,7 +1,15 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 2.0.0 → 2.0.1 (PATCH — clarifications only)
+Version change: 2.0.1 → 2.0.2 (PATCH — TODO closure only)
+  - TODO(STORAGE_CHOICE) is RESOLVED. Decision: bundled SQLite at
+    `<data-dir>/state.db` (WAL mode, BEGIN IMMEDIATE writers, refinery
+    migrations, no system libsqlite3 dependency). Rationale, schema,
+    contracts, and quickstart live under `specs/008-sqlite-storage/`.
+    No principle or section text changes; this PATCH only retires the
+    deferred TODO marker. v0.8.0 ships the implementation.
+
+Earlier version change: 2.0.0 → 2.0.1 (PATCH — clarifications only)
   - Added explicit MSRV anchor (1.88, driven by tonic) under Technology
     & Operational Constraints. Not a new constraint, just a concrete number.
   - Added TODO(WEB_UI) under Deferred / TODOs to make the future web-UI
@@ -40,8 +48,9 @@ Templates requiring updates:
   - ⚠ CLAUDE.md — auto-generated stub; re-check at first /speckit-plan.
 
 Deferred / TODOs:
-  - TODO(STORAGE_CHOICE): server-side persistent store (SQLite vs Postgres) is
-    not yet decided; finalize in first /speckit-plan run.
+  - ✅ STORAGE_CHOICE — RESOLVED in v0.8.0 (008-sqlite-storage). Decision:
+    bundled SQLite at `<data-dir>/state.db`. See `specs/008-sqlite-storage/`
+    (plan.md, research.md R-001..R-015, contracts/persistence.md).
   - TODO(KERNEL_OFFLOAD): whether the data path uses pure-userspace Tokio or
     kernel offload (eBPF / splice / SO_REUSEPORT) is left to plan-level research.
   - TODO(MTLS_REVISIT): if a future deployment surfaces a compliance requirement
@@ -153,8 +162,10 @@ self-restrict.
   length-prefixed framed protocol — chosen at first `/speckit-plan`) MUST be
   versioned; breaking changes require a major-version protocol bump and a
   documented migration path.
-- **Persistence (server)**: Embedded or external SQL store —
-  TODO(STORAGE_CHOICE), to be decided in first plan iteration.
+- **Persistence (server)**: Bundled SQLite at `<data-dir>/state.db`
+  (WAL mode, `BEGIN IMMEDIATE` writers, `r2d2` pool fronting reads,
+  refinery-managed migrations, no system libsqlite3 dependency). Decided
+  in 008-sqlite-storage (v0.8.0) — closes earlier `TODO(STORAGE_CHOICE)`.
 - **Data path implementation**: Userspace Tokio is the default. Kernel
   offload (eBPF / `splice` / `SO_REUSEPORT`) is permitted as an optimization
   but MUST NOT become a hard dependency unless this constitution is amended —

@@ -18,15 +18,18 @@
 //! this file only owns the explicit operator-invoked paths.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::Utc;
-use forward_auth::OperatorAuthenticator;
-use forward_auth::operator_store::{FileOperatorStore, IdentityStoreError};
 use forward_auth::{
-    Credential, CredentialId, CredentialStatus, OperatorRole, User, UserId,
+    Credential, CredentialId, CredentialStatus, IdentityStoreError, OperatorAuthenticator,
+    OperatorRole, User, UserId,
     token::{generate_token, hash_token},
 };
 use tracing::{info, warn};
+
+use crate::store::Store;
+use crate::store::operator_store::SqliteOperatorStore;
 
 /// Exit code surfaced by the binary when an operator action is rejected.
 /// Mirrors the values frozen in `contracts/operator-api.md` § "CLI Exit Codes".
@@ -44,14 +47,15 @@ pub const EXIT_VALIDATION: u8 = 3;
 /// The raw token NEVER reaches `tracing` — only stdout. We only emit a
 /// single INFO audit line `event = "operator.bootstrap"` carrying the
 /// post-creation user_id and credential id (no token field).
-pub fn bootstrap_superadmin(identity_path: &Path, display_name: &str) -> u8 {
-    let store = match FileOperatorStore::open(identity_path) {
-        Ok(s) => s,
+pub fn bootstrap_superadmin(data_dir: &Path, display_name: &str) -> u8 {
+    let sqlite = match Store::open(data_dir) {
+        Ok(s) => Arc::new(s),
         Err(e) => {
-            eprintln!("error: open operator store: {e}");
+            eprintln!("error: open store: {e:?}");
             return EXIT_GENERIC;
         }
     };
+    let store = SqliteOperatorStore::new(sqlite);
 
     if store.has_any_superadmin() {
         eprintln!("error: already_bootstrapped (a superadmin already exists)");
@@ -111,21 +115,10 @@ pub fn gen_token() -> u8 {
 }
 
 /// Atomic helper: insert user + credential in a single store mutation.
-/// `FileOperatorStore` doesn't expose a combined "create user + credential
-/// with raw token" path (the regular `issue_credential` always generates
-/// a random token), so we mirror what the
-/// [`FileOperatorStore::bootstrap_legacy_superadmin`] path does for the
-/// `_legacy` user — but with the canonical `_superadmin` id.
-///
-/// Implementation note: rather than duplicate atomic-write logic here,
-/// we reuse `bootstrap_legacy_superadmin`-style sequencing — we have to
-/// poke at the store via its public surface. The cleanest path is two
-/// public methods, both of which already commit atomically:
-/// `add_user` then a synthetic `issue_credential` — but the latter
-/// generates a random token. So we drop down to a direct atomic-write
-/// helper exposed by the store (see [`bootstrap_pair`]).
+/// `bootstrap_pair` commits both rows inside one BEGIN IMMEDIATE
+/// transaction (R-014).
 fn persist_pair(
-    store: &FileOperatorStore,
+    store: &SqliteOperatorStore,
     user: User,
     cred: Credential,
 ) -> Result<(), IdentityStoreError> {

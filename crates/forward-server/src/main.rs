@@ -5,7 +5,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use forward_auth::file_store::FileTokenStore;
 
 use forward_server::OutputFormat;
 use forward_server::clients::ConnectedClients;
@@ -20,9 +19,17 @@ use forward_server::tls::ServerTlsMaterial;
 #[derive(Parser, Debug)]
 #[command(name = "forward-server", version, about = "forward-rs control plane")]
 struct Cli {
-    /// Override the configuration directory.
+    /// Override the configuration directory (admin-edited config + TLS material).
     #[arg(long, global = true)]
     config_dir: Option<PathBuf>,
+
+    /// Override the data directory (daemon-managed `state.db` and SQLite
+    /// sidecars). Independent from `--config-dir`. When omitted, resolved
+    /// in order: $STATE_DIRECTORY → $XDG_STATE_HOME/forward-rs →
+    /// $HOME/.local/state/forward-rs → ./forward-rs.state. See
+    /// specs/008-sqlite-storage/ FR-019.
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
 
     /// Override the path to `server.toml`.
     #[arg(long, global = true)]
@@ -241,6 +248,45 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
+    /// Take a snapshot of the SQLite store (008-sqlite-storage T062).
+    /// Refuses to overwrite an existing file. If `--out` points at a
+    /// directory, writes `forward-state-<RFC3339>.db` inside it.
+    Backup {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Restore from a backup artefact (008-sqlite-storage T063).
+    /// Refuses to clobber a non-empty data-dir without `--force`.
+    Restore {
+        #[arg(long)]
+        r#in: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Wipe the SQLite store (008-sqlite-storage T064). Verifies the
+    /// target file looks like a SQLite database first so a typo'd
+    /// `--data-dir` cannot delete arbitrary files.
+    Reset {
+        /// Required to actually proceed; without it, `reset` is a
+        /// dry-run that prints the path it would remove.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Audit-table maintenance subcommands (008-sqlite-storage T076).
+    #[command(subcommand)]
+    Audit(AuditCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditCmd {
+    /// Delete audit rows older than `--before <RFC3339>`. Pass
+    /// `--dry-run` to print the count without mutating the store.
+    Prune {
+        #[arg(long)]
+        before: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -255,11 +301,13 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), u8> {
     let config_dir = resolve_config_dir(cli.config_dir.clone());
+    let data_dir = forward_server::data_dir::resolve(cli.data_dir.clone());
 
     match cli.cmd {
         Cmd::Serve => {
             let opts = serve::ServeOptions {
                 config_dir,
+                data_dir: data_dir.clone(),
                 config_file: cli.config.clone(),
                 advertised_endpoint: cli.advertised_endpoint.clone(),
             };
@@ -275,7 +323,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             })
         }
         Cmd::ProvisionClient { name, out } => {
-            let state = build_offline_state(&config_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             match cli::provision_client(&state, &name, out) {
                 Ok((path, _)) => {
                     println!("{}", path.display());
@@ -289,7 +337,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             }
         }
         Cmd::Revoke { name } => {
-            let state = build_offline_state(&config_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -302,7 +350,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 })
         }
         Cmd::ListClients { format } => {
-            let state = build_offline_state(&config_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -363,8 +411,11 @@ fn run(cli: Cli) -> Result<(), u8> {
                 eprintln!("config dir: {e}");
                 1u8
             })?;
-            let identity_path = config_dir.join("identity.json");
-            let code = bootstrap::bootstrap_superadmin(&identity_path, &name);
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                eprintln!("data dir: {e}");
+                1u8
+            })?;
+            let code = bootstrap::bootstrap_superadmin(&data_dir, &name);
             if code == 0 { Ok(()) } else { Err(code) }
         }
         Cmd::GenToken => {
@@ -450,6 +501,85 @@ fn run(cli: Cli) -> Result<(), u8> {
             format,
             http_endpoint,
         } => identity_cli::grant_revoke(&http_endpoint, &grant_id, format),
+        Cmd::Backup { out } => match forward_server::store::backup::run_backup(&data_dir, &out) {
+            Ok(written) => {
+                println!("backup={}", written.display());
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                Err(e.exit_code())
+            }
+        },
+        Cmd::Restore { r#in, force } => {
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                eprintln!("data dir: {e}");
+                1u8
+            })?;
+            match forward_server::store::backup::run_restore(&r#in, &data_dir, force) {
+                Ok(()) => {
+                    println!("restore=ok data_dir={}", data_dir.display());
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Err(e.exit_code())
+                }
+            }
+        }
+        Cmd::Audit(AuditCmd::Prune { before, dry_run }) => {
+            let cutoff = match chrono::DateTime::parse_from_rfc3339(&before) {
+                Ok(dt) => dt.with_timezone(&chrono::Utc),
+                Err(e) => {
+                    eprintln!("error: --before must be RFC3339: {e}");
+                    return Err(3);
+                }
+            };
+            let store = match forward_server::store::Store::open(&data_dir) {
+                Ok(s) => std::sync::Arc::new(s),
+                Err(e) => {
+                    eprintln!("error: open store: {e:?}");
+                    return Err(1);
+                }
+            };
+            if dry_run {
+                match store.audit_prune_count(cutoff) {
+                    Ok(n) => {
+                        println!("audit_prune dry_run=true would_delete={n}");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        Err(1)
+                    }
+                }
+            } else {
+                match store.audit_prune_apply(cutoff) {
+                    Ok(n) => {
+                        println!("audit_prune deleted={n}");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        Err(1)
+                    }
+                }
+            }
+        }
+        Cmd::Reset { confirm } => {
+            if !confirm {
+                println!("would remove: {}", data_dir.join("state.db").display());
+                println!("dry-run: pass --confirm to proceed");
+                return Ok(());
+            }
+            match forward_server::store::backup::run_reset(&data_dir) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Err(e.exit_code())
+                }
+            }
+        }
     }
 }
 
@@ -471,10 +601,15 @@ fn resolve_config_dir(override_: Option<PathBuf>) -> PathBuf {
 /// issued bundles carry the correct fingerprint.
 fn build_offline_state(
     config_dir: &std::path::Path,
+    data_dir: &std::path::Path,
     advertised_endpoint: Option<String>,
 ) -> Result<AppState, u8> {
     std::fs::create_dir_all(config_dir).map_err(|e| {
         eprintln!("config dir: {e}");
+        1u8
+    })?;
+    std::fs::create_dir_all(data_dir).map_err(|e| {
+        eprintln!("data dir: {e}");
         1u8
     })?;
     let paths = cli::default_paths(config_dir);
@@ -482,16 +617,19 @@ fn build_offline_state(
         eprintln!("tls: {e}");
         1u8
     })?;
-    let tokens = Arc::new(FileTokenStore::open(&paths.tokens).map_err(|e| {
-        eprintln!("token store: {e}");
+    // 008-sqlite-storage T052 — offline path opens SQLite first, then
+    // wraps it with both Authenticator surfaces. The legacy file paths
+    // (`paths.tokens`, `identity.json`) are no longer touched.
+    let _ = paths.tokens; // silence "unused" if the field is unread now
+    let store = Arc::new(forward_server::store::Store::open(data_dir).map_err(|e| {
+        eprintln!("store: {e}");
         1u8
     })?);
+    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
+        Arc::clone(&store),
+    ));
     let operator_store = Arc::new(
-        forward_auth::operator_store::FileOperatorStore::open(config_dir.join("identity.json"))
-            .map_err(|e| {
-                eprintln!("operator store: {e}");
-                1u8
-            })?,
+        forward_server::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store)),
     );
     let endpoint = advertised_endpoint.unwrap_or_else(|| "127.0.0.1:7443".to_string());
     AppState::new(
@@ -506,6 +644,7 @@ fn build_offline_state(
         // effectively unused. Use the default to stay close to the
         // serve-path config.
         forward_core::config::default_range_rule_max_ports(),
+        store,
     )
     .map_err(|e| {
         eprintln!("metrics: {e}");

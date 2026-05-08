@@ -15,7 +15,7 @@ use axum::{
     http::StatusCode,
 };
 use chrono::Utc;
-use forward_auth::operator_store::IdentityStoreError;
+use forward_auth::IdentityStoreError;
 use forward_auth::{
     ClientScope, Grant, GrantId, OperatorAuthenticator, OperatorIdentity, OperatorRole,
     ProtocolSet, RbacError, UserId,

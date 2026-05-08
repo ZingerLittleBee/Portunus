@@ -11,10 +11,13 @@ fn server_bin() -> &'static str {
 
 #[test]
 fn bootstrap_superadmin_writes_identity_and_prints_token_once() {
-    let dir = TempDir::new().expect("tempdir");
+    let cfg = TempDir::new().expect("config tempdir");
+    let data = TempDir::new().expect("data tempdir");
     let out = Command::new(server_bin())
         .arg("--config-dir")
-        .arg(dir.path())
+        .arg(cfg.path())
+        .arg("--data-dir")
+        .arg(data.path())
         .arg("bootstrap-superadmin")
         .arg("--name")
         .arg("ops")
@@ -36,19 +39,21 @@ fn bootstrap_superadmin_writes_identity_and_prints_token_once() {
         token.len() >= 32 && token.len() <= 64,
         "token length out of band: `{token}`"
     );
-    let identity_path = dir.path().join("identity.json");
-    assert!(identity_path.exists(), "identity.json should be written");
-    let body = std::fs::read_to_string(&identity_path).expect("read identity.json");
-    assert!(body.contains("\"_superadmin\""), "{body}");
+    // 008-sqlite-storage: state lives in <data-dir>/state.db now.
+    let state_db = data.path().join("state.db");
+    assert!(state_db.exists(), "state.db should be written");
 }
 
 #[test]
 fn bootstrap_superadmin_second_run_returns_already_bootstrapped() {
-    let dir = TempDir::new().expect("tempdir");
+    let cfg = TempDir::new().expect("config tempdir");
+    let data = TempDir::new().expect("data tempdir");
     // First run.
     let first = Command::new(server_bin())
         .arg("--config-dir")
-        .arg(dir.path())
+        .arg(cfg.path())
+        .arg("--data-dir")
+        .arg(data.path())
         .arg("bootstrap-superadmin")
         .output()
         .expect("first");
@@ -57,7 +62,9 @@ fn bootstrap_superadmin_second_run_returns_already_bootstrapped() {
     // Second run.
     let second = Command::new(server_bin())
         .arg("--config-dir")
-        .arg(dir.path())
+        .arg(cfg.path())
+        .arg("--data-dir")
+        .arg(data.path())
         .arg("bootstrap-superadmin")
         .output()
         .expect("second");

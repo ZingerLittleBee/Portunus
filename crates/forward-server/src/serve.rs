@@ -21,8 +21,8 @@ use axum::{
     routing::get,
 };
 use forward_auth::OperatorAuthenticator;
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
+use crate::store::operator_store::SqliteOperatorStore;
+use crate::store::token_store::SqliteTokenStore;
 use forward_core::ForwardError;
 use forward_core::config::ServerConfig;
 use tokio::net::TcpListener;
@@ -43,6 +43,9 @@ use forward_proto::v1::control_server::ControlServer;
 #[derive(Debug, Clone)]
 pub struct ServeOptions {
     pub config_dir: PathBuf,
+    /// 008-sqlite-storage T019 / FR-019 — directory holding `state.db`
+    /// and SQLite-managed sidecars. Independent from `config_dir`.
+    pub data_dir: PathBuf,
     pub config_file: Option<PathBuf>,
     /// Override the host:port advertised in newly-issued bundles.
     pub advertised_endpoint: Option<String>,
@@ -55,19 +58,46 @@ pub struct ServeOptions {
 pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
     let cfg = load_config(&opts)?;
     std::fs::create_dir_all(&opts.config_dir)?;
+    std::fs::create_dir_all(&opts.data_dir)?;
+
+    // 008-sqlite-storage T021 boot order step (1)+(2): probe the
+    // filesystem class hosting --data-dir BEFORE opening SQLite, so
+    // we never land on NFS / tmpfs and risk silent corruption.
+    match crate::data_dir::probe_fs_class(&opts.data_dir) {
+        crate::data_dir::FsClass::Unsupported(fs) => {
+            return Err(ForwardError::Tls(format!(
+                "startup.unsupported_filesystem path={} fs={fs}",
+                opts.data_dir.display()
+            )));
+        }
+        crate::data_dir::FsClass::Supported | crate::data_dir::FsClass::Unknown => {}
+    }
+
+    // 008-sqlite-storage T020 boot order step (3): warn-and-ignore
+    // any pre-v0.8 JSON persistence files left in --config-dir. The
+    // server does not read these files; they are listed so an
+    // operator does not get a silent surprise.
+    warn_legacy_json_files(&opts.config_dir);
+
+    // 008-sqlite-storage T021 boot order step (4)+(5): open the store
+    // and run pending forward migrations.
+    let store = Arc::new(crate::store::Store::open(&opts.data_dir).map_err(|e| {
+        ForwardError::Tls(format!("startup.store_open path={} {e}", opts.data_dir.display()))
+    })?);
+    info!(
+        event = "store.ready",
+        path = %store.db_path().display(),
+        schema_version = store.schema_version().unwrap_or(0),
+    );
 
     let tls = ServerTlsMaterial::load_or_generate(&cfg.tls_cert_path, &cfg.tls_key_path)?;
-    let tokens = Arc::new(
-        FileTokenStore::open(&cfg.token_store_path)
-            .map_err(|e| ForwardError::Tls(format!("token store: {e}")))?,
-    );
-    // 005-multi-user-rbac T013: load the operator-side identity store.
-    // Failure to load = exit non-zero with a clear message; operators
-    // restore from backup or run `bootstrap-superadmin` against an empty file.
-    let operator_store = Arc::new(
-        FileOperatorStore::open(&cfg.operator_store_path)
-            .map_err(|e| ForwardError::Tls(format!("operator store: {e}")))?,
-    );
+    // 008-sqlite-storage T052 — both token and operator stores now live
+    // inside the SQLite database. The `cfg.token_store_path` and
+    // `cfg.operator_store_path` are no longer touched by the runtime;
+    // legacy files at those paths are warned about above and otherwise
+    // ignored (R-009).
+    let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+    let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
     info!(
         event = "operator.store_loaded",
         path = %cfg.operator_store_path.display(),
@@ -121,10 +151,22 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
             tls.leaf_fingerprint_hex.clone(),
             tls.cert_pem.clone(),
             cfg.range_rule_max_ports,
+            Arc::clone(&store),
         )
         .map_err(|e| ForwardError::Tls(format!("metrics: {e}")))?
         .with_server_config(cfg_arc),
     );
+
+    // 008-sqlite-storage T034 — spawn the durable audit writer and
+    // bind its Handle into the AuditRing fan-out. Until US2 retires
+    // the in-memory ring entirely, every audit emit dual-writes.
+    let audit_writer_handle = crate::store::audit_writer::spawn(
+        Arc::clone(&store),
+        state.metrics.audit_buffer_drops_total.clone(),
+        state.metrics.audit_durable_writer_lag_seconds.clone(),
+        shutdown.child(),
+    );
+    state.audit.bind_durable_writer(audit_writer_handle);
 
     let interceptor = AuthInterceptor::new(
         tokens.clone() as Arc<dyn forward_auth::Authenticator>,
@@ -154,10 +196,11 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
         async move { s.signal_handler().await }
     });
 
-    // T049 (005-multi-user-rbac): SIGHUP triggers an in-place reload
-    // of `identity.json`. Linux + macOS only (Windows has no SIGHUP).
-    // On reload-validation failure the prior in-memory snapshot is
-    // kept; we emit one structured log line either way.
+    // T049 (005-multi-user-rbac) was a SIGHUP-driven reload of the
+    // JSON identity store. 008-sqlite-storage retired that path: every
+    // read pulls fresh state directly from SQLite, so there's no
+    // in-memory cache to reload. We still log the SIGHUP so operators
+    // who scripted around it can confirm receipt.
     #[cfg(unix)]
     let _sighup_task = {
         let store = Arc::clone(&operator_store);
@@ -171,20 +214,14 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
                 }
             };
             while sig.recv().await.is_some() {
-                match store.reload_from_disk() {
-                    Ok(()) => info!(
-                        event = "operator.store_reloaded",
-                        users = store.list_users().len(),
-                        grants = store.list_grants(None).len(),
-                        superadmin_present = store.has_any_superadmin(),
-                        outcome = "ok",
-                    ),
-                    Err(e) => tracing::warn!(
-                        event = "operator.store_reload_failed",
-                        reason = %e,
-                        outcome = "fail",
-                    ),
-                }
+                info!(
+                    event = "operator.store_reloaded",
+                    users = store.list_users().len(),
+                    grants = store.list_grants(None).len(),
+                    superadmin_present = store.has_any_superadmin(),
+                    outcome = "ok",
+                    note = "sqlite store reads are always fresh; SIGHUP is a no-op",
+                );
             }
         })
     };
@@ -283,6 +320,28 @@ fn default_config(config_dir: &std::path::Path) -> ServerConfig {
         udp_max_flows_per_rule: None,
         operator_store_path: config_dir.join("identity.json"),
         operator_token: None,
+    }
+}
+
+/// 008-sqlite-storage T020 — legacy JSON warn-and-ignore.
+///
+/// The pre-v0.8 persistence layer wrote `tokens.json` / `identity.json`
+/// / `rules.json` under `--config-dir`. v0.8 retired all three; the
+/// store at `--data-dir/state.db` is the only source of truth.
+/// Operators upgrading from a v0.7 install in dev environments may
+/// have stale files lying around; rather than silently ignore them
+/// (operator-hostile) or refuse to start (operator-hostile), we log
+/// one structured warning per file pointing at `forward-server reset`.
+fn warn_legacy_json_files(config_dir: &std::path::Path) {
+    for name in ["tokens.json", "identity.json", "rules.json"] {
+        let path = config_dir.join(name);
+        if path.exists() {
+            tracing::warn!(
+                event = "startup.legacy_persistence_file_ignored",
+                path = %path.display(),
+                hint = "Pre-v0.8 file; not loaded. Run `forward-server reset` to clean.",
+            );
+        }
     }
 }
 

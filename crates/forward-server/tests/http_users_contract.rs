@@ -8,8 +8,6 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
 use forward_server::clients::ConnectedClients;
 use forward_server::operator::http;
 use forward_server::state::AppState;
@@ -21,10 +19,11 @@ const SUPERADMIN_TOKEN: &str = "T026-super";
 
 fn build_router() -> (axum::Router, TempDir) {
     let dir = TempDir::new().expect("tempdir");
+    let sqlite_store = std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
     let tokens =
-        Arc::new(FileTokenStore::open(dir.path().join("tokens.json")).expect("token store"));
+        Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
     let operator_store = Arc::new(
-        FileOperatorStore::open(dir.path().join("identity.json")).expect("operator store"),
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)),
     );
     operator_store
         .bootstrap_legacy_superadmin(SUPERADMIN_TOKEN)
@@ -38,6 +37,7 @@ fn build_router() -> (axum::Router, TempDir) {
             "deadbeef",
             "-----BEGIN CERTIFICATE-----\n",
             16,
+            std::sync::Arc::clone(&sqlite_store),
         )
         .expect("AppState"),
     );
@@ -90,6 +90,37 @@ async fn post_users_happy_path_creates_user() {
     let v = body_json(resp).await;
     let arr = v.as_array().expect("array");
     assert_eq!(arr.len(), 2);
+}
+
+#[tokio::test]
+async fn post_users_duplicate_returns_409_user_already_exists() {
+    // 008-sqlite-storage T047: SqliteOperatorStore turns the duplicate
+    // into StoreError::Conflict → IdentityStoreError::UserAlreadyExists →
+    // RbacError::UserAlreadyExists → HTTP 409 with stable error.code.
+    let (router, _d) = build_router();
+    let resp = router
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({"user_id": "alice", "display_name": "Alice"}),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = router
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({"user_id": "alice", "display_name": "Alice"}),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"]["code"], "user_already_exists");
 }
 
 #[tokio::test]
@@ -195,16 +226,24 @@ async fn user_remove_persists_identity_then_drops_rules() {
         .expect("oneshot");
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Pre-delete: identity.json on disk references alice.
-    let path = dir.path().join("identity.json");
-    let body = std::fs::read_to_string(&path).expect("read identity.json");
+    // 008-sqlite-storage T046: pre-delete, alice is reachable via the
+    // public read surface (the on-disk JSON store is gone — every read
+    // goes through SQLite now).
+    let resp = router
+        .clone()
+        .oneshot(req("GET", "/v1/users", SUPERADMIN_TOKEN, json!(null)))
+        .await
+        .expect("oneshot");
+    let users_pre = body_json(resp).await;
     assert!(
-        body.contains("\"alice\""),
-        "alice should be on disk pre-delete"
+        users_pre.as_array().unwrap().iter().any(|u| u["user_id"] == "alice"),
+        "alice should appear in /v1/users pre-delete"
     );
+    let _ = dir; // keep the tempdir alive
 
     // Cascade-remove alice.
     let resp = router
+        .clone()
         .oneshot(req(
             "DELETE",
             "/v1/users/alice",
@@ -222,12 +261,15 @@ async fn user_remove_persists_identity_then_drops_rules() {
     assert_eq!(v["removed_credential_ids"].as_array().unwrap().len(), 1);
     assert_eq!(v["revoked_grant_ids"].as_array().unwrap().len(), 1);
 
-    // Identity flush is committed: re-reading the file must NOT
-    // surface alice or her credential/grant entries.
-    let body = std::fs::read_to_string(&path).expect("read identity.json post-delete");
+    // R-006: cascade is durable. Alice no longer appears in /v1/users.
+    let resp = router
+        .oneshot(req("GET", "/v1/users", SUPERADMIN_TOKEN, json!(null)))
+        .await
+        .expect("oneshot");
+    let users_post = body_json(resp).await;
     assert!(
-        !body.contains("\"alice\""),
-        "R-006 violation: alice still on disk after DELETE returned: {body}"
+        !users_post.as_array().unwrap().iter().any(|u| u["user_id"] == "alice"),
+        "alice still present after DELETE: {users_post}"
     );
 }
 

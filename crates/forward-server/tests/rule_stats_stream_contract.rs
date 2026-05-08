@@ -10,8 +10,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
 use forward_core::{ClientName, RuleId};
 use forward_server::clients::ConnectedClients;
 use forward_server::operator::http;
@@ -34,10 +32,11 @@ struct Harness {
 
 async fn build_harness() -> Harness {
     let dir = TempDir::new().expect("tempdir");
+    let sqlite_store = std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
     let tokens =
-        Arc::new(FileTokenStore::open(dir.path().join("tokens.json")).expect("token store"));
+        Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
     let operator_store = Arc::new(
-        FileOperatorStore::open(dir.path().join("identity.json")).expect("operator store"),
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)),
     );
     operator_store
         .bootstrap_legacy_superadmin(SUPERADMIN_TOKEN)
@@ -73,6 +72,7 @@ async fn build_harness() -> Harness {
             "deadbeef",
             "-----BEGIN CERTIFICATE-----\n",
             16,
+            std::sync::Arc::clone(&sqlite_store),
         )
         .expect("AppState"),
     );

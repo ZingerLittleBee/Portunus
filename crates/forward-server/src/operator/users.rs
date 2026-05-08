@@ -26,7 +26,7 @@ use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
 use crate::operator::rbac;
 use crate::state::AppState;
-use forward_auth::operator_store::IdentityStoreError;
+use forward_auth::IdentityStoreError;
 
 fn api_rbac(e: RbacError) -> ApiError {
     ApiError::from(OperatorError::Rbac(e))

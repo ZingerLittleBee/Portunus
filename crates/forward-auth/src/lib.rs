@@ -6,9 +6,10 @@
 //! scheme (e.g., adding mTLS later) means writing a new `Authenticator`
 //! impl, not touching `forward-server` or `forward-client`.
 
-pub mod file_store;
-pub mod operator_store;
+pub mod store_types;
 pub mod token;
+
+pub use store_types::{IdentityStoreError, ProvisionedClient, UserRemoveSummary};
 
 use std::fmt;
 
@@ -108,9 +109,10 @@ impl UserId {
         Self("_superadmin".to_owned())
     }
 
-    /// Internal constructor for reserved (`_`-prefixed) IDs. Not exposed
-    /// publicly — only the bootstrap path mints these.
-    pub(crate) fn reserved(s: impl Into<String>) -> Self {
+    /// Constructor for reserved (`_`-prefixed) IDs. Used by bootstrap
+    /// flows and by the SQLite-backed identity store when reading stored
+    /// rows back (008-sqlite-storage T044).
+    pub fn reserved(s: impl Into<String>) -> Self {
         Self(s.into())
     }
 
@@ -509,7 +511,7 @@ pub trait OperatorAuthenticator: Send + Sync + 'static {
 
 mod hash_hex {
     //! Serde adapter for `[u8; 32]` ↔ 64-char lowercase hex.
-    //! Mirrors the `token_hash` encoding used by `file_store::TokenRecordWire`.
+    //! Mirrors the hex(blake3) encoding the v0.7 `file_store` used.
     use forward_core::fingerprint;
     use serde::{Deserialize, Deserializer, Serializer};
 

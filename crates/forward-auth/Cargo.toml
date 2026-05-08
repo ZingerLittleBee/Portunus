@@ -22,6 +22,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 bitflags = { version = "2", features = ["serde"] }
+# 008-sqlite-storage: SQLite-backed Authenticator / OperatorAuthenticator
+# trait impls. The Store handle itself lives in forward-server; this
+# crate just consumes a `&Connection` through the trait seam.
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

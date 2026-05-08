@@ -18,6 +18,7 @@ fn server_bin() -> &'static str {
 #[test]
 fn provision_writes_bundle_then_rejects_duplicate() {
     let config_dir = TempDir::new().expect("config tempdir");
+    let data_dir = TempDir::new().expect("data tempdir");
     let bundle_dir = TempDir::new().expect("bundle tempdir");
     let bundle_path = bundle_dir.path().join("edge-01.bundle.json");
 
@@ -25,6 +26,8 @@ fn provision_writes_bundle_then_rejects_duplicate() {
     let out = Command::new(server_bin())
         .arg("--config-dir")
         .arg(config_dir.path())
+        .arg("--data-dir")
+        .arg(data_dir.path())
         .arg("provision-client")
         .arg("edge-01")
         .arg("--out")
@@ -77,6 +80,8 @@ fn provision_writes_bundle_then_rejects_duplicate() {
     let dup = Command::new(server_bin())
         .arg("--config-dir")
         .arg(config_dir.path())
+        .arg("--data-dir")
+        .arg(data_dir.path())
         .arg("provision-client")
         .arg("edge-01")
         .arg("--out")
@@ -100,9 +105,12 @@ fn provision_writes_bundle_then_rejects_duplicate() {
 #[test]
 fn provision_rejects_invalid_name() {
     let config_dir = TempDir::new().expect("config tempdir");
+    let data_dir = TempDir::new().expect("data tempdir");
     let out = Command::new(server_bin())
         .arg("--config-dir")
         .arg(config_dir.path())
+        .arg("--data-dir")
+        .arg(data_dir.path())
         .arg("provision-client")
         .arg("Edge-01") // uppercase forbidden by ClientName rules
         .output()

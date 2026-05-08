@@ -14,7 +14,7 @@ use std::time::Duration;
 use clap::Parser;
 use tracing::{error, info};
 
-use crate::bundle::CredentialBundle;
+use crate::bundle::{CredentialBundle, resolve_bundle_path};
 use crate::control::ReconnectConfig;
 use crate::shutdown::Shutdown;
 
@@ -22,8 +22,12 @@ use crate::shutdown::Shutdown;
 #[command(name = "forward-client", version, about = "forward-rs edge client")]
 struct Cli {
     /// Path to the `.bundle.json` produced by `forward-server provision-client`.
+    /// When omitted, the resolver searches `$FORWARD_CLIENT_BUNDLE`,
+    /// `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`,
+    /// `$HOME/.config/forward-rs/client.bundle.json`, and
+    /// `./client.bundle.json` (in that order).
     #[arg(long)]
-    bundle: PathBuf,
+    bundle: Option<PathBuf>,
 
     /// Initial reconnect delay in milliseconds (full-jitter exponential backoff base).
     #[arg(long, default_value_t = 500)]
@@ -49,10 +53,20 @@ fn main() -> ExitCode {
     // Install rustls crypto provider for TLS dialing.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    let bundle = match CredentialBundle::read_from(&cli.bundle) {
+    let bundle_path = match resolve_bundle_path(cli.bundle.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            // Surface every attempted candidate so operators can fix
+            // their environment without strace-ing the client.
+            eprintln!("error: {e}");
+            error!(event = "client.bundle_search_failed", attempted = ?e.attempted);
+            return ExitCode::from(1);
+        }
+    };
+    let bundle = match CredentialBundle::read_from(&bundle_path) {
         Ok(b) => Arc::new(b),
         Err(e) => {
-            error!(event = "client.bundle_load_failed", error = %e, path = %cli.bundle.display());
+            error!(event = "client.bundle_load_failed", error = %e, path = %bundle_path.display());
             return ExitCode::from(1);
         }
     };
