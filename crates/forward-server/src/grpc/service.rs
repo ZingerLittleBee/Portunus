@@ -91,6 +91,19 @@ impl Control for ControlService {
                         .clients
                         .set_supported_protocols(&identity.client_name, session_id, caps.clone())
                         .await;
+                    // 007-multi-target-failover (R-007): track the
+                    // client binary version so the operator HTTP guard
+                    // can refuse multi-target push to a < 0.7.0 client.
+                    if !h.client_version.is_empty() {
+                        state
+                            .clients
+                            .set_client_version(
+                                &identity.client_name,
+                                session_id,
+                                h.client_version.clone(),
+                            )
+                            .await;
+                    }
                     info!(
                         event = "client.hello",
                         client_name = %identity.client_name,

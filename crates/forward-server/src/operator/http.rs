@@ -126,6 +126,12 @@ async fn get_v1_metrics(
         .into_response())
 }
 
+/// `POST /v1/rules` request body. Accepts BOTH the v0.6.0 legacy
+/// shape (`target_host` + `target_port`) AND the new v0.7.0 shape
+/// (`targets[]` + optional `health_check_interval_secs`). Per
+/// `contracts/operator-api.md` §1, supplying both shapes or neither
+/// is a 400 (`rule_shape_conflict` / `rule_shape_missing` —
+/// 007-multi-target-failover, FR-004).
 #[derive(Debug, Deserialize)]
 struct PushRuleBody {
     client: String,
@@ -135,8 +141,13 @@ struct PushRuleBody {
     /// greater than `listen_port` → range rule (002-port-range-forward).
     #[serde(default)]
     listen_port_end: Option<u16>,
-    target_host: String,
-    target_port: u16,
+    /// Legacy single-target host. Present iff legacy shape (mutually
+    /// exclusive with `targets[]`).
+    #[serde(default)]
+    target_host: Option<String>,
+    /// Legacy single-target port. Present iff legacy shape.
+    #[serde(default)]
+    target_port: Option<u16>,
     /// Inclusive target-range end. MUST be present iff `listen_port_end`
     /// is present (the server enforces co-presence and equal length).
     #[serde(default)]
@@ -152,6 +163,26 @@ struct PushRuleBody {
     /// Optional override of the per-request ack timeout in seconds.
     #[serde(default)]
     ack_timeout_secs: Option<u64>,
+    /// 007-multi-target-failover (FR-001): ordered list of upstream
+    /// targets. Present iff new shape (mutually exclusive with
+    /// `target_host` / `target_port`).
+    #[serde(default)]
+    targets: Option<Vec<TargetBody>>,
+    /// 007-multi-target-failover (FR-013): optional active TCP-connect
+    /// probe interval in seconds (1..=3600). Only valid alongside
+    /// `targets[]`.
+    #[serde(default)]
+    health_check_interval_secs: Option<u32>,
+}
+
+/// One entry in the new `targets[]` shape. `priority` defaults to the
+/// row index when omitted.
+#[derive(Debug, Deserialize)]
+struct TargetBody {
+    host: String,
+    port: u16,
+    #[serde(default)]
+    priority: Option<u32>,
 }
 
 fn default_protocol() -> String {
@@ -184,28 +215,51 @@ async fn post_rules(
     Extension(identity): Extension<OperatorIdentity>,
     Json(body): Json<PushRuleBody>,
 ) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
+    // 007-multi-target-failover (FR-004): shape dispatch.
+    let has_legacy = body.target_host.is_some() || body.target_port.is_some();
+    let has_new = body.targets.is_some();
+    if has_legacy && has_new {
+        return Err(OperatorError::RuleShapeConflict.into());
+    }
+    if !has_legacy && !has_new {
+        return Err(OperatorError::RuleShapeMissing.into());
+    }
+
     // Co-presence check (FR-005 / contracts/operator-api.md):
     // listen_port_end / target_port_end MUST appear together.
-    let listen =
-        build_range(body.listen_port, body.listen_port_end).map_err(OperatorError::RangeInvalid)?;
-    let target =
-        build_range(body.target_port, body.target_port_end).map_err(OperatorError::RangeInvalid)?;
     if body.listen_port_end.is_some() != body.target_port_end.is_some() {
         return Err(OperatorError::RangeInvalid(
             "mismatched_range: listen_port_end and target_port_end must be present together".into(),
         )
         .into());
     }
-
+    let listen =
+        build_range(body.listen_port, body.listen_port_end).map_err(OperatorError::RangeInvalid)?;
     let timeout = body
         .ack_timeout_secs
         .map_or(DEFAULT_ACK_TIMEOUT, Duration::from_secs);
+
+    if has_new {
+        return push_multi_target(&state, &identity, &body, listen, timeout).await;
+    }
+
+    // Legacy single-target shape (v0.6.0).
+    let target_host = body
+        .target_host
+        .as_deref()
+        .expect("has_legacy true → target_host present");
+    let target_port = body
+        .target_port
+        .expect("has_legacy true → target_port present");
+    let target =
+        build_range(target_port, body.target_port_end).map_err(OperatorError::RangeInvalid)?;
+
     let rule = cli::push_rule(
         &state,
         &identity,
         &body.client,
         listen,
-        &body.target_host,
+        target_host,
         target,
         &body.protocol,
         body.prefer_ipv6,
@@ -230,6 +284,125 @@ async fn post_rules(
             owner: rule.owner_user_id.to_string(),
         }),
     ))
+}
+
+/// 007-multi-target-failover Phase 2 helper for the new `targets[]`
+/// shape. Performs all validation + RBAC + version-guard work BEFORE
+/// any rule mutation. The full multi-target wire push (rule registry
+/// insert + multi-target `RuleUpdate` + ack handling) lights up in
+/// Phase 3 alongside the failover engine — for now this returns an
+/// `AckTimeout` (504) once validation passes, mirroring the
+/// "validated-but-no-client-can-handle-it-yet" semantic.
+async fn push_multi_target(
+    state: &Arc<AppState>,
+    identity: &OperatorIdentity,
+    body: &PushRuleBody,
+    listen: PortRange,
+    _timeout: Duration,
+) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
+    use crate::operator::rbac;
+    use forward_core::rule_target;
+    use std::str::FromStr;
+
+    let raw_targets = body.targets.as_deref().expect("has_new true");
+
+    // V-R6: health_check_interval_secs in 1..=3600 if Some.
+    if let Some(hci) = body.health_check_interval_secs
+        && (hci == 0 || hci > 3600)
+    {
+        return Err(OperatorError::HealthCheckIntervalOutOfRange { value: hci }.into());
+    }
+
+    // Empty list special-case: surface as `targets_empty` (V-R1).
+    if raw_targets.is_empty() {
+        return Err(OperatorError::TargetsInvalid(forward_core::RuleTargetError::Empty).into());
+    }
+
+    // Build typed targets, defaulting `priority` to the row index.
+    let typed: Vec<forward_core::RuleTarget> = raw_targets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| forward_core::RuleTarget {
+            host: t.host.clone(),
+            port: t.port,
+            priority: t.priority.unwrap_or(u32::try_from(i).unwrap_or(u32::MAX)),
+        })
+        .collect();
+
+    // V-T1..V-T4 + V-R5 (FR-001, FR-005).
+    rule_target::validate(&typed).map_err(OperatorError::TargetsInvalid)?;
+
+    // Resolve protocol + client name.
+    let client_name =
+        forward_core::ClientName::from_str(&body.client).map_err(OperatorError::InvalidName)?;
+    let proto = parse_protocol_str(&body.protocol)?;
+
+    // RBAC: same envelope as legacy push (FR-021 — targets are NOT
+    // gated). enforce_push only inspects (client, listen-port range,
+    // protocol).
+    let push_proto = match proto {
+        ProtocolWire::Tcp => rbac::PushProtocol::Tcp,
+        ProtocolWire::Udp => rbac::PushProtocol::Udp,
+    };
+    let push_req = rbac::PushRequest {
+        client: &client_name,
+        listen_port_start: listen.start(),
+        listen_port_end: listen.end(),
+        protocol: push_proto,
+    };
+    let grants = state.operator_auth.grants_for(&identity.user_id);
+    rbac::enforce_push(identity, &push_req, &grants).map_err(OperatorError::Rbac)?;
+
+    // R-007: client-version guard. Multi-target push (length >= 2) to
+    // a client whose last-known Hello.client_version is < 0.7.0 is
+    // refused before any rule mutation, since the v0.6.0 client can't
+    // decode `Rule.targets` and would activate a broken single-target
+    // rule with empty `target_host`.
+    if typed.len() >= 2
+        && let Some(v) = state.clients.client_version_of(&client_name).await
+        && !version_at_least_0_7(&v)
+    {
+        return Err(OperatorError::MultiTargetUnsupportedByClient {
+            client_name: client_name.clone(),
+            client_version: v,
+        }
+        .into());
+    }
+
+    // Phase 2 stub boundary: the full multi-target wire push lands in
+    // Phase 3 (T022..T025). For now we surface the same status the
+    // operator would see if a real client were connected but didn't
+    // ack — keeps existing CLI / Web UI surfaces honest.
+    Err(OperatorError::AckTimeout.into())
+}
+
+/// Internal protocol enum used by the multi-target helper. Mirrors
+/// `forward_proto::v1::Protocol` but kept private to avoid leaking
+/// proto types into the HTTP module.
+enum ProtocolWire {
+    Tcp,
+    Udp,
+}
+
+fn parse_protocol_str(s: &str) -> Result<ProtocolWire, OperatorError> {
+    match s.to_ascii_lowercase().as_str() {
+        "tcp" => Ok(ProtocolWire::Tcp),
+        "udp" => Ok(ProtocolWire::Udp),
+        _ => Err(OperatorError::InvalidProtocol(s.to_string())),
+    }
+}
+
+/// Semver-prefix comparison: `version >= 0.7.0` for the multi-target
+/// version guard (R-007). Non-strict semver — strips any `-suffix` /
+/// `+meta` and parses `MAJOR.MINOR` as `(u32, u32)`. Returns `false`
+/// for malformed input (treats unknown / unparseable versions as
+/// "not new enough" so the safe default is to gate).
+fn version_at_least_0_7(version: &str) -> bool {
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (0, 7)
 }
 
 /// Build a `PortRange` from a `(start, optional end)` pair. Returns
@@ -372,13 +545,23 @@ impl From<OperatorError> for ApiError {
             | OperatorError::InvalidTarget(_)
             | OperatorError::InvalidTargetHost { .. }
             | OperatorError::ExceedsCap { .. }
-            | OperatorError::RangeInvalid(_) => StatusCode::BAD_REQUEST,
+            | OperatorError::RangeInvalid(_)
+            // 007-multi-target-failover: shape + targets validation
+            // (operator-api.md §1) — all 400 with stable codes.
+            | OperatorError::RuleShapeConflict
+            | OperatorError::RuleShapeMissing
+            | OperatorError::TargetsInvalid(_)
+            | OperatorError::HealthCheckIntervalOutOfRange { .. } => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_)
             | OperatorError::ActivationFailed(_)
             // 004-udp-forward T019: capability mismatch surfaces as 422
             // (client connected but cannot fulfil the rule) — distinct
             // from 400 (operator's input was syntactically wrong).
-            | OperatorError::UnsupportedProtocol { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            | OperatorError::UnsupportedProtocol { .. }
+            // 007-multi-target-failover (R-007): client connected but
+            // its version cannot decode the new wire shape. Same
+            // semantic class as UnsupportedProtocol.
+            | OperatorError::MultiTargetUnsupportedByClient { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
             OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
             // 005-multi-user-rbac: RBAC failures use the auth_layer's

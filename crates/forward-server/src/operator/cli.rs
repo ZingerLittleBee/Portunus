@@ -85,6 +85,39 @@ pub enum OperatorError {
     /// `contracts/operator-api.md` § "CLI Exit Codes".
     #[error("rbac: {0}")]
     Rbac(forward_auth::RbacError),
+
+    // ---- 007-multi-target-failover ----
+    //
+    /// Operator submitted BOTH `target_host`/`target_port` AND
+    /// `targets[]`. Maps to 400 / `rule_shape_conflict` (FR-004).
+    #[error(
+        "rule_shape_conflict: legacy target_host/target_port and targets[] are mutually exclusive"
+    )]
+    RuleShapeConflict,
+    /// Operator submitted NEITHER shape. Maps to 400 /
+    /// `rule_shape_missing` (FR-004).
+    #[error("rule_shape_missing: rule must carry target_host/target_port OR targets[]")]
+    RuleShapeMissing,
+    /// `targets[]` validation failed (V-T1..V-T4 + V-R5). The inner
+    /// `RuleTargetError` carries the specific failure; `code()` maps
+    /// each variant to its operator-api stable code.
+    #[error("{0}")]
+    TargetsInvalid(#[from] forward_core::RuleTargetError),
+    /// `health_check_interval_secs` outside `1..=3600` (V-R6).
+    #[error("health_check_interval_out_of_range: {value} not in 1..=3600")]
+    HealthCheckIntervalOutOfRange { value: u32 },
+    /// Operator pushed a multi-target rule (`targets.len() >= 2`) at a
+    /// client whose last-known `Hello.client_version` is `< 0.7.0`.
+    /// That client cannot decode `Rule.targets` and would activate a
+    /// broken single-target rule with empty `target_host`. Maps to
+    /// 422 / `multi_target_unsupported_by_client` (R-007).
+    #[error(
+        "multi_target_unsupported_by_client: client {client_name} (version {client_version}) requires >= 0.7.0"
+    )]
+    MultiTargetUnsupportedByClient {
+        client_name: ClientName,
+        client_version: String,
+    },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -108,7 +141,16 @@ impl OperatorError {
             | Self::InvalidTargetHost { .. }
             | Self::ExceedsCap { .. }
             | Self::RangeInvalid(_)
-            | Self::UnsupportedProtocol { .. } => 3,
+            | Self::UnsupportedProtocol { .. }
+            // 007-multi-target-failover: shape and target validation
+            // share exit code 3 with the v0.6.0 validation family.
+            // Capability mismatch (`MultiTargetUnsupportedByClient`)
+            // mirrors `UnsupportedProtocol` semantics — same exit.
+            | Self::RuleShapeConflict
+            | Self::RuleShapeMissing
+            | Self::TargetsInvalid(_)
+            | Self::HealthCheckIntervalOutOfRange { .. }
+            | Self::MultiTargetUnsupportedByClient { .. } => 3,
             Self::ClientNotConnected(_) => 4,
             Self::PortInUse { .. } => 5,
             Self::ActivationFailed(_) => 6,
@@ -161,6 +203,19 @@ impl OperatorError {
             Self::Rbac(e) => e.code(),
             Self::Io(_) => "io_error",
             Self::Auth(_) => "auth_error",
+            // 007-multi-target-failover (operator-api.md §1):
+            Self::RuleShapeConflict => "rule_shape_conflict",
+            Self::RuleShapeMissing => "rule_shape_missing",
+            Self::TargetsInvalid(e) => match e {
+                forward_core::RuleTargetError::Empty => "targets_empty",
+                forward_core::RuleTargetError::TooMany(_) => "targets_too_many",
+                forward_core::RuleTargetError::EmptyHost { .. }
+                | forward_core::RuleTargetError::InvalidHost { .. } => "target_invalid_host",
+                forward_core::RuleTargetError::InvalidPort { .. } => "target_invalid_port",
+                forward_core::RuleTargetError::Duplicate { .. } => "targets_duplicate",
+            },
+            Self::HealthCheckIntervalOutOfRange { .. } => "health_check_interval_out_of_range",
+            Self::MultiTargetUnsupportedByClient { .. } => "multi_target_unsupported_by_client",
         }
     }
 }
