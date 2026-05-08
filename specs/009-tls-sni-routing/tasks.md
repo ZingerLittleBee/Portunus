@@ -245,7 +245,7 @@ Bench home:
 - [x] T086 [P] Quickstart validation — run through `quickstart.md` end-to-end on a clean checkout; capture the actual `/metrics` output into the doc as the "expected" snippet (replace placeholders if numbers shifted).
 - [x] T087 [P] Bench — `SniRoutingTable::lookup` ns/op — `crates/forward-client/benches/sni_route.rs::lookup_at_scale`. Build tables with 100 / 1 000 / 10 000 routes; criterion runs hits + misses; assert p99 < 100 µs at 100 routes (SC-006).
 - [ ] T088 [P] Bench — connection-setup latency — `crates/forward-client/benches/sni_route.rs::setup_latency_vs_baseline`. Compare SNI listener vs. v0.7 plain-TCP listener; assert SNI within +5 ms p99 (SC-003).
-- [ ] T089 [P] Operator API regression bench — `crates/forward-server/benches/operator_api.rs` (existing). Assert the rule-push path is within 5 % of the v0.8 baseline despite the new overlap-matrix walk.
+- [x] T089 [P] Operator API regression bench — `crates/forward-server/benches/operator_api.rs` (existing). Assert the rule-push path is within 5 % of the v0.8 baseline despite the new overlap-matrix walk.
 - [x] T090 CHANGELOG entry under `# 0.9.0` documenting: SNI routing, capability gate, additive proto fields, additive SQL migration, no breaking changes. Reference the spec / plan file paths.
 - [x] T091 Bump workspace version in `Cargo.toml` and `crates/*/Cargo.toml` from `0.8.0` to `0.9.0`. Validate `CHANGELOG.md` entry exists (use the project's `release-version` skill if available).
 - [x] T092 Final audit — run `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`, `cargo bench --workspace -- --quick` — record the green run in the PR description before merging to `main`.
