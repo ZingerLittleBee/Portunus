@@ -109,27 +109,27 @@ Bench home:
 
 > Write these tests FIRST and confirm they fail before implementing T036..T046.
 
-- [ ] T032 [P] [US1] Unit test — `client_hello::parse` happy path — in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/forwarder/sni/client_hello.rs::tests::parse_tls12_extracts_sni`. Load `tests/fixtures/tls/client_hello_tls12.bin`; assert `parse(bytes) == Ok(Some(ServerName("example.com")))`.
-- [ ] T033 [P] [US1] Unit test — incremental feed (Truncated → Ok) — in the same file `::tests::parse_truncated_then_complete`. Feed bytes one at a time; assert `Truncated` then `Ok(Some(...))`.
-- [ ] T034 [P] [US1] Unit test — exact match priority — in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/forwarder/sni/route_table.rs::tests::exact_beats_fallback`. Build a table with one exact rule and one fallback; assert exact wins.
-- [ ] T035 [P] [US1] Integration test — two SNI rules → two upstreams — in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/tests/sni_route_e2e_exact.rs`. Spin up two TCP backends + a server + a v0.9 client; push two SNI rules on `:443`; rustls clients with each SNI; assert each lands on the right backend.
+- [x] T032 [P] [US1] Unit test — `client_hello::parse` happy path — in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/forwarder/sni/client_hello.rs::tests::parse_tls12_extracts_sni`. Load `tests/fixtures/tls/client_hello_tls12.bin`; assert `parse(bytes) == Ok(Some(ServerName("example.com")))`.
+- [x] T033 [P] [US1] Unit test — incremental feed (Truncated → Ok) — in the same file `::tests::parse_truncated_then_complete`. Feed bytes one at a time; assert `Truncated` then `Ok(Some(...))`.
+- [x] T034 [P] [US1] Unit test — exact match priority — in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/forwarder/sni/route_table.rs::tests::exact_beats_fallback`. Build a table with one exact rule and one fallback; assert exact wins.
+- [x] T035 [P] [US1] Integration test — two SNI rules → two upstreams — in `/Users/zingerbee/Documents/forward-rs/crates/forward-client/tests/sni_route_e2e_exact.rs`. Spin up two TCP backends + a server + a v0.9 client; push two SNI rules on `:443`; rustls clients with each SNI; assert each lands on the right backend.
 
 ### Implementation for User Story 1
 
-- [ ] T036 [P] [US1] Implement `client_hello::parse(bytes: &[u8]) -> Result<ParseOutcome, ParseError>` in `crates/forward-client/src/forwarder/sni/client_hello.rs`. Outcomes: `Truncated`, `Ok(Some(host))`, `Ok(None)`. Errors: `NotTls`, `Malformed`. Single record only — first handshake message must be ClientHello (R-015). Read only `server_name` extension; skip everything else by length. Make T032..T033 pass.
-- [ ] T037 [P] [US1] Implement `SniRoutingTable` in `crates/forward-client/src/forwarder/sni/route_table.rs` with the layout from data-model.md §2.2 — `exact: HashMap<String, RuleId>`, `wildcards: Vec<…>` (empty for now — populated in US2), `fallback: Option<RuleId>` (empty for now — populated in US3). `lookup` implements Exact-then-Fallback only at this stage. Make T034 pass.
-- [ ] T038 [P] [US1] Implement `peek::read_client_hello(stream, 3 s, 64 KiB) -> Result<(Vec<u8>, Option<ServerName>), PeekError>` in `crates/forward-client/src/forwarder/sni/peek.rs`. Re-invokes `client_hello::parse` after each `read`; returns the captured buffer + parsed SNI. Errors map cleanly to the five tracing event names (R-009).
-- [ ] T039 [P] [US1] Add `pub sni_pattern: Option<String>` to `ClientRule` in `crates/forward-client/src/forwarder/mod.rs`. Update every constructor (search call sites); `crates/forward-client/src/control.rs::handle_rule_update` plumbs it from the wire `Rule.sni_pattern`.
-- [ ] T040 [US1] Implement `SniListener` in `crates/forward-client/src/forwarder/sni/listener.rs` (data-model.md §2.3): owns the bound `TcpListener`, the `tokio::sync::watch::Receiver<Arc<SniRoutingTable>>`, the cancellation token, and an `Arc<SniListenerCounters>`. Per-connection accept handler:
+- [x] T036 [P] [US1] Implement `client_hello::parse(bytes: &[u8]) -> Result<ParseOutcome, ParseError>` in `crates/forward-client/src/forwarder/sni/client_hello.rs`. Outcomes: `Truncated`, `Ok(Some(host))`, `Ok(None)`. Errors: `NotTls`, `Malformed`. Single record only — first handshake message must be ClientHello (R-015). Read only `server_name` extension; skip everything else by length. Make T032..T033 pass.
+- [x] T037 [P] [US1] Implement `SniRoutingTable` in `crates/forward-client/src/forwarder/sni/route_table.rs` with the layout from data-model.md §2.2 — `exact: HashMap<String, RuleId>`, `wildcards: Vec<…>` (empty for now — populated in US2), `fallback: Option<RuleId>` (empty for now — populated in US3). `lookup` implements Exact-then-Fallback only at this stage. Make T034 pass.
+- [x] T038 [P] [US1] Implement `peek::read_client_hello(stream, 3 s, 64 KiB) -> Result<(Vec<u8>, Option<ServerName>), PeekError>` in `crates/forward-client/src/forwarder/sni/peek.rs`. Re-invokes `client_hello::parse` after each `read`; returns the captured buffer + parsed SNI. Errors map cleanly to the five tracing event names (R-009).
+- [x] T039 [P] [US1] Add `pub sni_pattern: Option<String>` to `ClientRule` in `crates/forward-client/src/forwarder/mod.rs`. Update every constructor (search call sites); `crates/forward-client/src/control.rs::handle_rule_update` plumbs it from the wire `Rule.sni_pattern`.
+- [x] T040 [US1] Implement `SniListener` in `crates/forward-client/src/forwarder/sni/listener.rs` (data-model.md §2.3): owns the bound `TcpListener`, the `tokio::sync::watch::Receiver<Arc<SniRoutingTable>>`, the cancellation token, and an `Arc<SniListenerCounters>`. Per-connection accept handler:
   1. peek ClientHello (T038),
   2. snapshot table via `borrow().clone()`,
   3. lookup, hit → dispatch to `proxy::proxy(stream, preread, rule)`; miss/error → close + bump counter + tracing event.
-- [ ] T041 [US1] Extend `proxy::proxy` in `crates/forward-client/src/forwarder/proxy.rs` to accept an optional preread buffer. When present, write it to the upstream before splicing. The hot path on the legacy plain-TCP code path stays byte-identical (`preread = None`).
-- [ ] T042 [US1] Implement `PortGroupManager` skeleton in `crates/forward-client/src/port_groups.rs` (data-model.md §2.4) — `groups: HashMap<u16, GroupState>` + `rule_to_port: HashMap<RuleId, u16>`. Operations: `apply_push(rule)` and `apply_remove(rule_id)` returning `Result<(), PortGroupError>`. For US1 only the SNI mode (≥1 SNI member) needs to be functional; the Legacy variant can carry a stub that delegates to the existing v0.7 forwarder spawn for backward compat (US4 will exercise it).
-- [ ] T043 [US1] Wire `PortGroupManager` into the control loop at `crates/forward-client/src/control.rs::handle_rule_update`: `RuleUpdate(PUSH | REMOVE)` flows through the manager instead of the per-rule `forwarder::ClientRule -> task` path. Old per-rule path is removed only after all five user stories activate it (kept side-by-side until US4 verifies byte-stability).
-- [ ] T044 [US1] CLI flag — add optional `--sni <PATTERN>` to `forward-server push-rule` in `crates/forward-server/src/main.rs` per contracts/cli.md §1. Pre-API rejections (UDP / port-range / malformed) exit 2 with the documented stderr.
-- [ ] T045 [US1] Operator API response shape — `POST /v1/rules` and `GET /v1/rules` echo `sni_pattern` when present, omit when absent (`#[serde(skip_serializing_if = "Option::is_none")]`).
-- [ ] T046 [US1] Make `sni_route_e2e_exact.rs` (T035) pass: end-to-end with two SNI rules + two upstreams + rustls clients with two SNIs.
+- [x] T041 [US1] Extend `proxy::proxy` in `crates/forward-client/src/forwarder/proxy.rs` to accept an optional preread buffer. When present, write it to the upstream before splicing. The hot path on the legacy plain-TCP code path stays byte-identical (`preread = None`).
+- [x] T042 [US1] Implement `PortGroupManager` skeleton in `crates/forward-client/src/port_groups.rs` (data-model.md §2.4) — `groups: HashMap<u16, GroupState>` + `rule_to_port: HashMap<RuleId, u16>`. Operations: `apply_push(rule)` and `apply_remove(rule_id)` returning `Result<(), PortGroupError>`. For US1 only the SNI mode (≥1 SNI member) needs to be functional; the Legacy variant can carry a stub that delegates to the existing v0.7 forwarder spawn for backward compat (US4 will exercise it).
+- [x] T043 [US1] Wire `PortGroupManager` into the control loop at `crates/forward-client/src/control.rs::handle_rule_update`: `RuleUpdate(PUSH | REMOVE)` flows through the manager instead of the per-rule `forwarder::ClientRule -> task` path. Old per-rule path is removed only after all five user stories activate it (kept side-by-side until US4 verifies byte-stability).
+- [x] T044 [US1] CLI flag — add optional `--sni <PATTERN>` to `forward-server push-rule` in `crates/forward-server/src/main.rs` per contracts/cli.md §1. Pre-API rejections (UDP / port-range / malformed) exit 2 with the documented stderr.
+- [x] T045 [US1] Operator API response shape — `POST /v1/rules` and `GET /v1/rules` echo `sni_pattern` when present, omit when absent (`#[serde(skip_serializing_if = "Option::is_none")]`).
+- [x] T046 [US1] Make `sni_route_e2e_exact.rs` (T035) pass: end-to-end with two SNI rules + two upstreams + rustls clients with two SNIs.
 
 **Checkpoint**: US1 functional. The MVP — operators can fan out two TLS hostnames on one port — is shippable here.
 
@@ -143,16 +143,16 @@ Bench home:
 
 ### Tests for User Story 2 (TDD)
 
-- [ ] T047 [P] [US2] Unit test — wildcard match + single-label remainder — in `crates/forward-client/src/forwarder/sni/route_table.rs::tests::wildcard_single_label_only`. Assert `*.example.com` matches `foo.example.com`; rejects `example.com` (no left label) and `a.b.example.com` (extra label).
-- [ ] T048 [P] [US2] Unit test — wildcard specificity — `::tests::longest_wildcard_wins`. Two rules `*.team.example.com` and `*.example.com`; assert `x.team.example.com` matches the more specific one.
-- [ ] T049 [P] [US2] Unit test — exact vs. wildcard priority — `::tests::exact_beats_wildcard`. One exact `api.example.com`, one wildcard `*.example.com`; assert `api.example.com` matches exact.
+- [x] T047 [P] [US2] Unit test — wildcard match + single-label remainder — in `crates/forward-client/src/forwarder/sni/route_table.rs::tests::wildcard_single_label_only`. Assert `*.example.com` matches `foo.example.com`; rejects `example.com` (no left label) and `a.b.example.com` (extra label).
+- [x] T048 [P] [US2] Unit test — wildcard specificity — `::tests::longest_wildcard_wins`. Two rules `*.team.example.com` and `*.example.com`; assert `x.team.example.com` matches the more specific one.
+- [x] T049 [P] [US2] Unit test — exact vs. wildcard priority — `::tests::exact_beats_wildcard`. One exact `api.example.com`, one wildcard `*.example.com`; assert `api.example.com` matches exact.
 - [ ] T050 [P] [US2] Validation test — wildcard grammar — extend `crates/forward-server/tests/sni_rule_validation.rs::wildcard_grammar` to include rejections for `*.com` (single-label suffix), `*.*.example.com` (multi-`*`), `foo*.example.com` (`*` not at leftmost), `*example.com` (no dot after `*`).
 - [ ] T051 [P] [US2] Integration test — wildcard end-to-end — `crates/forward-client/tests/sni_route_e2e_wildcard.rs`. Push `*.web.example.com`; rustls clients with three SNIs; assert correct routing decisions.
 
 ### Implementation for User Story 2
 
-- [ ] T052 [US2] Extend `SniRoutingTable::from_members` in `crates/forward-client/src/forwarder/sni/route_table.rs` to populate `wildcards: Vec<(String, RuleId)>` sorted by suffix length descending. The suffix stored is the part **after** `*.`.
-- [ ] T053 [US2] Extend `SniRoutingTable::lookup` to walk `wildcards` after `exact` miss; for each `(suffix, rule_id)` apply the data-model.md §2.2 algorithm: `host.ends_with("." + suffix) && prefix_before_suffix.contains('.') == false`. Make T047..T049 pass.
+- [x] T052 [US2] Extend `SniRoutingTable::from_members` in `crates/forward-client/src/forwarder/sni/route_table.rs` to populate `wildcards: Vec<(String, RuleId)>` sorted by suffix length descending. The suffix stored is the part **after** `*.`.
+- [x] T053 [US2] Extend `SniRoutingTable::lookup` to walk `wildcards` after `exact` miss; for each `(suffix, rule_id)` apply the data-model.md §2.2 algorithm: `host.ends_with("." + suffix) && prefix_before_suffix.contains('.') == false`. Make T047..T049 pass.
 - [ ] T054 [US2] Tighten the grammar check in `crates/forward-server/src/operator/http.rs::validate_rule` per data-model.md §V-3 (T029 covers the basics; this task adds wildcard-specific checks: `*` must be the first label; suffix must have ≥ 2 labels; no other `*`). Make T050 pass.
 - [ ] T055 [US2] Make `sni_route_e2e_wildcard.rs` (T051) pass.
 
@@ -168,16 +168,16 @@ Bench home:
 
 ### Tests for User Story 3 (TDD)
 
-- [ ] T056 [P] [US3] Unit test — fallback only when exact + wildcard miss — `crates/forward-client/src/forwarder/sni/route_table.rs::tests::fallback_only_on_miss`.
-- [ ] T057 [P] [US3] Unit test — duplicate fallback rejected at table build — `::tests::duplicate_fallback_panics_or_errors`. Pass two None members to `from_members`; assert error / panic with explicit message (data-model.md INV-1 indirectly).
-- [ ] T058 [P] [US3] Integration test — fallback present — `crates/forward-client/tests/sni_route_fallback.rs::with_fallback_routes_no_sni_client`. No-SNI rustls client on a port with a fallback rule → lands on the fallback upstream.
-- [ ] T059 [P] [US3] Integration test — fallback absent — `…::without_fallback_resets_connection`. Same setup minus the None rule → connection reset; `tls.no_sni` tracing event observed.
+- [x] T056 [P] [US3] Unit test — fallback only when exact + wildcard miss — `crates/forward-client/src/forwarder/sni/route_table.rs::tests::fallback_only_on_miss`.
+- [x] T057 [P] [US3] Unit test — duplicate fallback rejected at table build — `::tests::duplicate_fallback_panics_or_errors`. Pass two None members to `from_members`; assert error / panic with explicit message (data-model.md INV-1 indirectly).
+- [x] T058 [P] [US3] Integration test — fallback present — `crates/forward-client/tests/sni_route_fallback.rs::with_fallback_routes_no_sni_client`. No-SNI rustls client on a port with a fallback rule → lands on the fallback upstream.
+- [x] T059 [P] [US3] Integration test — fallback absent — `…::without_fallback_resets_connection`. Same setup minus the None rule → connection reset; `tls.no_sni` tracing event observed.
 
 ### Implementation for User Story 3
 
-- [ ] T060 [US3] Populate `fallback: Option<RuleId>` in `SniRoutingTable::from_members` when a member has `sni_pattern = None`. Reject duplicate fallbacks at build time (panic with a clear message; the server's overlap matrix prevents this in normal flow but the in-memory check is a backstop). Make T056..T057 pass.
-- [ ] T061 [US3] Verify `SniListener` lookup falls through to `fallback` when both `exact` and `wildcard` miss (already implied by T053; spot-check with T056 fixture).
-- [ ] T062 [US3] Make T058 + T059 pass.
+- [x] T060 [US3] Populate `fallback: Option<RuleId>` in `SniRoutingTable::from_members` when a member has `sni_pattern = None`. Reject duplicate fallbacks at build time (panic with a clear message; the server's overlap matrix prevents this in normal flow but the in-memory check is a backstop). Make T056..T057 pass.
+- [x] T061 [US3] Verify `SniListener` lookup falls through to `fallback` when both `exact` and `wildcard` miss (already implied by T053; spot-check with T056 fixture).
+- [x] T062 [US3] Make T058 + T059 pass.
 
 **Checkpoint**: US3 functional. Operators get a TLS-only catch-all that does not silently accept plain-TCP traffic.
 

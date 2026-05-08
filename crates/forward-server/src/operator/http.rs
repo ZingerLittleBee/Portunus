@@ -216,6 +216,11 @@ struct PushRuleResponse {
     /// (FR-014). Always present; superadmin-pushed rules carry
     /// `_superadmin`.
     owner: String,
+    /// 009-tls-sni-routing T045: echo the SNI selector when the rule
+    /// carries one. Omitted when absent so v0.8 callers see byte-
+    /// identical bodies (`#[serde(skip_serializing_if = "Option::is_none")]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sni_pattern: Option<String>,
 }
 
 async fn post_rules(
@@ -342,6 +347,7 @@ async fn post_rules(
             prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
             protocol: rule.protocol.as_str().to_string(),
             owner: rule.owner_user_id.to_string(),
+            sni_pattern: rule.sni_pattern.clone(),
         }),
     ))
 }
@@ -477,6 +483,7 @@ async fn push_multi_target(
             prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
             protocol: rule.protocol.as_str().to_string(),
             owner: rule.owner_user_id.to_string(),
+            sni_pattern: rule.sni_pattern.clone(),
         }),
     ))
 }
@@ -573,6 +580,7 @@ async fn push_legacy_with_sni(
             prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
             protocol: rule.protocol.as_str().to_string(),
             owner: rule.owner_user_id.to_string(),
+            sni_pattern: rule.sni_pattern.clone(),
         }),
     ))
 }

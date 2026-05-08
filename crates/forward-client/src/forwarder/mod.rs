@@ -105,6 +105,12 @@ pub struct ClientRule {
     /// asserts `Some` on entry; if a multi-target rule reaches the
     /// failover_path with `None`, that's a wiring bug.
     pub multi_target_obs: Option<Arc<MultiTargetObservability>>,
+    /// 009-tls-sni-routing (T039): optional SNI selector. `Some(host)` /
+    /// `Some("*.host")` opts this rule into the SNI listener at its
+    /// `(client, listen_port)` group; `None` keeps the v0.7 byte-stable
+    /// plain-TCP path. Lowercased + grammar-validated by the server
+    /// before reaching the client (operator-api.md §1.2).
+    pub sni_pattern: Option<String>,
 }
 
 /// One entry in `ClientRule.targets`. Holds both the wire-shape
@@ -747,6 +753,7 @@ mod tests {
             targets: Vec::new(),
             health_check_interval_secs: None,
             multi_target_obs: None,
+            sni_pattern: None,
         }
     }
 
@@ -819,6 +826,7 @@ mod tests {
                 targets: Vec::new(),
                 health_check_interval_secs: None,
                 multi_target_obs: None,
+                sni_pattern: None,
             },
             ip_resolver(),
             tx,
@@ -1118,6 +1126,7 @@ mod tests {
                     targets: Vec::new(),
                     health_check_interval_secs: None,
                     multi_target_obs: None,
+                    sni_pattern: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1198,6 +1207,7 @@ mod tests {
                     targets: Vec::new(),
                     health_check_interval_secs: None,
                     multi_target_obs: None,
+                    sni_pattern: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1361,6 +1371,7 @@ mod tests {
             targets: Vec::new(),
             health_check_interval_secs: None,
             multi_target_obs: None,
+            sni_pattern: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);

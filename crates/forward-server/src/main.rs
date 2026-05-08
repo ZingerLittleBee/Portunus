@@ -98,6 +98,15 @@ enum Cmd {
         /// passive-only failover detection (FR-015).
         #[arg(long)]
         health_check_interval_secs: Option<u32>,
+        /// 009-tls-sni-routing: optional Server Name Indication
+        /// selector. Accepts an exact host (`api.example.com`) or
+        /// single-label wildcard (`*.example.com`). TCP single-port
+        /// rules only — UDP and port-range rules are rejected with
+        /// `validation.sni_on_unsupported_rule`. Omit (or pass an
+        /// empty string) for the legacy / fallback shape. The server
+        /// lowercases and grammar-validates the value (R-001).
+        #[arg(long = "sni")]
+        sni_pattern: Option<String>,
         /// Operator HTTP endpoint of the running server.
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
@@ -377,6 +386,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             target_specs,
             targets_json,
             health_check_interval_secs,
+            sni_pattern,
             http_endpoint,
         } => rule_cli::push(
             &http_endpoint,
@@ -389,6 +399,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             &target_specs,
             targets_json.as_deref(),
             health_check_interval_secs,
+            sni_pattern.as_deref(),
         ),
         Cmd::RemoveRule {
             rule_id,

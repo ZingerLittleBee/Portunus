@@ -125,6 +125,7 @@ pub fn push(
     target_specs: &[String],
     targets_json: Option<&str>,
     health_check_interval_secs: Option<u32>,
+    sni_pattern: Option<&str>,
 ) -> Result<(), u8> {
     let listen = parse_listen(listen_spec).map_err(|e| {
         eprintln!("error: {e}");
@@ -147,6 +148,30 @@ pub fn push(
         eprintln!("error: health_check_interval_out_of_range: {hci} (must be 1..=3600)");
         return Err(3);
     }
+
+    // 009-tls-sni-routing T044: client-side rejection per contracts/cli.md.
+    // Operators get exit 2 immediately for shape errors that the server
+    // would also reject (a network round-trip is wasteful when the
+    // problem is in the local invocation).
+    let sni_normalised: Option<String> = match sni_pattern {
+        None => None,
+        Some(s) if s.trim().is_empty() => None,
+        Some(s) => {
+            if !protocol.eq_ignore_ascii_case("tcp") {
+                eprintln!(
+                    "error: validation.sni_on_unsupported_rule: --sni is only valid on tcp single-port rules"
+                );
+                return Err(2);
+            }
+            if listen.len() > 1 {
+                eprintln!(
+                    "error: validation.sni_on_unsupported_rule: --sni is only valid on single-port rules, not ranges"
+                );
+                return Err(2);
+            }
+            Some(s.trim().to_ascii_lowercase())
+        }
+    };
 
     let multi_form = !target_specs.is_empty() || targets_json.is_some();
     let legacy_form = target.is_some();
@@ -228,6 +253,10 @@ pub fn push(
     if prefer_ipv6 {
         let obj = body.as_object_mut().expect("just built a json object");
         obj.insert("prefer_ipv6".into(), true.into());
+    }
+    if let Some(sni) = sni_normalised {
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("sni_pattern".into(), sni.into());
     }
     let resp = apply_auth(client()?.post(&url).json(&body))
         .send()

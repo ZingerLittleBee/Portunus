@@ -3,23 +3,294 @@
 //! Owns the bound `TcpListener`, the `watch::Receiver<Arc<SniRoutingTable>>`,
 //! the cancellation token, and an `Arc<SniListenerCounters>`. On each
 //! accept it peeks the ClientHello, looks up the SNI in a snapshot of
-//! the routing table, and dispatches into the existing `proxy::proxy`.
+//! the routing table, and dispatches into `proxy::proxy_with_preread`
+//! so the captured handshake bytes reach the upstream verbatim.
 //!
-//! NOTE (Phase 1 — T002 scaffold): bodies stubbed. T040 in Phase 3
-//! fills in the real listener.
-
-#![allow(dead_code)]
+//! Lookup result mapping (data-model.md §2.3 + R-009):
+//!
+//! | outcome                        | action                                  | tracing event             |
+//! |--------------------------------|-----------------------------------------|---------------------------|
+//! | Hit { Exact / Wildcard }       | dispatch + bump per-rule counter        | `tls.sni_routed` INFO     |
+//! | Hit { Fallback } w/ SNI        | dispatch fallback + bump fallback ctr   | `tls.sni_routed` INFO     |
+//! | Hit { Fallback } w/o SNI       | dispatch fallback + bump fallback ctr   | `tls.no_sni` INFO         |
+//! | Miss (host present, no rule)   | drop, bump listener-miss counter        | `tls.sni_no_match` WARN   |
+//! | Miss (no SNI, no fallback)     | drop, bump listener-miss counter        | `tls.no_sni` INFO         |
+//! | PeekError::Timeout             | drop                                    | `tls.client_hello_timeout` WARN |
+//! | PeekError::NotTls / Malformed  | drop, bump parse_failures counter       | `tls.parse_failed` WARN   |
+//! | PeekError::Io / SizeCap        | drop, bump parse_failures counter       | `tls.parse_failed` WARN   |
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use forward_core::{RuleId, Target};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
+
+use crate::forwarder::proxy::proxy_with_preread;
+use crate::forwarder::stats::RuleStats;
+use crate::resolver::{LiveResolver, Resolve};
+
+use super::peek::{self, PeekError};
+use super::route_table::{SniMatch, SniMatchKind, SniRoutingTable};
+
+/// Per-listener counters surfaced via `proto::SniListenerStats`
+/// (T078). Bumped from the accept loop's miss / parse-failure paths.
 #[derive(Default, Debug)]
 pub struct SniListenerCounters {
     pub miss: AtomicU64,
     pub parse_failures: AtomicU64,
 }
 
+/// Per-rule resolution + dispatch context. The listener resolves a
+/// `RuleId` from the SNI lookup into one of these slots so the
+/// per-rule data plane (Target classification, port range, stats) is
+/// ready to feed into `proxy_with_preread`.
+#[derive(Clone)]
+pub struct SniRuleSlot {
+    pub rule_id: RuleId,
+    pub target: Target,
+    pub target_port: u16,
+    pub prefer_ipv6: bool,
+    pub listen_port: u16,
+    pub stats: Arc<RuleStats>,
+    /// Per-rule SNI hit counter. The right slot
+    /// (exact/wildcard/fallback) is chosen by the listener based on
+    /// `SniMatchKind` and bumped before dispatch.
+    pub sni_route_exact_total: Arc<AtomicU64>,
+    pub sni_route_wildcard_total: Arc<AtomicU64>,
+    pub sni_route_fallback_total: Arc<AtomicU64>,
+}
+
+/// Snapshot of the rule slots a SNI listener can dispatch to.
+/// Wrapped in `Arc` and swapped in via `watch` whenever the route
+/// group composition changes (PUSH/REMOVE).
+#[derive(Clone, Default)]
+pub struct SniRouteResolver {
+    pub slots: std::collections::HashMap<RuleId, SniRuleSlot>,
+}
+
+/// Configuration for one SNI-mode listener. Owned by the
+/// `PortGroupManager` (T042); the listener task reads through the
+/// shared `Arc`s.
 pub struct SniListener {
-    // Filled in T040.
-    pub(crate) _counters: Arc<SniListenerCounters>,
+    pub listen_port: u16,
+    pub counters: Arc<SniListenerCounters>,
+    pub table_rx: watch::Receiver<Arc<SniRoutingTable>>,
+    pub resolver_rx: watch::Receiver<Arc<SniRouteResolver>>,
+    pub cancel: CancellationToken,
+}
+
+impl SniListener {
+    /// Spawn the accept loop. Returns when `cancel` fires.
+    pub async fn run<R: Resolve + 'static>(
+        self,
+        listener: TcpListener,
+        live_resolver: Arc<LiveResolver<R>>,
+    ) {
+        let SniListener {
+            listen_port,
+            counters,
+            table_rx,
+            resolver_rx,
+            cancel,
+        } = self;
+        info!(
+            target = "tls_sni",
+            event = "tls.sni_listener.started",
+            listen_port,
+        );
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    debug!(
+                        target = "tls_sni",
+                        event = "tls.sni_listener.stopped",
+                        listen_port,
+                    );
+                    return;
+                }
+                accept = listener.accept() => {
+                    match accept {
+                        Ok((stream, peer)) => {
+                            let counters = Arc::clone(&counters);
+                            let table = table_rx.borrow().clone();
+                            let routes = resolver_rx.borrow().clone();
+                            let resolver = Arc::clone(&live_resolver);
+                            let cancel = cancel.clone();
+                            tokio::spawn(async move {
+                                handle_accept(
+                                    stream,
+                                    peer,
+                                    listen_port,
+                                    table,
+                                    routes,
+                                    counters,
+                                    resolver,
+                                    cancel,
+                                )
+                                .await;
+                            });
+                        }
+                        Err(e) => {
+                            warn!(
+                                target = "tls_sni",
+                                event = "tls.sni_listener.accept_error",
+                                listen_port,
+                                error = %e,
+                            );
+                            // Brief backoff; the legacy listener uses the
+                            // same pattern.
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_accept<R: Resolve + 'static>(
+    mut stream: TcpStream,
+    peer: std::net::SocketAddr,
+    listen_port: u16,
+    table: Arc<SniRoutingTable>,
+    routes: Arc<SniRouteResolver>,
+    counters: Arc<SniListenerCounters>,
+    resolver: Arc<LiveResolver<R>>,
+    cancel: CancellationToken,
+) {
+    let (preread, sni) = match peek::read_client_hello(&mut stream).await {
+        Ok((buf, sni)) => (buf, sni),
+        Err(PeekError::Timeout { bytes_read }) => {
+            counters.parse_failures.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                target = "tls_sni",
+                event = "tls.client_hello_timeout",
+                listen_port,
+                peer = %peer,
+                bytes_read,
+            );
+            return;
+        }
+        Err(other) => {
+            counters.parse_failures.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                target = "tls_sni",
+                event = "tls.parse_failed",
+                listen_port,
+                peer = %peer,
+                error = ?other,
+            );
+            return;
+        }
+    };
+
+    let sni_str = sni.as_deref();
+    let m = table.lookup(sni_str);
+    let (rule_id, kind) = match m {
+        SniMatch::Hit { rule_id, kind } => (rule_id, kind),
+        SniMatch::Miss => {
+            counters.miss.fetch_add(1, Ordering::Relaxed);
+            match sni_str {
+                Some(host) => {
+                    warn!(
+                        target = "tls_sni",
+                        event = "tls.sni_no_match",
+                        listen_port,
+                        peer = %peer,
+                        server_name = %host,
+                    );
+                }
+                None => {
+                    info!(
+                        target = "tls_sni",
+                        event = "tls.no_sni",
+                        listen_port,
+                        peer = %peer,
+                        fallback_used = false,
+                    );
+                }
+            }
+            return;
+        }
+    };
+
+    let Some(slot) = routes.slots.get(&rule_id) else {
+        // Race: the rule was REMOVE'd between the table snapshot and
+        // this lookup. Drop quietly — no per-rule counter to bump.
+        counters.miss.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            target = "tls_sni",
+            event = "tls.sni_no_match",
+            listen_port,
+            peer = %peer,
+            reason = "rule_id_unknown",
+            rule_id = %rule_id,
+        );
+        return;
+    };
+
+    let match_kind = match kind {
+        SniMatchKind::Exact => {
+            slot.sni_route_exact_total.fetch_add(1, Ordering::Relaxed);
+            "exact"
+        }
+        SniMatchKind::Wildcard => {
+            slot.sni_route_wildcard_total.fetch_add(1, Ordering::Relaxed);
+            "wildcard"
+        }
+        SniMatchKind::Fallback => {
+            slot.sni_route_fallback_total.fetch_add(1, Ordering::Relaxed);
+            "fallback"
+        }
+    };
+    if matches!(kind, SniMatchKind::Fallback) && sni_str.is_none() {
+        info!(
+            target = "tls_sni",
+            event = "tls.no_sni",
+            listen_port,
+            peer = %peer,
+            fallback_used = true,
+        );
+    } else {
+        info!(
+            target = "tls_sni",
+            event = "tls.sni_routed",
+            listen_port,
+            peer = %peer,
+            server_name = sni_str.unwrap_or(""),
+            match_kind = match_kind,
+            rule_id = %rule_id,
+        );
+    }
+
+    let res = proxy_with_preread(
+        stream,
+        Some(preread),
+        &resolver,
+        slot.rule_id,
+        &slot.target,
+        slot.target_port,
+        slot.prefer_ipv6,
+        cancel,
+        Some(Arc::clone(&slot.stats)),
+        slot.listen_port,
+    )
+    .await;
+    if let Err(e) = res
+        && e.kind() != std::io::ErrorKind::Other
+    {
+        // ErrorKind::Other carries the deliberate "proxy_cancelled"
+        // signal — not worth a warning.
+        debug!(
+            target = "tls_sni",
+            event = "tls.proxy_finished_error",
+            listen_port,
+            rule_id = %rule_id,
+            error = %e,
+        );
+    }
 }
