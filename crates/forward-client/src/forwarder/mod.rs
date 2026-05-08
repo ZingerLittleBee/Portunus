@@ -19,6 +19,7 @@
 
 pub mod failover;
 pub mod failover_path;
+pub mod probe;
 pub mod proxy;
 pub mod range;
 pub mod stats;
@@ -88,6 +89,13 @@ pub struct ClientRule {
     /// telemetry — the failover loop ignores them and walks the
     /// `targets` list instead.
     pub targets: Vec<MultiTarget>,
+    /// 007-multi-target-failover (T029): per-rule active TCP-connect
+    /// probe interval, in seconds. `None` (the default) means probes
+    /// are disabled — passive failure detection from the data path
+    /// alone (FR-015). `Some(n)` opts the rule into a per-rule
+    /// prober task that probes each target round-robin at the
+    /// configured cadence. Single-target rules ignore this field.
+    pub health_check_interval_secs: Option<u32>,
 }
 
 /// One entry in `ClientRule.targets`. Holds both the wire-shape
@@ -714,7 +722,7 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
-            targets: Vec::new(),
+            targets: Vec::new(), health_check_interval_secs: None,
         }
     }
 
@@ -784,7 +792,7 @@ mod tests {
                 protocol: Protocol::Tcp,
                 udp_max_flows: 0,
                 udp_flow_idle_secs: 0,
-                targets: Vec::new(),
+                targets: Vec::new(), health_check_interval_secs: None,
             },
             ip_resolver(),
             tx,
@@ -1081,7 +1089,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
-                    targets: Vec::new(),
+                    targets: Vec::new(), health_check_interval_secs: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1159,7 +1167,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
-                    targets: Vec::new(),
+                    targets: Vec::new(), health_check_interval_secs: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1320,7 +1328,7 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
-            targets: Vec::new(),
+            targets: Vec::new(), health_check_interval_secs: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);

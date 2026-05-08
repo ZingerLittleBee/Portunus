@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::failover::{self, HealthState};
+use super::probe;
 use super::range::{self, BindFailure};
 use super::stats::RuleStats;
 use super::udp;
@@ -119,6 +120,26 @@ pub async fn run_tcp<R: Resolve + 'static>(
     let proxy_cancel = CancellationToken::new();
     let mut in_flight: JoinSet<()> = JoinSet::new();
 
+    // T029: opt-in active TCP-connect prober. Spawned per-rule, drained
+    // by the same `cancel` that drives the accept loops. The prober
+    // task and the data path share the per-target HealthState mutexes
+    // so passive + active signals merge into a single health view.
+    let probe_handle = if let Some(interval) = rule.health_check_interval_secs {
+        let targets_arc = Arc::new(rule.targets.clone());
+        Some(probe::spawn(
+            rule.rule_id,
+            targets_arc,
+            Arc::clone(&states),
+            Arc::clone(&target_failovers_total),
+            rule.prefer_ipv6,
+            interval,
+            Arc::clone(&resolver),
+            cancel.clone(),
+        ))
+    } else {
+        None
+    };
+
     for (listen_port, listener) in listeners {
         let accept_cancel = cancel.clone();
         let conn_proxy_cancel = proxy_cancel.clone();
@@ -148,6 +169,9 @@ pub async fn run_tcp<R: Resolve + 'static>(
     }
 
     drain(in_flight, proxy_cancel, drain_timeout).await;
+    if let Some(h) = probe_handle {
+        h.abort();
+    }
 
     info!(
         event = "rule.removed",
@@ -490,6 +514,21 @@ pub async fn run_udp<R: Resolve + 'static>(
     let target_failovers_total = Arc::new(AtomicU64::new(0));
     let targets = Arc::new(rule.targets.clone());
 
+    let probe_handle = if let Some(interval) = rule.health_check_interval_secs {
+        Some(probe::spawn(
+            rule.rule_id,
+            Arc::clone(&targets),
+            Arc::clone(&states),
+            Arc::clone(&target_failovers_total),
+            rule.prefer_ipv6,
+            interval,
+            Arc::clone(&resolver),
+            cancel.clone(),
+        ))
+    } else {
+        None
+    };
+
     let mut tasks: JoinSet<()> = JoinSet::new();
     for listen_port in listen_start..=listen_end {
         let rule_id = rule.rule_id;
@@ -519,6 +558,9 @@ pub async fn run_udp<R: Resolve + 'static>(
     }
 
     while tasks.join_next().await.is_some() {}
+    if let Some(h) = probe_handle {
+        h.abort();
+    }
 
     info!(
         event = "rule.removed",

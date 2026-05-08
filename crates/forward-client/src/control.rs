@@ -514,6 +514,11 @@ fn handle_server_message(
                 }
                 out
             };
+            let health_check_interval_secs = if rule.health_check_interval_secs == 0 {
+                None
+            } else {
+                Some(rule.health_check_interval_secs)
+            };
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
@@ -525,6 +530,7 @@ fn handle_server_message(
                 udp_max_flows,
                 udp_flow_idle_secs,
                 targets: multi_targets,
+                health_check_interval_secs,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
