@@ -1108,4 +1108,139 @@ mod e2e_tests {
         );
         mgr.shutdown();
     }
+
+    /// 009-tls-sni-routing T072: hot-reload preserves in-flight.
+    ///
+    /// Open a long-running SNI connection (rule 1 → backend A),
+    /// wait until backend A has received the ClientHello bytes (proves
+    /// the proxy is wired up), then push a NEW rule on the same
+    /// listener and verify:
+    ///   - The in-flight connection keeps delivering bytes to backend
+    ///     A (the `send_replace` swap honours existing `Arc<…>`
+    ///     snapshots — see `rebuild_watches`).
+    ///   - A NEW connection that names the newly-pushed rule's SNI
+    ///     reaches backend B.
+    ///
+    /// `data-model.md` §INV-2 / R-004: the listener task is owned by
+    /// the manager; route-table swaps are atomic via
+    /// `watch::Sender::send_replace`. This test catches any
+    /// regression where a swap accidentally invalidates an in-flight
+    /// `proxy_with_preread` task.
+    #[tokio::test]
+    async fn t072_hot_reload_preserves_in_flight_and_serves_new() {
+        let (addr_a, cap_a) = spawn_capture_backend().await;
+        let listen_port = ephemeral_port().await;
+
+        let mut mgr = PortGroupManager::new();
+        mgr.apply_push(
+            make_rule(1, listen_port, addr_a, Some("a.example.com")),
+            live_resolver(),
+        )
+        .await
+        .expect("push 1");
+
+        // Open the long-running connection. We send the ClientHello
+        // first so the listener can route us; then we leave the
+        // socket alive and stream a small payload AFTER the mutation
+        // lands.
+        let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .expect("connect");
+        let bytes_hello = build_client_hello(Some("a.example.com"));
+        conn.write_all(&bytes_hello).await.expect("write hello");
+
+        // Wait for backend A to capture the ClientHello bytes — that's
+        // the signal that the proxy task has fully connected through.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if cap_a.lock().await.len() >= bytes_hello.len() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "timeout: backend A did not receive ClientHello ({} / {})",
+                    cap_a.lock().await.len(),
+                    bytes_hello.len()
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // Apply the mutation: add rule 2 (new SNI → backend B). The
+        // existing connection is now mid-flight — it must not be
+        // disrupted.
+        let (addr_b, cap_b) = spawn_capture_backend().await;
+        mgr.apply_push(
+            make_rule(2, listen_port, addr_b, Some("b.example.com")),
+            live_resolver(),
+        )
+        .await
+        .expect("push 2 mid-flight");
+
+        // Stream a payload over the in-flight connection. Each byte
+        // travels through the same `proxy_with_preread` task that was
+        // dispatched against the pre-mutation routing table — the
+        // table swap must NOT redirect it.
+        let after_mutation = b"after-mutation-payload-for-rule-1".to_vec();
+        conn.write_all(&after_mutation)
+            .await
+            .expect("write post-swap");
+        drop(conn);
+
+        // Wait for backend A to receive the full payload (ClientHello +
+        // post-mutation bytes).
+        let expected_total = bytes_hello.len() + after_mutation.len();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if cap_a.lock().await.len() >= expected_total {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "timeout: in-flight connection lost bytes after mutation ({} / {})",
+                    cap_a.lock().await.len(),
+                    expected_total
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let captured_a = cap_a.lock().await.clone();
+        assert!(
+            captured_a.starts_with(&bytes_hello),
+            "ClientHello must arrive byte-identically"
+        );
+        assert!(
+            captured_a.ends_with(&after_mutation),
+            "post-mutation bytes must reach backend A — hot-reload broke in-flight forwarding"
+        );
+
+        // Open a fresh connection with the NEW SNI. It must land on
+        // backend B (rule 2), proving the table swap is visible to
+        // every `accept` after the mutation.
+        let bytes_b = build_client_hello(Some("b.example.com"));
+        {
+            let mut conn_b = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port))
+                .await
+                .expect("connect new");
+            conn_b.write_all(&bytes_b).await.expect("write new");
+            drop(conn_b);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if cap_b.lock().await.len() >= bytes_b.len() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "timeout: new connection did not reach backend B ({} / {})",
+                    cap_b.lock().await.len(),
+                    bytes_b.len()
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(cap_b.lock().await.as_slice(), bytes_b.as_slice());
+
+        mgr.shutdown();
+    }
 }
