@@ -166,10 +166,7 @@ fn active_probe_recovers_primary_after_restart() {
         &http,
         "edge-01",
         listen_port,
-        &[
-            ("127.0.0.1", primary_port),
-            ("127.0.0.1", secondary_port),
-        ],
+        &[("127.0.0.1", primary_port), ("127.0.0.1", secondary_port)],
         Some(1), // 1 s active probe interval
         Some(5),
     );

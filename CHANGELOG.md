@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(no changes since v0.7.0)
+
+## [0.7.0] — 2026-05-08
+
 Multi-target failover release (007). Extends a forwarding rule from a
 single `(target_host, target_port)` to an ordered list of targets with
 priority-ordered failover and per-target client-side health tracking.

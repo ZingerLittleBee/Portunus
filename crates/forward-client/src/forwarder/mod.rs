@@ -743,7 +743,9 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
-            targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
+            targets: Vec::new(),
+            health_check_interval_secs: None,
+            multi_target_obs: None,
         }
     }
 
@@ -813,7 +815,9 @@ mod tests {
                 protocol: Protocol::Tcp,
                 udp_max_flows: 0,
                 udp_flow_idle_secs: 0,
-                targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
+                targets: Vec::new(),
+                health_check_interval_secs: None,
+                multi_target_obs: None,
             },
             ip_resolver(),
             tx,
@@ -1110,7 +1114,9 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
-                    targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
+                    targets: Vec::new(),
+                    health_check_interval_secs: None,
+                    multi_target_obs: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1188,7 +1194,9 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
-                    targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
+                    targets: Vec::new(),
+                    health_check_interval_secs: None,
+                    multi_target_obs: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1349,7 +1357,9 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
-            targets: Vec::new(), health_check_interval_secs: None, multi_target_obs: None,
+            targets: Vec::new(),
+            health_check_interval_secs: None,
+            multi_target_obs: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);

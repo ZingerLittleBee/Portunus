@@ -31,8 +31,8 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::failover::HealthState;
 use super::MultiTarget;
+use super::failover::HealthState;
 use crate::resolver::{ConnectError, LiveResolver, Resolve};
 
 /// Same-as-data-plane connect attempt budget (FR-014). Single-attempt

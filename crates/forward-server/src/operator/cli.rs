@@ -691,7 +691,10 @@ pub async fn push_rule_multi_target(
     range_cap: u32,
     ack_timeout: Duration,
 ) -> Result<Rule, OperatorError> {
-    debug_assert!(!targets.is_empty(), "push_rule_multi_target with empty targets");
+    debug_assert!(
+        !targets.is_empty(),
+        "push_rule_multi_target with empty targets"
+    );
 
     // First target carries the legacy mirror — v0.6.0 readers ignore
     // `targets` and use these. Multi-target clients ignore them in

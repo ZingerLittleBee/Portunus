@@ -516,10 +516,7 @@ fn handle_server_message(
                     }
                 }
                 if let Some(reason) = parse_err {
-                    let _ = status_tx.try_send(RuleStatusEvent::Failed {
-                        rule_id,
-                        reason,
-                    });
+                    let _ = status_tx.try_send(RuleStatusEvent::Failed { rule_id, reason });
                     return;
                 }
                 out
@@ -547,12 +544,14 @@ fn handle_server_message(
                         })
                         .collect(),
                 );
-                Some(std::sync::Arc::new(crate::forwarder::MultiTargetObservability {
-                    target_failovers_total: std::sync::Arc::new(
-                        std::sync::atomic::AtomicU64::new(0),
-                    ),
-                    states,
-                }))
+                Some(std::sync::Arc::new(
+                    crate::forwarder::MultiTargetObservability {
+                        target_failovers_total: std::sync::Arc::new(
+                            std::sync::atomic::AtomicU64::new(0),
+                        ),
+                        states,
+                    },
+                ))
             };
             let targets_view = multi_targets.clone();
             let multi_target_obs_for_slot = multi_target_obs.clone();

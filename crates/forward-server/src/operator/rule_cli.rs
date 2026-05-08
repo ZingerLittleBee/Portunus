@@ -146,7 +146,9 @@ pub fn push(
         return Err(3);
     }
     if !multi_form && !legacy_form {
-        eprintln!("error: rule_shape_missing (provide a positional target, --target, or --targets-json)");
+        eprintln!(
+            "error: rule_shape_missing (provide a positional target, --target, or --targets-json)"
+        );
         return Err(3);
     }
 
@@ -456,7 +458,15 @@ pub fn stats(
                     let _ = writeln!(
                         buf,
                         "{:<3} {:<24} {:<6} {:<4} {:<8} {:<5} {:<14} {:<14} {:<6}",
-                        "IDX", "HOST", "PORT", "PRIO", "HEALTH", "FAILS", "BYTES_IN", "BYTES_OUT", "CONNS",
+                        "IDX",
+                        "HOST",
+                        "PORT",
+                        "PRIO",
+                        "HEALTH",
+                        "FAILS",
+                        "BYTES_IN",
+                        "BYTES_OUT",
+                        "CONNS",
                     );
                     for r in rows {
                         let h = if r.health == 0 { "Healthy" } else { "Failed" };

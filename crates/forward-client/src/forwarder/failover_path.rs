@@ -288,10 +288,7 @@ async fn handle_connection<R: Resolve>(
     // Per-target connection counter (Phase 5 wires this into
     // PerTargetStats — the inc happens here so the order-of-magnitude
     // reflects the chosen-target stickiness).
-    states[idx]
-        .lock()
-        .await
-        .increment_connections_accepted();
+    states[idx].lock().await.increment_connections_accepted();
 
     // Disable Nagle on both halves — same trade-off as proxy.rs.
     let _ = inbound.set_nodelay(true);

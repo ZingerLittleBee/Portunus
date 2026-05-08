@@ -531,9 +531,7 @@ async fn get_rule_stats(
     let per_target_requested = params
         .get("per_target")
         .is_some_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
-    if per_target_requested
-        && let serde_json::Value::Object(ref mut map) = body
-    {
+    if per_target_requested && let serde_json::Value::Object(ref mut map) = body {
         let per_target = snap.per_target.clone();
         map.insert(
             "per_target".to_string(),

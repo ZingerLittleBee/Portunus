@@ -156,8 +156,16 @@ async fn handle_inbound_multi_target<R: Resolve>(
     use std::time::{Instant, SystemTime};
 
     if let Some(existing) = flow_table.get(source).await {
-        forward_existing_flow(rule_id, listen_port, payload, source, existing, &flow_table, &stats)
-            .await;
+        forward_existing_flow(
+            rule_id,
+            listen_port,
+            payload,
+            source,
+            existing,
+            &flow_table,
+            &stats,
+        )
+        .await;
         return;
     }
 
@@ -230,8 +238,16 @@ async fn handle_inbound_multi_target<R: Resolve>(
         .await
         {
             Some(f) => {
-                forward_existing_flow(rule_id, listen_port, payload, source, f, &flow_table, &stats)
-                    .await;
+                forward_existing_flow(
+                    rule_id,
+                    listen_port,
+                    payload,
+                    source,
+                    f,
+                    &flow_table,
+                    &stats,
+                )
+                .await;
                 return;
             }
             None => return,
