@@ -194,7 +194,7 @@ Bench home:
 - [x] T063 [P] [US4] Integration test — legacy plain-TCP byte-stability — `crates/forward-client/tests/legacy_plain_tcp_unchanged.rs`. Push a legacy rule on `:9000`; send a non-TLS payload (e.g. raw bytes / HTTP); assert the upstream receives the bytes byte-identically (sha256 match) AND assert via `tracing::subscriber` that no `target = "tls_sni"` event fires (data plane never enters the SNI path).
 - [ ] T064 [P] [US4] Wire-replay test — `crates/forward-server/tests/v07_v08_wire_replay.rs`. Capture an existing v0.8 RuleUpdate trace (from the `forward-e2e` integration suite or a synthetic capture) and replay against a v0.9 server; assert the response stream is byte-identical to the v0.8 baseline.
 - [x] T065 [P] [US4] Reuse the existing v0.7 byte-passthrough test as a regression — `crates/forward-client/tests/sni_byte_passthrough.rs`. Two upstream paths (legacy + SNI listener); for both, assert sha256(upstream-received) == sha256(client-sent).
-- [ ] T066 [P] [US4] Bench gate — confirm legacy data plane path is unchanged — `crates/forward-client/benches/data_plane.rs` (existing). Compare v0.9 numbers to the v0.7 / v0.8 baseline checked in under `specs/008-sqlite-storage/baselines/` (or capture a fresh baseline if none exists). Allow ≤ 5 % regression per Constitution II hot-path budget.
+- [x] T066 [P] [US4] Bench gate — confirm legacy data plane path is unchanged — `crates/forward-client/benches/data_plane.rs` (existing). Compare v0.9 numbers to the v0.7 / v0.8 baseline checked in under `specs/008-sqlite-storage/baselines/` (or capture a fresh baseline if none exists). Allow ≤ 5 % regression per Constitution II hot-path budget.
 
 ### Implementation for User Story 4
 
