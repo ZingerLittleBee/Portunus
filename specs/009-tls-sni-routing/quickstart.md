@@ -75,21 +75,21 @@ TCP rules — the SNI feature gates only kick in when you push a
 
 ```bash
 # Exact hostname → backend A
-forward-server push-rule \
-    --client edge-01 \
-    --protocol tcp \
-    --listen-port 443 \
-    --target 10.0.1.5:8443 \
-    --sni api.example.com
+forward-server push-rule edge-01 443 10.0.1.5:8443 \
+    --protocol tcp --sni api.example.com
 
-# Single-level wildcard → backend B
-forward-server push-rule \
-    --client edge-01 \
-    --protocol tcp \
-    --listen-port 443 \
-    --target 10.0.1.6:8443 \
-    --sni '*.web.example.com'
+# Single-label wildcard → backend B
+forward-server push-rule edge-01 443 10.0.1.6:8443 \
+    --protocol tcp --sni '*.web.example.com'
 ```
+
+> Argument shape: `forward-server push-rule <client> <listen> [target]
+> [--protocol tcp|udp] [--sni <pattern>] ...`. `<listen>` is a single
+> port or `start-end` range; `[target]` is `host:port` (or `host:start-end`
+> for ranges). The contract spec at `contracts/cli.md` uses
+> `--client/--listen-port/--target` named flags — the implementation
+> currently keeps the v0.1 positional shape. Both forms surface the
+> same `--sni` flag.
 
 Both pushes return immediately. The forward-client binds `:443` once
 (the first push), then adds a second rule to the existing SNI listener
@@ -100,9 +100,9 @@ none yet, but verify under load — are not interrupted.
 
 ```text
 $ forward-server list-rules --client edge-01
-ID  CLIENT   PROTO PORT  SNI                  TARGETS         STATE
-1   edge-01  tcp   443   api.example.com      10.0.1.5:8443   Active
-2   edge-01  tcp   443   *.web.example.com    10.0.1.6:8443   Active
+ID     CLIENT               PORT   TARGET                           SNI                      STATE
+1      edge-01              443    10.0.1.5:8443                    api.example.com          active
+2      edge-01              443    10.0.1.6:8443                    *.web.example.com        active
 ```
 
 ---
@@ -137,11 +137,7 @@ an SNI that matches nothing? Push a rule on the same port without
 `--sni`:
 
 ```bash
-forward-server push-rule \
-    --client edge-01 \
-    --protocol tcp \
-    --listen-port 443 \
-    --target 10.0.1.7:8443
+forward-server push-rule edge-01 443 10.0.1.7:8443 --protocol tcp
 ```
 
 The listener stays in SNI mode (it was first activated as SNI when you
@@ -149,10 +145,10 @@ pushed rule 1). The new rule slots in as the fallback.
 
 ```text
 $ forward-server list-rules --client edge-01
-ID  CLIENT   PROTO PORT  SNI                  TARGETS         STATE
-1   edge-01  tcp   443   api.example.com      10.0.1.5:8443   Active
-2   edge-01  tcp   443   *.web.example.com    10.0.1.6:8443   Active
-3   edge-01  tcp   443   —                    10.0.1.7:8443   Active
+ID     CLIENT               PORT   TARGET                           SNI                      STATE
+1      edge-01              443    10.0.1.5:8443                    api.example.com          active
+2      edge-01              443    10.0.1.6:8443                    *.web.example.com        active
+3      edge-01              443    10.0.1.7:8443                    -                        active
 ```
 
 A second `push-rule` without `--sni` on this port now fails with
@@ -169,15 +165,15 @@ If `:444` was already serving plain TCP and you want to add SNI to it,
 the **operationally honest** workflow is:
 
 ```bash
-# 1. Identify the existing legacy rule
-$ forward-server list-rules --client edge-01 --port 444
+# 1. Identify the existing legacy rule (filter the table for `:444`)
+$ forward-server list-rules --client edge-01 | awk '$3 == 444'
 
 # 2. Remove it (this drains existing connections per v0.7 semantics)
-$ forward-server remove-rule --rule-id <ID>
+$ forward-server remove-rule <ID>
 
 # 3. Push the new SNI rules. The listener re-binds in SNI mode.
-$ forward-server push-rule --client edge-01 --protocol tcp \
-    --listen-port 444 --target 10.0.2.5:8443 --sni api.internal
+$ forward-server push-rule edge-01 444 10.0.2.5:8443 \
+    --protocol tcp --sni api.internal
 ```
 
 Trying to skip step 2 returns:
@@ -199,15 +195,20 @@ and ClientHello-peek modes, which we considered too risky for v0.9.
 After running mixed traffic for a minute, scrape `/metrics`:
 
 ```bash
-$ curl -sH "Authorization: Bearer $ADMIN" \
-       https://forward-server.local/metrics | grep ^forward_tls
-forward_tls_sni_route_total{client="edge-01",rule="1",owner="u-7",result="exact"} 124
-forward_tls_sni_route_total{client="edge-01",rule="2",owner="u-7",result="wildcard"} 41
-forward_tls_sni_route_total{client="edge-01",rule="3",owner="u-7",result="fallback"} 8
+$ curl -s http://127.0.0.1:7090/metrics | grep ^forward_tls
+forward_tls_sni_route_total{client="edge-01",owner="u-7",result="exact",rule="1"} 124
+forward_tls_sni_route_total{client="edge-01",owner="u-7",result="wildcard",rule="2"} 41
+forward_tls_sni_route_total{client="edge-01",owner="u-7",result="fallback",rule="3"} 8
 forward_tls_sni_listener_miss_total{client="edge-01",port="443"} 2
-forward_tls_client_hello_parse_failures_total{client="edge-01",port="443"} 1
+forward_tls_sni_listener_parse_failures_total{client="edge-01",port="443"} 1
 forward_tls_sni_routes_active 3
 ```
+
+> The `/metrics` endpoint binds loopback-only and does NOT require
+> bearer auth — it's the same v0.5+ surface. Default port is the one
+> the server logged at boot (`server.metrics_listen` in
+> `server.toml`); the snippet above uses the dev-default
+> `127.0.0.1:7090`.
 
 Reading the labels:
 
