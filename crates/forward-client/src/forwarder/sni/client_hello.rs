@@ -401,4 +401,59 @@ mod tests {
         let err = parse(&bytes).expect_err("not ClientHello");
         assert_eq!(err, ParseError::Malformed);
     }
+
+    // T020..T024: real-wire ClientHello fixtures captured against
+    // OpenSSL 3.6.2 with `-servername example.com`. See
+    // `crates/forward-client/tests/fixtures/tls/README.md` for the
+    // capture procedure. These tests lock the fixtures' parse
+    // outcomes so a parser regression OR fixture rot surfaces here.
+
+    const TLS10_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/tls/client_hello_tls10.bin");
+    const TLS11_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/tls/client_hello_tls11.bin");
+    const TLS12_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/tls/client_hello_tls12.bin");
+    const TLS13_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/tls/client_hello_tls13.bin");
+    const FRAGMENTED_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/tls/client_hello_fragmented.bin");
+
+    #[test]
+    fn parse_real_tls10_clienthello_extracts_sni() {
+        let outcome = parse(TLS10_FIXTURE).expect("parse tls1.0 fixture");
+        assert_eq!(outcome, ParseOutcome::Ok(Some("example.com".to_string())));
+    }
+
+    #[test]
+    fn parse_real_tls11_clienthello_extracts_sni() {
+        let outcome = parse(TLS11_FIXTURE).expect("parse tls1.1 fixture");
+        assert_eq!(outcome, ParseOutcome::Ok(Some("example.com".to_string())));
+    }
+
+    #[test]
+    fn parse_real_tls12_clienthello_extracts_sni() {
+        let outcome = parse(TLS12_FIXTURE).expect("parse tls1.2 fixture");
+        assert_eq!(outcome, ParseOutcome::Ok(Some("example.com".to_string())));
+    }
+
+    #[test]
+    fn parse_real_tls13_clienthello_extracts_sni() {
+        // TLS 1.3 keeps the legacy_version at 0x0303 in the record
+        // header; the fixture exercises real-wire extension shapes
+        // including PQ-hybrid `X25519MLKEM768` keyshare.
+        let outcome = parse(TLS13_FIXTURE).expect("parse tls1.3 fixture");
+        assert_eq!(outcome, ParseOutcome::Ok(Some("example.com".to_string())));
+    }
+
+    #[test]
+    fn parse_fragmented_clienthello_is_malformed() {
+        // R-015 explicitly rejects multi-record ClientHellos. The
+        // fragmented fixture is the canonical negative case: feeding
+        // bytes from the SECOND record (which starts mid-handshake-
+        // body) MUST yield `ParseError::Malformed`, not Truncated or
+        // a spurious Ok.
+        let err = parse(FRAGMENTED_FIXTURE).expect_err("fragmented must be malformed");
+        assert_eq!(err, ParseError::Malformed);
+    }
 }
