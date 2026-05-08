@@ -259,9 +259,16 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
     });
 
     let metrics_shutdown = shutdown.token();
+    // 009-tls-sni-routing T081: render_metrics refreshes the
+    // `forward_tls_sni_routes_active` gauge on every scrape, so it
+    // needs both the Prometheus collectors and the rule store.
+    let metrics_state = MetricsState {
+        metrics: Arc::clone(&state.metrics),
+        rules: state.rules.clone(),
+    };
     let metrics_router = Router::new()
         .route("/metrics", get(render_metrics))
-        .with_state(Arc::clone(&state.metrics));
+        .with_state(metrics_state);
     let metrics_task = tokio::spawn(async move {
         let res = axum::serve(metrics_listener, metrics_router)
             .with_graceful_shutdown(async move { metrics_shutdown.cancelled().await })
@@ -280,8 +287,23 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
     Ok(())
 }
 
-async fn render_metrics(State(metrics): State<Arc<Metrics>>) -> impl IntoResponse {
-    let body = metrics.render();
+#[derive(Clone)]
+struct MetricsState {
+    metrics: Arc<Metrics>,
+    rules: crate::rules::ServerRuleStore,
+}
+
+async fn render_metrics(State(state): State<MetricsState>) -> impl IntoResponse {
+    // 009-tls-sni-routing T081: refresh on-demand. Cheap (one read
+    // lock; rule sets are small in any deployment that scrapes
+    // Prometheus). Keeps the gauge consistent with the rule store
+    // without adding a background tick.
+    let active = state.rules.count_with_sni().await;
+    state
+        .metrics
+        .tls_sni_routes_active
+        .set(i64::try_from(active).unwrap_or(i64::MAX));
+    let body = state.metrics.render();
     (
         StatusCode::OK,
         [(

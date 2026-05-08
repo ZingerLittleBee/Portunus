@@ -766,6 +766,19 @@ impl ServerRuleStore {
         out.sort_by_key(|r| r.id.0);
         out
     }
+
+    /// 009-tls-sni-routing T081: count rules whose `sni_pattern` is set.
+    /// Source of truth for the `forward_tls_sni_routes_active` gauge,
+    /// refreshed each `/metrics` scrape.
+    #[must_use]
+    pub async fn count_with_sni(&self) -> usize {
+        let guard = self.inner.read().await;
+        guard
+            .rules
+            .values()
+            .filter(|r| r.sni_pattern.is_some())
+            .count()
+    }
 }
 
 #[cfg(test)]

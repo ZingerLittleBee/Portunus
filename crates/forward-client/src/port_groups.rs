@@ -130,6 +130,11 @@ impl PortGroupManager {
         }
 
         let stats = RuleStats::for_range(rule.listen_range);
+        // 009-tls-sni-routing T077: the per-rule SNI counters live on
+        // `RuleStats` so the existing StatsReport tick reads them
+        // alongside `bytes_in` / `active_connections` etc. The
+        // listener bumps them via the `SniRuleSlot`; we share the
+        // Arcs so both readers see the same totals.
         let member = GroupMember {
             rule_id: rule.rule_id,
             sni_pattern: rule.sni_pattern.clone(),
@@ -138,9 +143,9 @@ impl PortGroupManager {
             prefer_ipv6: rule.prefer_ipv6,
             listen_port,
             stats: Arc::clone(&stats),
-            sni_route_exact_total: Arc::new(AtomicU64::new(0)),
-            sni_route_wildcard_total: Arc::new(AtomicU64::new(0)),
-            sni_route_fallback_total: Arc::new(AtomicU64::new(0)),
+            sni_route_exact_total: Arc::clone(&stats.sni_route_exact_total),
+            sni_route_wildcard_total: Arc::clone(&stats.sni_route_wildcard_total),
+            sni_route_fallback_total: Arc::clone(&stats.sni_route_fallback_total),
         };
 
         match self.groups.get_mut(&listen_port) {
@@ -264,6 +269,37 @@ impl PortGroupManager {
             .members
             .get(&rule_id)
             .map(|m| Arc::clone(&m.stats))
+    }
+
+    /// `true` if at least one SNI listener is bound. The control
+    /// loop uses this to know whether `StatsReport.sni_listener_stats`
+    /// might carry rows even when no per-rule slots exist.
+    #[must_use]
+    pub fn has_any_listener(&self) -> bool {
+        !self.groups.is_empty()
+    }
+
+    /// 009-tls-sni-routing T078: snapshot the per-listener counters
+    /// for each bound SNI listener. Returns one
+    /// `proto::SniListenerStats` per port. Listeners with all-zero
+    /// counters still emit a row so the server can render the
+    /// listener as "active but quiet" (Prometheus `_total` style).
+    /// Empty Vec when no listener is bound — proto3 default-stripping
+    /// keeps the wire shape byte-identical with v0.8.
+    #[must_use]
+    pub fn snapshot_listener_stats(&self) -> Vec<forward_proto::v1::SniListenerStats> {
+        use std::sync::atomic::Ordering;
+        self.groups
+            .iter()
+            .map(|(port, group)| forward_proto::v1::SniListenerStats {
+                listen_port: u32::from(*port),
+                sni_route_miss_total: group.counters.miss.load(Ordering::Relaxed),
+                client_hello_parse_failures_total: group
+                    .counters
+                    .parse_failures
+                    .load(Ordering::Relaxed),
+            })
+            .collect()
     }
 }
 

@@ -224,12 +224,12 @@ Bench home:
 
 ### Implementation for User Story 5
 
-- [ ] T077 [US5] Implement per-rule SNI counters in `crates/forward-client/src/forwarder/stats.rs::RuleStats`: three new monotonic `AtomicU64` fields (exact / wildcard / fallback) bumped from `SniListener::handle_accept`. Aggregator that builds `proto::RuleStats` reads them into fields 13/14/15.
-- [ ] T078 [US5] Implement listener-level counters in `crates/forward-client/src/forwarder/sni/listener.rs::SniListenerCounters` (miss + parse-failure) and aggregate them into `proto::SniListenerStats` in `stats.rs`. Wire into `proto::StatsReport.sni_listener_stats` in the existing 5 s tick.
-- [ ] T079 [US5] Register five new Prometheus collectors in `crates/forward-server/src/metrics.rs` (alongside existing v0.5+ patterns — `client/rule/owner/result` for per-rule, `client/port` for per-listener). Reuse the `Registry` already present.
-- [ ] T080 [US5] Extend `crates/forward-server/src/grpc/service.rs::handle_stats_report` (around `:317`) to fold the three `RuleStats.sni_route_*_total` fields into the per-rule collectors and the new `StatsReport.sni_listener_stats` rows into the per-listener collectors.
-- [ ] T081 [US5] Implement the gauge `forward_tls_sni_routes_active` server-side: count rules with `sni_pattern.is_some()` from `ServerRuleStore`; refresh in the existing metrics tick (search for `metrics_tick` or equivalent in `crates/forward-server/src/metrics.rs`).
-- [ ] T082 [US5] Add the five `tracing` events with `target = "tls_sni"` in `crates/forward-client/src/forwarder/sni/listener.rs` and `peek.rs`: `tls.client_hello_timeout` (WARN), `tls.parse_failed` (WARN), `tls.no_sni` (INFO + `fallback_used: bool`), `tls.sni_no_match` (WARN), `tls.sni_routed` (INFO + `server_name`, `match_kind`).
+- [x] T077 [US5] Implement per-rule SNI counters in `crates/forward-client/src/forwarder/stats.rs::RuleStats`: three new monotonic `AtomicU64` fields (exact / wildcard / fallback) bumped from `SniListener::handle_accept`. Aggregator that builds `proto::RuleStats` reads them into fields 13/14/15.
+- [x] T078 [US5] Implement listener-level counters in `crates/forward-client/src/forwarder/sni/listener.rs::SniListenerCounters` (miss + parse-failure) and aggregate them into `proto::SniListenerStats` in `stats.rs`. Wire into `proto::StatsReport.sni_listener_stats` in the existing 5 s tick.
+- [x] T079 [US5] Register five new Prometheus collectors in `crates/forward-server/src/metrics.rs` (alongside existing v0.5+ patterns — `client/rule/owner/result` for per-rule, `client/port` for per-listener). Reuse the `Registry` already present.
+- [x] T080 [US5] Extend `crates/forward-server/src/grpc/service.rs::handle_stats_report` (around `:317`) to fold the three `RuleStats.sni_route_*_total` fields into the per-rule collectors and the new `StatsReport.sni_listener_stats` rows into the per-listener collectors.
+- [x] T081 [US5] Implement the gauge `forward_tls_sni_routes_active` server-side: count rules with `sni_pattern.is_some()` from `ServerRuleStore`; refresh in the existing metrics tick (search for `metrics_tick` or equivalent in `crates/forward-server/src/metrics.rs`).
+- [x] T082 [US5] Add the five `tracing` events with `target = "tls_sni"` in `crates/forward-client/src/forwarder/sni/listener.rs` and `peek.rs`: `tls.client_hello_timeout` (WARN), `tls.parse_failed` (WARN), `tls.no_sni` (INFO + `fallback_used: bool`), `tls.sni_no_match` (WARN), `tls.sni_routed` (INFO + `server_name`, `match_kind`).
 
 **Checkpoint**: Full observability surface; operators can run v0.9 in production with their existing Prometheus / log infrastructure.
 

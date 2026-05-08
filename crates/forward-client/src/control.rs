@@ -333,7 +333,7 @@ async fn pump(
                 }
             }
             _ = stats_tick.tick() => {
-                send_stats_report(&rules, &session.outbound).await;
+                send_stats_report(&rules, &port_groups, &session.outbound).await;
             }
         }
     }
@@ -828,10 +828,11 @@ fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
 
 async fn send_stats_report(
     rules: &HashMap<RuleId, RuleSlot>,
+    port_groups: &PortGroupManager,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
     use std::sync::atomic::Ordering;
-    if rules.is_empty() {
+    if rules.is_empty() && !port_groups.has_any_listener() {
         return;
     }
     let stats: Vec<ProtoRuleStats> = rules
@@ -887,13 +888,24 @@ async fn send_stats_report(
                     .as_ref()
                     .map_or(0, |o| o.target_failovers_total.load(Ordering::Relaxed)),
                 per_target: build_per_target(slot),
-                // 009-tls-sni-routing T015: SNI hit counters default to 0
-                // until T077 wires them to the live SniListener bumps.
-                // Phase-2 wire shape is byte-stable with v0.8 (verified
-                // by sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
-                sni_route_exact_total: 0,
-                sni_route_wildcard_total: 0,
-                sni_route_fallback_total: 0,
+                // 009-tls-sni-routing T077: per-rule SNI hit counters.
+                // Legacy plain-TCP rules and UDP rules see all three at
+                // 0 (the listener never bumps them) → proto3 default-
+                // stripping keeps the wire shape byte-identical with
+                // v0.8 (verified by
+                // sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
+                sni_route_exact_total: slot
+                    .stats
+                    .sni_route_exact_total
+                    .load(Ordering::Relaxed),
+                sni_route_wildcard_total: slot
+                    .stats
+                    .sni_route_wildcard_total
+                    .load(Ordering::Relaxed),
+                sni_route_fallback_total: slot
+                    .stats
+                    .sni_route_fallback_total
+                    .load(Ordering::Relaxed),
             }
         })
         .collect();
@@ -901,15 +913,16 @@ async fn send_stats_report(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
+    let sni_listener_stats = port_groups.snapshot_listener_stats();
     let msg = ClientMessage {
         payload: Some(client_message::Payload::StatsReport(StatsReport {
             sent_at_unix_ms: now_ms,
             stats,
-            // 009-tls-sni-routing T015: empty until T078 aggregates
-            // SniListener counters into wire SniListenerStats. Empty
-            // list elides field 3 on the wire (verified by
-            // sni_wire_compat::t009_stats_report_empty_sni_list_omits_field_3).
-            sni_listener_stats: Vec::new(),
+            // 009-tls-sni-routing T078: per-listener SNI counters
+            // (miss, parse_failures) snapshotted from the manager.
+            // Empty when no SNI listener has bound yet — proto3
+            // default-stripping keeps wire byte-stable with v0.8.
+            sni_listener_stats,
         })),
     };
     if let Err(e) = outbound.send(msg).await {

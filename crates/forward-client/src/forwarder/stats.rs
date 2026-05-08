@@ -66,6 +66,17 @@ pub struct RuleStats {
     /// via [`RuleStats::new`]. Lookup misses are silent — the aggregate
     /// is always updated regardless.
     pub per_port: BTreeMap<u16, PerPortCounters>,
+    /// 009-tls-sni-routing T077: monotonic per-rule SNI hit counters.
+    /// Bumped from `SniListener::handle_accept` BEFORE the dispatch.
+    /// Always 0 for legacy plain-TCP rules and for UDP rules; the
+    /// wire emit (`StatsReport`) folds them into proto fields 13/14/15
+    /// (`RuleStats.sni_route_*_total`). The slot is populated for SNI
+    /// rules from the listener's `SniRuleSlot`; the same `Arc<AtomicU64>`
+    /// trio is shared by reference between the slot and this struct
+    /// so both readers see the same totals.
+    pub sni_route_exact_total: Arc<AtomicU64>,
+    pub sni_route_wildcard_total: Arc<AtomicU64>,
+    pub sni_route_fallback_total: Arc<AtomicU64>,
 }
 
 impl RuleStats {
@@ -101,6 +112,9 @@ impl RuleStats {
             active_flows: AtomicU32::new(0),
             flows_dropped_overflow: AtomicU64::new(0),
             per_port,
+            sni_route_exact_total: Arc::new(AtomicU64::new(0)),
+            sni_route_wildcard_total: Arc::new(AtomicU64::new(0)),
+            sni_route_fallback_total: Arc::new(AtomicU64::new(0)),
         })
     }
 

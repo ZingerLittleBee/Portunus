@@ -138,6 +138,28 @@ pub struct Metrics {
     /// occurrences mapped to `StoreError::Transient`. Should stay
     /// near zero in healthy deployments thanks to BEGIN IMMEDIATE.
     pub store_busy_total: IntCounter,
+    /// 009-tls-sni-routing T079: per-rule SNI dispatch hits, labelled
+    /// `(client, rule, owner, result)` where `result` is one of
+    /// `exact`, `wildcard`, `fallback`. Cardinality budget per design
+    /// observability section: 3 rows per SNI rule (one per result
+    /// kind). Legacy plain-TCP rules NEVER emit a row because the
+    /// listener's per-rule counters stay at 0.
+    pub tls_sni_route_total: IntCounterVec,
+    /// 009-tls-sni-routing T079: per-listener cumulative count of
+    /// connections whose SNI didn't match any rule on the port AND
+    /// no fallback was configured. Labelled `(client, port)`. One
+    /// row per SNI listener.
+    pub tls_sni_listener_miss_total: IntCounterVec,
+    /// 009-tls-sni-routing T079: per-listener cumulative count of
+    /// peeked bytes that failed to parse as a ClientHello (or
+    /// timed out / hit size cap). Labelled `(client, port)`.
+    pub tls_sni_listener_parse_failures_total: IntCounterVec,
+    /// 009-tls-sni-routing T081: gauge of active rules whose
+    /// `sni_pattern.is_some()`. Refreshed each metrics tick from
+    /// `ServerRuleStore`. Single global series — no labels — so
+    /// `irate()` over time tells operators when SNI rule density
+    /// changes meaningfully.
+    pub tls_sni_routes_active: IntGauge,
 }
 
 impl Metrics {
@@ -235,6 +257,32 @@ impl Metrics {
             "forward_store_busy_total",
             "Cumulative count of SQLITE_BUSY occurrences mapped to StoreError::Transient (008-sqlite-storage T031)",
         )?;
+        // ----- 009-tls-sni-routing -----
+        let tls_sni_route_total = IntCounterVec::new(
+            opts!(
+                "forward_tls_sni_route_total",
+                "Per-rule cumulative count of SNI-dispatched connections by match kind (009-tls-sni-routing T079). `result` is `exact`, `wildcard`, or `fallback`."
+            ),
+            &["client", "rule", "owner", "result"],
+        )?;
+        let tls_sni_listener_miss_total = IntCounterVec::new(
+            opts!(
+                "forward_tls_sni_listener_miss_total",
+                "Per-listener cumulative count of TLS connections whose SNI matched no rule and no fallback existed (009-tls-sni-routing T079)."
+            ),
+            &["client", "port"],
+        )?;
+        let tls_sni_listener_parse_failures_total = IntCounterVec::new(
+            opts!(
+                "forward_tls_sni_listener_parse_failures_total",
+                "Per-listener cumulative count of peeked bytes that failed to parse as a TLS ClientHello (009-tls-sni-routing T079)."
+            ),
+            &["client", "port"],
+        )?;
+        let tls_sni_routes_active = IntGauge::new(
+            "forward_tls_sni_routes_active",
+            "Number of currently-active rules whose `sni_pattern` is non-empty (009-tls-sni-routing T081).",
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
@@ -250,6 +298,10 @@ impl Metrics {
         registry.register(Box::new(rule_target_failovers_total.clone()))?;
         registry.register(Box::new(audit_durable_writer_lag_seconds.clone()))?;
         registry.register(Box::new(store_busy_total.clone()))?;
+        registry.register(Box::new(tls_sni_route_total.clone()))?;
+        registry.register(Box::new(tls_sni_listener_miss_total.clone()))?;
+        registry.register(Box::new(tls_sni_listener_parse_failures_total.clone()))?;
+        registry.register(Box::new(tls_sni_routes_active.clone()))?;
 
         Ok(Self {
             registry,
@@ -268,6 +320,10 @@ impl Metrics {
             audit_buffer_drops_total,
             audit_durable_writer_lag_seconds,
             store_busy_total,
+            tls_sni_route_total,
+            tls_sni_listener_miss_total,
+            tls_sni_listener_parse_failures_total,
+            tls_sni_routes_active,
         })
     }
 
@@ -302,6 +358,11 @@ pub struct RuleStatsCache {
     /// `subscribe(rule_id)`. Removed when `drop_rule` runs so a removed
     /// rule's broadcast resources don't accumulate.
     broadcasts: Arc<RwLock<HashMap<RuleId, broadcast::Sender<RuleStatsSnapshot>>>>,
+    /// 009-tls-sni-routing T080: per-listener delta cache keyed on
+    /// `(client_name, listen_port)`. Tracks the previous tick's
+    /// cumulative `(miss, parse_failures)` so the new tick can feed
+    /// monotonic deltas into the per-listener Prometheus collectors.
+    sni_listener_prev: Arc<RwLock<HashMap<(String, u16), (u64, u64)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -325,6 +386,13 @@ struct CachedEntry {
     /// 007-multi-target-failover T033/T035: previous failovers count
     /// for monotonic delta into the new collector.
     prev_target_failovers_total: u64,
+    /// 009-tls-sni-routing T080: per-rule cumulative SNI hit
+    /// counters from the previous tick. Same baseline-reset rule as
+    /// the other deltas — `new < prev` is treated as a fresh window
+    /// (monotonic counters never decrement).
+    prev_sni_route_exact_total: u64,
+    prev_sni_route_wildcard_total: u64,
+    prev_sni_route_fallback_total: u64,
 }
 
 impl RuleStatsCache {
@@ -428,6 +496,9 @@ impl RuleStatsCache {
             prev_datagrams_out: 0,
             prev_flows_dropped_overflow: 0,
             prev_target_failovers_total: 0,
+            prev_sni_route_exact_total: 0,
+            prev_sni_route_wildcard_total: 0,
+            prev_sni_route_fallback_total: 0,
         });
 
         let rule_id_str = rule_id.0.to_string();
@@ -522,6 +593,109 @@ impl RuleStatsCache {
             // ignoring is correct — no subscribers means no fan-out.
             let _ = tx.send(snap_clone);
         }
+    }
+
+    /// 009-tls-sni-routing T080: fold the per-rule SNI hit counters
+    /// into the new `forward_tls_sni_route_total` collector. Same
+    /// monotonic-delta + baseline-reset semantics as `observe`. Each
+    /// of the three counters lands on a distinct `result` label
+    /// value (`exact` / `wildcard` / `fallback`).
+    ///
+    /// Called from the gRPC `handle_stats_report` for every
+    /// `RuleStats` row whose three SNI counters are present (the
+    /// proto3 default-strip means TCP-legacy / UDP rules don't even
+    /// pay the load — their values stay 0 forever).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn observe_sni_per_rule(
+        &self,
+        client_name: &ClientName,
+        rule_id: RuleId,
+        owner: &str,
+        sni_route_exact_total: u64,
+        sni_route_wildcard_total: u64,
+        sni_route_fallback_total: u64,
+        metrics: &Metrics,
+    ) {
+        let mut guard = self.inner.write().await;
+        let Some(entry) = guard.get_mut(&rule_id) else {
+            // observe() runs first in the gRPC handler, so the entry
+            // must exist by the time we get here. If it doesn't,
+            // the rule was just removed — drop silently.
+            return;
+        };
+        let exact_delta = sni_route_exact_total.saturating_sub(entry.prev_sni_route_exact_total);
+        let wild_delta =
+            sni_route_wildcard_total.saturating_sub(entry.prev_sni_route_wildcard_total);
+        let fb_delta =
+            sni_route_fallback_total.saturating_sub(entry.prev_sni_route_fallback_total);
+        let rule_id_str = rule_id.0.to_string();
+        if exact_delta > 0 {
+            metrics
+                .tls_sni_route_total
+                .with_label_values(&[
+                    client_name.as_str(),
+                    rule_id_str.as_str(),
+                    owner,
+                    "exact",
+                ])
+                .inc_by(exact_delta);
+        }
+        if wild_delta > 0 {
+            metrics
+                .tls_sni_route_total
+                .with_label_values(&[
+                    client_name.as_str(),
+                    rule_id_str.as_str(),
+                    owner,
+                    "wildcard",
+                ])
+                .inc_by(wild_delta);
+        }
+        if fb_delta > 0 {
+            metrics
+                .tls_sni_route_total
+                .with_label_values(&[
+                    client_name.as_str(),
+                    rule_id_str.as_str(),
+                    owner,
+                    "fallback",
+                ])
+                .inc_by(fb_delta);
+        }
+        entry.prev_sni_route_exact_total = sni_route_exact_total;
+        entry.prev_sni_route_wildcard_total = sni_route_wildcard_total;
+        entry.prev_sni_route_fallback_total = sni_route_fallback_total;
+    }
+
+    /// 009-tls-sni-routing T080: fold per-listener counters into the
+    /// new `forward_tls_sni_listener_*` collectors.
+    pub async fn observe_sni_listener(
+        &self,
+        client_name: &ClientName,
+        port: u16,
+        sni_route_miss_total: u64,
+        client_hello_parse_failures_total: u64,
+        metrics: &Metrics,
+    ) {
+        let key = (client_name.as_str().to_string(), port);
+        let mut guard = self.sni_listener_prev.write().await;
+        let prev = guard.entry(key.clone()).or_insert((0, 0));
+        let miss_delta = sni_route_miss_total.saturating_sub(prev.0);
+        let parse_delta = client_hello_parse_failures_total.saturating_sub(prev.1);
+        let port_str = port.to_string();
+        if miss_delta > 0 {
+            metrics
+                .tls_sni_listener_miss_total
+                .with_label_values(&[client_name.as_str(), port_str.as_str()])
+                .inc_by(miss_delta);
+        }
+        if parse_delta > 0 {
+            metrics
+                .tls_sni_listener_parse_failures_total
+                .with_label_values(&[client_name.as_str(), port_str.as_str()])
+                .inc_by(parse_delta);
+        }
+        *prev = (sni_route_miss_total, client_hello_parse_failures_total);
     }
 
     /// 006-management-web-ui T011: subscribe to live snapshots for a
