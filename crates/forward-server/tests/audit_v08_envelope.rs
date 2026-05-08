@@ -27,9 +27,8 @@ fn build() -> (axum::Router, Arc<AppState>, TempDir, CancellationToken) {
     let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
         sqlite.clone(),
     ));
-    let operator_store = Arc::new(
-        forward_server::store::operator_store::SqliteOperatorStore::new(sqlite.clone()),
-    );
+    let operator_store =
+        Arc::new(forward_server::store::operator_store::SqliteOperatorStore::new(sqlite.clone()));
     operator_store
         .bootstrap_legacy_superadmin(SUPER)
         .expect("bootstrap");
@@ -95,8 +94,8 @@ async fn seed(state: &Arc<AppState>, n: usize) {
 async fn since_returns_envelope_shape() {
     let (router, state, _d, _c) = build();
     seed(&state, 3).await;
-    let cutoff =
-        (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(1))
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
     let resp = router
         .oneshot(req(&format!("/v1/audit?since={cutoff}&limit=10")))
         .await
@@ -114,8 +113,8 @@ async fn since_after_until_returns_400_invalid_time_range() {
     let (router, state, _d, _c) = build();
     seed(&state, 1).await;
     let s = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let u =
-        (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+    let u = (chrono::Utc::now() - chrono::Duration::hours(1))
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
     let resp = router
         .oneshot(req(&format!("/v1/audit?since={s}&until={u}")))
         .await
@@ -157,8 +156,8 @@ async fn cursor_pagination_walks_every_row_once() {
     seed(&state, 7).await;
     let mut all_seen = Vec::<String>::new();
     let mut cursor: Option<String> = None;
-    let cutoff =
-        (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(1))
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
     for _ in 0..10 {
         let path = match &cursor {
             Some(c) => format!("/v1/audit?since={cutoff}&limit=2&cursor={c}"),

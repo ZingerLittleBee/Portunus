@@ -125,6 +125,7 @@ pub fn push(
     target_specs: &[String],
     targets_json: Option<&str>,
     health_check_interval_secs: Option<u32>,
+    sni_pattern: Option<&str>,
 ) -> Result<(), u8> {
     let listen = parse_listen(listen_spec).map_err(|e| {
         eprintln!("error: {e}");
@@ -147,6 +148,30 @@ pub fn push(
         eprintln!("error: health_check_interval_out_of_range: {hci} (must be 1..=3600)");
         return Err(3);
     }
+
+    // 009-tls-sni-routing T044: client-side rejection per contracts/cli.md.
+    // Operators get exit 2 immediately for shape errors that the server
+    // would also reject (a network round-trip is wasteful when the
+    // problem is in the local invocation).
+    let sni_normalised: Option<String> = match sni_pattern {
+        None => None,
+        Some(s) if s.trim().is_empty() => None,
+        Some(s) => {
+            if !protocol.eq_ignore_ascii_case("tcp") {
+                eprintln!(
+                    "error: validation.sni_on_unsupported_rule: --sni is only valid on tcp single-port rules"
+                );
+                return Err(2);
+            }
+            if listen.len() > 1 {
+                eprintln!(
+                    "error: validation.sni_on_unsupported_rule: --sni is only valid on single-port rules, not ranges"
+                );
+                return Err(2);
+            }
+            Some(s.trim().to_ascii_lowercase())
+        }
+    };
 
     let multi_form = !target_specs.is_empty() || targets_json.is_some();
     let legacy_form = target.is_some();
@@ -228,6 +253,10 @@ pub fn push(
     if prefer_ipv6 {
         let obj = body.as_object_mut().expect("just built a json object");
         obj.insert("prefer_ipv6".into(), true.into());
+    }
+    if let Some(sni) = sni_normalised {
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("sni_pattern".into(), sni.into());
     }
     let resp = apply_auth(client()?.post(&url).json(&body))
         .send()
@@ -600,10 +629,12 @@ fn body_as_json(body: &StatsResponse) -> serde_json::Value {
 fn render_rules_text(rules: &[Rule]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
+    // 009-tls-sni-routing T085: SNI column. Rules without an SNI
+    // selector render `-` so the column width stays stable.
     let _ = writeln!(
         s,
-        "{:<6} {:<20} {:<6} {:<32} {:<10}",
-        "ID", "CLIENT", "PORT", "TARGET", "STATE"
+        "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
+        "ID", "CLIENT", "PORT", "TARGET", "SNI", "STATE"
     );
     for r in rules {
         let state = match &r.state {
@@ -612,13 +643,15 @@ fn render_rules_text(rules: &[Rule]) -> String {
             RuleState::Failed { reason } => format!("failed:{reason}"),
             RuleState::Removed => "removed".to_string(),
         };
+        let sni = r.sni_pattern.as_deref().unwrap_or("-");
         let _ = writeln!(
             s,
-            "{:<6} {:<20} {:<6} {:<32} {:<10}",
+            "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
             r.id.0,
             r.client_name,
             r.listen_port,
             format!("{}:{}", r.target_host, r.target_port),
+            sni,
             state,
         );
     }

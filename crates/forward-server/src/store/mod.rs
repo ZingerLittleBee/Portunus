@@ -194,8 +194,8 @@ impl Store {
 
         // Build the runtime pool. PRAGMAs are applied on every checkout
         // via `with_init` so a connection reset (rare) re-arms them.
-        let manager = SqliteConnectionManager::file(&db_path)
-            .with_init(|c| configure_connection_rusqlite(c));
+        let manager =
+            SqliteConnectionManager::file(&db_path).with_init(|c| configure_connection_rusqlite(c));
         let pool_size = num_cpus::get().min(MAX_POOL_SIZE as usize) as u32;
         let pool = Pool::builder()
             .max_size(pool_size)
@@ -312,11 +312,9 @@ fn read_head_version(conn: &Connection) -> Option<u32> {
     if !exists {
         return None;
     }
-    conn.query_row(
-        "SELECT MAX(version) FROM schema_migrations",
-        [],
-        |r| r.get::<_, Option<i64>>(0),
-    )
+    conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+        r.get::<_, Option<i64>>(0)
+    })
     .ok()
     .flatten()
     .map(|v| v as u32)
@@ -505,10 +503,7 @@ mod tests {
         drop(conn);
 
         let err = Store::open(dir.path()).unwrap_err();
-        assert!(
-            matches!(err, BootError::SchemaTooNew { .. }),
-            "got {err:?}"
-        );
+        assert!(matches!(err, BootError::SchemaTooNew { .. }), "got {err:?}");
     }
 
     #[test]

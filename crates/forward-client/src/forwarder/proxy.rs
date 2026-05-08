@@ -41,7 +41,42 @@ use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, Resolve
 /// the per-port slot may be empty (graceful degradation).
 #[allow(clippy::too_many_arguments)]
 pub async fn proxy<R: Resolve>(
+    inbound: TcpStream,
+    resolver: &LiveResolver<R>,
+    rule_id: RuleId,
+    target: &Target,
+    target_port: u16,
+    prefer_ipv6: bool,
+    shutdown: CancellationToken,
+    stats: Option<Arc<RuleStats>>,
+    listen_port: u16,
+) -> io::Result<(u64, u64)> {
+    // Legacy plain-TCP path: no preread bytes to replay.
+    proxy_with_preread(
+        inbound,
+        None,
+        resolver,
+        rule_id,
+        target,
+        target_port,
+        prefer_ipv6,
+        shutdown,
+        stats,
+        listen_port,
+    )
+    .await
+}
+
+/// 009-tls-sni-routing T041: proxy variant that replays a `preread`
+/// buffer to the upstream BEFORE switching to bidirectional copy.
+/// The SNI listener (T040) calls this with the captured ClientHello
+/// bytes so the upstream sees the byte-identical handshake. The
+/// legacy `proxy` shim above passes `None` and stays on the byte-
+/// identical v0.7 hot path.
+#[allow(clippy::too_many_arguments)]
+pub async fn proxy_with_preread<R: Resolve>(
     mut inbound: TcpStream,
+    preread: Option<Vec<u8>>,
     resolver: &LiveResolver<R>,
     rule_id: RuleId,
     target: &Target,
@@ -127,6 +162,20 @@ pub async fn proxy<R: Resolve>(
         .as_ref()
         .map(|s| ActiveGuard::new(Arc::clone(s), listen_port));
 
+    // 009-tls-sni-routing T041: replay the captured ClientHello to the
+    // upstream BEFORE switching to bidirectional copy. The bytes count
+    // toward the inbound→outbound tally just like a normal write — we
+    // bump `record_in` for the preread length so SC-002 byte-equality
+    // tests see the same totals regardless of legacy vs. SNI path.
+    let mut preread_in: u64 = 0;
+    if let Some(buf) = preread.as_ref()
+        && !buf.is_empty()
+    {
+        use tokio::io::AsyncWriteExt;
+        outbound.write_all(buf).await?;
+        preread_in = buf.len() as u64;
+    }
+
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             // Both streams drop at function exit, closing the sockets. We
@@ -139,10 +188,10 @@ pub async fn proxy<R: Resolve>(
         }
     };
     if let (Some(s), Ok((bin, bout))) = (stats.as_ref(), result.as_ref()) {
-        s.record_in(listen_port, *bin);
+        s.record_in(listen_port, *bin + preread_in);
         s.record_out(listen_port, *bout);
     }
-    result
+    result.map(|(bin, bout)| (bin + preread_in, bout))
 }
 
 struct ActiveGuard {

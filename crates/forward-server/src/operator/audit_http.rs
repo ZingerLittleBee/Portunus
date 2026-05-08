@@ -111,13 +111,16 @@ pub async fn get_audit(
     if !envelope_mode {
         // v0.7 array-root response. Byte-stable with v0.6 / v0.7.
         let snapshot: Vec<AuditEntry> =
-            state.store.query_audit_recent(limit, outcome).map_err(|e| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    format!("audit read: {e}"),
-                )
-            })?;
+            state
+                .store
+                .query_audit_recent(limit, outcome)
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        format!("audit read: {e}"),
+                    )
+                })?;
         let body = Json(snapshot).into_response();
         let mut response = body;
         response

@@ -103,6 +103,7 @@ async fn multi_target_rule_round_trip_preserves_v07_shape() {
                 },
             ],
             None,
+            None, // 009-tls-sni-routing: no SNI selector
         )
         .await
         .expect("push_range_with_targets");
@@ -160,5 +161,4 @@ async fn multi_target_rule_round_trip_preserves_v07_shape() {
         arr_after.iter().all(|r| r["id"].as_u64() != Some(rule_id)),
         "rule should be gone after DELETE: {arr_after:?}"
     );
-
 }

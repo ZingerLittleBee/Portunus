@@ -132,6 +132,11 @@ export interface Rule {
   /// 007-multi-target-failover: opt-in active TCP-connect probe cadence.
   /// `null` / absent means passive-only health tracking.
   health_check_interval_secs?: number | null;
+  /// 009-tls-sni-routing: optional TLS Server Name Indication selector.
+  /// Exact host (`api.example.com`) or single-label wildcard
+  /// (`*.example.com`). Present only on TCP single-port rules; `null`
+  /// or absent for legacy plain-TCP rules and the SNI fallback shape.
+  sni_pattern?: string | null;
 }
 
 /// 007-multi-target-failover T044: a single target on a rule. Mirrors
@@ -196,6 +201,10 @@ export interface PushRuleBody {
   /// seconds (range 1..=3600). Omit or `null` for passive-only health
   /// tracking (default).
   health_check_interval_secs?: number;
+  /// 009-tls-sni-routing: optional SNI selector. Server-side validation
+  /// rejects this field on UDP rules, port-range rules, and grammar
+  /// violations. Omit (or pass empty) for the legacy / fallback shape.
+  sni_pattern?: string;
 }
 
 export interface PushRuleResponse {

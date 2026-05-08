@@ -8,7 +8,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/ZingerLittleBee/forward-rs"
 authors = ["forward-rs contributors"]
-version = "0.8.0"
+version = "0.9.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

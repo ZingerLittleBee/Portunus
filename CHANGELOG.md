@@ -7,7 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(no changes since v0.8.0)
+(no changes since v0.9.0)
+
+## [0.9.0] — 2026-05-09
+
+TLS SNI routing release (009). A single TCP listen port (typically
+443) can fan out to different upstream targets based on the TLS
+hostname in the client's ClientHello. forward-rs remains a pure L4
+byte-passthrough — never decrypts, terminates, or re-encrypts TLS.
+Implementation lives in the data plane on `forward-client` (peek +
+parse + route) and in additive control-plane fields on
+`forward-server`. Auth seam, credential hashing, persistence layer,
+and forwarding hot-path layout are byte-stable for v0.8 callers.
+Zero new workspace deps.
+
+Spec / plan: `specs/009-tls-sni-routing/`.
+
+### Added (009-tls-sni-routing)
+
+- **SNI routing on a single TCP listener** — `Rule.sni_pattern`
+  accepts an exact host (`api.example.com`) or single-label wildcard
+  (`*.example.com`). Multiple rules can share the same listen port
+  with distinct SNI selectors; the client peeks the ClientHello,
+  parses the SNI extension, and forwards the connection to the
+  upstream of the matching rule. The peek buffer is replayed to the
+  upstream byte-for-byte (no TLS termination at any point).
+- **TLS-only fallback** — a rule with `sni_pattern = NULL` on a port
+  that already runs in SNI mode catches valid TLS connections whose
+  SNI is missing or unmatched. Without a fallback, unmatched
+  connections are dropped without ever reaching a backend (FR-035).
+- **CLI**: `forward-server push-rule --sni <PATTERN>` adds the
+  selector. Pre-API rejections (UDP rules, port-range rules,
+  malformed grammar) exit 2 with `validation.sni_on_unsupported_rule`
+  / `validation.sni_pattern_malformed`. `list-rules` human output
+  carries an `SNI` column (`-` for legacy rules).
+- **Operator HTTP API**: `POST /v1/rules` accepts `sni_pattern`;
+  `GET /v1/rules` echoes it when present (omitted for legacy rules
+  via `#[serde(skip_serializing_if = "Option::is_none")]`).
+- **Capability gate** — pushing a rule with `sni_pattern` to a v0.8
+  or earlier client returns HTTP 422
+  `sni_unsupported_by_client` before any rule activates (FR-018).
+- **Mode-locked listener lifetime** (R-004) — a `(client, listen_port)`
+  group's mode (legacy plain-TCP vs SNI dispatch) is fixed for its
+  lifetime. Cross-mode pushes are refused with HTTP 409
+  `conflict.legacy_to_sni_unsupported`. Operators must remove the
+  existing rule first.
+- **Observability** — four new Prometheus collectors:
+  `forward_tls_sni_route_total{client,rule,owner,result}`,
+  `forward_tls_sni_listener_miss_total{client,port}`,
+  `forward_tls_sni_listener_parse_failures_total{client,port}`,
+  `forward_tls_sni_routes_active`. Five structured tracing events
+  with `target = "tls_sni"` cover client_hello timeout, parse
+  failure, no-SNI fallback, SNI no-match, and successful routing.
+  Data-plane events do NOT enter the SQLite operator audit ring
+  (D13 / FR-035).
+
+### Wire (additive only)
+
+- `Rule.sni_pattern = 11`
+- `RuleStats.sni_route_exact_total = 13`
+- `RuleStats.sni_route_wildcard_total = 14`
+- `RuleStats.sni_route_fallback_total = 15`
+- `StatsReport.sni_listener_stats = 3` (new
+  `SniListenerStats { listen_port, sni_route_miss_total,
+  client_hello_parse_failures_total }`)
+
+A v0.8 client connected to a v0.9 server sees no behavioural
+difference; a v0.9 client connected to a v0.8 server transparently
+omits the new fields under proto3 default-stripping. Schema-version
+range shifts `[1,1] → [1,2]` via additive SQL migration V002 (one
+new nullable column on `rules`, one helper partial index).
+
+### No breaking changes
+
+- v0.8 plain-TCP rules forward byte-for-byte through the existing
+  v0.7 hot path — never enter the SNI peek code (gated structurally
+  in `control.rs::routes_via_sni`, verified by
+  `t063_legacy_tcp_emits_no_tls_sni_events`).
+- v0.7 multi-target failover, v0.6 management UI, v0.5 RBAC, v0.4
+  UDP, v0.3 DNS resolution, v0.2 port-range rules, and v0.1 TCP MVP
+  all behave unchanged.
 
 ## [0.8.0] — 2026-05-08
 

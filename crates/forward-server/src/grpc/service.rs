@@ -381,6 +381,22 @@ async fn handle_client_message(
                         &state.metrics,
                     )
                     .await;
+                // 009-tls-sni-routing T080: fold per-rule SNI counters into
+                // the new Prometheus collectors. Same delta semantics as the
+                // existing observe path — saturating_sub guards against a
+                // client-side rebaseline (e.g. process restart).
+                state
+                    .stats_cache
+                    .observe_sni_per_rule(
+                        &identity.client_name,
+                        rule_id,
+                        owner.as_str(),
+                        entry.sni_route_exact_total,
+                        entry.sni_route_wildcard_total,
+                        entry.sni_route_fallback_total,
+                        &state.metrics,
+                    )
+                    .await;
                 if !entry.per_port.is_empty() {
                     let snapshots = entry
                         .per_port
@@ -400,6 +416,25 @@ async fn handle_client_message(
                         .collect::<Vec<_>>();
                     state.per_port_stats.update(rule_id, snapshots).await;
                 }
+            }
+            // 009-tls-sni-routing T080: per-listener SNI counters
+            // (StatsReport.sni_listener_stats = 3). Independent of rule
+            // identity — keyed on (client, listen_port) — so the cache
+            // tracks them in a separate prev-state map.
+            for listener in report.sni_listener_stats {
+                let Ok(port) = u16::try_from(listener.listen_port) else {
+                    continue;
+                };
+                state
+                    .stats_cache
+                    .observe_sni_listener(
+                        &identity.client_name,
+                        port,
+                        listener.sni_route_miss_total,
+                        listener.client_hello_parse_failures_total,
+                        &state.metrics,
+                    )
+                    .await;
             }
             info!(
                 event = "client.stats_report",

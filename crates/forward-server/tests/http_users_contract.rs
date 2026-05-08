@@ -20,10 +20,13 @@ const SUPERADMIN_TOKEN: &str = "T026-super";
 fn build_router() -> (axum::Router, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let sqlite_store = std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
-    let tokens =
-        Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
+    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
+        std::sync::Arc::clone(&sqlite_store),
+    ));
     let operator_store = Arc::new(
-        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)),
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(
+            &sqlite_store,
+        )),
     );
     operator_store
         .bootstrap_legacy_superadmin(SUPERADMIN_TOKEN)
@@ -236,7 +239,11 @@ async fn user_remove_persists_identity_then_drops_rules() {
         .expect("oneshot");
     let users_pre = body_json(resp).await;
     assert!(
-        users_pre.as_array().unwrap().iter().any(|u| u["user_id"] == "alice"),
+        users_pre
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["user_id"] == "alice"),
         "alice should appear in /v1/users pre-delete"
     );
     let _ = dir; // keep the tempdir alive
@@ -268,7 +275,11 @@ async fn user_remove_persists_identity_then_drops_rules() {
         .expect("oneshot");
     let users_post = body_json(resp).await;
     assert!(
-        !users_post.as_array().unwrap().iter().any(|u| u["user_id"] == "alice"),
+        !users_post
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["user_id"] == "alice"),
         "alice still present after DELETE: {users_post}"
     );
 }

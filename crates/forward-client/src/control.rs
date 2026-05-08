@@ -27,6 +27,7 @@ use tracing::{error, info, warn};
 use crate::bundle::CredentialBundle;
 use crate::forwarder::stats::RuleStats;
 use crate::forwarder::{self, ClientRule, RuleStatusEvent};
+use crate::port_groups::PortGroupManager;
 
 const PROTOCOL_VERSION: &str = "1.0.0";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -306,6 +307,7 @@ async fn pump(
     let udp_max_flows = session.udp_max_flows_per_rule;
     let udp_flow_idle_secs = session.udp_flow_idle_secs;
     let mut rules: HashMap<RuleId, RuleSlot> = HashMap::new();
+    let mut port_groups = PortGroupManager::new();
     let (status_tx, mut status_rx) = mpsc::channel::<RuleStatusEvent>(64);
     let mut stats_tick = tokio::time::interval(stats_report_interval);
     // Skip the immediate first tick (interval fires at t=0).
@@ -317,7 +319,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, Arc::clone(&resolver), &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
+                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs).await;
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -331,7 +333,7 @@ async fn pump(
                 }
             }
             _ = stats_tick.tick() => {
-                send_stats_report(&rules, &session.outbound).await;
+                send_stats_report(&rules, &port_groups, &session.outbound).await;
             }
         }
     }
@@ -344,6 +346,7 @@ async fn pump(
     for slot in rules.values() {
         slot.cancel.cancel();
     }
+    port_groups.shutdown();
     let drain_deadline = tokio::time::sleep(drain_timeout);
     tokio::pin!(drain_deadline);
     while !rules.is_empty() {
@@ -358,9 +361,10 @@ async fn pump(
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-fn handle_server_message(
+async fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
+    port_groups: &mut PortGroupManager,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
@@ -568,9 +572,76 @@ fn handle_server_message(
                 targets: multi_targets,
                 health_check_interval_secs,
                 multi_target_obs,
+                // 009-tls-sni-routing T039: thread the wire-side
+                // sni_pattern through unchanged. The legacy
+                // forwarder ignores it; the SNI listener (T040)
+                // reads it when the port-group manager (T042)
+                // routes this rule into the SNI dispatch path.
+                sni_pattern: rule.sni_pattern.clone(),
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
+            // 009-tls-sni-routing T043: route TCP single-port rules
+            // through the PortGroupManager when EITHER the rule
+            // carries `sni_pattern` OR the port already runs in SNI
+            // mode (so a `sni_pattern = None` fallback joins the
+            // existing listener). All other shapes (UDP, port-range,
+            // and pure-legacy single-port) keep the v0.7 byte-stable
+            // per-rule spawn path.
+            let routes_via_sni = matches!(protocol, Protocol::Tcp)
+                && listen_end == listen_port
+                && (client_rule.sni_pattern.is_some() || port_groups.is_sni_port(listen_port));
+            if routes_via_sni {
+                match port_groups
+                    .apply_push(client_rule.clone(), Arc::clone(&resolver))
+                    .await
+                {
+                    Ok(stats) => {
+                        rules.insert(
+                            rule_id,
+                            RuleSlot {
+                                cancel,
+                                push_request_id: request_id,
+                                remove_request_id: None,
+                                stats,
+                                is_range: false,
+                                multi_target_obs: multi_target_obs_for_slot,
+                                targets_view,
+                            },
+                        );
+                        // Emit Activated synthetically — the SNI
+                        // listener bound + table populated, so from
+                        // the operator's perspective the rule is live.
+                        let _ = status_tx.try_send(RuleStatusEvent::Activated { rule_id });
+                    }
+                    Err(e) => {
+                        warn!(
+                            event = "control.sni_push_failed",
+                            request_id = %request_id,
+                            rule_id = %rule_id,
+                            error = ?e,
+                        );
+                        let reason = match e {
+                            crate::port_groups::PortGroupError::BindFailed(io) => {
+                                format!("bind_failed:{io}")
+                            }
+                            crate::port_groups::PortGroupError::ModeChangeUnsupported => {
+                                "mode_change_unsupported".into()
+                            }
+                            crate::port_groups::PortGroupError::DuplicateRuleId(_) => {
+                                "duplicate_rule_id".into()
+                            }
+                            crate::port_groups::PortGroupError::UnknownRuleId(_) => {
+                                "unknown_rule_id".into()
+                            }
+                        };
+                        let _ = status_tx.try_send(RuleStatusEvent::Failed { rule_id, reason });
+                    }
+                }
+                return;
+            }
+
+            // Legacy / multi-target / UDP / range path — unchanged.
             // Range-aware stats: one per-port slot per port in
             // `listen_range`. Single-port rules get a single-element
             // per-port slot — the wire emit logic in
@@ -602,9 +673,26 @@ fn handle_server_message(
             );
         }
         RuleAction::Remove => {
+            // 009-tls-sni-routing T043: ask the manager to drop the
+            // rule's SNI slot first. `apply_remove` is a no-op for
+            // legacy rules (UnknownRuleId), so swallowing the error
+            // is correct. The slot.cancel below still fires for
+            // rules on the legacy path; for SNI rules the cancel
+            // is wired to a dummy token (the listener task is owned
+            // by the manager) so the same cleanup path works for
+            // the operator-visible Removed event.
+            let _ = port_groups.apply_remove(rule_id);
             if let Some(slot) = rules.get_mut(&rule_id) {
                 slot.remove_request_id = Some(request_id);
                 slot.cancel.cancel();
+                // Synthesise Removed for the SNI path — the legacy
+                // forwarder emits Removed itself, but SNI listeners
+                // run inside the manager and have no direct status
+                // channel. We can't tell here whether `rule_id` is
+                // SNI vs legacy without a reverse index, so we send
+                // Removed unconditionally; the legacy path's own
+                // Removed event is idempotent in `forward_status`.
+                let _ = status_tx.try_send(RuleStatusEvent::Removed { rule_id });
             } else {
                 warn!(
                     event = "control.rule_remove_unknown",
@@ -737,10 +825,11 @@ fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
 
 async fn send_stats_report(
     rules: &HashMap<RuleId, RuleSlot>,
+    port_groups: &PortGroupManager,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
     use std::sync::atomic::Ordering;
-    if rules.is_empty() {
+    if rules.is_empty() && !port_groups.has_any_listener() {
         return;
     }
     let stats: Vec<ProtoRuleStats> = rules
@@ -796,6 +885,21 @@ async fn send_stats_report(
                     .as_ref()
                     .map_or(0, |o| o.target_failovers_total.load(Ordering::Relaxed)),
                 per_target: build_per_target(slot),
+                // 009-tls-sni-routing T077: per-rule SNI hit counters.
+                // Legacy plain-TCP rules and UDP rules see all three at
+                // 0 (the listener never bumps them) → proto3 default-
+                // stripping keeps the wire shape byte-identical with
+                // v0.8 (verified by
+                // sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
+                sni_route_exact_total: slot.stats.sni_route_exact_total.load(Ordering::Relaxed),
+                sni_route_wildcard_total: slot
+                    .stats
+                    .sni_route_wildcard_total
+                    .load(Ordering::Relaxed),
+                sni_route_fallback_total: slot
+                    .stats
+                    .sni_route_fallback_total
+                    .load(Ordering::Relaxed),
             }
         })
         .collect();
@@ -803,10 +907,16 @@ async fn send_stats_report(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
+    let sni_listener_stats = port_groups.snapshot_listener_stats();
     let msg = ClientMessage {
         payload: Some(client_message::Payload::StatsReport(StatsReport {
             sent_at_unix_ms: now_ms,
             stats,
+            // 009-tls-sni-routing T078: per-listener SNI counters
+            // (miss, parse_failures) snapshotted from the manager.
+            // Empty when no SNI listener has bound yet — proto3
+            // default-stripping keeps wire byte-stable with v0.8.
+            sni_listener_stats,
         })),
     };
     if let Err(e) = outbound.send(msg).await {

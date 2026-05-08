@@ -118,6 +118,61 @@ pub enum OperatorError {
         client_name: ClientName,
         client_version: String,
     },
+
+    // ---- 009-tls-sni-routing ----
+    //
+    /// FR-013: a candidate SNI rule has the same `sni_pattern` as an
+    /// existing sibling on `(client, listen_port)`. Maps to HTTP 409 /
+    /// `conflict.sni_route_duplicate`.
+    #[error(
+        "conflict.sni_route_duplicate: client {client_name} listen_port {listen_port} sni_pattern {sni_pattern} already in use"
+    )]
+    SniRouteDuplicate {
+        client_name: ClientName,
+        listen_port: u16,
+        sni_pattern: String,
+    },
+    /// FR-014: a candidate fallback rule (`sni_pattern = None`) is
+    /// being pushed to a listener that already has a fallback slot.
+    /// Maps to HTTP 409 / `conflict.sni_fallback_duplicate`.
+    #[error(
+        "conflict.sni_fallback_duplicate: client {client_name} listen_port {listen_port} already has a fallback rule"
+    )]
+    SniFallbackDuplicate {
+        client_name: ClientName,
+        listen_port: u16,
+    },
+    /// FR-015: a candidate would flip an active listener's mode (legacy
+    /// plain-TCP <-> SNI dispatch). Maps to HTTP 409 /
+    /// `conflict.legacy_to_sni_unsupported`. Operator must remove the
+    /// existing rule first.
+    #[error(
+        "conflict.legacy_to_sni_unsupported: client {client_name} listen_port {listen_port} has an active rule in {existing_mode} mode; remove it first before pushing in {candidate_mode} mode"
+    )]
+    LegacyToSniUnsupported {
+        client_name: ClientName,
+        listen_port: u16,
+        existing_mode: &'static str,
+        candidate_mode: &'static str,
+    },
+    /// FR-018 / T028: operator pushed a rule carrying `sni_pattern` at
+    /// a client whose last-known `Hello.client_version` is `< 0.9.0`.
+    /// Maps to HTTP 422 / `sni_unsupported_by_client`.
+    #[error(
+        "sni_unsupported_by_client: client {client_name} (version {client_version}) requires >= 0.9.0"
+    )]
+    SniUnsupportedByClient {
+        client_name: ClientName,
+        client_version: String,
+    },
+    /// FR-009 / T029: `sni_pattern` validation failure. The `code`
+    /// carries the operator-api stable subcategory:
+    /// - `validation.sni_on_unsupported_rule` — UDP or range rule.
+    /// - `validation.sni_pattern_malformed` — grammar reject.
+    ///
+    /// Maps to HTTP 400 / exit 3.
+    #[error("{code}: {message}")]
+    SniValidation { code: &'static str, message: String },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -150,9 +205,19 @@ impl OperatorError {
             | Self::RuleShapeMissing
             | Self::TargetsInvalid(_)
             | Self::HealthCheckIntervalOutOfRange { .. }
-            | Self::MultiTargetUnsupportedByClient { .. } => 3,
+            | Self::MultiTargetUnsupportedByClient { .. }
+            // 009-tls-sni-routing: SNI capability gate mirrors the
+            // 007 multi-target gate (HTTP 422 / exit 3).
+            | Self::SniUnsupportedByClient { .. }
+            | Self::SniValidation { .. } => 3,
             Self::ClientNotConnected(_) => 4,
-            Self::PortInUse { .. } => 5,
+            // 009-tls-sni-routing: SNI conflicts share exit 5 with
+            // PortInUse (the closest analogue: rule shape rejected
+            // because the listener is already committed).
+            Self::PortInUse { .. }
+            | Self::SniRouteDuplicate { .. }
+            | Self::SniFallbackDuplicate { .. }
+            | Self::LegacyToSniUnsupported { .. } => 5,
             Self::ActivationFailed(_) => 6,
             Self::AckTimeout => 7,
             Self::RuleNotFound => 8,
@@ -191,7 +256,10 @@ impl OperatorError {
             Self::InvalidName(_) => "invalid_name",
             Self::InvalidProtocol(_) => "invalid_protocol",
             Self::InvalidTarget(_) => "invalid_target",
-            Self::InvalidTargetHost { code, .. } => code,
+            // `InvalidTargetHost` and `SniValidation` (below) both
+            // store an operator-api-stable subcode in their `code`
+            // field; merging the arms keeps the dispatch trivial.
+            Self::InvalidTargetHost { code, .. } | Self::SniValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -216,6 +284,11 @@ impl OperatorError {
             },
             Self::HealthCheckIntervalOutOfRange { .. } => "health_check_interval_out_of_range",
             Self::MultiTargetUnsupportedByClient { .. } => "multi_target_unsupported_by_client",
+            // 009-tls-sni-routing (operator-api.md §1):
+            Self::SniRouteDuplicate { .. } => "conflict.sni_route_duplicate",
+            Self::SniFallbackDuplicate { .. } => "conflict.sni_fallback_duplicate",
+            Self::LegacyToSniUnsupported { .. } => "conflict.legacy_to_sni_unsupported",
+            Self::SniUnsupportedByClient { .. } => "sni_unsupported_by_client",
         }
     }
 }
@@ -260,6 +333,33 @@ impl From<RuleStoreError> for OperatorError {
             } => Self::UnsupportedProtocol {
                 client_name,
                 protocol,
+            },
+            RuleStoreError::SniRouteDuplicate {
+                client_name,
+                listen_port,
+                sni_pattern,
+            } => Self::SniRouteDuplicate {
+                client_name,
+                listen_port,
+                sni_pattern,
+            },
+            RuleStoreError::SniFallbackDuplicate {
+                client_name,
+                listen_port,
+            } => Self::SniFallbackDuplicate {
+                client_name,
+                listen_port,
+            },
+            RuleStoreError::LegacyToSniUnsupported {
+                client_name,
+                listen_port,
+                existing_mode,
+                candidate_mode,
+            } => Self::LegacyToSniUnsupported {
+                client_name,
+                listen_port,
+                existing_mode,
+                candidate_mode,
             },
         }
     }
@@ -586,6 +686,10 @@ pub async fn push_rule(
                 // Phase 6 (T043).
                 targets: Vec::new(),
                 health_check_interval_secs: 0,
+                // 009-tls-sni-routing T015: legacy (pre-009) push helpers
+                // never set sni_pattern. The new SNI-aware push path
+                // (added in T026/T043) plumbs this from rule.sni_pattern.
+                sni_pattern: None,
             }),
         })),
     };
@@ -690,6 +794,10 @@ pub async fn push_rule_multi_target(
     prefer_ipv6: Option<bool>,
     range_cap: u32,
     ack_timeout: Duration,
+    // 009-tls-sni-routing: optional SNI selector. Already validated +
+    // lowercased by the HTTP handler (operator::http::post_rules)
+    // before reaching this helper.
+    sni_pattern: Option<String>,
 ) -> Result<Rule, OperatorError> {
     debug_assert!(
         !targets.is_empty(),
@@ -738,6 +846,7 @@ pub async fn push_rule_multi_target(
             identity.user_id.clone(),
             targets.clone(),
             health_check_interval_secs,
+            sni_pattern,
         )
         .await?;
     let request_id = RequestId::new().to_string();
@@ -791,6 +900,11 @@ pub async fn push_rule_multi_target(
                 prefer_ipv6,
                 targets: proto_targets,
                 health_check_interval_secs: health_check_interval_secs.unwrap_or(0),
+                // 009-tls-sni-routing T026: forward the validated SNI
+                // pattern to the data plane. Pre-0.9 clients are
+                // refused upstream by the capability gate, so this is
+                // safe to send unconditionally.
+                sni_pattern: rule.sni_pattern.clone(),
             }),
         })),
     };
@@ -912,6 +1026,9 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     // shape canonical. Empty/zero on the wire.
                     targets: Vec::new(),
                     health_check_interval_secs: 0,
+                    // 009-tls-sni-routing T015: REMOVE only reads rule_id
+                    // on the receiving side; SNI is irrelevant here.
+                    sni_pattern: None,
                 }),
             })),
         };

@@ -30,9 +30,8 @@ fn build() -> (axum::Router, Arc<AppState>, TempDir, CancellationToken) {
     let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
         sqlite.clone(),
     ));
-    let operator_store = Arc::new(
-        forward_server::store::operator_store::SqliteOperatorStore::new(sqlite.clone()),
-    );
+    let operator_store =
+        Arc::new(forward_server::store::operator_store::SqliteOperatorStore::new(sqlite.clone()));
     operator_store
         .bootstrap_legacy_superadmin(SUPER)
         .expect("bootstrap");

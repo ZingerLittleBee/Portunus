@@ -199,11 +199,9 @@ mod search_tests {
         let p = dir.path().join("custom.bundle.json");
         std::fs::write(&p, "{}").unwrap();
         let mut env = HashMap::new();
-        env.insert(
-            "FORWARD_CLIENT_BUNDLE",
-            p.to_string_lossy().into_owned(),
-        );
-        let resolved = resolve_bundle_path_with(None, env_from(&env)).expect("env var path resolves");
+        env.insert("FORWARD_CLIENT_BUNDLE", p.to_string_lossy().into_owned());
+        let resolved =
+            resolve_bundle_path_with(None, env_from(&env)).expect("env var path resolves");
         assert_eq!(resolved, p);
     }
 
@@ -243,10 +241,7 @@ mod search_tests {
         let env_target = env_dir.path().join("env.bundle.json");
         std::fs::write(&env_target, "{}").unwrap();
         let xdg_dir = tempfile::TempDir::new().unwrap();
-        let xdg_target = xdg_dir
-            .path()
-            .join("forward-rs")
-            .join("client.bundle.json");
+        let xdg_target = xdg_dir.path().join("forward-rs").join("client.bundle.json");
         std::fs::create_dir_all(xdg_target.parent().unwrap()).unwrap();
         std::fs::write(&xdg_target, "{}").unwrap();
         let home_dir = tempfile::TempDir::new().unwrap();
@@ -284,7 +279,10 @@ mod search_tests {
         );
         env.insert(
             "XDG_CONFIG_HOME",
-            dir.path().join("xdg-missing").to_string_lossy().into_owned(),
+            dir.path()
+                .join("xdg-missing")
+                .to_string_lossy()
+                .into_owned(),
         );
         env.insert(
             "HOME",
@@ -298,7 +296,9 @@ mod search_tests {
         // 4 candidates: env, xdg, home, cwd.
         assert_eq!(err.attempted.len(), 4, "attempted: {:?}", err.attempted);
         assert!(
-            err.attempted.iter().any(|p| p.ends_with("env-missing.json")),
+            err.attempted
+                .iter()
+                .any(|p| p.ends_with("env-missing.json")),
             "should record env-var attempt: {:?}",
             err.attempted
         );
