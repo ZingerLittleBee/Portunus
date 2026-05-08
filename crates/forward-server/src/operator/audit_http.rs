@@ -76,7 +76,20 @@ pub async fn get_audit(
         },
     };
 
-    let snapshot: Vec<AuditEntry> = state.audit.snapshot(limit, outcome);
+    // 008-sqlite-storage T033 — read from the durable store. Returns
+    // newest-first AuditEntry rows reconstructed from the audit table;
+    // shape is byte-stable with the v0.7 ring-buffer snapshot, so v0.7
+    // callers see no change to JSON.
+    let snapshot: Vec<AuditEntry> = state
+        .store
+        .query_audit_recent(limit, outcome)
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                format!("audit read: {e}"),
+            )
+        })?;
 
     let body = Json(snapshot).into_response();
     let mut response = body;

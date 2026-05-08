@@ -11,6 +11,7 @@
 
 pub mod bundle;
 pub mod clients;
+pub mod data_dir;
 pub mod grpc;
 pub mod metrics;
 pub mod operator;
@@ -18,6 +19,7 @@ pub mod rules;
 pub mod serve;
 pub mod shutdown;
 pub mod state;
+pub mod store;
 pub mod tls;
 
 /// Output format for CLI subcommands. Used by `rule_cli` (and now,

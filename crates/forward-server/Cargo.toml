@@ -50,7 +50,24 @@ futures = "0.3"
 # Content-Type without hand-coding a MIME table.
 mime_guess = "2"
 
+# 008-sqlite-storage: persistent store
+rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
+refinery = { workspace = true }
+num_cpus = { workspace = true }
+nix = { workspace = true }
+blake3 = { workspace = true }
+# Direct flock(2) for store-in-use detection on Unix; transitively
+# present via rusqlite but listed here so the call site is auditable.
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 assert_cmd = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "operator_api"
+harness = false

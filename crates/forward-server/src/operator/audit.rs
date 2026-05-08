@@ -96,6 +96,12 @@ pub struct AuditRing {
     /// Bound after construction via `bind_drops_metric` so `Metrics`
     /// owns the registry and `AuditRing` doesn't depend on it.
     drops_metric: Arc<Mutex<Option<IntCounter>>>,
+    /// 008-sqlite-storage T032 — optional fan-out to the durable
+    /// audit writer. When bound, every `push(...)` also records the
+    /// entry into the SQLite-backed table via the bounded mpsc queue.
+    /// Bound after construction in `serve.rs` so the AppState
+    /// constructor stays unchanged.
+    durable: Arc<Mutex<Option<crate::store::audit_writer::Handle>>>,
 }
 
 impl std::fmt::Debug for AuditRing {
@@ -124,10 +130,30 @@ impl AuditRing {
             .expect("AuditRing drops_metric mutex poisoned") = Some(counter);
     }
 
+    /// 008-sqlite-storage T032 — bind the durable audit writer's
+    /// handle so every `push(entry)` also records the entry into the
+    /// SQLite-backed `audit` table. Idempotent.
+    pub fn bind_durable_writer(&self, handle: crate::store::audit_writer::Handle) {
+        *self
+            .durable
+            .lock()
+            .expect("AuditRing durable mutex poisoned") = Some(handle);
+    }
+
     /// Push a new entry. On overflow the oldest entry is dropped and
     /// the drop counter is bumped (and mirrored into the Prometheus
     /// counter if one was bound).
     pub fn push(&self, entry: AuditEntry) {
+        // 008-sqlite-storage T032: fan out to the durable writer
+        // BEFORE the in-memory push so a panic on the ring lock does
+        // not lose the durable copy. The durable writer's `record`
+        // is non-blocking.
+        if let Ok(guard) = self.durable.lock()
+            && let Some(h) = guard.as_ref()
+        {
+            h.record(entry.clone());
+        }
+
         let mut q = self.inner.lock().expect("AuditRing mutex poisoned");
         if q.len() == AUDIT_RING_CAPACITY {
             q.pop_front();

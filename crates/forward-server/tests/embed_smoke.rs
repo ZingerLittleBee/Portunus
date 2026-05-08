@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
 use forward_server::clients::ConnectedClients;
 use forward_server::operator::http;
 use forward_server::operator::webui::serve_webui;
@@ -23,8 +21,9 @@ const SUPER: &str = "T064-super";
 
 fn build() -> (axum::Router, TempDir) {
     let dir = TempDir::new().unwrap();
-    let tokens = Arc::new(FileTokenStore::open(dir.path().join("tokens.json")).unwrap());
-    let store = Arc::new(FileOperatorStore::open(dir.path().join("identity.json")).unwrap());
+    let sqlite_store = Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
+    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
+    let store = Arc::new(forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)));
     store.bootstrap_legacy_superadmin(SUPER).unwrap();
     let state = Arc::new(
         AppState::new(
@@ -35,6 +34,7 @@ fn build() -> (axum::Router, TempDir) {
             "deadbeef",
             "-----BEGIN CERTIFICATE-----\n",
             16,
+            sqlite_store,
         )
         .unwrap(),
     );

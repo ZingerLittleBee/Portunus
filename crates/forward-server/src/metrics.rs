@@ -124,7 +124,20 @@ pub struct Metrics {
     /// 006-management-web-ui T009: cumulative count of audit-ring
     /// evictions. Bumped by `AuditRing::push` when the ring is at
     /// capacity and the oldest entry is dropped to make room.
+    ///
+    /// 008-sqlite-storage T031 reuses the same series for hand-off
+    /// queue overflow on the durable audit writer (semantically
+    /// identical: "we lost an audit entry due to backpressure"); see
+    /// `contracts/operator-api.md` §Prometheus.
     pub audit_buffer_drops_total: IntCounter,
+    /// 008-sqlite-storage T031: oldest hand-off-queue entry's age in
+    /// seconds. 0 when the queue is empty / writer is idle. Useful
+    /// for diagnosing burst saturation BEFORE drops happen.
+    pub audit_durable_writer_lag_seconds: prometheus::Gauge,
+    /// 008-sqlite-storage T031: cumulative count of `SQLITE_BUSY`
+    /// occurrences mapped to `StoreError::Transient`. Should stay
+    /// near zero in healthy deployments thanks to BEGIN IMMEDIATE.
+    pub store_busy_total: IntCounter,
 }
 
 impl Metrics {
@@ -214,6 +227,14 @@ impl Metrics {
             ),
             &["client", "rule", "owner"],
         )?;
+        let audit_durable_writer_lag_seconds = prometheus::Gauge::new(
+            "forward_audit_durable_writer_lag_seconds",
+            "Age of the oldest entry currently sitting in the durable-audit hand-off queue (008-sqlite-storage T031)",
+        )?;
+        let store_busy_total = IntCounter::new(
+            "forward_store_busy_total",
+            "Cumulative count of SQLITE_BUSY occurrences mapped to StoreError::Transient (008-sqlite-storage T031)",
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
@@ -227,6 +248,8 @@ impl Metrics {
         registry.register(Box::new(operator_requests_total.clone()))?;
         registry.register(Box::new(audit_buffer_drops_total.clone()))?;
         registry.register(Box::new(rule_target_failovers_total.clone()))?;
+        registry.register(Box::new(audit_durable_writer_lag_seconds.clone()))?;
+        registry.register(Box::new(store_busy_total.clone()))?;
 
         Ok(Self {
             registry,
@@ -243,6 +266,8 @@ impl Metrics {
             operator_requests_total,
             rule_target_failovers_total,
             audit_buffer_drops_total,
+            audit_durable_writer_lag_seconds,
+            store_busy_total,
         })
     }
 

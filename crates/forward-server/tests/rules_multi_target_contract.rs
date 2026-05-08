@@ -27,13 +27,12 @@
 //! step doesn't 503 with `client_not_connected`), the test seeds the
 //! `ConnectedClients` registry with a fake outbound channel.
 
+use rusqlite;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
 use forward_auth::{ClientScope, Grant, GrantId, OperatorRole, ProtocolSet, User, UserId};
 use forward_core::ClientName;
 use forward_proto::v1::Protocol as ProtoProtocol;
@@ -56,10 +55,11 @@ struct Fixture {
 
 fn build_fixture() -> Fixture {
     let dir = TempDir::new().expect("tempdir");
+    let sqlite_store = std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
     let tokens =
-        Arc::new(FileTokenStore::open(dir.path().join("tokens.json")).expect("token store"));
+        Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
     let operator_store = Arc::new(
-        FileOperatorStore::open(dir.path().join("identity.json")).expect("operator store"),
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)),
     );
     operator_store
         .bootstrap_legacy_superadmin(SUPERADMIN_TOKEN)
@@ -78,29 +78,20 @@ fn build_fixture() -> Fixture {
     let _ = operator_store
         .issue_credential(&alice_id, Some("test".to_string()))
         .expect("issue cred");
-    // Swap the random token for a deterministic test fixture, mirroring
-    // the trick rbac_push_rule.rs uses.
-    let identity_json =
-        std::fs::read_to_string(dir.path().join("identity.json")).expect("read identity.json");
-    let mut value: serde_json::Value =
-        serde_json::from_str(&identity_json).expect("parse identity.json");
+    // 008-sqlite-storage T044: rewrite alice's credential hash via SQL
+    // (the legacy identity.json mutation path is gone in v0.8).
     let known_hash_hex =
         forward_core::fingerprint::hex(&forward_auth::token::hash_token(ALICE_TOKEN));
-    if let Some(creds) = value.get_mut("credentials").and_then(|v| v.as_array_mut()) {
-        for c in creds.iter_mut() {
-            if c.get("user_id").and_then(|v| v.as_str()) == Some("alice") {
-                c["token_hash"] = serde_json::Value::String(known_hash_hex.clone());
-            }
-        }
-    }
-    std::fs::write(
-        dir.path().join("identity.json"),
-        serde_json::to_vec_pretty(&value).expect("serialize"),
-    )
-    .expect("write back");
-    operator_store
-        .reload_from_disk()
-        .expect("reload after token swap");
+    sqlite_store
+        .with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE credentials SET hash = ? WHERE user_id = 'alice'",
+                rusqlite::params![known_hash_hex],
+            )
+            .map_err(forward_server::store::map_rusqlite)?;
+            Ok(())
+        })
+        .expect("patch alice credential hash");
 
     let alice_grant = Grant {
         id: GrantId::new(),
@@ -124,6 +115,7 @@ fn build_fixture() -> Fixture {
             "deadbeef",
             "-----BEGIN CERTIFICATE-----\n",
             16,
+            std::sync::Arc::clone(&sqlite_store),
         )
         .expect("AppState"),
     );

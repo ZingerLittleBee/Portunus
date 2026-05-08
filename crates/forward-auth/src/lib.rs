@@ -108,9 +108,10 @@ impl UserId {
         Self("_superadmin".to_owned())
     }
 
-    /// Internal constructor for reserved (`_`-prefixed) IDs. Not exposed
-    /// publicly — only the bootstrap path mints these.
-    pub(crate) fn reserved(s: impl Into<String>) -> Self {
+    /// Constructor for reserved (`_`-prefixed) IDs. Used by bootstrap
+    /// flows and by the SQLite-backed identity store when reading stored
+    /// rows back (008-sqlite-storage T044).
+    pub fn reserved(s: impl Into<String>) -> Self {
         Self(s.into())
     }
 

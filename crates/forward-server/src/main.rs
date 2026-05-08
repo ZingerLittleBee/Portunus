@@ -5,7 +5,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use forward_auth::file_store::FileTokenStore;
 
 use forward_server::OutputFormat;
 use forward_server::clients::ConnectedClients;
@@ -20,9 +19,17 @@ use forward_server::tls::ServerTlsMaterial;
 #[derive(Parser, Debug)]
 #[command(name = "forward-server", version, about = "forward-rs control plane")]
 struct Cli {
-    /// Override the configuration directory.
+    /// Override the configuration directory (admin-edited config + TLS material).
     #[arg(long, global = true)]
     config_dir: Option<PathBuf>,
+
+    /// Override the data directory (daemon-managed `state.db` and SQLite
+    /// sidecars). Independent from `--config-dir`. When omitted, resolved
+    /// in order: $STATE_DIRECTORY → $XDG_STATE_HOME/forward-rs →
+    /// $HOME/.local/state/forward-rs → ./forward-rs.state. See
+    /// specs/008-sqlite-storage/ FR-019.
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
 
     /// Override the path to `server.toml`.
     #[arg(long, global = true)]
@@ -255,11 +262,13 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), u8> {
     let config_dir = resolve_config_dir(cli.config_dir.clone());
+    let data_dir = forward_server::data_dir::resolve(cli.data_dir.clone());
 
     match cli.cmd {
         Cmd::Serve => {
             let opts = serve::ServeOptions {
                 config_dir,
+                data_dir: data_dir.clone(),
                 config_file: cli.config.clone(),
                 advertised_endpoint: cli.advertised_endpoint.clone(),
             };
@@ -275,7 +284,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             })
         }
         Cmd::ProvisionClient { name, out } => {
-            let state = build_offline_state(&config_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             match cli::provision_client(&state, &name, out) {
                 Ok((path, _)) => {
                     println!("{}", path.display());
@@ -289,7 +298,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             }
         }
         Cmd::Revoke { name } => {
-            let state = build_offline_state(&config_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -302,7 +311,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 })
         }
         Cmd::ListClients { format } => {
-            let state = build_offline_state(&config_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -471,10 +480,15 @@ fn resolve_config_dir(override_: Option<PathBuf>) -> PathBuf {
 /// issued bundles carry the correct fingerprint.
 fn build_offline_state(
     config_dir: &std::path::Path,
+    data_dir: &std::path::Path,
     advertised_endpoint: Option<String>,
 ) -> Result<AppState, u8> {
     std::fs::create_dir_all(config_dir).map_err(|e| {
         eprintln!("config dir: {e}");
+        1u8
+    })?;
+    std::fs::create_dir_all(data_dir).map_err(|e| {
+        eprintln!("data dir: {e}");
         1u8
     })?;
     let paths = cli::default_paths(config_dir);
@@ -482,16 +496,19 @@ fn build_offline_state(
         eprintln!("tls: {e}");
         1u8
     })?;
-    let tokens = Arc::new(FileTokenStore::open(&paths.tokens).map_err(|e| {
-        eprintln!("token store: {e}");
+    // 008-sqlite-storage T052 — offline path opens SQLite first, then
+    // wraps it with both Authenticator surfaces. The legacy file paths
+    // (`paths.tokens`, `identity.json`) are no longer touched.
+    let _ = paths.tokens; // silence "unused" if the field is unread now
+    let store = Arc::new(forward_server::store::Store::open(data_dir).map_err(|e| {
+        eprintln!("store: {e}");
         1u8
     })?);
+    let tokens = Arc::new(forward_server::store::token_store::SqliteTokenStore::new(
+        Arc::clone(&store),
+    ));
     let operator_store = Arc::new(
-        forward_auth::operator_store::FileOperatorStore::open(config_dir.join("identity.json"))
-            .map_err(|e| {
-                eprintln!("operator store: {e}");
-                1u8
-            })?,
+        forward_server::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store)),
     );
     let endpoint = advertised_endpoint.unwrap_or_else(|| "127.0.0.1:7443".to_string());
     AppState::new(
@@ -506,6 +523,7 @@ fn build_offline_state(
         // effectively unused. Use the default to stay close to the
         // serve-path config.
         forward_core::config::default_range_rule_max_ports(),
+        store,
     )
     .map_err(|e| {
         eprintln!("metrics: {e}");

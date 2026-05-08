@@ -77,6 +77,7 @@ fn cmd_for(name: &str) -> Command {
 pub struct ServerHandle {
     pub child: Child,
     pub config_dir: TempDir,
+    pub data_dir: TempDir,
     pub stderr_lines: Arc<Mutex<Vec<String>>>,
 }
 
@@ -210,9 +211,15 @@ pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> 
         token = TEST_OPERATOR_TOKEN,
     );
     std::fs::write(cd.join("server.toml"), body).expect("write server.toml");
+    // 008-sqlite-storage T034 — every spawned server gets its own
+    // isolated SQLite data dir so parallel test runners don't fight
+    // over the state.db lockfile.
+    let data_dir = fresh_tempdir("server data");
     let mut cmd = cmd_for("forward-server");
     cmd.arg("--config-dir")
         .arg(config_dir.path())
+        .arg("--data-dir")
+        .arg(data_dir.path())
         .arg("serve")
         .args(extra_args)
         .stdout(Stdio::piped())
@@ -224,6 +231,7 @@ pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> 
     ServerHandle {
         child,
         config_dir,
+        data_dir,
         stderr_lines,
     }
 }

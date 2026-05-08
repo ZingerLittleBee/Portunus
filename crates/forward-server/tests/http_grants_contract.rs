@@ -9,8 +9,6 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
 use forward_server::clients::ConnectedClients;
 use forward_server::operator::http;
 use forward_server::state::AppState;
@@ -22,10 +20,11 @@ const SUPER_TOKEN: &str = "T028-super";
 
 fn build_router() -> (axum::Router, TempDir) {
     let dir = TempDir::new().expect("tempdir");
+    let sqlite_store = std::sync::Arc::new(forward_server::store::Store::open(dir.path()).unwrap());
     let tokens =
-        Arc::new(FileTokenStore::open(dir.path().join("tokens.json")).expect("token store"));
+        Arc::new(forward_server::store::token_store::SqliteTokenStore::new(std::sync::Arc::clone(&sqlite_store)));
     let operator_store = Arc::new(
-        FileOperatorStore::open(dir.path().join("identity.json")).expect("operator store"),
+        forward_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)),
     );
     operator_store
         .bootstrap_legacy_superadmin(SUPER_TOKEN)
@@ -39,6 +38,7 @@ fn build_router() -> (axum::Router, TempDir) {
             "deadbeef",
             "-----BEGIN CERTIFICATE-----\n",
             16,
+            std::sync::Arc::clone(&sqlite_store),
         )
         .expect("AppState"),
     );

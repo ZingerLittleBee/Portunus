@@ -3,8 +3,6 @@
 use std::sync::Arc;
 
 use forward_auth::OperatorAuthenticator;
-use forward_auth::file_store::FileTokenStore;
-use forward_auth::operator_store::FileOperatorStore;
 use forward_core::config::ServerConfig;
 
 use crate::clients::ConnectedClients;
@@ -12,10 +10,13 @@ use crate::metrics::{Metrics, RuleStatsCache};
 use crate::operator::audit::AuditRing;
 use crate::operator::per_port_stats::PerPortStatsCache;
 use crate::rules::ServerRuleStore;
+use crate::store::Store;
+use crate::store::operator_store::SqliteOperatorStore;
+use crate::store::token_store::SqliteTokenStore;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub tokens: Arc<FileTokenStore>,
+    pub tokens: Arc<SqliteTokenStore>,
     pub clients: ConnectedClients,
     pub rules: ServerRuleStore,
     /// `host:port` advertised in newly-issued credential bundles.
@@ -46,7 +47,7 @@ pub struct AppState {
     /// Operator-side identity store (005-multi-user-rbac). Always
     /// present after `serve.rs` startup; used by the auth_layer
     /// middleware (T019) to verify operator bearer tokens.
-    pub operator_store: Arc<FileOperatorStore>,
+    pub operator_store: Arc<SqliteOperatorStore>,
     /// Same store, exposed via the `OperatorAuthenticator` trait so
     /// the auth_layer can take an abstraction (Constitution I single
     /// seam). In v0.5.0 this is just `Arc::clone`-cast of the store
@@ -55,7 +56,17 @@ pub struct AppState {
     /// 006-management-web-ui T009: in-memory audit ring buffer fed by
     /// the auth_layer's allow/deny emit sites and read by
     /// `GET /v1/audit`. Capacity 1000; ≈ 200 KB resident.
+    ///
+    /// 008-sqlite-storage US1 retires this in favour of `store` once
+    /// the audit_writer is wired (T032). For Phase 2 + early Phase 3
+    /// the ring buffer stays as the primary read path while the
+    /// audit_writer fans the same entries into the durable table; the
+    /// retirement flip happens in T032 / T033.
     pub audit: Arc<AuditRing>,
+    /// 008-sqlite-storage T019 — persistent SQLite store. Owns the
+    /// connection pool, schema migrations, and (after US1's wiring)
+    /// the audit-write durable sink. `Arc<Store>` is cheap to clone.
+    pub store: Arc<Store>,
 }
 
 impl AppState {
@@ -65,13 +76,14 @@ impl AppState {
     /// on duplicate metric names, which would be a programming bug.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        tokens: Arc<FileTokenStore>,
-        operator_store: Arc<FileOperatorStore>,
+        tokens: Arc<SqliteTokenStore>,
+        operator_store: Arc<SqliteOperatorStore>,
         clients: ConnectedClients,
         server_endpoint: impl Into<String>,
         server_cert_sha256: impl Into<String>,
         server_cert_pem: impl Into<String>,
         range_rule_max_ports: u32,
+        store: Arc<Store>,
     ) -> Result<Self, prometheus::Error> {
         let operator_auth: Arc<dyn OperatorAuthenticator> = operator_store.clone();
         let audit = Arc::new(AuditRing::new());
@@ -94,6 +106,7 @@ impl AppState {
             operator_store,
             operator_auth,
             audit,
+            store,
         })
     }
 

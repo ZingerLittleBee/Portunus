@@ -339,7 +339,7 @@ pub async fn revoke(state: &AppState, raw_name: &str) -> Result<(), OperatorErro
 
 /// `list-clients`. Joins the union of provisioned + currently-connected.
 pub async fn list_clients(state: &AppState) -> Vec<ClientView> {
-    let provisioned = state.tokens.list();
+    let provisioned = state.tokens.list().unwrap_or_default();
     let connected = state.clients.snapshot().await;
 
     let mut views = Vec::with_capacity(provisioned.len());
