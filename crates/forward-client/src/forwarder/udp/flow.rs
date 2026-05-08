@@ -78,6 +78,17 @@ pub struct UdpFlow {
     /// reply-pump task associated with this flow. The reply-pump
     /// awaits `cancel.cancelled()` in its select arm.
     pub cancel: CancellationToken,
+
+    /// 007-multi-target-failover (T024/T034): index of the target this
+    /// flow stuck to on its first packet (FR-012). `None` for legacy
+    /// single-target rules so `bump_*` skips per-target crediting and
+    /// the byte-identical v0.6.0 hot path is preserved (Constitution
+    /// Principle II). `Some(idx)` for multi-target rules; the flow
+    /// holds a clone of the per-rule `health_states` slice so the
+    /// reply-pump can credit per-target bytes without re-plumbing
+    /// through the listener task.
+    pub target_idx: Option<u32>,
+    pub health_states: Option<Arc<Vec<Mutex<crate::forwarder::failover::HealthState>>>>,
 }
 
 impl UdpFlow {
@@ -106,6 +117,41 @@ impl UdpFlow {
             datagrams_in: AtomicU64::new(0),
             datagrams_out: AtomicU64::new(0),
             cancel: CancellationToken::new(),
+            target_idx: None,
+            health_states: None,
+        })
+    }
+
+    /// 007-multi-target-failover T024/T034 — multi-target constructor.
+    /// `target_idx` is the slot the flow stuck to on its first packet
+    /// (FR-012). `health_states` is a clone of the per-rule slice so
+    /// `bump_inbound`/`bump_outbound` can credit per-target byte
+    /// counters without holding any listener-side lock.
+    #[must_use]
+    pub fn new_multi_target(
+        source_addr: SocketAddr,
+        upstream_socket: Arc<UdpSocket>,
+        upstream_addrs: Vec<SocketAddr>,
+        target_idx: u32,
+        health_states: Arc<Vec<Mutex<crate::forwarder::failover::HealthState>>>,
+    ) -> Arc<Self> {
+        assert!(
+            !upstream_addrs.is_empty(),
+            "UdpFlow must be constructed with at least one upstream address"
+        );
+        Arc::new(Self {
+            source_addr,
+            upstream_socket,
+            upstream_addrs,
+            current_addr_idx: AtomicUsize::new(0),
+            last_seen: Mutex::new(Instant::now()),
+            bytes_in: AtomicU64::new(0),
+            bytes_out: AtomicU64::new(0),
+            datagrams_in: AtomicU64::new(0),
+            datagrams_out: AtomicU64::new(0),
+            cancel: CancellationToken::new(),
+            target_idx: Some(target_idx),
+            health_states: Some(health_states),
         })
     }
 
@@ -139,18 +185,43 @@ impl UdpFlow {
 
     /// Record that a datagram of `n` bytes flowed inbound (end-user →
     /// upstream). Updates the per-flow counters and bumps `last_seen`.
+    /// 007-multi-target-failover T024/T034 — also credits the per-target
+    /// byte counter when `target_idx`/`health_states` are set (multi-
+    /// target rules only). The legacy hot path (`target_idx: None`)
+    /// skips the per-target work entirely and stays byte-identical to
+    /// v0.6.0.
     pub async fn bump_inbound(&self, n: u64) {
         self.bytes_in.fetch_add(n, Ordering::Relaxed);
         self.datagrams_in.fetch_add(1, Ordering::Relaxed);
         *self.last_seen.lock().await = Instant::now();
+        self.credit_target_in(n).await;
     }
 
     /// Record that a datagram of `n` bytes flowed outbound (upstream →
     /// end-user). Updates the per-flow counters and bumps `last_seen`.
+    /// 007-multi-target-failover T024/T034 — also credits the per-target
+    /// byte counter when `target_idx`/`health_states` are set.
     pub async fn bump_outbound(&self, n: u64) {
         self.bytes_out.fetch_add(n, Ordering::Relaxed);
         self.datagrams_out.fetch_add(1, Ordering::Relaxed);
         *self.last_seen.lock().await = Instant::now();
+        self.credit_target_out(n).await;
+    }
+
+    async fn credit_target_in(&self, n: u64) {
+        if let (Some(idx), Some(states)) = (self.target_idx, self.health_states.as_ref())
+            && let Some(slot) = states.get(idx as usize)
+        {
+            slot.lock().await.add_bytes_in(n);
+        }
+    }
+
+    async fn credit_target_out(&self, n: u64) {
+        if let (Some(idx), Some(states)) = (self.target_idx, self.health_states.as_ref())
+            && let Some(slot) = states.get(idx as usize)
+        {
+            slot.lock().await.add_bytes_out(n);
+        }
     }
 
     /// Synchronous read of the last activity timestamp — held under

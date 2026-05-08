@@ -123,17 +123,79 @@ export interface Rule {
   created_at: string;
   last_state_change_at: string;
   owner_user_id: string;
+  /// 007-multi-target-failover: when present, the rule has ≥1 target.
+  /// `GET /v1/rules` augments each rule with this synthesised array
+  /// (single-target rules get a one-element list mirroring
+  /// `target_host`/`target_port`). `health` is `null` until the stats
+  /// cache observes the rule.
+  targets?: TargetWithHealth[];
+  /// 007-multi-target-failover: opt-in active TCP-connect probe cadence.
+  /// `null` / absent means passive-only health tracking.
+  health_check_interval_secs?: number | null;
+}
+
+/// 007-multi-target-failover T044: a single target on a rule. Mirrors
+/// `RuleTarget` server-side. `priority` defaults to row index (0 =
+/// highest priority).
+export interface Target {
+  host: string;
+  port: number;
+  priority: number;
+}
+
+/// 007-multi-target-failover T044: live per-target health snapshot
+/// from the stats cache. Mirrors the `health` slot on
+/// `rule_with_health` server-side. `null` on the parent target means
+/// the cache has no snapshot yet (rule just pushed, no
+/// `StatsReport` observed).
+export interface TargetHealth {
+  healthy: boolean;
+  consecutive_failures: number;
+  last_failure_at_unix_ms: number;
+  last_success_at_unix_ms: number;
+}
+
+/// 007-multi-target-failover T044: union of `Target` + optional
+/// `TargetHealth` as returned by `GET /v1/rules` and `GET /v1/rules/{id}`.
+export interface TargetWithHealth extends Target {
+  health: TargetHealth | null;
+}
+
+/// 007-multi-target-failover T044: per-target stats from
+/// `RuleStatsSnapshot.per_target` (only present for multi-target rules
+/// when `?per_target=true` is set on the stats endpoint or stream).
+export interface PerTargetStats {
+  index: number;
+  host: string;
+  port: number;
+  priority: number;
+  /// 0 = Healthy, 1 = Failed (mirrors proto wire encoding).
+  health: number;
+  consecutive_failures: number;
+  last_failure_at_unix_ms: number;
+  last_success_at_unix_ms: number;
+  bytes_in: number;
+  bytes_out: number;
+  connections_accepted: number;
 }
 
 export interface PushRuleBody {
   client: string;
   listen_port: number;
   listen_port_end?: number;
-  target_host: string;
-  target_port: number;
+  /// Legacy single-target shape. Mutually exclusive with `targets[]`.
+  target_host?: string;
+  target_port?: number;
   target_port_end?: number;
   protocol?: "tcp" | "udp";
   prefer_ipv6?: boolean;
+  /// 007-multi-target-failover T044: new multi-target shape. Mutually
+  /// exclusive with `target_host`/`target_port`. Length ≥ 1, ≤ 8.
+  targets?: Target[];
+  /// 007-multi-target-failover T044: opt-in active probe cadence in
+  /// seconds (range 1..=3600). Omit or `null` for passive-only health
+  /// tracking (default).
+  health_check_interval_secs?: number;
 }
 
 export interface PushRuleResponse {
@@ -162,6 +224,15 @@ export interface RuleStatsSnapshot {
   flows_dropped_overflow: number;
   updated_at: string;
   protocol?: "tcp" | "udp";
+  /// 007-multi-target-failover T044: cumulative count of
+  /// Healthy↔Failed transitions on multi-target rules. Always 0 on
+  /// single-target rules (invariant I-3).
+  target_failovers_total?: number;
+  /// 007-multi-target-failover T044: per-target snapshots, only
+  /// present when the request was made with `?per_target=true` AND
+  /// the rule is multi-target. Empty/absent for single-target rules
+  /// (server strips via `skip_serializing_if = "Vec::is_empty"`).
+  per_target?: PerTargetStats[];
 }
 
 // -----------------------------------------------------------------------------

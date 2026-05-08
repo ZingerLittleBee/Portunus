@@ -460,7 +460,7 @@ async fn get_rules(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<Rule>>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let client = params.get("client").map(String::as_str);
     let mut rules = cli::list_rules(&state, client).await?;
     // T043: superadmin sees all (with optional `?owner=` filter);
@@ -470,7 +470,56 @@ async fn get_rules(
     } else if let Some(o) = params.get("owner") {
         rules.retain(|r| r.owner_user_id.as_str() == o);
     }
-    Ok(Json(rules))
+    // 007-multi-target-failover T038: augment each rule's targets[]
+    // with per-target health from the stats cache when available.
+    // Single-target rules emit one element with `health: null` so
+    // generic operator tooling can read targets[0] uniformly.
+    let mut out = Vec::with_capacity(rules.len());
+    for r in rules {
+        out.push(rule_with_health(&state, r).await);
+    }
+    Ok(Json(serde_json::Value::Array(out)))
+}
+
+/// 007-multi-target-failover T038: serialize a rule and augment each
+/// entry in `targets[]` with the live `health` snapshot from the
+/// stats cache. Single-target rules synthesize a one-element
+/// `targets[]` with `health: null` so the wire shape is uniform.
+async fn rule_with_health(state: &Arc<AppState>, rule: Rule) -> serde_json::Value {
+    let snap = state.stats_cache.get(rule.id).await;
+    let mut value = serde_json::to_value(&rule).unwrap_or(serde_json::Value::Null);
+    let serde_json::Value::Object(ref mut map) = value else {
+        return value;
+    };
+
+    // Build canonical targets[] view (legacy single-target rules
+    // synthesise a one-element list mirroring `targets_view()`).
+    let view = rule.targets_view();
+    let mut targets_json = Vec::with_capacity(view.len());
+    for (idx, t) in view.iter().enumerate() {
+        let health = snap
+            .as_ref()
+            .and_then(|s| s.per_target.iter().find(|p| p.index as usize == idx))
+            .map(|p| {
+                serde_json::json!({
+                    "healthy": p.health == 0,
+                    "consecutive_failures": p.consecutive_failures,
+                    "last_failure_at_unix_ms": p.last_failure_at_unix_ms,
+                    "last_success_at_unix_ms": p.last_success_at_unix_ms,
+                })
+            });
+        targets_json.push(serde_json::json!({
+            "host": t.host,
+            "port": t.port,
+            "priority": t.priority,
+            "health": health,
+        }));
+    }
+    map.insert(
+        "targets".to_string(),
+        serde_json::Value::Array(targets_json),
+    );
+    value
 }
 
 async fn get_rule_stats(

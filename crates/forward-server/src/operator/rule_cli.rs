@@ -137,6 +137,17 @@ pub fn push(
     // --targets-json; we still need to reject "neither" and "all
     // three" early so the operator gets exit-3 instead of a network
     // round-trip + 400.
+    // 007-multi-target-failover T041: enforce the health-check interval
+    // bound (1..=3600 per `data-model.md` V-R5) client-side so the
+    // operator gets exit 3 immediately instead of a network round-trip
+    // + 400. Server enforces the same bound for defence-in-depth.
+    if let Some(hci) = health_check_interval_secs
+        && !(1..=3600).contains(&hci)
+    {
+        eprintln!("error: health_check_interval_out_of_range: {hci} (must be 1..=3600)");
+        return Err(3);
+    }
+
     let multi_form = !target_specs.is_empty() || targets_json.is_some();
     let legacy_form = target.is_some();
     if multi_form && legacy_form {
@@ -164,14 +175,14 @@ pub fn push(
         let targets = if let Some(json) = targets_json {
             // Parse the JSON array verbatim — server validates V-T1..V-T4.
             serde_json::from_str::<serde_json::Value>(json).map_err(|e| {
-                eprintln!("error: --targets-json: {e}");
+                eprintln!("error: invalid_targets_json: {e}");
                 3u8
             })?
         } else {
             let mut arr: Vec<serde_json::Value> = Vec::with_capacity(target_specs.len());
             for spec in target_specs {
                 let (host, port, priority) = parse_target_spec(spec).map_err(|e| {
-                    eprintln!("error: --target {spec:?}: {e}");
+                    eprintln!("error: invalid_target_spec --target {spec:?}: {e}");
                     3u8
                 })?;
                 let mut entry = serde_json::json!({"host": host, "port": port});

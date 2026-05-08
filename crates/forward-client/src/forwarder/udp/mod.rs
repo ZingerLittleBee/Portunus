@@ -226,6 +226,7 @@ async fn handle_inbound_multi_target<R: Resolve>(
             .lock()
             .await
             .record_success(now, wall, &target_failovers_total);
+        let target_idx = u32::try_from(idx).unwrap_or(u32::MAX);
         match build_or_lookup_flow(
             Arc::clone(&flow_table),
             source,
@@ -234,6 +235,7 @@ async fn handle_inbound_multi_target<R: Resolve>(
             listen_port,
             Arc::clone(&listener),
             Arc::clone(&stats),
+            Some((target_idx, Arc::clone(&health_states))),
         )
         .await
         {
@@ -479,6 +481,7 @@ async fn handle_inbound<R: Resolve>(
             listen_port,
             Arc::clone(&listener),
             Arc::clone(&stats),
+            None, // legacy single-target rule — preserve v0.6.0 hot path
         )
         .await
         {
@@ -556,6 +559,14 @@ async fn build_or_lookup_flow(
     listen_port: u16,
     listener: Arc<UdpSocket>,
     stats: Arc<RuleStats>,
+    // 007-multi-target-failover T024/T034: when `Some(idx, states)`,
+    // the constructed flow stores them so `bump_inbound`/`bump_outbound`
+    // can credit the per-target byte counter. `None` for legacy
+    // single-target rules (byte-identical hot path preserved).
+    multi_target: Option<(
+        u32,
+        Arc<Vec<tokio::sync::Mutex<crate::forwarder::failover::HealthState>>>,
+    )>,
 ) -> Option<Arc<UdpFlow>> {
     let upstream_socket = match UdpSocket::bind(("0.0.0.0", 0)).await {
         Ok(s) => Arc::new(s),
@@ -579,9 +590,17 @@ async fn build_or_lookup_flow(
     let addr_count = upstream_addrs.len();
     let flow_for_build = Arc::clone(&upstream_socket);
     let addrs_for_build = upstream_addrs.clone();
+    let multi_for_build = multi_target.clone();
     let result = flow_table
-        .lookup_or_insert(source, move || {
-            UdpFlow::new(source, flow_for_build, addrs_for_build)
+        .lookup_or_insert(source, move || match multi_for_build {
+            Some((target_idx, hstates)) => UdpFlow::new_multi_target(
+                source,
+                flow_for_build,
+                addrs_for_build,
+                target_idx,
+                hstates,
+            ),
+            None => UdpFlow::new(source, flow_for_build, addrs_for_build),
         })
         .await;
 

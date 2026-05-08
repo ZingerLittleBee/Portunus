@@ -62,10 +62,18 @@ export function useRemoveRule() {
   });
 }
 
-export function useRuleStats(id: number | undefined, opts: { refetchIntervalMs?: number } = {}) {
+export function useRuleStats(
+  id: number | undefined,
+  opts: { refetchIntervalMs?: number; perTarget?: boolean } = {},
+) {
+  // 007-multi-target-failover T045: opt into the per-target body via
+  // `?per_target=true`. Default off so the byte-identical v0.6.0 wire
+  // shape is preserved (Constitution Principle II).
+  const qs = opts.perTarget ? "?per_target=true" : "";
   return useQuery({
-    queryKey: id !== undefined ? ruleStatsKey(id) : ["rules", "missing", "stats"],
-    queryFn: () => apiFetch<RuleStatsSnapshot>(`/v1/rules/${id}/stats`),
+    queryKey:
+      id !== undefined ? [...ruleStatsKey(id), { perTarget: opts.perTarget ?? false }] : ["rules", "missing", "stats"],
+    queryFn: () => apiFetch<RuleStatsSnapshot>(`/v1/rules/${id}/stats${qs}`),
     enabled: id !== undefined,
     refetchInterval: opts.refetchIntervalMs ?? 5_000,
   });

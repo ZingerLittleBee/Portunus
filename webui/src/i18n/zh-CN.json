@@ -128,7 +128,8 @@
     "remove": "删除",
     "ownerFilter": "所有者",
     "emptyTitle": "暂无规则",
-    "emptyBody": "下发第一条规则以开始转发流量。"
+    "emptyBody": "下发第一条规则以开始转发流量。",
+    "multiTargetPill": "多目标 ×{{count}}"
   },
   "rulePush": {
     "title": "下发规则",
@@ -136,9 +137,20 @@
     "listenStart": "监听端口(起)",
     "listenEnd": "监听端口(止)",
     "targetHost": "目标主机或 IP",
+    "targetPort": "端口",
     "targetStart": "目标端口(起)",
     "targetEnd": "目标端口(止)",
-    "optional": "可选"
+    "optional": "可选",
+    "targetMode": "目标模式",
+    "targetMode_single": "单目标",
+    "targetMode_multi": "多目标(故障切换)",
+    "targets": "目标列表(按优先级排序)",
+    "addTarget": "添加目标",
+    "removeTarget": "移除该目标",
+    "priority": "优先级",
+    "healthCheckInterval": "主动健康检查间隔(秒)",
+    "healthCheckIntervalPlaceholder": "留空仅启用被动检查",
+    "healthCheckIntervalHelp": "可选。设置后,客户端按此间隔向每个目标发起 TCP 连接探测。范围:1–3600 秒。"
   },
   "ruleDetail": {
     "title": "规则",
@@ -157,7 +169,27 @@
     "flowsDropped": "丢弃的新流(溢出)",
     "datagramsIn": "入向数据报",
     "datagramsOut": "出向数据报",
-    "updatedAt": "更新时间"
+    "targetFailovers": "故障切换次数",
+    "updatedAt": "更新时间",
+    "multiTargetBadge": "{{count}} 个目标",
+    "multiTargetTooltip": "多目标规则——按优先级排序的故障切换,每个目标独立健康追踪。",
+    "targetsTitle": "目标列表",
+    "targetCol": {
+      "host": "主机",
+      "port": "端口",
+      "priority": "优先级",
+      "health": "健康状态",
+      "consecutiveFailures": "连续失败",
+      "bytesIn": "入向字节",
+      "bytesOut": "出向字节",
+      "connections": "连接数",
+      "lastFailure": "上次失败"
+    },
+    "health": {
+      "healthy": "健康",
+      "failed": "已故障",
+      "unknown": "未知"
+    }
   },
   "clients": {
     "title": "客户端",
