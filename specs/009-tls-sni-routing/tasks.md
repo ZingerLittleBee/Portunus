@@ -219,7 +219,7 @@ Bench home:
 - [x] T072 [P] [US5] Hot-reload preserves in-flight test — `crates/forward-client/tests/sni_hot_reload.rs`. Open a long-running SNI connection; mutate the route group; assert the open connection completes its bytes; new connections see the new table.
 - [x] T073 [P] [US5] REMOVE-by-rule_id consistency — `crates/forward-client/tests/sni_remove_by_rule_id.rs`. Push two SNI rules on `:443`; REMOVE the second by rule_id (no port hint); assert the listener still has the first rule and the reverse index is consistent (data-model.md INV-2).
 - [x] T074 [P] [US5] Server-side metrics surface — `crates/forward-server/tests/sni_metrics_surface.rs`. Same scenario as T070..T071; scrape `/metrics`; assert `forward_tls_sni_route_total{client,rule,owner,result}` and `forward_tls_sni_listener_miss_total{client,port}` are present with expected values.
-- [ ] T075 [P] [US5] Audit-ring isolation — `crates/forward-server/tests/sni_audit_ring_isolation.rs`. Drive every tracing event listed in contracts/operator-api.md §5; assert `GET /v1/audit` returns the same result before and after.
+- [x] T075 [P] [US5] Audit-ring isolation — `crates/forward-server/tests/sni_audit_ring_isolation.rs`. Drive every tracing event listed in contracts/operator-api.md §5; assert `GET /v1/audit` returns the same result before and after.
 - [x] T076 [P] [US5] Timeout / not-TLS rejection events — `crates/forward-client/tests/sni_route_timeout.rs` and `…/sni_route_not_tls.rs`. Open TCP without sending bytes (3 s) → connection reset + `tls.client_hello_timeout`. Send `GET / HTTP/1.1\r\n\r\n` → reset + `tls.parse_failed`.
 
 ### Implementation for User Story 5
