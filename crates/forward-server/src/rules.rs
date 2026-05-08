@@ -322,6 +322,12 @@ impl ServerRuleStore {
     /// the configured cap, and rejects overlaps with any existing
     /// `Active`/`Failed` rule on the same client. The `owner_user_id`
     /// is stamped on the new rule (005-multi-user-rbac, FR-014).
+    ///
+    /// 007-multi-target-failover (Phase 3 / T022): single-target callers
+    /// use this thin shim which forwards `targets: vec![]` and
+    /// `health_check_interval_secs: None`, preserving the v0.6.0
+    /// behaviour byte-for-byte. Multi-target callers use
+    /// `push_range_with_targets` directly.
     #[allow(clippy::too_many_arguments)]
     pub async fn push_range(
         &self,
@@ -333,6 +339,43 @@ impl ServerRuleStore {
         prefer_ipv6: Option<bool>,
         range_cap: u32,
         owner_user_id: forward_auth::UserId,
+    ) -> Result<Rule, RuleStoreError> {
+        self.push_range_with_targets(
+            client_name,
+            listen,
+            target_host,
+            target,
+            protocol,
+            prefer_ipv6,
+            range_cap,
+            owner_user_id,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    /// Multi-target-aware variant of `push_range` (007-multi-target-failover).
+    /// Pass `targets: Vec::new()` for the legacy single-target shape — the
+    /// stored `Rule` will carry no `targets` entries and downstream
+    /// readers see the byte-identical v0.6.0 shape.
+    ///
+    /// `health_check_interval_secs` is forwarded verbatim — `None` keeps
+    /// passive-only failover (FR-015), `Some(n)` opts the rule into the
+    /// active TCP-connect probe at the configured cadence.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn push_range_with_targets(
+        &self,
+        client_name: ClientName,
+        listen: PortRange,
+        target_host: String,
+        target: PortRange,
+        protocol: Protocol,
+        prefer_ipv6: Option<bool>,
+        range_cap: u32,
+        owner_user_id: forward_auth::UserId,
+        targets: Vec<forward_core::RuleTarget>,
+        health_check_interval_secs: Option<u32>,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
         let (listen, target) =
@@ -401,11 +444,8 @@ impl ServerRuleStore {
             created_at: now,
             last_state_change_at: now,
             owner_user_id,
-            // 007-multi-target-failover Phase 2: legacy push-rule path
-            // always builds a single-target rule. Multi-target push
-            // lands in Phase 6 (T043).
-            targets: Vec::new(),
-            health_check_interval_secs: None,
+            targets,
+            health_check_interval_secs,
         };
         guard
             .by_client_listen_start

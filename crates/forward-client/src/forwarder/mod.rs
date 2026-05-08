@@ -18,6 +18,7 @@
 //! apply uniformly to range and single-port rules.
 
 pub mod failover;
+pub mod failover_path;
 pub mod proxy;
 pub mod range;
 pub mod stats;
@@ -75,6 +76,29 @@ pub struct ClientRule {
     /// is reaped. Sourced from `Welcome.udp_flow_idle_secs` (default
     /// 60 if 0/absent). Ignored for TCP rules.
     pub udp_flow_idle_secs: u32,
+    /// 007-multi-target-failover (T022): non-empty for multi-target
+    /// rules; empty for single-target rules (which keep the byte-
+    /// identical v0.6.0 hot path). Each entry pairs the operator-
+    /// supplied (host, port, priority) with its parsed `Target`
+    /// classification (IP literal vs DNS name) so the failover dial
+    /// loop doesn't reparse on every connect.
+    ///
+    /// When non-empty, `target` / `target_host` / `target_range` carry
+    /// the FIRST target's values for back-compat with existing
+    /// telemetry — the failover loop ignores them and walks the
+    /// `targets` list instead.
+    pub targets: Vec<MultiTarget>,
+}
+
+/// One entry in `ClientRule.targets`. Holds both the wire-shape
+/// `RuleTarget` and the pre-parsed `forward_core::Target` so the
+/// dial loop never reparses. Heavy enough to put off the hot path
+/// for single-target rules — they stay on the byte-identical v0.6.0
+/// path that doesn't even read this field.
+#[derive(Debug, Clone)]
+pub struct MultiTarget {
+    pub spec: forward_core::RuleTarget,
+    pub target: Target,
 }
 
 /// Run the forwarder until `cancel` fires. Sends exactly one
@@ -99,6 +123,18 @@ pub async fn run<R: Resolve + 'static>(
     // identical (FR-010).
     if matches!(rule.protocol, Protocol::Udp) {
         run_udp(rule, resolver, status_tx, cancel, stats).await;
+        return;
+    }
+
+    // 007-multi-target-failover T022: activation branch. Single-target
+    // rules (`targets.is_empty()`) stay on the byte-identical v0.6.0
+    // hot path below; multi-target rules divert into the failover
+    // module which spins its own listeners + accept loop using the
+    // health state machine. Constitution Principle II — the byte-
+    // identity guarantee for single-target rules is structural here:
+    // they never even pull `failover_path` into their data path.
+    if !rule.targets.is_empty() {
+        failover_path::run_tcp(rule, resolver, status_tx, cancel, drain_timeout, stats).await;
         return;
     }
 
@@ -372,6 +408,13 @@ async fn run_udp<R: Resolve + 'static>(
     cancel: CancellationToken,
     stats: Arc<RuleStats>,
 ) {
+    // 007-multi-target-failover (T024): multi-target UDP rules go
+    // through the multi-target listener which selects a target on
+    // each NEW flow's first inbound packet (FR-012).
+    if !rule.targets.is_empty() {
+        failover_path::run_udp(rule, resolver, status_tx, cancel, stats).await;
+        return;
+    }
     let listen_start = rule.listen_range.start();
     let listen_end = rule.listen_range.end();
     let range_size = rule.listen_range.len();
@@ -488,7 +531,7 @@ async fn run_udp<R: Resolve + 'static>(
         .await;
 }
 
-async fn drain(
+pub(super) async fn drain(
     mut in_flight: JoinSet<()>,
     proxy_cancel: CancellationToken,
     drain_timeout: Duration,
@@ -671,6 +714,7 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
+            targets: Vec::new(),
         }
     }
 
@@ -740,6 +784,7 @@ mod tests {
                 protocol: Protocol::Tcp,
                 udp_max_flows: 0,
                 udp_flow_idle_secs: 0,
+                targets: Vec::new(),
             },
             ip_resolver(),
             tx,
@@ -1036,6 +1081,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
+                    targets: Vec::new(),
                 },
                 ip_resolver(),
                 tx,
@@ -1113,6 +1159,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     udp_max_flows: 0,
                     udp_flow_idle_secs: 0,
+                    targets: Vec::new(),
                 },
                 ip_resolver(),
                 tx,
@@ -1273,6 +1320,7 @@ mod tests {
             protocol: Protocol::Tcp,
             udp_max_flows: 0,
             udp_flow_idle_secs: 0,
+            targets: Vec::new(),
         };
 
         let (tx, mut rx) = mpsc::channel(8);

@@ -502,6 +502,52 @@ pub fn push_rule_http_with_prefer_ipv6(
     (status, body)
 }
 
+/// 007-multi-target-failover (T018) helper: push a multi-target rule
+/// via the new `targets[]` body shape. `targets` is `(host, port)`
+/// pairs; priority defaults to row index server-side.
+#[allow(dead_code)]
+pub fn push_rule_http_targets(
+    operator_http_addr: &str,
+    client: &str,
+    listen_port: u16,
+    targets: &[(&str, u16)],
+    health_check_interval_secs: Option<u32>,
+    ack_timeout_secs: Option<u64>,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("http://{operator_http_addr}/v1/rules");
+    let targets_json: Vec<serde_json::Value> = targets
+        .iter()
+        .map(|(host, port)| {
+            serde_json::json!({
+                "host": host,
+                "port": port,
+            })
+        })
+        .collect();
+    let mut body = serde_json::json!({
+        "client": client,
+        "listen_port": listen_port,
+        "protocol": "tcp",
+        "targets": targets_json,
+    });
+    if let Some(hci) = health_check_interval_secs {
+        body["health_check_interval_secs"] = serde_json::Value::Number(hci.into());
+    }
+    if let Some(secs) = ack_timeout_secs {
+        body["ack_timeout_secs"] = serde_json::Value::Number(secs.into());
+    }
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .post(&url)
+        .header(k, v)
+        .json(&body)
+        .send()
+        .expect("POST /v1/rules");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
 pub fn remove_rule_http(operator_http_addr: &str, rule_id: u64) -> reqwest::StatusCode {
     let url = format!("http://{operator_http_addr}/v1/rules/{rule_id}");
     let (k, v) = auth_header();

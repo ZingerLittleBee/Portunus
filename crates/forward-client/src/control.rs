@@ -461,6 +461,59 @@ fn handle_server_message(
                 Protocol::Udp => Protocol::Udp,
                 _ => Protocol::Tcp,
             };
+            // 007-multi-target-failover T022: when the wire `Rule`
+            // carries a non-empty `targets` list, pre-parse each
+            // host into a `forward_core::Target` so the failover dial
+            // loop never reparses. A parse failure on ANY entry
+            // refuses the whole rule with `invalid_target_host` —
+            // mirrors the single-target validation above.
+            let multi_targets = if rule.targets.is_empty() {
+                Vec::new()
+            } else {
+                let mut out: Vec<crate::forwarder::MultiTarget> =
+                    Vec::with_capacity(rule.targets.len());
+                let mut parse_err: Option<String> = None;
+                for (idx, t) in rule.targets.iter().enumerate() {
+                    match forward_core::Target::parse(&t.host) {
+                        Ok(parsed) => {
+                            let port = match u16::try_from(t.port) {
+                                Ok(p) if p > 0 => p,
+                                _ => {
+                                    parse_err = Some(format!("target_invalid_port:{idx}"));
+                                    break;
+                                }
+                            };
+                            out.push(crate::forwarder::MultiTarget {
+                                spec: forward_core::RuleTarget {
+                                    host: t.host.clone(),
+                                    port,
+                                    priority: t.priority,
+                                },
+                                target: parsed,
+                            });
+                        }
+                        Err(e) => {
+                            warn!(
+                                event = "control.rule_push_invalid_target",
+                                request_id = %request_id,
+                                rule_id = %rule_id,
+                                target_index = idx,
+                                error = %e,
+                            );
+                            parse_err = Some("invalid_target_host".to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(reason) = parse_err {
+                    let _ = status_tx.try_send(RuleStatusEvent::Failed {
+                        rule_id,
+                        reason,
+                    });
+                    return;
+                }
+                out
+            };
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
@@ -471,6 +524,7 @@ fn handle_server_message(
                 protocol,
                 udp_max_flows,
                 udp_flow_idle_secs,
+                targets: multi_targets,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();

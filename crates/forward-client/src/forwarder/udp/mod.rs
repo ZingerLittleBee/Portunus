@@ -46,6 +46,259 @@ use crate::resolver::{ConnectError, LiveResolver, Resolve};
 /// well-formed datagram at the proxy layer.
 const UDP_BUFFER_BYTES: usize = 65_535;
 
+/// 007-multi-target-failover (T024): per-flow target selection happens
+/// once on the first inbound packet of a NEW flow; the chosen upstream
+/// sticks for the lifetime of the flow (FR-012).
+///
+/// This entry point mirrors `run_listener` but consults a parallel
+/// `targets` + `health_states` slice for each new flow. Existing flows
+/// take the byte-identical fast path. On dial failure for the chosen
+/// target the per-target health is incremented and the next-priority
+/// target is attempted; this attribution mirrors the TCP failover loop
+/// (FR-010 / quickstart §3).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_listener_multi_target<R: Resolve + 'static>(
+    rule_id: RuleId,
+    listen_port: u16,
+    targets: Arc<Vec<crate::forwarder::MultiTarget>>,
+    health_states: Arc<Vec<tokio::sync::Mutex<crate::forwarder::failover::HealthState>>>,
+    target_failovers_total: Arc<std::sync::atomic::AtomicU64>,
+    prefer_ipv6: bool,
+    flow_cap: usize,
+    idle_window: std::time::Duration,
+    stats: Arc<RuleStats>,
+    resolver: Arc<LiveResolver<R>>,
+    cancel: CancellationToken,
+) {
+    let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
+    let listener = match UdpSocket::bind(listen_addr).await {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            warn!(
+                event = "rule.udp_bind_failed",
+                rule_id = %rule_id,
+                listen_port = listen_port,
+                multi_target = true,
+                error = %e,
+            );
+            return;
+        }
+    };
+    let flow_table = Arc::new(UdpFlowTable::new(flow_cap));
+    flow_table.spawn_reaper(idle_window, rule_id, cancel.clone());
+
+    let mut buf = vec![0u8; UDP_BUFFER_BYTES];
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            recv = listener.recv_from(&mut buf) => match recv {
+                Ok((n, source)) => {
+                    handle_inbound_multi_target(
+                        rule_id,
+                        listen_port,
+                        &buf[..n],
+                        source,
+                        Arc::clone(&targets),
+                        Arc::clone(&health_states),
+                        Arc::clone(&target_failovers_total),
+                        prefer_ipv6,
+                        Arc::clone(&listener),
+                        Arc::clone(&flow_table),
+                        Arc::clone(&stats),
+                        Arc::clone(&resolver),
+                    )
+                    .await;
+                }
+                Err(e) => warn!(
+                    event = "rule.udp_recv_error",
+                    rule_id = %rule_id,
+                    listen_port = listen_port,
+                    multi_target = true,
+                    error = %e,
+                ),
+            }
+        }
+    }
+
+    let final_len = flow_table.len().await;
+    if let Ok(n) = u32::try_from(final_len) {
+        stats.set_active_flows(n);
+    }
+    flow_table.drain().await;
+    info!(
+        event = "rule.udp_listener_drained",
+        rule_id = %rule_id,
+        listen_port = listen_port,
+        multi_target = true,
+    );
+}
+
+/// Multi-target counterpart to `handle_inbound`. Existing-flow path is
+/// byte-identical (sticky target per FR-012). New-flow path: snapshot
+/// per-target health → walk in priority order until one resolves +
+/// dials → bind upstream + insert flow.
+#[allow(clippy::too_many_arguments)]
+async fn handle_inbound_multi_target<R: Resolve>(
+    rule_id: RuleId,
+    listen_port: u16,
+    payload: &[u8],
+    source: SocketAddr,
+    targets: Arc<Vec<crate::forwarder::MultiTarget>>,
+    health_states: Arc<Vec<tokio::sync::Mutex<crate::forwarder::failover::HealthState>>>,
+    target_failovers_total: Arc<std::sync::atomic::AtomicU64>,
+    prefer_ipv6: bool,
+    listener: Arc<UdpSocket>,
+    flow_table: Arc<UdpFlowTable>,
+    stats: Arc<RuleStats>,
+    resolver: Arc<LiveResolver<R>>,
+) {
+    use crate::forwarder::failover;
+    use std::time::{Instant, SystemTime};
+
+    if let Some(existing) = flow_table.get(source).await {
+        forward_existing_flow(rule_id, listen_port, payload, source, existing, &flow_table, &stats)
+            .await;
+        return;
+    }
+
+    // New flow: pick a healthy target (or fall back to row 0 if all
+    // failed — FR-007). Walk through remaining targets on dial
+    // failure, attributing each failure to the right HealthState.
+    let order: Vec<usize> = {
+        let mut snap: Vec<failover::Health> = Vec::with_capacity(health_states.len());
+        for s in health_states.iter() {
+            snap.push(s.lock().await.health());
+        }
+        let first = snap
+            .iter()
+            .position(|h| matches!(h, failover::Health::Healthy))
+            .unwrap_or(0);
+        let mut rest: Vec<usize> = (0..targets.len()).filter(|&i| i != first).collect();
+        rest.sort_unstable();
+        let mut out = Vec::with_capacity(targets.len());
+        out.push(first);
+        out.extend(rest);
+        out
+    };
+
+    for &idx in &order {
+        let candidate = &targets[idx];
+        let resolve = resolver
+            .resolve_target(rule_id, &candidate.target, candidate.spec.port, prefer_ipv6)
+            .await;
+        let now = Instant::now();
+        let wall = SystemTime::now();
+        let upstream_addrs = match resolve {
+            Ok((addrs, _src)) if !addrs.is_empty() => addrs,
+            _ => {
+                health_states[idx]
+                    .lock()
+                    .await
+                    .record_failure(now, wall, &target_failovers_total);
+                stats.inc_dns_failure();
+                warn!(
+                    event = "rule.udp_target.dial_failed",
+                    rule_id = %rule_id,
+                    listen_port = listen_port,
+                    source = %source,
+                    target_index = idx,
+                    target_host = %candidate.spec.host,
+                    target_port = candidate.spec.port,
+                    reason = "resolve_or_empty",
+                );
+                continue;
+            }
+        };
+        // Resolution succeeded — count as success on this target's
+        // health and build the flow. Per-flow stickiness means
+        // subsequent send_to errors don't roll back the per-target
+        // health; they route through the existing `advance_upstream`
+        // multi-A walk (FR-012 — failover only on NEW flows).
+        health_states[idx]
+            .lock()
+            .await
+            .record_success(now, wall, &target_failovers_total);
+        match build_or_lookup_flow(
+            Arc::clone(&flow_table),
+            source,
+            upstream_addrs,
+            rule_id,
+            listen_port,
+            Arc::clone(&listener),
+            Arc::clone(&stats),
+        )
+        .await
+        {
+            Some(f) => {
+                forward_existing_flow(rule_id, listen_port, payload, source, f, &flow_table, &stats)
+                    .await;
+                return;
+            }
+            None => return,
+        }
+    }
+    // All targets exhausted.
+    stats.inc_dns_failure();
+    warn!(
+        event = "rule.udp_all_targets_failed",
+        rule_id = %rule_id,
+        listen_port = listen_port,
+        source = %source,
+        target_count = targets.len(),
+    );
+}
+
+/// Drain a payload through an already-resolved flow. Mirrors the loop
+/// in `handle_inbound` post-flow-lookup.
+async fn forward_existing_flow(
+    rule_id: RuleId,
+    listen_port: u16,
+    payload: &[u8],
+    source: SocketAddr,
+    phase_flow: Arc<UdpFlow>,
+    flow_table: &Arc<UdpFlowTable>,
+    stats: &Arc<RuleStats>,
+) {
+    let n = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+    loop {
+        let upstream = phase_flow.current_upstream();
+        match phase_flow.upstream_socket.send_to(payload, upstream).await {
+            Ok(_) => {
+                stats.inc_datagram_in(listen_port, n);
+                phase_flow.bump_inbound(n).await;
+                if let Ok(live) = u32::try_from(flow_table.len().await) {
+                    stats.set_active_flows(live);
+                }
+                return;
+            }
+            Err(e) => {
+                if let Some(next) = phase_flow.advance_upstream() {
+                    warn!(
+                        event = "rule.udp_send_to_fallback",
+                        rule_id = %rule_id,
+                        listen_port = listen_port,
+                        source = %source,
+                        failed_upstream = %upstream,
+                        next_upstream = %next,
+                        error = %e,
+                    );
+                } else {
+                    stats.inc_dns_failure();
+                    warn!(
+                        event = "rule.udp_send_to_exhausted",
+                        rule_id = %rule_id,
+                        listen_port = listen_port,
+                        source = %source,
+                        failed_upstream = %upstream,
+                        error = %e,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// Run a per-port UDP listener on `listen_port`. The listener binds,
 /// loops `recv_from` on the listen socket, dispatches each datagram
 /// through a per-source flow, and tears down on `cancel`.

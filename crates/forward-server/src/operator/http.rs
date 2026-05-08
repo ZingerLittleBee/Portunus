@@ -286,19 +286,16 @@ async fn post_rules(
     ))
 }
 
-/// 007-multi-target-failover Phase 2 helper for the new `targets[]`
-/// shape. Performs all validation + RBAC + version-guard work BEFORE
-/// any rule mutation. The full multi-target wire push (rule registry
-/// insert + multi-target `RuleUpdate` + ack handling) lights up in
-/// Phase 3 alongside the failover engine — for now this returns an
-/// `AckTimeout` (504) once validation passes, mirroring the
-/// "validated-but-no-client-can-handle-it-yet" semantic.
+/// 007-multi-target-failover handler for the new `targets[]` shape.
+/// Validates + RBAC + version-guards BEFORE any rule mutation, then
+/// hands off to `cli::push_rule_multi_target` which emits the
+/// multi-target `RuleUpdate` and waits for activation.
 async fn push_multi_target(
     state: &Arc<AppState>,
     identity: &OperatorIdentity,
     body: &PushRuleBody,
     listen: PortRange,
-    _timeout: Duration,
+    timeout: Duration,
 ) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
     use crate::operator::rbac;
     use forward_core::rule_target;
@@ -369,11 +366,42 @@ async fn push_multi_target(
         .into());
     }
 
-    // Phase 2 stub boundary: the full multi-target wire push lands in
-    // Phase 3 (T022..T025). For now we surface the same status the
-    // operator would see if a real client were connected but didn't
-    // ack — keeps existing CLI / Web UI surfaces honest.
-    Err(OperatorError::AckTimeout.into())
+    // Phase 3 (T022): hand off to the multi-target push helper which
+    // emits the new wire shape and waits for activation.
+    let proto_internal = match proto {
+        ProtocolWire::Tcp => crate::rules::Protocol::Tcp,
+        ProtocolWire::Udp => crate::rules::Protocol::Udp,
+    };
+    let rule = cli::push_rule_multi_target(
+        state,
+        identity,
+        client_name,
+        listen,
+        typed,
+        body.health_check_interval_secs,
+        proto_internal,
+        body.prefer_ipv6,
+        state.range_rule_max_ports,
+        timeout,
+    )
+    .await?;
+    let status = match &rule.state {
+        crate::rules::RuleState::Pending => "Pending".to_string(),
+        crate::rules::RuleState::Active => "Active".to_string(),
+        crate::rules::RuleState::Failed { reason } => format!("Failed:{reason}"),
+        crate::rules::RuleState::Removed => "Removed".to_string(),
+    };
+    Ok((
+        StatusCode::CREATED,
+        Json(PushRuleResponse {
+            rule_id: rule.id.0,
+            status,
+            target_host: rule.target_host.clone(),
+            prefer_ipv6: rule.prefer_ipv6.unwrap_or(false),
+            protocol: rule.protocol.as_str().to_string(),
+            owner: rule.owner_user_id.to_string(),
+        }),
+    ))
 }
 
 /// Internal protocol enum used by the multi-target helper. Mirrors

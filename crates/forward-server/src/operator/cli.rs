@@ -669,6 +669,206 @@ pub async fn push_rule(
     }
 }
 
+/// 007-multi-target-failover (Phase 3 / T022): wire-pushing a rule whose
+/// `targets` list has length >= 1 with real failover semantics. Mirrors
+/// `push_rule` but emits the multi-target wire shape (`Rule.targets[]`
+/// populated, legacy `target_host`/`target_port` carry the FIRST
+/// target's values for back-compat with v0.6.0 readers — those readers
+/// drop field 9 silently and run the rule as single-target).
+///
+/// Validation, RBAC, and version-guard work happens BEFORE this helper
+/// in `operator::http::push_multi_target` so callers don't re-validate.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn push_rule_multi_target(
+    state: &AppState,
+    identity: &forward_auth::OperatorIdentity,
+    client_name: ClientName,
+    listen: PortRange,
+    targets: Vec<forward_core::RuleTarget>,
+    health_check_interval_secs: Option<u32>,
+    proto: Protocol,
+    prefer_ipv6: Option<bool>,
+    range_cap: u32,
+    ack_timeout: Duration,
+) -> Result<Rule, OperatorError> {
+    debug_assert!(!targets.is_empty(), "push_rule_multi_target with empty targets");
+
+    // First target carries the legacy mirror — v0.6.0 readers ignore
+    // `targets` and use these. Multi-target clients ignore them in
+    // favour of `targets`. The target_range is always single-port:
+    // multi-target rules don't combine with port ranges in v0.7.0.
+    let first = &targets[0];
+    let target_host = first.host.clone();
+    let target_range = PortRange::single(first.port);
+
+    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+        return Err(OperatorError::ClientNotConnected(client_name));
+    };
+
+    // Capability gate (mirrors push_rule). UDP multi-target rules need
+    // a UDP-capable client just like single-target UDP rules.
+    if matches!(proto, Protocol::Udp) {
+        let proto_wire = forward_proto::v1::Protocol::Udp;
+        let supported = state
+            .clients
+            .supports(&client_name, proto_wire)
+            .await
+            .unwrap_or(false);
+        if !supported {
+            return Err(OperatorError::UnsupportedProtocol {
+                client_name,
+                protocol: "udp",
+            });
+        }
+    }
+
+    let rule = state
+        .rules
+        .push_range_with_targets(
+            client_name.clone(),
+            listen,
+            target_host.clone(),
+            target_range,
+            proto,
+            prefer_ipv6,
+            range_cap,
+            identity.user_id.clone(),
+            targets.clone(),
+            health_check_interval_secs,
+        )
+        .await?;
+    let request_id = RequestId::new().to_string();
+    let (tx, rx) = oneshot::channel();
+    {
+        let mut guard = waiters.lock().await;
+        guard.insert(request_id.clone(), tx);
+    }
+
+    info!(
+        event = "audit.rule_push",
+        outcome = "sent",
+        request_id = %request_id,
+        rule_id = %rule.id,
+        client_name = %client_name,
+        listen_port = listen.start(),
+        listen_port_end = ?listen_end_for_log(listen),
+        range_size = listen.len(),
+        target_count = targets.len(),
+        multi_target = true,
+        health_check_interval_secs = ?health_check_interval_secs,
+    );
+
+    let proto_targets: Vec<forward_proto::v1::Target> = targets
+        .iter()
+        .map(|t| forward_proto::v1::Target {
+            host: t.host.clone(),
+            port: u32::from(t.port),
+            priority: t.priority,
+        })
+        .collect();
+    let update = ServerMessage {
+        payload: Some(server_message::Payload::RuleUpdate(RuleUpdate {
+            request_id: request_id.clone(),
+            action: RuleAction::Push as i32,
+            rule: Some(ProtoRule {
+                rule_id: rule.id.0,
+                listen_port: u32::from(listen.start()),
+                target_host,
+                target_port: u32::from(first.port),
+                protocol: match proto {
+                    Protocol::Tcp => ProtoProto::Tcp as i32,
+                    Protocol::Udp => ProtoProto::Udp as i32,
+                },
+                listen_port_end: if listen.len() > 1 {
+                    u32::from(listen.end())
+                } else {
+                    0
+                },
+                target_port_end: 0,
+                prefer_ipv6,
+                targets: proto_targets,
+                health_check_interval_secs: health_check_interval_secs.unwrap_or(0),
+            }),
+        })),
+    };
+    if outbound.send(Ok(update)).await.is_err() {
+        let _ = state.rules.remove(rule.id).await;
+        let mut guard = waiters.lock().await;
+        guard.remove(&request_id);
+        return Err(OperatorError::ClientNotConnected(client_name));
+    }
+
+    match tokio::time::timeout(ack_timeout, rx).await {
+        Ok(Ok(status)) => {
+            let outcome = ActivationOutcome::try_from(status.outcome)
+                .unwrap_or(ActivationOutcome::Unspecified);
+            match outcome {
+                ActivationOutcome::Activated => {
+                    state.rules.mark_active(rule.id).await?;
+                    info!(
+                        event = "audit.rule_push",
+                        outcome = "activated",
+                        request_id = %request_id,
+                        rule_id = %rule.id,
+                        client_name = %client_name,
+                        multi_target = true,
+                    );
+                    state
+                        .rules
+                        .get(rule.id)
+                        .await
+                        .ok_or(OperatorError::RuleNotFound)
+                }
+                ActivationOutcome::Failed => {
+                    let reason = if status.reason.is_empty() {
+                        "unspecified".to_string()
+                    } else {
+                        status.reason.clone()
+                    };
+                    state.rules.mark_failed(rule.id, reason.clone()).await.ok();
+                    warn!(
+                        event = "audit.rule_push",
+                        outcome = "failed",
+                        request_id = %request_id,
+                        rule_id = %rule.id,
+                        client_name = %client_name,
+                        reason = %reason,
+                        multi_target = true,
+                    );
+                    Err(OperatorError::ActivationFailed(reason))
+                }
+                _ => Err(OperatorError::ActivationFailed(
+                    "unexpected_outcome".to_string(),
+                )),
+            }
+        }
+        Ok(Err(_recv_err)) => {
+            warn!(
+                event = "audit.rule_push",
+                outcome = "ack_lost",
+                request_id = %request_id,
+                rule_id = %rule.id,
+                client_name = %client_name,
+                multi_target = true,
+            );
+            Err(OperatorError::AckTimeout)
+        }
+        Err(_elapsed) => {
+            let mut guard = waiters.lock().await;
+            guard.remove(&request_id);
+            warn!(
+                event = "audit.rule_push",
+                outcome = "ack_timeout",
+                request_id = %request_id,
+                rule_id = %rule.id,
+                client_name = %client_name,
+                multi_target = true,
+            );
+            Err(OperatorError::AckTimeout)
+        }
+    }
+}
+
 /// `remove-rule <rule_id>`. Removes the rule from the store and, if the client
 /// is connected, fires a `RuleUpdate{REMOVE}`. The Removed echo is informational
 /// (logged in the gRPC service) — operator-api.md says success is "rule gone
