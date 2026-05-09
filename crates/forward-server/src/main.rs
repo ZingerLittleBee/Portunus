@@ -107,6 +107,36 @@ enum Cmd {
         /// lowercases and grammar-validates the value (R-001).
         #[arg(long = "sni")]
         sni_pattern: Option<String>,
+        /// 011-rate-limiting-qos: ingress bandwidth cap (bytes / sec).
+        /// Server validates `> 0`; absent leaves ingress uncapped.
+        #[arg(long)]
+        bandwidth_in_bps: Option<u64>,
+        /// 011-rate-limiting-qos: egress bandwidth cap (bytes / sec).
+        /// Server validates `> 0`; absent leaves egress uncapped.
+        #[arg(long)]
+        bandwidth_out_bps: Option<u64>,
+        /// 011-rate-limiting-qos: new TCP connections / new UDP flows
+        /// per second. Surplus accepts get RST (TCP) or are dropped
+        /// before NAT bind (UDP).
+        #[arg(long)]
+        new_connections_per_sec: Option<u32>,
+        /// 011-rate-limiting-qos: ceiling on simultaneously-active
+        /// TCP connections + UDP flows. Surplus accepts get RST.
+        #[arg(long)]
+        concurrent_connections: Option<u32>,
+        /// 011-rate-limiting-qos: optional ingress burst override
+        /// (bytes). Defaults to `1 × bandwidth_in_bps`. Server
+        /// validates `[rate/100, rate*60]`.
+        #[arg(long)]
+        bandwidth_in_burst: Option<u64>,
+        /// 011-rate-limiting-qos: optional egress burst override
+        /// (bytes). Defaults to `1 × bandwidth_out_bps`.
+        #[arg(long)]
+        bandwidth_out_burst: Option<u64>,
+        /// 011-rate-limiting-qos: optional new-connection burst
+        /// override. Defaults to `1 × new_connections_per_sec`.
+        #[arg(long)]
+        new_connections_burst: Option<u32>,
         /// Operator HTTP endpoint of the running server.
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
@@ -390,6 +420,13 @@ fn run(cli: Cli) -> Result<(), u8> {
             targets_json,
             health_check_interval_secs,
             sni_pattern,
+            bandwidth_in_bps,
+            bandwidth_out_bps,
+            new_connections_per_sec,
+            concurrent_connections,
+            bandwidth_in_burst,
+            bandwidth_out_burst,
+            new_connections_burst,
             http_endpoint,
         } => rule_cli::push(
             &http_endpoint,
@@ -403,6 +440,15 @@ fn run(cli: Cli) -> Result<(), u8> {
             targets_json.as_deref(),
             health_check_interval_secs,
             sni_pattern.as_deref(),
+            rule_cli::RateLimitArgs {
+                bandwidth_in_bps,
+                bandwidth_out_bps,
+                new_connections_per_sec,
+                concurrent_connections,
+                bandwidth_in_burst,
+                bandwidth_out_burst,
+                new_connections_burst,
+            },
         ),
         Cmd::RemoveRule {
             rule_id,
