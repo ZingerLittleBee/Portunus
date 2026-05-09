@@ -40,6 +40,18 @@ pub enum BandwidthDirection {
     Out,
 }
 
+/// Cap scope tag — selects whether the limiter emits per-rule
+/// reject reasons (`ConnConcurrent` / `ConnRate` / `UdpFlowRate`)
+/// or per-owner reject reasons (`OwnerConcurrent` / `OwnerConnRate`
+/// / `OwnerUdpFlowRate`). Per FR-014 owner rejects must carry
+/// distinct reasons so operators can attribute a quota hit to the
+/// right policy layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapScope {
+    Rule,
+    Owner,
+}
+
 /// Per-rule data-plane limiter. Constructed once from a
 /// [`forward_core::RateLimit`] envelope; immutable thereafter (a
 /// hot-reload allocates a fresh limiter through
@@ -192,28 +204,39 @@ impl RuleRateLimiter {
         self.active_connections.load(Ordering::Acquire)
     }
 
-    /// Try to admit a new connection.
-    ///
-    /// Order: connection-rate token first (FR-009), then concurrent
-    /// ceiling. Both checks short-circuit on `None`. On admission the
-    /// caller receives an [`ActiveGuard`] whose `Drop` decrements the
-    /// gauge.
-    ///
-    /// `is_udp_first_packet` selects the reject-reason variant
-    /// (`UdpFlowRate` vs `ConnRate`); the token-bucket math is shared.
+    /// Try to admit a new connection at the per-rule cap layer.
+    /// Convenience wrapper around [`Self::try_acquire`]
+    /// with `scope = CapScope::Rule` — preserved as the canonical
+    /// per-rule entry point so existing call sites (T019 TCP accept,
+    /// T021 UDP first-packet) keep their familiar shape.
     pub fn try_acquire_connection(
         self: &Arc<Self>,
+        is_udp_first_packet: bool,
+    ) -> ConnectionAcquire {
+        self.try_acquire(CapScope::Rule, is_udp_first_packet)
+    }
+
+    /// Try to admit a new connection.
+    ///
+    /// Order: connection-rate / flow-rate token first (FR-009), then
+    /// concurrent ceiling. Both checks short-circuit on `None`. On
+    /// admission the caller receives an [`ActiveGuard`] whose `Drop`
+    /// decrements the gauge.
+    ///
+    /// `scope` selects whether reject reasons are rule-scoped or
+    /// owner-scoped (FR-014). `is_udp_first_packet` further chooses
+    /// between `*ConnRate` (TCP) and `*UdpFlowRate` (UDP) within
+    /// either scope.
+    pub fn try_acquire(
+        self: &Arc<Self>,
+        scope: CapScope,
         is_udp_first_packet: bool,
     ) -> ConnectionAcquire {
         // 1. Connection-rate / flow-rate token bucket.
         if let Some(bucket) = &self.new_connections
             && matches!(bucket.acquire(1), Acquire::Throttled { .. })
         {
-            return ConnectionAcquire::Rejected(if is_udp_first_packet {
-                RejectReason::UdpFlowRate
-            } else {
-                RejectReason::ConnRate
-            });
+            return ConnectionAcquire::Rejected(rate_reject_reason(scope, is_udp_first_packet));
         }
 
         // 2. Concurrent ceiling — fetch_add then compare (R-007).
@@ -221,7 +244,7 @@ impl RuleRateLimiter {
             let prev = self.active_connections.fetch_add(1, Ordering::AcqRel);
             if prev >= u64::from(max) {
                 self.active_connections.fetch_sub(1, Ordering::AcqRel);
-                return ConnectionAcquire::Rejected(RejectReason::ConnConcurrent);
+                return ConnectionAcquire::Rejected(concurrent_reject_reason(scope));
             }
             return ConnectionAcquire::Granted(ActiveGuard {
                 limiter: Arc::clone(self),
@@ -274,6 +297,52 @@ impl RuleRateLimiter {
         }
     }
 }
+
+/// Centralised reject-reason mapping for the connection-rate /
+/// flow-rate token bucket exhaustion path.
+fn rate_reject_reason(scope: CapScope, is_udp_first_packet: bool) -> RejectReason {
+    match (scope, is_udp_first_packet) {
+        (CapScope::Rule, false) => RejectReason::ConnRate,
+        (CapScope::Rule, true) => RejectReason::UdpFlowRate,
+        (CapScope::Owner, false) => RejectReason::OwnerConnRate,
+        (CapScope::Owner, true) => RejectReason::OwnerUdpFlowRate,
+    }
+}
+
+/// Centralised reject-reason mapping for the concurrent-ceiling
+/// exhaustion path.
+fn concurrent_reject_reason(scope: CapScope) -> RejectReason {
+    match scope {
+        CapScope::Rule => RejectReason::ConnConcurrent,
+        CapScope::Owner => RejectReason::OwnerConcurrent,
+    }
+}
+
+/// Owner identifier — the v0.5 RBAC owner string keyed on the wire
+/// as `OwnerRateLimitUpdate.owner_id`. Newtyped so the scope manager
+/// can't be confused with a `RuleId`-keyed registry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OwnerId(pub String);
+
+impl OwnerId {
+    #[must_use]
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+}
+
+impl std::fmt::Display for OwnerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Per-owner data-plane limiter — same shape as [`RuleRateLimiter`]
+/// (data-model § 2.3). Sharing the underlying type keeps the
+/// hot-path call sites symmetric: the per-owner gate (run BEFORE the
+/// per-rule gate per FR-013) reuses [`RuleRateLimiter::try_acquire`]
+/// with `scope = CapScope::Owner`.
+pub type OwnerRateLimiter = RuleRateLimiter;
 
 /// Registry of `RuleId → Arc<RuleRateLimiter>`. Owned by the
 /// `forward-client` rate-limit subsystem; one per process. All public
@@ -346,6 +415,94 @@ impl RateLimitScopeManager {
     #[allow(dead_code)] // tests + future operator-debug surface
     pub fn len(&self) -> usize {
         let guard = self.rules.read().expect("rate-limit registry poisoned");
+        guard.len()
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // tests + future operator-debug surface
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Registry of `OwnerId → Arc<OwnerRateLimiter>` (data-model § 2.3).
+/// Mirrors [`RateLimitScopeManager`] but keyed by RBAC owner string
+/// — the tenant-isolation scope per FR-002. The forward-client
+/// allocates one per process; the `OwnerRateLimitUpdate` server-push
+/// (T031) drives `install`/`update`/`remove`; per-rule forwarders
+/// look up their owner's limiter once at rule activation and cache
+/// the `Arc` for the rule lifetime.
+#[derive(Debug, Default)]
+pub struct OwnerRateLimitScopeManager {
+    owners: RwLock<HashMap<OwnerId, Arc<OwnerRateLimiter>>>,
+}
+
+impl OwnerRateLimitScopeManager {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Install (or replace) the limiter for `owner_id`. `rl = None`
+    /// removes any existing limiter so the owner runs uncapped — the
+    /// hot path observes `get` returning `None` after this. Mirrors
+    /// the `OwnerRateLimitUpdate { action = REMOVE }` server-push
+    /// shape.
+    pub fn install(&self, owner_id: &OwnerId, rl: Option<&RateLimit>) {
+        let mut guard = self.owners.write().expect("owner registry poisoned");
+        match rl {
+            Some(envelope) => {
+                let limiter = Arc::new(OwnerRateLimiter::from_envelope(envelope));
+                guard.insert(owner_id.clone(), limiter);
+            }
+            None => {
+                guard.remove(owner_id);
+            }
+        }
+    }
+
+    /// Hot-reload swap: build a successor limiter that inherits live
+    /// state from the prior one. When `owner_id` has no prior
+    /// limiter, falls back to a fresh `from_envelope`. Same semantics
+    /// as [`RateLimitScopeManager::update`] — the carryover preserves
+    /// `tokens` / `last_refill` and shares the `active_connections`
+    /// gauge so a lowered concurrent cap drains gracefully (R-008).
+    pub fn update(&self, owner_id: &OwnerId, rl: Option<&RateLimit>) {
+        let mut guard = self.owners.write().expect("owner registry poisoned");
+        match (guard.get(owner_id).cloned(), rl) {
+            (Some(prior), Some(envelope)) => {
+                let next = Arc::new(OwnerRateLimiter::with_carryover(&prior, envelope));
+                guard.insert(owner_id.clone(), next);
+            }
+            (None, Some(envelope)) => {
+                let next = Arc::new(OwnerRateLimiter::from_envelope(envelope));
+                guard.insert(owner_id.clone(), next);
+            }
+            (_, None) => {
+                guard.remove(owner_id);
+            }
+        }
+    }
+
+    /// Drop the limiter for `owner_id`. Idempotent.
+    pub fn remove(&self, owner_id: &OwnerId) {
+        let mut guard = self.owners.write().expect("owner registry poisoned");
+        guard.remove(owner_id);
+    }
+
+    /// Snapshot the limiter for `owner_id`. Per-rule forwarders call
+    /// this once at rule activation and cache the `Arc` for the
+    /// rule's lifetime.
+    #[must_use]
+    pub fn get(&self, owner_id: &OwnerId) -> Option<Arc<OwnerRateLimiter>> {
+        let guard = self.owners.read().expect("owner registry poisoned");
+        guard.get(owner_id).cloned()
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // tests + future operator-debug surface
+    pub fn len(&self) -> usize {
+        let guard = self.owners.read().expect("owner registry poisoned");
         guard.len()
     }
 
@@ -690,5 +847,100 @@ mod tests {
             }),
         );
         assert!(mgr.get(r).is_some());
+    }
+
+    /// T030: per-owner gate emits owner-prefixed reject reasons,
+    /// distinct from the per-rule equivalents. Establishes the
+    /// FR-014 "rejects carry distinct owner_* reasons" invariant.
+    #[tokio::test(start_paused = true)]
+    async fn t030_try_acquire_owner_emits_owner_reject_reasons() {
+        let l = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            new_connections_per_sec: Some(1),
+            concurrent_connections: Some(1),
+            ..Default::default()
+        }));
+        // First TCP-shaped accept admits.
+        let g = match l.try_acquire(CapScope::Owner, false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(r) => panic!("first owner-acquire admitted, got {r:?}"),
+        };
+        // Second back-to-back: rate token depleted → OwnerConnRate.
+        match l.try_acquire(CapScope::Owner, false) {
+            ConnectionAcquire::Rejected(RejectReason::OwnerConnRate) => {}
+            other => panic!("expected OwnerConnRate, got {other:?}"),
+        }
+        // UDP-shaped first packet under the same rate exhaustion:
+        // OwnerUdpFlowRate.
+        match l.try_acquire(CapScope::Owner, true) {
+            ConnectionAcquire::Rejected(RejectReason::OwnerUdpFlowRate) => {}
+            other => panic!("expected OwnerUdpFlowRate, got {other:?}"),
+        }
+        // Drop the only guard so concurrent slot is free, but rate
+        // bucket may still be empty — give the rate bucket a fresh
+        // token.
+        drop(g);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        // Acquire one to fill the concurrent slot.
+        let _g2 = match l.try_acquire(CapScope::Owner, false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(r) => panic!("post-refill admitted, got {r:?}"),
+        };
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        // With concurrent at-cap (1/1) and rate refilled, the next
+        // accept gets past the rate gate but hits the concurrent
+        // ceiling → OwnerConcurrent.
+        match l.try_acquire(CapScope::Owner, false) {
+            ConnectionAcquire::Rejected(RejectReason::OwnerConcurrent) => {}
+            other => panic!("expected OwnerConcurrent, got {other:?}"),
+        }
+    }
+
+    /// T030: round-trip the owner registry — install / get / update
+    /// / remove. Mirrors `scope_manager_install_get_remove_round_trip`
+    /// but keyed by `OwnerId`.
+    #[tokio::test(start_paused = true)]
+    async fn t030_owner_scope_manager_install_get_remove_round_trip() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        let alice = OwnerId::new("alice");
+        let bob = OwnerId::new("bob");
+        assert!(mgr.is_empty());
+
+        mgr.install(&alice, Some(&rl_full()));
+        assert!(mgr.get(&alice).is_some());
+        assert!(mgr.get(&bob).is_none());
+        assert_eq!(mgr.len(), 1);
+
+        mgr.install(&bob, None);
+        assert_eq!(mgr.len(), 1);
+
+        mgr.remove(&alice);
+        assert!(mgr.is_empty());
+    }
+
+    /// T030: owner update with carryover preserves the live-count
+    /// gauge across the swap (R-008 graceful drain on the owner
+    /// scope, mirroring the per-rule invariant).
+    #[tokio::test(start_paused = true)]
+    async fn t030_owner_scope_manager_update_carries_state() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        let owner = OwnerId::new("ops");
+        mgr.install(&owner, Some(&rl_full()));
+        let prior = mgr.get(&owner).unwrap();
+        let _g = match prior.try_acquire(CapScope::Owner, false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(_) => panic!("first acquire admitted"),
+        };
+        assert_eq!(prior.active_connections(), 1);
+
+        mgr.update(
+            &owner,
+            Some(&RateLimit {
+                concurrent_connections: Some(5),
+                ..Default::default()
+            }),
+        );
+        let next = mgr.get(&owner).unwrap();
+        assert!(!Arc::ptr_eq(&prior, &next), "update must swap the Arc");
+        assert_eq!(next.active_connections(), 1);
     }
 }
