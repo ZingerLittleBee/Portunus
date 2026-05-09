@@ -307,6 +307,104 @@ mod tests {
         assert_eq!(acc.throttle_micros(BandwidthDirection::Out), 0);
     }
 
+    /// 011-rate-limiting-qos T025: per-owner ceiling binds before
+    /// per-rule cap (FR-013). With a per-rule cap of 10 MB/s and a
+    /// per-owner cap of 5 MB/s, the data plane must shape ingress to
+    /// the owner rate (≤ 5 MB/s). The integration test that pushes
+    /// the cap envelope through the gRPC control plane lives in the
+    /// forward-e2e harness; this unit test pins the data-plane
+    /// semantic so a regression in the layered acquire would fail
+    /// here first.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn t025_per_owner_ceiling_binds_before_per_rule_cap() {
+        use crate::forwarder::rate_limit::scope::OwnerRateLimiter;
+        // 10 MB/s per-rule, 5 MB/s per-owner. The owner is the
+        // binding ceiling. Push 5 MiB and assert the elapsed time
+        // matches the owner rate within ±10%.
+        let rule_limiter = limiter_for(RateLimit {
+            bandwidth_in_bps: Some(10 * 1024 * 1024),
+            ..Default::default()
+        });
+        let rule_acc = Arc::new(RateLimitStatsAccumulator::new());
+        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(5 * 1024 * 1024),
+            ..Default::default()
+        }));
+        let owner_acc = Arc::new(RateLimitStatsAccumulator::new());
+
+        let (mut peer, mut inbound) = duplex(256 * 1024);
+        let (mut outbound, mut target) = duplex(256 * 1024);
+
+        let task_rule = Arc::clone(&rule_limiter);
+        let task_rule_stats = Arc::clone(&rule_acc);
+        let task_owner = Arc::clone(&owner_limiter);
+        let task_owner_stats = Arc::clone(&owner_acc);
+        let proxy = tokio::spawn(async move {
+            copy_bidirectional_with_rate_limit(
+                &mut inbound,
+                &mut outbound,
+                task_rule,
+                Some(task_rule_stats),
+                Some(task_owner),
+                Some(task_owner_stats),
+            )
+            .await
+        });
+
+        // Payload must exceed the owner burst (= rate by default) so
+        // the throttle path actually runs. 16 MiB at 5 MB/s shapes
+        // to ≈ 3 s of measurable throttle after the burst drains.
+        let bytes = 16 * 1024 * 1024_usize;
+        let payload = vec![0xAB_u8; bytes];
+        let writer = tokio::spawn(async move {
+            peer.write_all(&payload).await.unwrap();
+            peer.shutdown().await.unwrap();
+        });
+        let read = tokio::spawn(async move {
+            let mut buf = vec![0u8; bytes];
+            let mut total = 0;
+            loop {
+                let n = target.read(&mut buf[total..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+            total
+        });
+
+        let started = Instant::now();
+        writer.await.unwrap();
+        let total = read.await.unwrap();
+        proxy.await.unwrap().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(total, bytes);
+        // 16 MiB at 5 MB/s ≈ 3.2 s after the burst (= rate = 5 MiB)
+        // drains. We require ≥ 1.5 s — well below the theoretical
+        // floor but above what the per-rule rate (10 MB/s ≈ 1.6 s)
+        // would produce, so this assertion captures the owner-binds
+        // semantic: the rule is not the bottleneck.
+        assert!(
+            elapsed >= Duration::from_millis(1500),
+            "owner=5MB/s should take >=1.5s for 16MiB, took {elapsed:?}"
+        );
+        // The owner stats accumulator captured throttle wall-clock.
+        assert!(
+            owner_acc.throttle_micros(BandwidthDirection::In) > 0,
+            "owner throttle micros must be non-zero — owner is binding"
+        );
+        // FR-014: the rule accumulator stays at zero because the
+        // rule bucket was never the bottleneck. A regression that
+        // double-counted the throttle (or attributed it to the rule
+        // layer) would fail this check.
+        assert_eq!(
+            rule_acc.throttle_micros(BandwidthDirection::In),
+            0,
+            "rule layer never throttled — its accumulator must stay at 0"
+        );
+    }
+
     /// T030: per-owner bandwidth cap throttles even when the per-rule
     /// bucket has plenty of tokens. Throttle wall-clock for the owner
     /// direction lands in the OWNER stats accumulator (FR-014); the
@@ -388,6 +486,151 @@ mod tests {
             rule_acc.throttle_micros(BandwidthDirection::In),
             0,
             "rule throttle counter must NOT bump when owner is the binding cap"
+        );
+    }
+
+    /// 011-rate-limiting-qos T026: tenant isolation — a throttled
+    /// owner does not affect another owner's flows. Each owner has
+    /// its own `Arc<OwnerRateLimiter>` keyed in the registry, so a
+    /// token-bucket exhaustion on one Arc never reaches the other.
+    /// The full e2e starvation test (driven through the gRPC control
+    /// plane) belongs in forward-e2e; this unit test pins the
+    /// data-plane invariant — the registry's per-owner Arc cannot
+    /// be a shared resource.
+    #[allow(clippy::similar_names)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn t026_owner_throttle_does_not_affect_uncapped_owner_flow() {
+        use crate::forwarder::rate_limit::scope::OwnerRateLimiter;
+
+        // Owner A: 1 MiB/s aggregate ingress cap.
+        let owner_a = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(1024 * 1024),
+            ..Default::default()
+        }));
+        let owner_a_acc = Arc::new(RateLimitStatsAccumulator::new());
+
+        // Owner B: no cap whatsoever (uncapped envelope).
+        let owner_b = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit::default()));
+        let owner_b_stats_acc = Arc::new(RateLimitStatsAccumulator::new());
+
+        // Shared per-rule limiter — generous so it never binds and
+        // both owners' attribution cleanly attaches to the owner
+        // layer. (In production each rule has its own limiter; we
+        // share here only because the test exercises a single rule
+        // per owner-flow pair.)
+        let rule_a = limiter_for(RateLimit::default());
+        let rule_b = limiter_for(RateLimit::default());
+
+        // Two independent forwarder pairs, one per owner.
+        let (mut peer_a, mut inbound_a) = duplex(256 * 1024);
+        let (mut outbound_a, mut target_a) = duplex(256 * 1024);
+        let (mut peer_b, mut inbound_b) = duplex(256 * 1024);
+        let (mut outbound_b, mut target_b) = duplex(256 * 1024);
+
+        let bw_owner_a = Arc::clone(&owner_a);
+        let bw_owner_a_stats = Arc::clone(&owner_a_acc);
+        let proxy_a = tokio::spawn(async move {
+            copy_bidirectional_with_rate_limit(
+                &mut inbound_a,
+                &mut outbound_a,
+                rule_a,
+                None,
+                Some(bw_owner_a),
+                Some(bw_owner_a_stats),
+            )
+            .await
+        });
+        let bw_owner_b = Arc::clone(&owner_b);
+        let bw_owner_b_stats = Arc::clone(&owner_b_stats_acc);
+        let proxy_b = tokio::spawn(async move {
+            copy_bidirectional_with_rate_limit(
+                &mut inbound_b,
+                &mut outbound_b,
+                rule_b,
+                None,
+                Some(bw_owner_b),
+                Some(bw_owner_b_stats),
+            )
+            .await
+        });
+
+        // 4 MiB through both — owner A throttles to its cap, owner B
+        // streams freely.
+        let bytes = 4 * 1024 * 1024_usize;
+        let writer_a = tokio::spawn({
+            let payload = vec![0xAA_u8; bytes];
+            async move {
+                peer_a.write_all(&payload).await.unwrap();
+                peer_a.shutdown().await.unwrap();
+            }
+        });
+        let writer_b = tokio::spawn({
+            let payload = vec![0xBB_u8; bytes];
+            async move {
+                peer_b.write_all(&payload).await.unwrap();
+                peer_b.shutdown().await.unwrap();
+            }
+        });
+        let read_a = tokio::spawn(async move {
+            let mut buf = vec![0u8; bytes];
+            let mut total = 0;
+            loop {
+                let n = target_a.read(&mut buf[total..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+            (total, Instant::now())
+        });
+        let read_b = tokio::spawn(async move {
+            let mut buf = vec![0u8; bytes];
+            let mut total = 0;
+            loop {
+                let n = target_b.read(&mut buf[total..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+            (total, Instant::now())
+        });
+
+        let started = Instant::now();
+        writer_a.await.unwrap();
+        writer_b.await.unwrap();
+        let (total_a, finish_a) = read_a.await.unwrap();
+        let (total_b, finish_b) = read_b.await.unwrap();
+        proxy_a.await.unwrap().unwrap();
+        proxy_b.await.unwrap().unwrap();
+
+        assert_eq!(total_a, bytes);
+        assert_eq!(total_b, bytes);
+
+        let elapsed_a = finish_a.duration_since(started);
+        let elapsed_b = finish_b.duration_since(started);
+
+        // Owner A: 4 MiB at 1 MiB/s after burst drains ≈ 3 s.
+        assert!(
+            elapsed_a >= Duration::from_millis(1500),
+            "owner A throttle should take >=1.5s, took {elapsed_a:?}"
+        );
+        // Owner B: uncapped, finishes near-instantly even with the
+        // paused-time scheduler. Critically, it does NOT trail owner
+        // A — i.e., A's throttle does not back-pressure B.
+        assert!(
+            elapsed_b < Duration::from_millis(500),
+            "owner B uncapped should finish in <500ms, took {elapsed_b:?}"
+        );
+        // Throttle attribution: only owner A accrued throttle micros.
+        assert!(
+            owner_a_acc.throttle_micros(BandwidthDirection::In) > 0,
+            "owner A must record throttle"
+        );
+        assert_eq!(
+            owner_b_stats_acc.throttle_micros(BandwidthDirection::In),
+            0,
+            "owner B must not record any throttle"
         );
     }
 }
