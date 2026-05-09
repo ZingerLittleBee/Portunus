@@ -67,9 +67,10 @@ impl Default for PeekDurationHistogram {
 
 impl PeekDurationHistogram {
     pub fn observe(&self, elapsed: std::time::Duration) {
-        let idx = peek_histogram::bucket_index(elapsed);
-        for bucket in self.buckets.iter().skip(idx) {
-            bucket.fetch_add(1, Ordering::Relaxed);
+        if let Some(idx) = peek_histogram::bucket_index(elapsed) {
+            for bucket in self.buckets.iter().skip(idx) {
+                bucket.fetch_add(1, Ordering::Relaxed);
+            }
         }
         let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
         self.sum_micros.fetch_add(micros, Ordering::Relaxed);
@@ -109,7 +110,7 @@ mod tests {
 
         assert_eq!(buckets[one_ms_idx], 1);
         assert_eq!(buckets[one_ms_idx + 1], 1);
-        assert_eq!(buckets.last().copied(), Some(2));
+        assert_eq!(buckets.last().copied(), Some(1));
         assert_eq!(sum_micros, 4_001_000);
         assert_eq!(count, 2);
     }
