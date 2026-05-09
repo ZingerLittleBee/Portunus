@@ -677,6 +677,8 @@ pub async fn run_udp<R: Resolve + 'static>(
         let task_targets = Arc::clone(&targets);
         let task_states = Arc::clone(&states);
         let task_counter = Arc::clone(&target_failovers_total);
+        let task_rate_limit = rule.rate_limit.clone();
+        let task_rate_limit_stats = rule.rate_limit_stats.clone();
         tasks.spawn(async move {
             udp::run_listener_multi_target(
                 rule_id,
@@ -690,6 +692,8 @@ pub async fn run_udp<R: Resolve + 'static>(
                 task_stats,
                 task_resolver,
                 task_cancel,
+                task_rate_limit,
+                task_rate_limit_stats,
             )
             .await;
         });

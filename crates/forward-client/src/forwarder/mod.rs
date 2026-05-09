@@ -596,6 +596,8 @@ async fn run_udp<R: Resolve + 'static>(
         let task_stats = Arc::clone(&stats);
         let task_resolver = Arc::clone(&resolver);
         let task_cancel = cancel.clone();
+        let task_rate_limit = rule.rate_limit.clone();
+        let task_rate_limit_stats = rule.rate_limit_stats.clone();
         tasks.spawn(async move {
             udp::run_listener(
                 rule_id,
@@ -608,6 +610,8 @@ async fn run_udp<R: Resolve + 'static>(
                 task_stats,
                 task_resolver,
                 task_cancel,
+                task_rate_limit,
+                task_rate_limit_stats,
             )
             .await;
         });
