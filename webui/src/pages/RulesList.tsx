@@ -73,6 +73,13 @@ export function RulesList() {
           r.target_port_end && r.target_port_end !== r.target_port
             ? `${r.target_host}:${r.target_port}–${r.target_port_end}`
             : `${r.target_host}:${r.target_port}`;
+        const proxyTargets = (r.targets ?? []).filter((target) => target.proxy_protocol);
+        const proxyBadge =
+          proxyTargets.length > 0 ? (
+            <Badge variant="secondary" title={proxyTargets.map((t) => `${t.host}:${t.port}=${t.proxy_protocol}`).join(", ")}>
+              PROXY {proxyTargets.length}
+            </Badge>
+          ) : null;
         if (targetCount > 1) {
           return (
             <span className="flex items-center gap-2">
@@ -83,10 +90,16 @@ export function RulesList() {
               >
                 {t("rules.multiTargetPill", { count: targetCount })}
               </Badge>
+              {proxyBadge}
             </span>
           );
         }
-        return base;
+        return (
+          <span className="flex items-center gap-2">
+            <span>{base}</span>
+            {proxyBadge}
+          </span>
+        );
       },
     },
     {

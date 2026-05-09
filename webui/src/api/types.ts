@@ -146,6 +146,7 @@ export interface Target {
   host: string;
   port: number;
   priority: number;
+  proxy_protocol?: "v1" | "v2" | null;
 }
 
 /// 007-multi-target-failover T044: live per-target health snapshot

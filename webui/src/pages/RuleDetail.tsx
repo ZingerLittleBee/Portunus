@@ -145,6 +145,7 @@ function TargetsTable({
             <th className="px-2 py-2">{t("ruleDetail.targetCol.host")}</th>
             <th className="px-2 py-2">{t("ruleDetail.targetCol.port")}</th>
             <th className="px-2 py-2">{t("ruleDetail.targetCol.priority")}</th>
+            <th className="px-2 py-2">{t("ruleDetail.targetCol.proxyProtocol")}</th>
             <th className="px-2 py-2">{t("ruleDetail.targetCol.health")}</th>
             <th className="px-2 py-2">{t("ruleDetail.targetCol.consecutiveFailures")}</th>
             <th className="px-2 py-2 text-right">{t("ruleDetail.targetCol.bytesIn")}</th>
@@ -167,6 +168,7 @@ function TargetsTable({
                 <td className="px-2 py-2 font-mono">{target.host}</td>
                 <td className="px-2 py-2 font-mono">{target.port}</td>
                 <td className="px-2 py-2 font-mono">{target.priority}</td>
+                <td className="px-2 py-2 font-mono">{target.proxy_protocol ?? "—"}</td>
                 <td className="px-2 py-2">{healthBadge}</td>
                 <td className="px-2 py-2 font-mono">
                   {stats?.consecutive_failures ?? target.health?.consecutive_failures ?? 0}
