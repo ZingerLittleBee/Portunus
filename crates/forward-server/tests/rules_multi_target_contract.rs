@@ -261,7 +261,7 @@ async fn proxy_protocol_on_udp_rule_rejected() {
         .router
         .clone()
         .oneshot(push(
-            ALICE_TOKEN,
+            SUPERADMIN_TOKEN,
             serde_json::json!({
                 "client": "client-a",
                 "listen_port": 30003,
@@ -278,6 +278,29 @@ async fn proxy_protocol_on_udp_rule_rejected() {
         err_code(resp).await,
         "validation.proxy_protocol_on_unsupported_rule"
     );
+}
+
+#[tokio::test]
+async fn udp_proxy_protocol_probe_denied_by_rbac_first() {
+    let f = build_fixture();
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": "client-a",
+                "listen_port": 30003,
+                "protocol": "udp",
+                "targets": [
+                    {"host": "primary.test", "port": 53, "proxy_protocol": "v1"}
+                ]
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(err_code(resp).await, "protocol_not_granted");
 }
 
 #[tokio::test]

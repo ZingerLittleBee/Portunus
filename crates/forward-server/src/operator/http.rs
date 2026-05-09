@@ -405,13 +405,6 @@ async fn push_multi_target(
     let client_name =
         forward_core::ClientName::from_str(&body.client).map_err(OperatorError::InvalidName)?;
     let proto = parse_protocol_str(&body.protocol)?;
-    if matches!(proto, ProtocolWire::Udp) && typed.iter().any(|t| t.proxy_protocol.is_some()) {
-        return Err(OperatorError::ProxyProtocolValidation {
-            code: "validation.proxy_protocol_on_unsupported_rule",
-            message: "proxy_protocol is only valid on tcp rules".into(),
-        }
-        .into());
-    }
 
     // RBAC: same envelope as legacy push (FR-021 — targets are NOT
     // gated). enforce_push only inspects (client, listen-port range,
@@ -428,6 +421,14 @@ async fn push_multi_target(
     };
     let grants = state.operator_auth.grants_for(&identity.user_id);
     rbac::enforce_push(identity, &push_req, &grants).map_err(OperatorError::Rbac)?;
+
+    if matches!(proto, ProtocolWire::Udp) && typed.iter().any(|t| t.proxy_protocol.is_some()) {
+        return Err(OperatorError::ProxyProtocolValidation {
+            code: "validation.proxy_protocol_on_unsupported_rule",
+            message: "proxy_protocol is only valid on tcp rules".into(),
+        }
+        .into());
+    }
 
     // R-007: client-version guard. Multi-target push (length >= 2) to
     // a client whose last-known Hello.client_version is < 0.7.0 is
