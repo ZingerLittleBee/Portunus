@@ -105,7 +105,9 @@ TCP (legacy) listeners must produce **no** peek-histogram observations.
 3. **Given** a peek that times out at the 3-second deadline, **When** that
    peek terminates, **Then** the peek-failure counter from v0.9 increments
    as before *and* the histogram records the 3-second observation in the
-   tail bucket — operators can correlate the two without ambiguity.
+   `le="3"` bucket. Peeks observed after the deadline remain visible via
+   the histogram `_count` / `le="+Inf"` series without inflating finite
+   buckets.
 
 ---
 
@@ -170,10 +172,11 @@ with a PROXY header and B's does not.
 - **Histogram on the legacy listener mode**: a port that started as legacy
   plain-TCP must never emit peek-histogram observations even if other
   ports on the same client are SNI-mode.
-- **Bucket boundaries crossing the peek deadline**: the histogram tail
-  bucket must include observations equal to the 3-second deadline so that
-  timed-out peeks are visible in the tail rather than dropped or
-  miscounted.
+- **Bucket boundaries crossing the peek deadline**: the finite histogram
+  tail bucket must include observations equal to the 3-second deadline.
+  Observations measured above the deadline must remain visible via the
+  histogram `_count` / `+Inf` bucket while preserving Prometheus finite
+  bucket semantics (`le="3"` means `<= 3s`, not `timeout-ish`).
 - **PROXY header on a target with multiple priorities**: when v0.7
   multi-target failover swaps from a primary target opted-in to PROXY to
   a secondary target that is not opted in, the secondary connection must
@@ -238,9 +241,10 @@ with a PROXY header and B's does not.
   sub-millisecond to the 3-second peek deadline with enough resolution
   that operators can distinguish typical load (well under 10ms) from
   tail incidents (hundreds of milliseconds to seconds).
-- **FR-015**: The histogram tail bucket MUST include observations equal
-  to or greater than the 3-second peek deadline so that timed-out peeks
-  remain visible in the distribution.
+- **FR-015**: The histogram's finite tail bucket MUST include observations
+  equal to the 3-second peek deadline. Observations greater than the
+  deadline MUST increment the histogram's total count / `+Inf` series
+  without incrementing any finite `le` bucket.
 
 #### Cross-cutting invariants
 
@@ -331,10 +335,11 @@ with a PROXY header and B's does not.
   observed behavioural differences in upstream byte streams or in the
   v0.9 metric surface.
 - **SC-007**: A peek that times out at the 3-second deadline appears in
-  both the v0.9 peek-failure counter and the new peek-duration histogram
-  tail bucket, so an operator triaging a "peek failures rising"
-  Prometheus alert can pivot to the latency tail in the same dashboard
-  panel.
+  both the v0.9 peek-failure counter and the new peek-duration histogram's
+  `le="3"` bucket. A peek observed after the deadline appears in `_count`
+  / `le="+Inf"` without inflating finite buckets, so an operator triaging
+  a "peek failures rising" Prometheus alert can pivot to the latency tail
+  in the same dashboard panel without corrupting quantile math.
 
 ## Assumptions
 

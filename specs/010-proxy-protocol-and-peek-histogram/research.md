@@ -76,7 +76,8 @@ existing `StatsReport`.
 success, timeout, and parse failure.
 
 **Rationale**:
-- Operators need the tail to include timed-out peeks, not only successful ones.
+- Operators need timed-out peeks to be visible in the histogram count / `+Inf`
+  series, not only successful peeks.
 - This aligns the histogram with the existing failure counters instead of making
   them incomparable.
 
@@ -91,12 +92,17 @@ listener stats, not rule stats.
 
 ## R-009 — Bucket layout
 
-**Decision**: Use fixed buckets covering `100µs` through `3s`, with denser
-resolution below `10ms` and an inclusive `3.0s` tail bucket.
+**Decision**: Use fixed finite buckets covering `100µs` through `3s`, with
+denser resolution below `10ms` and an inclusive `3.0s` finite tail bucket.
+Observations greater than `3s` are represented by the histogram total count /
+`+Inf` bucket only.
 
 **Rationale**:
 - Operators need to distinguish normal sub-10ms operation from degraded
   hundreds-of-ms and timeout tails.
+- Prometheus finite bucket semantics require each `le` series to mean
+  "observations less than or equal to this boundary"; clamping over-deadline
+  observations into `le="3"` would corrupt quantile math.
 
 **Candidate bucket set**:
 `[0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0]`

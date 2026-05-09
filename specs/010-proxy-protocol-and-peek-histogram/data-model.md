@@ -66,6 +66,9 @@ PeekHistogramCounters {
 ```
 
 Observed once per peek attempt, including timeout and parse failure.
+Finite buckets cover observations up to and including the 3-second deadline.
+Observations above the deadline still increment `count` / `+Inf` but do not
+increment finite bucket counters.
 
 ### 2.3 Listener stats extension
 

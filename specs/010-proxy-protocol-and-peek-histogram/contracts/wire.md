@@ -13,6 +13,10 @@ classic Prometheus histogram series on the server:
 - cumulative observation count
 - cumulative observation sum
 
+Finite bucket counts represent observations less than or equal to the paired
+upper bound. Observations above the largest finite bound are represented by the
+cumulative count / `+Inf` series only.
+
 ## 3. Compatibility
 
 - v0.9 clients ignore the new target field, so the server must capability-gate

@@ -50,7 +50,7 @@ patterns.
 **Performance Goals**:
 - PROXY-protocol opt-in adds no more than 1 ms median setup latency versus the same target without PROXY
 - Legacy non-opted-in targets remain byte-identical to v0.9
-- Peek histogram covers sub-ms through the 3 s deadline and supports `histogram_quantile()` queries
+- Peek histogram finite buckets cover sub-ms through the 3 s deadline and support `histogram_quantile()` queries; observations above 3 s are represented by `_count` / `+Inf`, not by finite buckets
 
 **Constraints**:
 - No TLS termination or L7 parsing beyond the existing ClientHello peek

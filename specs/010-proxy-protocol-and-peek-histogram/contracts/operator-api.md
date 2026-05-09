@@ -39,4 +39,8 @@ Additive collector:
 
 With companion `_sum` and `_count` series.
 
+Finite buckets cover configured boundaries through `le="3"` only. Observations
+above 3 seconds are visible through `_count` / `le="+Inf"` and must not be
+reported in finite `le` buckets.
+
 No observations for legacy plain-TCP listeners.
