@@ -753,6 +753,44 @@ mod tests {
         }
     }
 
+    /// 011-rate-limiting-qos T012: TCP rule with
+    /// `new_connections_per_sec = R` enforces ±10% of R over a 60 s
+    /// window. Drives `attempts` admits over a paused-time minute,
+    /// asserts the admit count is within ±10% of `R × 60`.
+    #[tokio::test(start_paused = true)]
+    async fn t012_new_connections_per_sec_within_10pct_over_60s() {
+        // Rate of 10/sec, no concurrent cap, default burst (= rate).
+        // After 60 s the rate-limiter should have admitted ≈ 60 × 10
+        // ≈ 600 accepts (subject to bucket initial-burst arithmetic).
+        let r: u32 = 10;
+        let l = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            new_connections_per_sec: Some(r),
+            ..Default::default()
+        }));
+
+        let target = u64::from(r) * 60;
+        let mut admitted: u64 = 0;
+        let start = tokio::time::Instant::now();
+        // Drive accept-attempts at 1 ms cadence — enough to keep up
+        // with a 10/s bucket (which refills every 100 ms).
+        while start.elapsed() < Duration::from_secs(60) {
+            if let ConnectionAcquire::Granted(_g) = l.try_acquire_connection(false) {
+                admitted += 1;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        // ±10%: [target × 0.9, target × 1.1 + initial burst]. The
+        // initial-burst accounts for the bucket starting full (10
+        // accepts admit immediately on the first poll), so the
+        // upper bound is target + burst.
+        let lower = target * 9 / 10;
+        let upper = target * 11 / 10 + u64::from(r);
+        assert!(
+            admitted >= lower && admitted <= upper,
+            "admitted={admitted} outside [{lower}, {upper}] for rate={r}/s, 60s",
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn try_acquire_udp_first_packet_uses_udp_flow_rate_reason() {
         let l = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {

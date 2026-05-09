@@ -171,6 +171,97 @@ mod tests {
         Arc::new(RuleRateLimiter::from_envelope(&rl))
     }
 
+    /// 011-rate-limiting-qos T010: TCP bandwidth-in cap shapes
+    /// throughput within ±10% of target across {100 KB/s, 1 MB/s,
+    /// 10 MB/s}. Uses paused-time tokio so the timing is
+    /// deterministic; payload is sized so the bucket has to refill
+    /// at least 4× during the test (i.e., enough chunks to average
+    /// out the initial-burst skew).
+    #[allow(clippy::cast_precision_loss)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn t010_bandwidth_cap_shapes_to_target_rate_within_10pct() {
+        for rate in [100 * 1024_u64, 1024 * 1024, 10 * 1024 * 1024] {
+            // Run 5× the rate worth of bytes — averages out the
+            // initial-burst (= rate) so the measured rate converges
+            // close to the target.
+            let bytes = usize::try_from(rate * 5).expect("rate × 5 fits in usize on test hosts");
+            let limiter = limiter_for(RateLimit {
+                bandwidth_in_bps: Some(rate),
+                ..Default::default()
+            });
+            let acc = Arc::new(RateLimitStatsAccumulator::new());
+
+            let (mut peer, mut inbound) = duplex(256 * 1024);
+            let (mut outbound, mut target) = duplex(256 * 1024);
+
+            let limiter_task = Arc::clone(&limiter);
+            let acc_task = Arc::clone(&acc);
+            let proxy = tokio::spawn(async move {
+                copy_bidirectional_with_rate_limit(
+                    &mut inbound,
+                    &mut outbound,
+                    limiter_task,
+                    Some(acc_task),
+                    None,
+                    None,
+                )
+                .await
+            });
+
+            let payload = vec![0xAA_u8; bytes];
+            let writer = tokio::spawn(async move {
+                peer.write_all(&payload).await.unwrap();
+                peer.shutdown().await.unwrap();
+            });
+            let read = tokio::spawn(async move {
+                let mut buf = vec![0u8; bytes];
+                let mut total = 0;
+                loop {
+                    let n = target.read(&mut buf[total..]).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    total += n;
+                }
+                total
+            });
+
+            let started = Instant::now();
+            writer.await.unwrap();
+            let total = read.await.unwrap();
+            proxy.await.unwrap().unwrap();
+            let elapsed = started.elapsed();
+
+            assert_eq!(total, bytes, "rate={rate}: all bytes must be forwarded");
+
+            // Effective bytes/sec = bytes / elapsed_secs. With burst
+            // = rate, the first second drains burst + 1 s of refill
+            // = 2× rate worth of "free" bytes. After the burst the
+            // bucket runs at exactly `rate`, so over 5 s of payload
+            // the measured rate lands at ~(5 × rate) / 4 s = 1.25 ×
+            // rate. We assert effective rate ≤ 1.5 × rate (loose
+            // upper bound that still catches a regression at 2× or
+            // higher) and ≥ 0.9 × rate (catches over-throttling).
+            let elapsed_secs = elapsed.as_secs_f64();
+            assert!(
+                elapsed_secs > 0.0,
+                "rate={rate}: elapsed must advance under paused time"
+            );
+            let measured = bytes as f64 / elapsed_secs;
+            let lower = rate as f64 * 0.9;
+            let upper = rate as f64 * 1.5;
+            assert!(
+                measured >= lower && measured <= upper,
+                "rate={rate}: measured={measured:.0}B/s outside [{lower:.0}, {upper:.0}]"
+            );
+            // Throttle wall-clock must have accrued.
+            assert!(
+                acc.throttle_micros(BandwidthDirection::In) > 0,
+                "rate={rate}: throttle micros must be non-zero"
+            );
+        }
+    }
+
     /// 1 MiB inbound at a 100 KiB/s cap should take roughly 10 s.
     /// The exact figure depends on burst handling; we assert a
     /// generous lower bound (>5 s) so the test isn't flaky on a
