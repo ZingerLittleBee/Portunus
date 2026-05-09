@@ -591,7 +591,9 @@ impl OwnerRateLimitScopeManager {
 /// reconnects.
 #[derive(Debug, Default)]
 pub struct OwnerRateLimitStatsRegistry {
-    owners: RwLock<HashMap<OwnerId, Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>>,
+    owners: RwLock<
+        HashMap<OwnerId, Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    >,
 }
 
 impl OwnerRateLimitStatsRegistry {

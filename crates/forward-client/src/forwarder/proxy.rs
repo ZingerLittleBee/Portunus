@@ -247,10 +247,10 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     // limiter has at least one bandwidth bucket configured. Uncapped
     // rules with no owner caps stay on the byte-identical v0.10
     // `copy_bidirectional` fast path (zero extra atomic ops per chunk).
-    let rule_has_bw = rate_limit
-        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
+    let rule_has_bw = rate_limit.as_ref().is_some_and(|l| l.has_bandwidth_cap());
     let owner_has_bw = owner_rate_limit
-        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
+        .as_ref()
+        .is_some_and(|l| l.has_bandwidth_cap());
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             // Both streams drop at function exit, closing the sockets. We

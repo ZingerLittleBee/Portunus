@@ -128,16 +128,20 @@ pub async fn put_owner_rate_limit(
     // version is below 0.11. An unknown / disconnected client gates
     // conservatively (mirrors the per-rule path).
     let Some(client_version) = state.clients.client_version_of(&client_name).await else {
-        return Err(ApiError::from(OperatorError::RateLimitUnsupportedByClient {
-            client_name: client_name.clone(),
-            client_version: "unknown".into(),
-        }));
+        return Err(ApiError::from(
+            OperatorError::RateLimitUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: "unknown".into(),
+            },
+        ));
     };
     if !crate::operator::http::version_at_least_0_11(&client_version) {
-        return Err(ApiError::from(OperatorError::RateLimitUnsupportedByClient {
-            client_name: client_name.clone(),
-            client_version,
-        }));
+        return Err(ApiError::from(
+            OperatorError::RateLimitUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version,
+            },
+        ));
     }
     let envelope = forward_core::RateLimit {
         bandwidth_in_bps: body.bandwidth_in_bps,

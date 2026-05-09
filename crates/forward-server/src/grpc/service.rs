@@ -476,8 +476,7 @@ async fn handle_client_message(
                 };
                 let mut reject_totals = [0u64; 6];
                 for c in &payload.reject_total {
-                    if let Ok(reason) =
-                        forward_proto::v1::RateLimitRejectReason::try_from(c.reason)
+                    if let Ok(reason) = forward_proto::v1::RateLimitRejectReason::try_from(c.reason)
                     {
                         let idx = match reason {
                             forward_proto::v1::RateLimitRejectReason::ConnConcurrent => 0,
@@ -598,7 +597,10 @@ async fn replay_owner_caps_for_client(
         // wire byte-identical with the pre-0.11 contract.
         return;
     }
-    let envelopes = state.owner_caps.list_for_client(&identity.client_name).await;
+    let envelopes = state
+        .owner_caps
+        .list_for_client(&identity.client_name)
+        .await;
     if envelopes.is_empty() {
         return;
     }
@@ -1284,8 +1286,7 @@ mod tests {
     #[tokio::test]
     async fn t029_replay_owner_caps_isolates_by_client_name() {
         let state = build_state();
-        let (identity, outbound, mut rx) =
-            register_client(&state, "edge-target", "0.11.0").await;
+        let (identity, outbound, mut rx) = register_client(&state, "edge-target", "0.11.0").await;
         // Cap on a DIFFERENT client must not leak.
         let other = forward_core::ClientName::new("edge-other".to_string()).unwrap();
         state

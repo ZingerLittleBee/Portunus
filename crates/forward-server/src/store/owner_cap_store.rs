@@ -87,11 +87,7 @@ impl SqliteOwnerCapStore {
     }
 
     /// Idempotent delete; returns `true` when the row existed.
-    pub fn delete(
-        &self,
-        client_name: &ClientName,
-        owner_id: &str,
-    ) -> Result<bool, StoreError> {
+    pub fn delete(&self, client_name: &ClientName, owner_id: &str) -> Result<bool, StoreError> {
         self.store.with_write_tx(|tx| {
             let n = tx
                 .execute(
@@ -191,9 +187,11 @@ impl SqliteOwnerCapStore {
 }
 
 fn row_to_envelope(row: &rusqlite::Row<'_>) -> Result<OwnerRateLimitRow, StoreError> {
-    let client_name = ClientName::new(row.get::<_, String>(0).map_err(map_rusqlite)?)
-        .map_err(|e| StoreError::Internal {
-            message: format!("client_name: {e}"),
+    let client_name =
+        ClientName::new(row.get::<_, String>(0).map_err(map_rusqlite)?).map_err(|e| {
+            StoreError::Internal {
+                message: format!("client_name: {e}"),
+            }
         })?;
     let owner_id: String = row.get(1).map_err(map_rusqlite)?;
     let rate_limit = RateLimit {
@@ -338,9 +336,7 @@ mod tests {
         cap_store
             .upsert(&edge, "alice", &full_envelope(), 1)
             .unwrap();
-        cap_store
-            .upsert(&edge, "bob", &full_envelope(), 2)
-            .unwrap();
+        cap_store.upsert(&edge, "bob", &full_envelope(), 2).unwrap();
         cap_store
             .upsert(&core, "alice", &full_envelope(), 3)
             .unwrap();

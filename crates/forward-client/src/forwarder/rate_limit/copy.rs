@@ -133,8 +133,7 @@ where
                     BandwidthAcquire::Granted => break,
                     BandwidthAcquire::Throttled { deficit } => {
                         if let Some(s) = owner_stats {
-                            let micros =
-                                u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
+                            let micros = u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
                             s.record_throttle(direction, micros);
                         }
                         tokio::time::sleep(deficit).await;

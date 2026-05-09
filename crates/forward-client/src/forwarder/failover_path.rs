@@ -224,8 +224,9 @@ async fn accept_loop<R: Resolve + 'static>(
     // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
     // reject reasons (FR-014).
     owner_rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
-    owner_rate_limit_stats:
-        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    owner_rate_limit_stats: Option<
+        Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
+    >,
 ) {
     use crate::forwarder::rate_limit::scope::{LayeredAcquire, try_acquire_layered};
     let mut local: JoinSet<()> = JoinSet::new();
@@ -355,8 +356,9 @@ async fn handle_connection<R: Resolve>(
     // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
     // accumulator. None when the owner has no bandwidth caps.
     owner_rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
-    owner_rate_limit_stats:
-        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    owner_rate_limit_stats: Option<
+        Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
+    >,
 ) {
     let Ok(local_addr) = inbound.local_addr() else {
         warn!(
@@ -410,10 +412,10 @@ async fn handle_connection<R: Resolve>(
     // 011-rate-limiting-qos T020/T030: throttling fork fires when
     // EITHER per-rule or per-owner has a bandwidth cap. Uncapped
     // rules with no owner caps keep the byte-stable v0.7 path.
-    let rule_has_bw = rate_limit
-        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
+    let rule_has_bw = rate_limit.as_ref().is_some_and(|l| l.has_bandwidth_cap());
     let owner_has_bw = owner_rate_limit
-        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
+        .as_ref()
+        .is_some_and(|l| l.has_bandwidth_cap());
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             Err(io::Error::other("proxy_cancelled"))

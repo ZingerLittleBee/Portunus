@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use forward_core::{PortRange, RuleId};
 use forward_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction, PerPortStats as ProtoPerPortStats,
-    PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction, RuleStats as ProtoRuleStats,
-    RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport, client_message,
-    control_client::ControlClient, server_message,
+    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction,
+    PerPortStats as ProtoPerPortStats, PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction,
+    RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
+    client_message, control_client::ControlClient, server_message,
 };
 use rand::Rng;
 use thiserror::Error;
@@ -225,9 +225,8 @@ pub async fn run_with_reconnect(
     // reconnects. The server re-pushes the current owner state on
     // reconnect (mirroring the rule-replay convention from v0.1.0)
     // so a stale entry would be overwritten on the next push.
-    let owner_rate_limit_scope = Arc::new(
-        crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new(),
-    );
+    let owner_rate_limit_scope =
+        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
     // 011-rate-limiting-qos T032: per-owner stats registry parallels
     // the limiter registry. Aggregation across rules sharing the same
     // owner happens here — multiple rules call `get_or_create` for
@@ -236,9 +235,8 @@ pub async fn run_with_reconnect(
     // `StatsReport.owner_rate_limit_stats` (FR-014). Lives for the
     // process lifetime so cumulative counters persist across
     // reconnects.
-    let owner_rate_limit_stats_registry = Arc::new(
-        crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new(),
-    );
+    let owner_rate_limit_stats_registry =
+        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new());
 
     let mut attempt: u32 = 0;
     let max_delay = Duration::from_secs(cfg.max_delay_secs);
@@ -661,9 +659,9 @@ fn handle_server_message(
             // forwarding path byte-for-byte).
             let owner_id_str = rule.owner_id.as_ref().filter(|s| !s.is_empty()).cloned();
             let owner_rate_limit = owner_id_str.as_ref().and_then(|owner_id| {
-                owner_rate_limit_scope.get(
-                    &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
-                )
+                owner_rate_limit_scope.get(&crate::forwarder::rate_limit::scope::OwnerId::new(
+                    owner_id.clone(),
+                ))
             });
             // 011-rate-limiting-qos T032: per-owner stats are looked
             // up from the shared registry so multiple rules sharing
@@ -864,8 +862,8 @@ fn apply_owner_rate_limit_update(
 ) {
     use crate::forwarder::rate_limit::scope::OwnerId;
     let owner_id = OwnerId::new(update.owner_id.clone());
-    let action = OwnerRateLimitAction::try_from(update.action)
-        .unwrap_or(OwnerRateLimitAction::Unspecified);
+    let action =
+        OwnerRateLimitAction::try_from(update.action).unwrap_or(OwnerRateLimitAction::Unspecified);
     match action {
         OwnerRateLimitAction::Set => {
             let envelope = update.rate_limit.as_ref().map(|p| forward_core::RateLimit {

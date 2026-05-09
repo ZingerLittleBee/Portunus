@@ -897,12 +897,7 @@ impl RuleStatsCache {
             if delta > 0 {
                 metrics
                     .rate_limit_reject_total
-                    .with_label_values(&[
-                        client_name.as_str(),
-                        "",
-                        owner_id,
-                        REASON_LABELS[idx],
-                    ])
+                    .with_label_values(&[client_name.as_str(), "", owner_id, REASON_LABELS[idx]])
                     .inc_by(delta);
             }
             entry.reject_by_reason[idx] = total;

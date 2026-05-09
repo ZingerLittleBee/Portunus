@@ -161,11 +161,7 @@ impl OwnerCapService {
 
     /// Snapshot of one specific envelope. Used by `GET
     /// /v1/clients/{id}/owners/{owner_id}/rate-limit`.
-    pub async fn get(
-        &self,
-        client_name: &ClientName,
-        owner_id: &str,
-    ) -> Option<OwnerRateLimitRow> {
+    pub async fn get(&self, client_name: &ClientName, owner_id: &str) -> Option<OwnerRateLimitRow> {
         self.inner
             .cache
             .read()

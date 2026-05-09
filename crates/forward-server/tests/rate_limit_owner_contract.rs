@@ -106,8 +106,9 @@ async fn register_fake_client(
     fixture: &Fixture,
     name: &str,
     client_version: Option<&str>,
-) -> tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Result<forward_proto::v1::ServerMessage, tonic::Status>>>
-{
+) -> tokio::sync::Mutex<
+    tokio::sync::mpsc::Receiver<Result<forward_proto::v1::ServerMessage, tonic::Status>>,
+> {
     let client_name = ClientName::new(name.to_string()).expect("valid client");
     let cancel = CancellationToken::new();
     let (outbound, rx) = tokio::sync::mpsc::channel(8);
@@ -405,7 +406,10 @@ async fn t024_put_pushes_owner_rate_limit_update_set() {
         .expect("push must arrive");
     assert_eq!(push.client_name, CLIENT);
     assert_eq!(push.owner_id, "alice");
-    assert_eq!(push.action, forward_proto::v1::OwnerRateLimitAction::Set as i32);
+    assert_eq!(
+        push.action,
+        forward_proto::v1::OwnerRateLimitAction::Set as i32
+    );
     let body = push.rate_limit.expect("SET carries body");
     assert_eq!(body.bandwidth_in_bps, Some(1_048_576));
 }
@@ -441,7 +445,10 @@ async fn t024_delete_pushes_owner_rate_limit_update_remove() {
     let push = drain_owner_rate_limit_update(&rx)
         .await
         .expect("REMOVE push must arrive");
-    assert_eq!(push.action, forward_proto::v1::OwnerRateLimitAction::Remove as i32);
+    assert_eq!(
+        push.action,
+        forward_proto::v1::OwnerRateLimitAction::Remove as i32
+    );
     assert_eq!(push.owner_id, "alice");
     assert!(push.rate_limit.is_none());
 }
