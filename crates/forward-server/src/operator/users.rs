@@ -206,6 +206,7 @@ pub async fn delete_user(
     let summary = state.operator_store.remove_user(&id).map_err(api_store)?;
 
     let removed_rule_ids = state.rules.remove_owned_by(&id).await;
+    let _ = state.rule_store.delete_rules_owned_by(&id);
 
     info!(
         event = "operator.user_removed",

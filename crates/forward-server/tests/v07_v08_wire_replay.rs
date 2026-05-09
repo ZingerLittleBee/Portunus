@@ -120,9 +120,12 @@ fn v08_shape_rule() -> Rule {
             host: "127.0.0.1".to_string(),
             port: 9000,
             priority: 0,
+            proxy_protocol: None,
         }],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
+        owner_id: None,
     }
 }
 
@@ -194,6 +197,8 @@ fn explicit_unset_sni_pattern_encodes_identically_to_default() {
     let rule_explicit = v08_shape_rule();
     let rule_default_sni = Rule {
         sni_pattern: None,
+        rate_limit: None,
+        owner_id: None,
         ..v08_shape_rule()
     };
     assert_eq!(

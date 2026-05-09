@@ -8,7 +8,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/ZingerLittleBee/forward-rs"
 authors = ["forward-rs contributors"]
-version = "0.9.0"
+version = "0.11.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -111,7 +111,7 @@ num_cpus = "1"
 # Filesystem-class probe (statfs / fstatfs); used by data_dir module to
 # refuse NFS / tmpfs / ramfs at startup. Linux + macOS coverage. See
 # specs/008-sqlite-storage/research.md R-008.
-nix = { version = "0.29", default-features = false, features = ["fs"] }
+nix = { version = "0.29", default-features = false, features = ["fs", "net", "socket"] }
 
 # Forward workspace crates
 forward-proto = { path = "crates/forward-proto" }

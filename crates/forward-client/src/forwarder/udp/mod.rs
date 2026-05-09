@@ -36,6 +36,10 @@ use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::forwarder::rate_limit::scope::{
+    ActiveGuard, LayeredAcquire, OwnerRateLimiter, RuleRateLimiter, try_acquire_layered,
+};
+use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
 use crate::forwarder::udp::flow::UdpFlow;
 use crate::forwarder::udp::table::{OverflowDropped, UdpFlowTable};
@@ -69,6 +73,10 @@ pub async fn run_listener_multi_target<R: Resolve + 'static>(
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
     cancel: CancellationToken,
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
     let listener = match UdpSocket::bind(listen_addr).await {
@@ -106,6 +114,10 @@ pub async fn run_listener_multi_target<R: Resolve + 'static>(
                         Arc::clone(&flow_table),
                         Arc::clone(&stats),
                         Arc::clone(&resolver),
+                        rate_limit.clone(),
+                        rate_limit_stats.clone(),
+                        owner_rate_limit.clone(),
+                        owner_rate_limit_stats.clone(),
                     )
                     .await;
                 }
@@ -151,6 +163,10 @@ async fn handle_inbound_multi_target<R: Resolve>(
     flow_table: Arc<UdpFlowTable>,
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     use crate::forwarder::failover;
     use std::time::{Instant, SystemTime};
@@ -168,6 +184,21 @@ async fn handle_inbound_multi_target<R: Resolve>(
         .await;
         return;
     }
+
+    // T021/T030: layered owner+rule rate-limit gate before NAT bind.
+    // Run on the first packet of every NEW flow so a flooding source
+    // can't burn upstream sockets / DNS lookups (FR-009 + FR-013).
+    let Some((owner_admit_guard, admit_guard)) = acquire_first_packet(
+        rule_id,
+        listen_port,
+        source,
+        rate_limit.as_ref(),
+        rate_limit_stats.as_deref(),
+        owner_rate_limit.as_ref(),
+        owner_rate_limit_stats.as_deref(),
+    ) else {
+        return;
+    };
 
     // New flow: pick a healthy target (or fall back to row 0 if all
     // failed — FR-007). Walk through remaining targets on dial
@@ -236,6 +267,8 @@ async fn handle_inbound_multi_target<R: Resolve>(
             Arc::clone(&listener),
             Arc::clone(&stats),
             Some((target_idx, Arc::clone(&health_states))),
+            admit_guard,
+            owner_admit_guard,
         )
         .await
         {
@@ -317,6 +350,77 @@ async fn forward_existing_flow(
     }
 }
 
+/// Pair of admission guards from the layered owner+rule cascade —
+/// either side may be `None` when its layer is uncapped.
+type AdmitPair = (Option<ActiveGuard>, Option<ActiveGuard>);
+
+/// T021/T030: gate the first packet of a NEW UDP flow against the
+/// per-owner ceiling AND the per-rule cap. Owner gate runs first
+/// (FR-013); rejects on either layer return `None` (silent drop per
+/// FR-009), and reject reasons land in the corresponding scope's
+/// stats accumulator (FR-014).
+///
+/// On admission the caller receives `Some((owner_guard, rule_guard))`
+/// — both guards must be attached to the resulting `UdpFlow` so the
+/// owner and rule active-connection gauges decrement when the flow
+/// tears down.
+fn acquire_first_packet(
+    rule_id: RuleId,
+    listen_port: u16,
+    source: SocketAddr,
+    rate_limit: Option<&Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<&RateLimitStatsAccumulator>,
+    owner_rate_limit: Option<&Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<&RateLimitStatsAccumulator>,
+) -> Option<AdmitPair> {
+    match try_acquire_layered(owner_rate_limit, rate_limit, true) {
+        LayeredAcquire::Granted {
+            owner_guard,
+            rule_guard,
+        } => Some((owner_guard, rule_guard)),
+        LayeredAcquire::OwnerRejected(reason) => {
+            if let Some(s) = owner_rate_limit_stats {
+                s.record_reject(reason);
+            }
+            tracing::warn!(
+                event = "rule.udp_first_packet_rejected",
+                rule_id = %rule_id,
+                listen_port = listen_port,
+                source = %source,
+                scope = "owner",
+                reason = ?reason,
+            );
+            None
+        }
+        LayeredAcquire::RuleRejected(reason) => {
+            if let Some(s) = rate_limit_stats {
+                s.record_reject(reason);
+            }
+            tracing::warn!(
+                event = "rule.udp_first_packet_rejected",
+                rule_id = %rule_id,
+                listen_port = listen_port,
+                source = %source,
+                scope = "rule",
+                reason = ?reason,
+            );
+            None
+        }
+    }
+}
+
+/// Spawn a detached task that drops `guard` when `cancel` fires —
+/// ties the per-rule `active_connections` slot to the lifetime of the
+/// `UdpFlow.cancel` token. Used by `build_or_lookup_flow` after it
+/// confirms (via `Arc::ptr_eq`) that the closure-built flow won the
+/// race; lost-race callers drop the guard locally.
+fn spawn_admit_guard(cancel: CancellationToken, guard: ActiveGuard) {
+    tokio::spawn(async move {
+        cancel.cancelled().await;
+        drop(guard);
+    });
+}
+
 /// Run a per-port UDP listener on `listen_port`. The listener binds,
 /// loops `recv_from` on the listen socket, dispatches each datagram
 /// through a per-source flow, and tears down on `cancel`.
@@ -340,6 +444,10 @@ pub async fn run_listener<R: Resolve + 'static>(
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
     cancel: CancellationToken,
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
     let listener = match UdpSocket::bind(listen_addr).await {
@@ -381,6 +489,10 @@ pub async fn run_listener<R: Resolve + 'static>(
                         Arc::clone(&flow_table),
                         Arc::clone(&stats),
                         Arc::clone(&resolver),
+                        rate_limit.clone(),
+                        rate_limit_stats.clone(),
+                        owner_rate_limit.clone(),
+                        owner_rate_limit_stats.clone(),
                     )
                     .await;
                 }
@@ -423,6 +535,10 @@ async fn handle_inbound<R: Resolve>(
     flow_table: Arc<UdpFlowTable>,
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     // Fast path: existing flow. Skips both resolver and upstream-bind
     // in the common case of a long-lived sender. The resolver's cache
@@ -431,6 +547,20 @@ async fn handle_inbound<R: Resolve>(
     let phase_flow = if let Some(f) = flow_table.get(source).await {
         f
     } else {
+        // T021/T030: layered owner+rule rate-limit gate before any
+        // resolver / NAT bind work. Reject = silent drop (FR-009 UDP
+        // path); FR-013 ordering — owner first.
+        let Some((owner_admit_guard, admit_guard)) = acquire_first_packet(
+            rule_id,
+            listen_port,
+            source,
+            rate_limit.as_ref(),
+            rate_limit_stats.as_deref(),
+            owner_rate_limit.as_ref(),
+            owner_rate_limit_stats.as_deref(),
+        ) else {
+            return;
+        };
         // US2 (T044): resolve through the shared `LiveResolver`. For
         // `Target::Ip` this short-circuits to a single SocketAddr
         // without touching DNS; for `Target::Dns` it consults the
@@ -482,6 +612,8 @@ async fn handle_inbound<R: Resolve>(
             Arc::clone(&listener),
             Arc::clone(&stats),
             None, // legacy single-target rule — preserve v0.6.0 hot path
+            admit_guard,
+            owner_admit_guard,
         )
         .await
         {
@@ -567,6 +699,16 @@ async fn build_or_lookup_flow(
         u32,
         Arc<Vec<tokio::sync::Mutex<crate::forwarder::failover::HealthState>>>,
     )>,
+    // T021: per-rule concurrent-cap guard for THIS new flow's source.
+    // Attached to `flow.cancel` after we confirm the build closure
+    // ran (i.e. we won the lookup_or_insert race). Lost races drop
+    // the guard locally and the cap auto-decrements.
+    admit_guard: Option<ActiveGuard>,
+    // T030: per-owner concurrent-cap guard. Same lifetime semantics
+    // as `admit_guard` but attached to a separate AtomicU64 so the
+    // owner gauge tracks across all flows owned by the same RBAC
+    // identity.
+    owner_admit_guard: Option<ActiveGuard>,
 ) -> Option<Arc<UdpFlow>> {
     let upstream_socket = match UdpSocket::bind(("0.0.0.0", 0)).await {
         Ok(s) => Arc::new(s),
@@ -624,6 +766,12 @@ async fn build_or_lookup_flow(
                     upstream_addr_count = addr_count,
                     upstream_local = %bound_local,
                 );
+                if let Some(g) = admit_guard {
+                    spawn_admit_guard(flow.cancel.clone(), g);
+                }
+                if let Some(g) = owner_admit_guard {
+                    spawn_admit_guard(flow.cancel.clone(), g);
+                }
                 spawn_reply_pump(
                     rule_id,
                     listen_port,
@@ -632,6 +780,10 @@ async fn build_or_lookup_flow(
                     Arc::clone(&stats),
                 );
             }
+            // Lost-race path: both `admit_guard` and `owner_admit_guard`
+            // fall out of scope here (the `if let`s consumed them only
+            // on the won-race branch), so any concurrent slots we
+            // briefly held are released.
             Some(flow)
         }
         Err(OverflowDropped { source: src }) => {
@@ -779,6 +931,10 @@ mod tests {
                 stats_run,
                 test_resolver(),
                 cancel_run,
+                None,
+                None,
+                None,
+                None,
             )
             .await;
         });
@@ -833,6 +989,10 @@ mod tests {
                 stats_run,
                 test_resolver(),
                 cancel_run,
+                None,
+                None,
+                None,
+                None,
             )
             .await;
         });
@@ -861,6 +1021,188 @@ mod tests {
             .unwrap();
         assert_eq!(&ba[..na], b"AAAA", "source A must receive its own reply");
         assert_eq!(&bb[..nb], b"BBBBBB", "source B must receive its own reply");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    /// T021: a per-rule new_connections_per_sec=1 cap drops the second
+    /// new-source first-packet within the same burst window. The first
+    /// flow gets through; the second is silently dropped (no upstream
+    /// bind) and the per-rule reject counter shows
+    /// `RejectReason::UdpFlowRate`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn t021_udp_flow_rate_drops_second_new_source() {
+        use crate::forwarder::rate_limit::scope::RuleRateLimiter;
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        use forward_core::{RateLimit, RejectReason};
+
+        let echo = spawn_udp_echo().await;
+        let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
+        let listen_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let stats = RuleStats::new();
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let stats_run = Arc::clone(&stats);
+        let limiter = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            new_connections_per_sec: Some(1),
+            ..Default::default()
+        }));
+        let rl_stats = Arc::new(RateLimitStatsAccumulator::new());
+        let task_limiter = Arc::clone(&limiter);
+        let task_rl_stats = Arc::clone(&rl_stats);
+        let task = tokio::spawn(async move {
+            run_listener(
+                RuleId(800),
+                listen_port,
+                Target::Ip(echo.ip()),
+                echo.port(),
+                false,
+                1024,
+                Duration::ZERO,
+                stats_run,
+                test_resolver(),
+                cancel_run,
+                Some(task_limiter),
+                Some(task_rl_stats),
+                None,
+                None,
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // First source: must be admitted (rate burst = 1).
+        let a = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        a.send_to(b"first", (Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .unwrap();
+        let mut buf = [0u8; 16];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), a.recv_from(&mut buf))
+            .await
+            .expect("first source must round-trip")
+            .unwrap();
+        assert_eq!(&buf[..n], b"first");
+
+        // Second source within the same burst window: rate token is
+        // depleted, so the first-packet gate rejects. The send_to call
+        // succeeds (UDP is fire-and-forget) but no echo comes back —
+        // recv_from must time out.
+        let b = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        b.send_to(b"second", (Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .unwrap();
+        let mut buf2 = [0u8; 16];
+        let recv = tokio::time::timeout(Duration::from_millis(300), b.recv_from(&mut buf2)).await;
+        assert!(
+            recv.is_err(),
+            "second source must be dropped on the rate gate, got {recv:?}"
+        );
+
+        // Reject counter records UdpFlowRate exactly once.
+        assert_eq!(rl_stats.reject_total(RejectReason::UdpFlowRate), 1);
+        assert_eq!(rl_stats.reject_total(RejectReason::ConnRate), 0);
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    /// T030 / FR-013 (UDP path): when both per-owner and per-rule
+    /// flow-rate caps exist and the OWNER cap is the tighter one,
+    /// surplus first-packets must reject under `OwnerUdpFlowRate`
+    /// and the per-rule flow-rate counter must stay at zero.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn t030_owner_cap_binds_before_rule_cap_on_udp_first_packet() {
+        use crate::forwarder::rate_limit::scope::{OwnerRateLimiter, RuleRateLimiter};
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        use forward_core::{RateLimit, RejectReason};
+
+        let echo = spawn_udp_echo().await;
+        let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
+        let listen_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        // Rule allows 5 new flows/sec, owner allows 1 — owner is the
+        // binding ceiling. The first source admits, the second rejects
+        // under OwnerUdpFlowRate.
+        let rule_limiter = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            new_connections_per_sec: Some(5),
+            ..Default::default()
+        }));
+        let rule_stats = Arc::new(RateLimitStatsAccumulator::new());
+        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            new_connections_per_sec: Some(1),
+            ..Default::default()
+        }));
+        let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
+
+        let stats = RuleStats::new();
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let stats_run = Arc::clone(&stats);
+        let task_rule = Arc::clone(&rule_limiter);
+        let task_rule_stats = Arc::clone(&rule_stats);
+        let task_owner = Arc::clone(&owner_limiter);
+        let task_owner_stats = Arc::clone(&owner_stats);
+        let task = tokio::spawn(async move {
+            run_listener(
+                RuleId(801),
+                listen_port,
+                Target::Ip(echo.ip()),
+                echo.port(),
+                false,
+                1024,
+                Duration::ZERO,
+                stats_run,
+                test_resolver(),
+                cancel_run,
+                Some(task_rule),
+                Some(task_rule_stats),
+                Some(task_owner),
+                Some(task_owner_stats),
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // First source admits and round-trips.
+        let a = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        a.send_to(b"first", (Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .unwrap();
+        let mut buf = [0u8; 16];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), a.recv_from(&mut buf))
+            .await
+            .expect("first source must round-trip")
+            .unwrap();
+        assert_eq!(&buf[..n], b"first");
+
+        // Second NEW source within the burst window: owner rate token
+        // depleted → reject. Rule still has tokens but FR-013 means
+        // the rule's reject counter must stay at zero.
+        let b = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        b.send_to(b"second", (Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .unwrap();
+        let mut buf2 = [0u8; 16];
+        let recv = tokio::time::timeout(Duration::from_millis(300), b.recv_from(&mut buf2)).await;
+        assert!(
+            recv.is_err(),
+            "second source must be dropped on the owner gate, got {recv:?}"
+        );
+
+        assert_eq!(
+            owner_stats.reject_total(RejectReason::OwnerUdpFlowRate),
+            1,
+            "OwnerUdpFlowRate must record exactly one reject"
+        );
+        assert_eq!(
+            rule_stats.reject_total(RejectReason::UdpFlowRate),
+            0,
+            "rule flow-rate counter must NOT bump when owner gate refuses (FR-013)"
+        );
 
         cancel.cancel();
         task.await.unwrap();

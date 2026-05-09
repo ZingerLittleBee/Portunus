@@ -10,8 +10,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use forward_auth::ClientIdentity;
+use forward_core::RuleId;
 use forward_proto::v1::{
-    ClientMessage, Protocol, ServerMessage, Welcome, control_server::Control, server_message,
+    ClientMessage, Protocol, ProxyProtocolVersion, Rule, RuleAction, RuleUpdate, ServerMessage,
+    Welcome, control_server::Control, server_message,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -193,6 +195,15 @@ impl Control for ControlService {
         // sends rule pushes through this same channel.)
         tokio::spawn(async move {
             let _outbound = tx;
+            replay_rules_for_client(&pump_state, &pump_identity, &_outbound).await;
+            // 011-rate-limiting-qos T029: after the rule replay, push
+            // every persisted owner-cap envelope so the client's
+            // OwnerRateLimitScopeManager (T031) hydrates before any
+            // rule's per-owner gate is consulted on the data plane.
+            // Capability-gated against pre-0.11 clients per FR-006 —
+            // a v0.10 client sees no OwnerRateLimitUpdate frames so
+            // its decode is byte-identical with the v0.10 wire shape.
+            replay_owner_caps_for_client(&pump_state, &pump_identity, &_outbound).await;
             // If the first inbound message wasn't a Hello, replay it
             // through the existing handler now (v0.3 client back-compat).
             if let Some(replay) = pending_first_msg {
@@ -306,12 +317,7 @@ async fn handle_client_message(
             if let Some(tx) = guard.remove(&request_id) {
                 let _ = tx.send(rs);
             } else {
-                info!(
-                    event = "client.rule_status_unmatched",
-                    client_name = %identity.client_name,
-                    request_id = %request_id,
-                    rule_id = rs.rule_id,
-                );
+                apply_unsolicited_rule_status(state, identity, &rs).await;
             }
         }
         Some(Payload::StatsReport(report)) => {
@@ -397,6 +403,45 @@ async fn handle_client_message(
                         &state.metrics,
                     )
                     .await;
+                // 011-rate-limiting-qos T023: fold per-rule rate-limit
+                // stats into the three new collectors. v0.10 wire's
+                // proto3 default-strip means `entry.rate_limit` stays
+                // `None` for uncapped rules, so we skip the fold and
+                // emit no series — preserves SC-006 cardinality budget.
+                if let Some(rl) = entry.rate_limit.as_ref() {
+                    let mut reject_totals = [0u64; 6];
+                    for c in &rl.reject_total {
+                        if let Ok(reason) =
+                            forward_proto::v1::RateLimitRejectReason::try_from(c.reason)
+                        {
+                            let idx = match reason {
+                                forward_proto::v1::RateLimitRejectReason::ConnConcurrent => 0,
+                                forward_proto::v1::RateLimitRejectReason::ConnRate => 1,
+                                forward_proto::v1::RateLimitRejectReason::UdpFlowRate => 2,
+                                forward_proto::v1::RateLimitRejectReason::OwnerConcurrent => 3,
+                                forward_proto::v1::RateLimitRejectReason::OwnerConnRate => 4,
+                                forward_proto::v1::RateLimitRejectReason::OwnerUdpFlowRate => 5,
+                                // Unspecified is the proto default; the
+                                // client never emits it.
+                                forward_proto::v1::RateLimitRejectReason::Unspecified => continue,
+                            };
+                            reject_totals[idx] = c.total;
+                        }
+                    }
+                    state
+                        .stats_cache
+                        .observe_rate_limit_per_rule(
+                            &identity.client_name,
+                            rule_id,
+                            owner.as_str(),
+                            reject_totals,
+                            rl.throttle_micros_in,
+                            rl.throttle_micros_out,
+                            rl.active_connections,
+                            &state.metrics,
+                        )
+                        .await;
+                }
                 if !entry.per_port.is_empty() {
                     let snapshots = entry
                         .per_port
@@ -417,6 +462,47 @@ async fn handle_client_message(
                     state.per_port_stats.update(rule_id, snapshots).await;
                 }
             }
+            // 011-rate-limiting-qos T032: per-owner cumulative
+            // counters from the new `StatsReport.owner_rate_limit_stats`
+            // payload. Fed into the same Prometheus collectors with
+            // `rule=""` so operators can slice owner-aggregated traffic
+            // separately from per-rule rows. Per-rule rows already
+            // carry the `owner` label set on each entry — these owner
+            // rows are the cross-rule aggregation surface that the
+            // Web UI (T040) and future operator API hooks depend on.
+            for owner_stats in &report.owner_rate_limit_stats {
+                let Some(payload) = owner_stats.stats.as_ref() else {
+                    continue;
+                };
+                let mut reject_totals = [0u64; 6];
+                for c in &payload.reject_total {
+                    if let Ok(reason) = forward_proto::v1::RateLimitRejectReason::try_from(c.reason)
+                    {
+                        let idx = match reason {
+                            forward_proto::v1::RateLimitRejectReason::ConnConcurrent => 0,
+                            forward_proto::v1::RateLimitRejectReason::ConnRate => 1,
+                            forward_proto::v1::RateLimitRejectReason::UdpFlowRate => 2,
+                            forward_proto::v1::RateLimitRejectReason::OwnerConcurrent => 3,
+                            forward_proto::v1::RateLimitRejectReason::OwnerConnRate => 4,
+                            forward_proto::v1::RateLimitRejectReason::OwnerUdpFlowRate => 5,
+                            forward_proto::v1::RateLimitRejectReason::Unspecified => continue,
+                        };
+                        reject_totals[idx] = c.total;
+                    }
+                }
+                state
+                    .stats_cache
+                    .observe_rate_limit_per_owner(
+                        &identity.client_name,
+                        owner_stats.owner_id.as_str(),
+                        reject_totals,
+                        payload.throttle_micros_in,
+                        payload.throttle_micros_out,
+                        payload.active_connections,
+                        &state.metrics,
+                    )
+                    .await;
+            }
             // 009-tls-sni-routing T080: per-listener SNI counters
             // (StatsReport.sni_listener_stats = 3). Independent of rule
             // identity — keyed on (client, listen_port) — so the cache
@@ -432,6 +518,9 @@ async fn handle_client_message(
                         port,
                         listener.sni_route_miss_total,
                         listener.client_hello_parse_failures_total,
+                        &listener.client_hello_peek_bucket_counts,
+                        listener.client_hello_peek_sum_micros,
+                        listener.client_hello_peek_count,
                         &state.metrics,
                     )
                     .await;
@@ -447,6 +536,278 @@ async fn handle_client_message(
     }
 }
 
+async fn replay_rules_for_client(
+    state: &AppState,
+    identity: &ClientIdentity,
+    outbound: &OutboundSender,
+) {
+    let rules = state.rules.list(Some(&identity.client_name)).await;
+    if rules.is_empty() {
+        return;
+    }
+    let caps = state
+        .clients
+        .snapshot()
+        .await
+        .get(&identity.client_name)
+        .map_or_else(HashSet::new, |c| c.supported_protocols.clone());
+    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    for rule in rules {
+        if !matches!(rule.state, crate::rules::RuleState::Active) {
+            continue;
+        }
+        if let Err(reason) = replay_gate_reason(&rule, &caps, client_version.as_deref()) {
+            let _ = state.rules.mark_failed(rule.id, reason.clone()).await;
+            if let Some(updated) = state.rules.get(rule.id).await {
+                let _ = state.rule_store.upsert_rule(&updated);
+            }
+            continue;
+        }
+        let _ = state.rules.mark_pending(rule.id).await;
+        if let Some(updated) = state.rules.get(rule.id).await {
+            let _ = state.rule_store.upsert_rule(&updated);
+            let msg = ServerMessage {
+                payload: Some(server_message::Payload::RuleUpdate(RuleUpdate {
+                    request_id: format!("replay-{}", ulid::Ulid::new()),
+                    action: RuleAction::Push as i32,
+                    rule: Some(proto_rule_from_rule(&updated)),
+                })),
+            };
+            if outbound.send(Ok(msg)).await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+/// 011-rate-limiting-qos T029: push every persisted owner-cap envelope
+/// for `client_name` as `OwnerRateLimitUpdate{SET}` frames. Skipped
+/// entirely for pre-0.11 clients per FR-006 — those clients have no
+/// concept of `OwnerRateLimitUpdate` and would log it as an unknown
+/// payload variant.
+async fn replay_owner_caps_for_client(
+    state: &AppState,
+    identity: &ClientIdentity,
+    outbound: &OutboundSender,
+) {
+    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    if !version_at_least(client_version.as_deref(), 0, 11) {
+        // v0.10 (and earlier) clients silently drop the new
+        // ServerMessage oneof variant; emitting nothing keeps the
+        // wire byte-identical with the pre-0.11 contract.
+        return;
+    }
+    let envelopes = state
+        .owner_caps
+        .list_for_client(&identity.client_name)
+        .await;
+    if envelopes.is_empty() {
+        return;
+    }
+    for envelope in envelopes {
+        let push = ServerMessage {
+            payload: Some(server_message::Payload::OwnerRateLimitUpdate(
+                forward_proto::v1::OwnerRateLimitUpdate {
+                    client_name: envelope.client_name.as_str().to_string(),
+                    owner_id: envelope.owner_id.clone(),
+                    rate_limit: Some(rate_limit_to_proto(&envelope.rate_limit)),
+                    action: forward_proto::v1::OwnerRateLimitAction::Set as i32,
+                },
+            )),
+        };
+        if outbound.send(Ok(push)).await.is_err() {
+            // The pump's outbound channel closed (client dropped).
+            // Bail out — there's nothing left to push.
+            break;
+        }
+    }
+}
+
+fn replay_gate_reason(
+    rule: &crate::rules::Rule,
+    caps: &HashSet<Protocol>,
+    client_version: Option<&str>,
+) -> Result<(), String> {
+    if matches!(rule.protocol, crate::rules::Protocol::Udp) && !caps.contains(&Protocol::Udp) {
+        return Err("unsupported_protocol".into());
+    }
+    if !rule.targets.is_empty()
+        && rule.targets.len() >= 2
+        && !version_at_least(client_version, 0, 7)
+    {
+        return Err("multi_target_unsupported_by_client".into());
+    }
+    if rule.sni_pattern.is_some() && !version_at_least(client_version, 0, 9) {
+        return Err("sni_unsupported_by_client".into());
+    }
+    if rule.targets.iter().any(|t| t.proxy_protocol.is_some())
+        && !version_at_least(client_version, 0, 10)
+    {
+        return Err("proxy_protocol_unsupported_by_client".into());
+    }
+    // 011-rate-limiting-qos T008 / FR-006: refuse to replay a rule
+    // carrying any rate-limit cap to a forward-client whose
+    // self-reported client_version is below 0.11.0. Pre-0.11 readers
+    // would silently drop `Rule.rate_limit = 12` on decode and the
+    // rule would activate uncapped — violating the operator-visible
+    // contract. The HTTP push path enforces the same gate at submit
+    // time (operator/http.rs); this branch covers the post-restart
+    // rule-replay path so a rule that survived persistence cannot
+    // sneak past the gate after a server bounce.
+    if rule.rate_limit.is_some() && !version_at_least(client_version, 0, 11) {
+        return Err("rate_limit_unsupported_by_client".into());
+    }
+    Ok(())
+}
+
+fn version_at_least(version: Option<&str>, major_floor: u32, minor_floor: u32) -> bool {
+    let Some(version) = version else {
+        return false;
+    };
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (major_floor, minor_floor)
+}
+
+fn proto_rule_from_rule(rule: &crate::rules::Rule) -> Rule {
+    Rule {
+        rule_id: rule.id.0,
+        listen_port: u32::from(rule.listen_port),
+        target_host: rule.target_host.clone(),
+        target_port: u32::from(rule.target_port),
+        protocol: match rule.protocol {
+            crate::rules::Protocol::Tcp => Protocol::Tcp as i32,
+            crate::rules::Protocol::Udp => Protocol::Udp as i32,
+        },
+        listen_port_end: rule.listen_port_end.map_or(0, u32::from),
+        target_port_end: rule.target_port_end.map_or(0, u32::from),
+        prefer_ipv6: rule.prefer_ipv6,
+        targets: rule
+            .targets
+            .iter()
+            .map(|target| forward_proto::v1::Target {
+                host: target.host.clone(),
+                port: u32::from(target.port),
+                priority: target.priority,
+                proxy_protocol: target.proxy_protocol.map(|mode| match mode {
+                    forward_core::ProxyProtocolVersion::V1 => ProxyProtocolVersion::V1 as i32,
+                    forward_core::ProxyProtocolVersion::V2 => ProxyProtocolVersion::V2 as i32,
+                }),
+            })
+            .collect(),
+        health_check_interval_secs: rule.health_check_interval_secs.unwrap_or(0),
+        sni_pattern: rule.sni_pattern.clone(),
+        // 011-rate-limiting-qos T007: per-rule cap envelope. None on
+        // both sides preserves byte-identical wire shape with v0.10
+        // (proto3 default-stripping). Capability gate
+        // (rate_limit_unsupported_by_client) refuses to send a non-
+        // None envelope to a pre-0.11 client; that gate runs upstream
+        // of this mapping in operator/http.rs and replay_gate_reason.
+        rate_limit: rule.rate_limit.as_ref().map(rate_limit_to_proto),
+        // 011-rate-limiting-qos T031: owner_id surfaces on the wire
+        // only when this rule carries any v0.11 cap signal so the
+        // forward-client can resolve its per-owner limiter (FR-013).
+        // Gated on rate_limit.is_some() preserves byte-stability for
+        // uncapped rules (validated by the wire-compat suite). When
+        // T027/T028 land, owner-cap-presence will broaden the gate
+        // to cover the "uncapped rule whose owner has caps" case.
+        owner_id: rule
+            .rate_limit
+            .as_ref()
+            .map(|_| rule.owner_user_id.to_string()),
+    }
+}
+
+/// 011-rate-limiting-qos T007: encode a `forward_core::RateLimit` into
+/// the wire-shape `forward_proto::v1::RateLimit`. Field tags are
+/// 1-1 with the `RateLimit` definition in `proto/forward.proto` and
+/// every cap is independently optional.
+pub(crate) fn rate_limit_to_proto(rl: &forward_core::RateLimit) -> forward_proto::v1::RateLimit {
+    forward_proto::v1::RateLimit {
+        bandwidth_in_bps: rl.bandwidth_in_bps,
+        bandwidth_out_bps: rl.bandwidth_out_bps,
+        new_connections_per_sec: rl.new_connections_per_sec,
+        concurrent_connections: rl.concurrent_connections,
+        bandwidth_in_burst: rl.bandwidth_in_burst,
+        bandwidth_out_burst: rl.bandwidth_out_burst,
+        new_connections_burst: rl.new_connections_burst,
+    }
+}
+
+/// 011-rate-limiting-qos T007: decode a wire `RateLimit` back into the
+/// core envelope. Inverse of [`rate_limit_to_proto`]. Used by the HTTP
+/// push handler (T016) to hydrate caps received from the operator API
+/// — and any future inbound path that needs to read caps off the wire.
+#[allow(dead_code)] // wired up in T030 (per-owner caps inbound path)
+pub(crate) fn rate_limit_from_proto(p: &forward_proto::v1::RateLimit) -> forward_core::RateLimit {
+    forward_core::RateLimit {
+        bandwidth_in_bps: p.bandwidth_in_bps,
+        bandwidth_out_bps: p.bandwidth_out_bps,
+        new_connections_per_sec: p.new_connections_per_sec,
+        concurrent_connections: p.concurrent_connections,
+        bandwidth_in_burst: p.bandwidth_in_burst,
+        bandwidth_out_burst: p.bandwidth_out_burst,
+        new_connections_burst: p.new_connections_burst,
+    }
+}
+
+async fn apply_unsolicited_rule_status(
+    state: &AppState,
+    identity: &ClientIdentity,
+    status: &forward_proto::v1::RuleStatus,
+) {
+    let rule_id = RuleId(status.rule_id);
+    let Some(existing) = state.rules.get(rule_id).await else {
+        info!(
+            event = "client.rule_status_unmatched",
+            client_name = %identity.client_name,
+            request_id = %status.request_id,
+            rule_id = status.rule_id,
+        );
+        return;
+    };
+    if existing.client_name != identity.client_name {
+        warn!(
+            event = "client.rule_status_wrong_client",
+            client_name = %identity.client_name,
+            rule_owner = %existing.client_name,
+            request_id = %status.request_id,
+            rule_id = status.rule_id,
+        );
+        return;
+    }
+    let outcome = forward_proto::v1::ActivationOutcome::try_from(status.outcome)
+        .unwrap_or(forward_proto::v1::ActivationOutcome::Unspecified);
+    match outcome {
+        forward_proto::v1::ActivationOutcome::Activated => {
+            let _ = state.rules.mark_active(rule_id).await;
+        }
+        forward_proto::v1::ActivationOutcome::Failed => {
+            let reason = if status.reason.is_empty() {
+                "unspecified".to_string()
+            } else {
+                status.reason.clone()
+            };
+            let _ = state.rules.mark_failed(rule_id, reason).await;
+        }
+        forward_proto::v1::ActivationOutcome::Removed
+        | forward_proto::v1::ActivationOutcome::Unspecified => {
+            info!(
+                event = "client.rule_status_unmatched",
+                client_name = %identity.client_name,
+                request_id = %status.request_id,
+                rule_id = status.rule_id,
+            );
+            return;
+        }
+    }
+    if let Some(rule) = state.rules.get(rule_id).await {
+        let _ = state.rule_store.upsert_rule(&rule);
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -457,6 +818,14 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::ConnectedClients;
+    use crate::state::AppState;
+    use crate::store::Store;
+    use crate::store::operator_store::SqliteOperatorStore;
+    use crate::store::token_store::SqliteTokenStore;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     // 004-udp-forward T009. The end-to-end Hello-gated path is exercised
     // through the existing register/handle integration suites in
@@ -512,5 +881,426 @@ mod tests {
         // HashSet iteration is non-deterministic; the rendering must
         // be stable so log scrapers can pin on it.
         assert_eq!(caps_for_log(&caps), vec!["TCP", "UDP"]);
+    }
+
+    fn build_state() -> Arc<AppState> {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+        operator_store
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        Arc::new(
+            AppState::new(
+                tokens,
+                operator_store,
+                ConnectedClients::default(),
+                "127.0.0.1:0",
+                "deadbeef",
+                "-----BEGIN CERTIFICATE-----\n",
+                16,
+                store,
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn register_client(
+        state: &Arc<AppState>,
+        name: &str,
+        version: &str,
+    ) -> (
+        ClientIdentity,
+        OutboundSender,
+        mpsc::Receiver<Result<ServerMessage, Status>>,
+    ) {
+        let client_name = forward_core::ClientName::new(name.to_string()).unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let waiters: StatusWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let session_id = state
+            .clients
+            .register(
+                client_name.clone(),
+                None,
+                CancellationToken::new(),
+                tx.clone(),
+                waiters,
+            )
+            .await;
+        let mut caps = HashSet::new();
+        caps.insert(Protocol::Tcp);
+        state
+            .clients
+            .set_supported_protocols(&client_name, session_id, caps)
+            .await;
+        state
+            .clients
+            .set_client_version(&client_name, session_id, version.to_string())
+            .await;
+        (ClientIdentity { client_name }, tx, rx)
+    }
+
+    #[tokio::test]
+    async fn replay_rules_sends_proxy_protocol_targets_to_capable_client() {
+        let state = build_state();
+        let (identity, outbound, mut rx) = register_client(&state, "edge-replay", "0.10.0").await;
+        let rule = crate::rules::Rule {
+            id: forward_core::RuleId(7),
+            client_name: identity.client_name.clone(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.1".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: crate::rules::Protocol::Tcp,
+            state: crate::rules::RuleState::Active,
+            created_at: chrono::Utc::now(),
+            last_state_change_at: chrono::Utc::now(),
+            owner_user_id: forward_auth::UserId::reserved("alice"),
+            targets: vec![forward_core::RuleTarget {
+                host: "10.0.0.1".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: Some(forward_core::ProxyProtocolVersion::V1),
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: None,
+        };
+        state.rules.hydrate(vec![rule.clone()]).await;
+
+        replay_rules_for_client(&state, &identity, &outbound).await;
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("replay arrives")
+            .expect("message present")
+            .expect("server message");
+        let Some(server_message::Payload::RuleUpdate(update)) = msg.payload else {
+            panic!("expected RuleUpdate");
+        };
+        let rule = update.rule.expect("rule");
+        assert_eq!(rule.targets.len(), 1);
+        assert_eq!(
+            rule.targets[0].proxy_protocol,
+            Some(ProxyProtocolVersion::V1 as i32)
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_rules_marks_incompatible_proxy_rule_failed() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-replay-old", "0.8.0").await;
+        let rule = crate::rules::Rule {
+            id: forward_core::RuleId(8),
+            client_name: identity.client_name.clone(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.1".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: crate::rules::Protocol::Tcp,
+            state: crate::rules::RuleState::Active,
+            created_at: chrono::Utc::now(),
+            last_state_change_at: chrono::Utc::now(),
+            owner_user_id: forward_auth::UserId::reserved("alice"),
+            targets: vec![forward_core::RuleTarget {
+                host: "10.0.0.1".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: Some(forward_core::ProxyProtocolVersion::V1),
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: None,
+        };
+        state.rules.hydrate(vec![rule]).await;
+
+        replay_rules_for_client(&state, &identity, &outbound).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "incompatible rule should not replay"
+        );
+        let loaded = state
+            .rules
+            .get(forward_core::RuleId(8))
+            .await
+            .expect("rule");
+        match loaded.state {
+            crate::rules::RuleState::Failed { reason } => {
+                assert_eq!(reason, "proxy_protocol_unsupported_by_client");
+            }
+            other => panic!("expected failed state, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_rules_skips_non_active_rules() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-replay-skip", "0.10.0").await;
+        let now = chrono::Utc::now();
+        state
+            .rules
+            .hydrate(vec![
+                crate::rules::Rule {
+                    id: forward_core::RuleId(9),
+                    client_name: identity.client_name.clone(),
+                    listen_port: 443,
+                    listen_port_end: None,
+                    target_host: "10.0.0.1".into(),
+                    target_port: 8443,
+                    target_port_end: None,
+                    prefer_ipv6: None,
+                    protocol: crate::rules::Protocol::Tcp,
+                    state: crate::rules::RuleState::Failed {
+                        reason: "port_in_use".into(),
+                    },
+                    created_at: now,
+                    last_state_change_at: now,
+                    owner_user_id: forward_auth::UserId::reserved("alice"),
+                    targets: vec![forward_core::RuleTarget {
+                        host: "10.0.0.1".into(),
+                        port: 8443,
+                        priority: 0,
+                        proxy_protocol: None,
+                    }],
+                    health_check_interval_secs: None,
+                    sni_pattern: None,
+                    rate_limit: None,
+                },
+                crate::rules::Rule {
+                    id: forward_core::RuleId(10),
+                    client_name: identity.client_name.clone(),
+                    listen_port: 444,
+                    listen_port_end: None,
+                    target_host: "10.0.0.2".into(),
+                    target_port: 8444,
+                    target_port_end: None,
+                    prefer_ipv6: None,
+                    protocol: crate::rules::Protocol::Tcp,
+                    state: crate::rules::RuleState::Pending,
+                    created_at: now,
+                    last_state_change_at: now,
+                    owner_user_id: forward_auth::UserId::reserved("alice"),
+                    targets: vec![forward_core::RuleTarget {
+                        host: "10.0.0.2".into(),
+                        port: 8444,
+                        priority: 0,
+                        proxy_protocol: None,
+                    }],
+                    health_check_interval_secs: None,
+                    sni_pattern: None,
+                    rate_limit: None,
+                },
+            ])
+            .await;
+
+        replay_rules_for_client(&state, &identity, &outbound).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "non-active rules should not replay"
+        );
+        assert!(matches!(
+            state
+                .rules
+                .get(forward_core::RuleId(9))
+                .await
+                .expect("failed rule")
+                .state,
+            crate::rules::RuleState::Failed { .. }
+        ));
+        assert!(matches!(
+            state
+                .rules
+                .get(forward_core::RuleId(10))
+                .await
+                .expect("pending rule")
+                .state,
+            crate::rules::RuleState::Pending
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsolicited_rule_status_ignores_rules_owned_by_other_client() {
+        let state = build_state();
+        let (identity, _outbound, _rx) = register_client(&state, "edge-a", "0.10.0").await;
+        let other_client = forward_core::ClientName::new("edge-b".to_string()).unwrap();
+        let now = chrono::Utc::now();
+        state
+            .rules
+            .hydrate(vec![crate::rules::Rule {
+                id: forward_core::RuleId(11),
+                client_name: other_client,
+                listen_port: 443,
+                listen_port_end: None,
+                target_host: "10.0.0.1".into(),
+                target_port: 8443,
+                target_port_end: None,
+                prefer_ipv6: None,
+                protocol: crate::rules::Protocol::Tcp,
+                state: crate::rules::RuleState::Active,
+                created_at: now,
+                last_state_change_at: now,
+                owner_user_id: forward_auth::UserId::reserved("alice"),
+                targets: vec![forward_core::RuleTarget {
+                    host: "10.0.0.1".into(),
+                    port: 8443,
+                    priority: 0,
+                    proxy_protocol: None,
+                }],
+                health_check_interval_secs: None,
+                sni_pattern: None,
+                rate_limit: None,
+            }])
+            .await;
+
+        apply_unsolicited_rule_status(
+            &state,
+            &identity,
+            &forward_proto::v1::RuleStatus {
+                request_id: "stale-or-forged".into(),
+                rule_id: 11,
+                outcome: forward_proto::v1::ActivationOutcome::Failed as i32,
+                reason: "forged_failure".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            state
+                .rules
+                .get(forward_core::RuleId(11))
+                .await
+                .expect("other client rule")
+                .state,
+            crate::rules::RuleState::Active
+        ));
+    }
+
+    // ==========================================================
+    //  T029: owner-cap welcome-replay
+    // ==========================================================
+
+    fn cap_envelope() -> forward_core::RateLimit {
+        forward_core::RateLimit {
+            bandwidth_in_bps: Some(1_048_576),
+            bandwidth_out_bps: None,
+            new_connections_per_sec: Some(50),
+            concurrent_connections: Some(10),
+            bandwidth_in_burst: None,
+            bandwidth_out_burst: None,
+            new_connections_burst: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_pushes_set_for_each_persisted_envelope() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-owner-replay", "0.11.0").await;
+        // Seed two cap envelopes for this client.
+        state
+            .owner_caps
+            .upsert(&identity.client_name, "alice", cap_envelope())
+            .await
+            .unwrap();
+        state
+            .owner_caps
+            .upsert(&identity.client_name, "bob", cap_envelope())
+            .await
+            .unwrap();
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        // Drain the receiver and pick up two SET pushes (order is
+        // alphabetical because list_for_client wraps the in-memory
+        // BTreeMap-backed snapshot).
+        let mut owners_seen = std::collections::HashSet::new();
+        for _ in 0..2 {
+            let msg = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .expect("push arrives")
+                .expect("message present")
+                .expect("server message");
+            let Some(server_message::Payload::OwnerRateLimitUpdate(update)) = msg.payload else {
+                panic!("expected OwnerRateLimitUpdate");
+            };
+            assert_eq!(
+                update.action,
+                forward_proto::v1::OwnerRateLimitAction::Set as i32,
+            );
+            assert_eq!(update.client_name, identity.client_name.as_str());
+            assert!(update.rate_limit.is_some());
+            owners_seen.insert(update.owner_id);
+        }
+        assert!(owners_seen.contains("alice"));
+        assert!(owners_seen.contains("bob"));
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_skips_pre_011_clients() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-owner-replay-old", "0.10.5").await;
+        state
+            .owner_caps
+            .upsert(&identity.client_name, "alice", cap_envelope())
+            .await
+            .unwrap();
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        // No OwnerRateLimitUpdate must reach the wire — pre-0.11
+        // clients have no concept of the new oneof variant.
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "no message should arrive within the timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_noop_when_no_envelopes() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-owner-replay-empty", "0.11.0").await;
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "no message should arrive when no caps exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_isolates_by_client_name() {
+        let state = build_state();
+        let (identity, outbound, mut rx) = register_client(&state, "edge-target", "0.11.0").await;
+        // Cap on a DIFFERENT client must not leak.
+        let other = forward_core::ClientName::new("edge-other".to_string()).unwrap();
+        state
+            .owner_caps
+            .upsert(&other, "alice", cap_envelope())
+            .await
+            .unwrap();
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "cap envelope on another client must not be replayed",
+        );
     }
 }

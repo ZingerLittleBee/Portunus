@@ -489,6 +489,7 @@ async fn plant_active_legacy(
             Vec::new(),
             None,
             None,
+            None,
         )
         .await
         .expect("plant_active_legacy push");
@@ -533,6 +534,7 @@ async fn overlap_matrix_legacy_legacy_collides() {
             16,
             UserId::superadmin(),
             Vec::new(),
+            None,
             None,
             None,
         )
@@ -686,6 +688,7 @@ async fn http_legacy_listener_refuses_sni_candidate() {
             16,
             UserId::superadmin(),
             Vec::new(),
+            None,
             None,
             None,
         )

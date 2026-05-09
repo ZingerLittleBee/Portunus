@@ -173,6 +173,43 @@ pub enum OperatorError {
     /// Maps to HTTP 400 / exit 3.
     #[error("{code}: {message}")]
     SniValidation { code: &'static str, message: String },
+    #[error(
+        "proxy_protocol_unsupported_by_client: client {client_name} (version {client_version}) requires >= 0.10.0"
+    )]
+    ProxyProtocolUnsupportedByClient {
+        client_name: ClientName,
+        client_version: String,
+    },
+    #[error("{code}: {message}")]
+    ProxyProtocolValidation { code: &'static str, message: String },
+
+    /// 011-rate-limiting-qos T008 / FR-006: capability gate. Returned
+    /// when the operator pushes a rule with any `rate_limit` field set
+    /// — or mutates a `(client, owner)` rate-limit envelope — toward
+    /// a forward-client whose last-known `Hello.client_version` is
+    /// `< 0.11.0`. Pre-0.11 clients silently drop the field on decode
+    /// and would activate an uncapped rule, violating the operator-
+    /// visible contract.
+    ///
+    /// Maps to HTTP 422 / `rate_limit_unsupported_by_client`.
+    #[error(
+        "rate_limit_unsupported_by_client: client {client_name} (version {client_version}) requires >= 0.11.0"
+    )]
+    RateLimitUnsupportedByClient {
+        client_name: ClientName,
+        client_version: String,
+    },
+    /// 011-rate-limiting-qos T008 / FR-020: `rate_limit` validation
+    /// failure. The `code` carries the operator-api stable
+    /// subcategory:
+    /// - `validation.rate_limit_cap_zero`
+    /// - `validation.rate_limit_burst_without_rate`
+    /// - `validation.rate_limit_burst_range`
+    /// - `validation.rate_limit_burst_unsupported`
+    ///
+    /// Maps to HTTP 400 / exit 3.
+    #[error("{code}: {message}")]
+    RateLimitValidation { code: &'static str, message: String },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -209,7 +246,13 @@ impl OperatorError {
             // 009-tls-sni-routing: SNI capability gate mirrors the
             // 007 multi-target gate (HTTP 422 / exit 3).
             | Self::SniUnsupportedByClient { .. }
-            | Self::SniValidation { .. } => 3,
+            | Self::SniValidation { .. }
+            | Self::ProxyProtocolUnsupportedByClient { .. }
+            | Self::ProxyProtocolValidation { .. }
+            // 011-rate-limiting-qos: rate-limit capability + validation
+            // gates share exit 3 with the surrounding family.
+            | Self::RateLimitUnsupportedByClient { .. }
+            | Self::RateLimitValidation { .. } => 3,
             Self::ClientNotConnected(_) => 4,
             // 009-tls-sni-routing: SNI conflicts share exit 5 with
             // PortInUse (the closest analogue: rule shape rejected
@@ -259,7 +302,10 @@ impl OperatorError {
             // `InvalidTargetHost` and `SniValidation` (below) both
             // store an operator-api-stable subcode in their `code`
             // field; merging the arms keeps the dispatch trivial.
-            Self::InvalidTargetHost { code, .. } | Self::SniValidation { code, .. } => code,
+            Self::InvalidTargetHost { code, .. }
+            | Self::SniValidation { code, .. }
+            | Self::ProxyProtocolValidation { code, .. }
+            | Self::RateLimitValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -289,6 +335,9 @@ impl OperatorError {
             Self::SniFallbackDuplicate { .. } => "conflict.sni_fallback_duplicate",
             Self::LegacyToSniUnsupported { .. } => "conflict.legacy_to_sni_unsupported",
             Self::SniUnsupportedByClient { .. } => "sni_unsupported_by_client",
+            Self::ProxyProtocolUnsupportedByClient { .. } => "proxy_protocol_unsupported_by_client",
+            // 011-rate-limiting-qos (operator-api.md §1.x):
+            Self::RateLimitUnsupportedByClient { .. } => "rate_limit_unsupported_by_client",
         }
     }
 }
@@ -631,6 +680,10 @@ pub async fn push_rule(
             identity.user_id.clone(),
         )
         .await?;
+    state
+        .rule_store
+        .upsert_rule(&rule)
+        .map_err(|e| OperatorError::ActivationFailed(format!("persist_rule: {e}")))?;
     let request_id = RequestId::new().to_string();
     let (tx, rx) = oneshot::channel();
     {
@@ -690,6 +743,15 @@ pub async fn push_rule(
                 // never set sni_pattern. The new SNI-aware push path
                 // (added in T026/T043) plumbs this from rule.sni_pattern.
                 sni_pattern: None,
+                // 011-rate-limiting-qos: legacy push helpers never set
+                // a cap. The cap-aware push path (T015/T016) plumbs
+                // this from rule.rate_limit.
+                rate_limit: None,
+                // owner_id stays None on the wire when there's no
+                // v0.11 cap signal (per-rule cap or owner cap).
+                // Byte-stable with v0.10 — see proto_rule_from_rule
+                // for the cap-aware emit path.
+                owner_id: None,
             }),
         })),
     };
@@ -698,6 +760,7 @@ pub async fn push_rule(
         // client_not_connected. Drop the pending entry so re-push can succeed
         // after a reconnect.
         let _ = state.rules.remove(rule.id).await;
+        let _ = state.rule_store.delete_rule(rule.id);
         let mut guard = waiters.lock().await;
         guard.remove(&request_id);
         return Err(OperatorError::ClientNotConnected(client_name));
@@ -710,6 +773,9 @@ pub async fn push_rule(
             match outcome {
                 ActivationOutcome::Activated => {
                     state.rules.mark_active(rule.id).await?;
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     info!(
                         event = "audit.rule_push",
                         outcome = "activated",
@@ -730,6 +796,9 @@ pub async fn push_rule(
                         status.reason.clone()
                     };
                     state.rules.mark_failed(rule.id, reason.clone()).await.ok();
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     warn!(
                         event = "audit.rule_push",
                         outcome = "failed",
@@ -798,6 +867,11 @@ pub async fn push_rule_multi_target(
     // lowercased by the HTTP handler (operator::http::post_rules)
     // before reaching this helper.
     sni_pattern: Option<String>,
+    // 011-rate-limiting-qos T016: optional per-rule cap envelope.
+    // Already validated by `forward_core::rate_limit::validate` and
+    // capability-gated by the HTTP handler before reaching this
+    // helper. None preserves v0.10 byte-stable wire shape.
+    rate_limit: Option<forward_core::RateLimit>,
 ) -> Result<Rule, OperatorError> {
     debug_assert!(
         !targets.is_empty(),
@@ -847,8 +921,13 @@ pub async fn push_rule_multi_target(
             targets.clone(),
             health_check_interval_secs,
             sni_pattern,
+            rate_limit,
         )
         .await?;
+    state
+        .rule_store
+        .upsert_rule(&rule)
+        .map_err(|e| OperatorError::ActivationFailed(format!("persist_rule: {e}")))?;
     let request_id = RequestId::new().to_string();
     let (tx, rx) = oneshot::channel();
     {
@@ -876,6 +955,14 @@ pub async fn push_rule_multi_target(
             host: t.host.clone(),
             port: u32::from(t.port),
             priority: t.priority,
+            proxy_protocol: t.proxy_protocol.map(|mode| match mode {
+                forward_core::ProxyProtocolVersion::V1 => {
+                    forward_proto::v1::ProxyProtocolVersion::V1 as i32
+                }
+                forward_core::ProxyProtocolVersion::V2 => {
+                    forward_proto::v1::ProxyProtocolVersion::V2 as i32
+                }
+            }),
         })
         .collect();
     let update = ServerMessage {
@@ -905,11 +992,31 @@ pub async fn push_rule_multi_target(
                 // refused upstream by the capability gate, so this is
                 // safe to send unconditionally.
                 sni_pattern: rule.sni_pattern.clone(),
+                // 011-rate-limiting-qos T016: forward the validated
+                // cap envelope to the data plane. Pre-0.11 clients
+                // are refused upstream by the capability gate
+                // (rate_limit_unsupported_by_client), so emitting
+                // here is safe unconditionally.
+                rate_limit: rule
+                    .rate_limit
+                    .as_ref()
+                    .map(crate::grpc::service::rate_limit_to_proto),
+                // 011-rate-limiting-qos T031: emit owner_id alongside
+                // the per-rule cap so the forward-client can resolve
+                // its per-owner limiter (FR-013). Gated on
+                // rate_limit.is_some() preserves byte-stability for
+                // uncapped rules; future owner-cap-presence detection
+                // (T027/T028) will broaden the gate.
+                owner_id: rule
+                    .rate_limit
+                    .as_ref()
+                    .map(|_| rule.owner_user_id.to_string()),
             }),
         })),
     };
     if outbound.send(Ok(update)).await.is_err() {
         let _ = state.rules.remove(rule.id).await;
+        let _ = state.rule_store.delete_rule(rule.id);
         let mut guard = waiters.lock().await;
         guard.remove(&request_id);
         return Err(OperatorError::ClientNotConnected(client_name));
@@ -922,6 +1029,9 @@ pub async fn push_rule_multi_target(
             match outcome {
                 ActivationOutcome::Activated => {
                     state.rules.mark_active(rule.id).await?;
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     info!(
                         event = "audit.rule_push",
                         outcome = "activated",
@@ -943,6 +1053,9 @@ pub async fn push_rule_multi_target(
                         status.reason.clone()
                     };
                     state.rules.mark_failed(rule.id, reason.clone()).await.ok();
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     warn!(
                         event = "audit.rule_push",
                         outcome = "failed",
@@ -992,6 +1105,7 @@ pub async fn push_rule_multi_target(
 /// from the store", not "client confirmed teardown".
 pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, OperatorError> {
     let removed = state.rules.remove(rule_id).await?;
+    let _ = state.rule_store.delete_rule(rule_id);
     let owner = removed.owner_user_id.to_string();
     state
         .stats_cache
@@ -1029,6 +1143,11 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     // 009-tls-sni-routing T015: REMOVE only reads rule_id
                     // on the receiving side; SNI is irrelevant here.
                     sni_pattern: None,
+                    // 011-rate-limiting-qos: REMOVE-only path; caps
+                    // and owner_id are irrelevant — the receiver
+                    // only reads rule_id.
+                    rate_limit: None,
+                    owner_id: None,
                 }),
             })),
         };
@@ -1049,6 +1168,30 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
         rule_id = %rule_id,
         client_name = %removed.client_name,
     );
+    // 011-rate-limiting-qos T027: owner-cap GC sweep. If this was the
+    // owner's last rule on `client_name`, drop their cap envelope so
+    // a subsequent reconnect of the client doesn't re-receive an
+    // OwnerRateLimitUpdate for an owner with zero rules.
+    let rules_remaining = state
+        .rules
+        .list_owned_by(&removed.owner_user_id)
+        .await
+        .into_iter()
+        .filter(|r| r.client_name == removed.client_name)
+        .count();
+    if let Err(e) = state
+        .owner_caps
+        .gc_after_rule_removed(&removed.client_name, owner.as_str(), rules_remaining)
+        .await
+    {
+        warn!(
+            event = "owner_cap.gc_sweep_failed",
+            rule_id = %rule_id,
+            client_name = %removed.client_name,
+            owner_user_id = %owner,
+            error = %e,
+        );
+    }
     Ok(removed)
 }
 

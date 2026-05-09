@@ -15,6 +15,7 @@ pub mod data_dir;
 pub mod grpc;
 pub mod metrics;
 pub mod operator;
+pub mod owner;
 pub mod rules;
 pub mod serve;
 pub mod shutdown;

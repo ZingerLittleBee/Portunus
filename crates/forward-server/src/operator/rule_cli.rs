@@ -87,7 +87,10 @@ fn code_to_exit(code: &str) -> u8 {
         | "invalid_target_host_label_hyphen"
         // 004-udp-forward T018/T034: capability mismatch reuses exit 3
         // (input-validation family) per operator-api.md stability rules.
-        | "unsupported_protocol" => 3,
+        | "unsupported_protocol"
+        | "proxy_protocol_unsupported_by_client"
+        | "validation.proxy_protocol_invalid"
+        | "validation.proxy_protocol_on_unsupported_rule" => 3,
         "client_not_connected" => 4,
         "port_in_use" => 5,
         "activation_failed" => 6,
@@ -113,6 +116,62 @@ struct PushResponse {
     rule_id: u64,
 }
 
+/// 011-rate-limiting-qos T016: per-rule QoS caps as a single struct
+/// so the (already long) `push` signature doesn't grow seven more
+/// positional `Option`s. Each field is independently optional;
+/// absent fields are stripped from the wire body, preserving SC-004
+/// byte stability for v0.10-shaped pushes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RateLimitArgs {
+    pub bandwidth_in_bps: Option<u64>,
+    pub bandwidth_out_bps: Option<u64>,
+    pub new_connections_per_sec: Option<u32>,
+    pub concurrent_connections: Option<u32>,
+    pub bandwidth_in_burst: Option<u64>,
+    pub bandwidth_out_burst: Option<u64>,
+    pub new_connections_burst: Option<u32>,
+}
+
+impl RateLimitArgs {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bandwidth_in_bps.is_none()
+            && self.bandwidth_out_bps.is_none()
+            && self.new_connections_per_sec.is_none()
+            && self.concurrent_connections.is_none()
+            && self.bandwidth_in_burst.is_none()
+            && self.bandwidth_out_burst.is_none()
+            && self.new_connections_burst.is_none()
+    }
+
+    #[must_use]
+    pub fn to_json(self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = self.bandwidth_in_bps {
+            obj.insert("bandwidth_in_bps".into(), v.into());
+        }
+        if let Some(v) = self.bandwidth_out_bps {
+            obj.insert("bandwidth_out_bps".into(), v.into());
+        }
+        if let Some(v) = self.new_connections_per_sec {
+            obj.insert("new_connections_per_sec".into(), v.into());
+        }
+        if let Some(v) = self.concurrent_connections {
+            obj.insert("concurrent_connections".into(), v.into());
+        }
+        if let Some(v) = self.bandwidth_in_burst {
+            obj.insert("bandwidth_in_burst".into(), v.into());
+        }
+        if let Some(v) = self.bandwidth_out_burst {
+            obj.insert("bandwidth_out_burst".into(), v.into());
+        }
+        if let Some(v) = self.new_connections_burst {
+            obj.insert("new_connections_burst".into(), v.into());
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn push(
     endpoint: &str,
@@ -126,6 +185,7 @@ pub fn push(
     targets_json: Option<&str>,
     health_check_interval_secs: Option<u32>,
     sni_pattern: Option<&str>,
+    rate_limit: RateLimitArgs,
 ) -> Result<(), u8> {
     let listen = parse_listen(listen_spec).map_err(|e| {
         eprintln!("error: {e}");
@@ -257,6 +317,14 @@ pub fn push(
     if let Some(sni) = sni_normalised {
         let obj = body.as_object_mut().expect("just built a json object");
         obj.insert("sni_pattern".into(), sni.into());
+    }
+    // 011-rate-limiting-qos T016: emit `rate_limit` only when at
+    // least one cap is set. Empty envelope is omitted entirely so
+    // the wire stays byte-identical to v0.10 for uncapped rules
+    // (SC-004 — wire byte-stability).
+    if !rate_limit.is_empty() {
+        let obj = body.as_object_mut().expect("just built a json object");
+        obj.insert("rate_limit".into(), rate_limit.to_json());
     }
     let resp = apply_auth(client()?.post(&url).json(&body))
         .send()
@@ -631,10 +699,13 @@ fn render_rules_text(rules: &[Rule]) -> String {
     let mut s = String::new();
     // 009-tls-sni-routing T085: SNI column. Rules without an SNI
     // selector render `-` so the column width stays stable.
+    // 011-rate-limiting-qos T016: CAPS column rendered as a compact
+    // summary (e.g., `↓1.0M·≤100`); `-` for uncapped rules so the
+    // legacy v0.10 row layout is preserved by width.
     let _ = writeln!(
         s,
-        "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
-        "ID", "CLIENT", "PORT", "TARGET", "SNI", "STATE"
+        "{:<6} {:<20} {:<6} {:<32} {:<24} {:<18} {:<10}",
+        "ID", "CLIENT", "PORT", "TARGET", "SNI/PROXY", "CAPS", "STATE"
     );
     for r in rules {
         let state = match &r.state {
@@ -643,17 +714,159 @@ fn render_rules_text(rules: &[Rule]) -> String {
             RuleState::Failed { reason } => format!("failed:{reason}"),
             RuleState::Removed => "removed".to_string(),
         };
-        let sni = r.sni_pattern.as_deref().unwrap_or("-");
+        let proxy = r
+            .targets_view()
+            .iter()
+            .filter_map(|target| {
+                target.proxy_protocol.map(|mode| {
+                    let mode = match mode {
+                        forward_core::ProxyProtocolVersion::V1 => "v1",
+                        forward_core::ProxyProtocolVersion::V2 => "v2",
+                    };
+                    format!("{}:{}={mode}", target.host, target.port)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let selector = match (r.sni_pattern.as_deref(), proxy.is_empty()) {
+            (Some(sni), false) => format!("{sni} | {proxy}"),
+            (Some(sni), true) => sni.to_string(),
+            (None, false) => proxy,
+            (None, true) => "-".to_string(),
+        };
+        let caps = render_rate_limit_summary(r.rate_limit.as_ref());
         let _ = writeln!(
             s,
-            "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
+            "{:<6} {:<20} {:<6} {:<32} {:<24} {:<18} {:<10}",
             r.id.0,
             r.client_name,
             r.listen_port,
             format!("{}:{}", r.target_host, r.target_port),
-            sni,
+            selector,
+            caps,
             state,
         );
     }
     s
+}
+
+/// 011-rate-limiting-qos T016: compact one-line summary of a
+/// rate-limit envelope, mirroring the Web UI's `Caps` column. `-`
+/// when every cap is `None` so v0.10 rows stay visually identical.
+fn render_rate_limit_summary(rl: Option<&forward_core::RateLimit>) -> String {
+    let Some(rl) = rl else {
+        return "-".to_string();
+    };
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    if let Some(b) = rl.bandwidth_in_bps {
+        parts.push(format!("↓{}", format_bps(b)));
+    }
+    if let Some(b) = rl.bandwidth_out_bps {
+        parts.push(format!("↑{}", format_bps(b)));
+    }
+    if let Some(c) = rl.new_connections_per_sec {
+        parts.push(format!("{c}/s"));
+    }
+    if let Some(c) = rl.concurrent_connections {
+        parts.push(format!("≤{c}"));
+    }
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join("·")
+    }
+}
+
+fn format_bps(n: u64) -> String {
+    if n >= 1024 * 1024 {
+        // Render as `X.YM` mirroring the Web UI summarizeRateLimit
+        // helper. Compute the tenths digit via integer arithmetic so
+        // we don't trip clippy::cast_precision_loss for `u64 → f64`.
+        let mib = n / (1024 * 1024);
+        let tenths = (n % (1024 * 1024)) * 10 / (1024 * 1024);
+        format!("{mib}.{tenths}M")
+    } else if n >= 1024 {
+        format!("{}K", n / 1024)
+    } else {
+        format!("{n}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_protocol_errors_use_input_validation_exit_code() {
+        for code in [
+            "proxy_protocol_unsupported_by_client",
+            "validation.proxy_protocol_invalid",
+            "validation.proxy_protocol_on_unsupported_rule",
+        ] {
+            assert_eq!(code_to_exit(code), 3, "{code}");
+        }
+    }
+
+    /// 011-rate-limiting-qos T016: list-rules text mode shows a
+    /// compact `CAPS` column. The render mirrors the Web UI's
+    /// `summarizeRateLimit` helper byte-for-byte where possible
+    /// (same `↓1.0M·≤100` style) so operators can flip between the
+    /// CLI and the SPA without re-learning the formatting.
+    #[test]
+    fn render_rate_limit_summary_handles_all_combinations() {
+        use forward_core::RateLimit;
+        // Uncapped → "-" so v0.10 row layout is preserved.
+        assert_eq!(render_rate_limit_summary(None), "-");
+        assert_eq!(render_rate_limit_summary(Some(&RateLimit::default())), "-");
+        // Each cap dimension renders independently.
+        assert_eq!(
+            render_rate_limit_summary(Some(&RateLimit {
+                bandwidth_in_bps: Some(1024 * 1024),
+                ..Default::default()
+            })),
+            "↓1.0M",
+        );
+        assert_eq!(
+            render_rate_limit_summary(Some(&RateLimit {
+                bandwidth_out_bps: Some(2048),
+                ..Default::default()
+            })),
+            "↑2K",
+        );
+        assert_eq!(
+            render_rate_limit_summary(Some(&RateLimit {
+                new_connections_per_sec: Some(50),
+                ..Default::default()
+            })),
+            "50/s",
+        );
+        assert_eq!(
+            render_rate_limit_summary(Some(&RateLimit {
+                concurrent_connections: Some(100),
+                ..Default::default()
+            })),
+            "≤100",
+        );
+        // All four together — order matches the Web UI's column.
+        assert_eq!(
+            render_rate_limit_summary(Some(&RateLimit {
+                bandwidth_in_bps: Some(1024 * 1024),
+                bandwidth_out_bps: Some(1024 * 1024),
+                new_connections_per_sec: Some(50),
+                concurrent_connections: Some(100),
+                ..Default::default()
+            })),
+            "↓1.0M·↑1.0M·50/s·≤100",
+        );
+    }
+
+    #[test]
+    fn format_bps_renders_human_units() {
+        assert_eq!(format_bps(500), "500");
+        assert_eq!(format_bps(2048), "2K");
+        assert_eq!(format_bps(1024 * 1024), "1.0M");
+        // 1.5 MB ≈ 1572864 → 1.5M (integer-arithmetic floor on the
+        // tenths digit avoids cast_precision_loss).
+        assert_eq!(format_bps(1024 * 1024 + 512 * 1024), "1.5M");
+    }
 }

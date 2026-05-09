@@ -73,6 +73,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/grants", get(grants::get_grants).post(grants::post_grants))
         .route("/v1/grants/{grant_id}", delete(grants::delete_grant))
+        // 011-rate-limiting-qos T028: per-owner cap endpoints. Nested
+        // under client (Q5) so /v1/clients/{id}/owners is the listing
+        // surface and /v1/clients/{id}/owners/{owner_id}/rate-limit
+        // carries the envelope GET / PUT / DELETE.
+        .route(
+            "/v1/clients/{client_id}/owners",
+            get(crate::operator::owner_cap::get_owners_under_client),
+        )
+        .route(
+            "/v1/clients/{client_id}/owners/{owner_id}/rate-limit",
+            get(crate::operator::owner_cap::get_owner_rate_limit)
+                .put(crate::operator::owner_cap::put_owner_rate_limit)
+                .delete(crate::operator::owner_cap::delete_owner_rate_limit),
+        )
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
@@ -181,6 +195,49 @@ struct PushRuleBody {
     /// `sni_pattern` are rejected with 400 / `validation.sni_on_unsupported_rule`.
     #[serde(default)]
     sni_pattern: Option<String>,
+    /// 011-rate-limiting-qos (FR-001..FR-004, FR-018, FR-020): optional
+    /// per-rule cap envelope. Absent → uncapped on every dimension
+    /// (legacy v0.10 behaviour, byte-identical wire). Present →
+    /// validated by `forward_core::rate_limit::validate` before
+    /// persistence; capability-gated against pre-0.11 clients
+    /// (HTTP 422 / `rate_limit_unsupported_by_client`). All four cap
+    /// dimensions and their burst overrides are independently
+    /// optional; `concurrent_connections_burst` is intentionally
+    /// absent (concurrent caps are hard ceilings, not buckets — the
+    /// reserved-rejection check happens at the operator-API
+    /// boundary, see `RateLimitBody`).
+    #[serde(default)]
+    rate_limit: Option<RateLimitBody>,
+}
+
+/// 011-rate-limiting-qos T016: operator-API request shape for the
+/// per-rule cap envelope. Distinct from `forward_core::RateLimit`
+/// because we accept the reserved
+/// `concurrent_connections_burst` field at the wire level so we
+/// can reject it with the stable subcategory
+/// `validation.rate_limit_burst_unsupported`. The reserved field is
+/// not stored or otherwise plumbed.
+#[derive(Debug, Deserialize)]
+struct RateLimitBody {
+    #[serde(default)]
+    bandwidth_in_bps: Option<u64>,
+    #[serde(default)]
+    bandwidth_out_bps: Option<u64>,
+    #[serde(default)]
+    new_connections_per_sec: Option<u32>,
+    #[serde(default)]
+    concurrent_connections: Option<u32>,
+    #[serde(default)]
+    bandwidth_in_burst: Option<u64>,
+    #[serde(default)]
+    bandwidth_out_burst: Option<u64>,
+    #[serde(default)]
+    new_connections_burst: Option<u32>,
+    /// Reserved for future use (concurrent caps are hard ceilings,
+    /// not token buckets). Any non-null value is rejected with
+    /// `400 validation.rate_limit_burst_unsupported`.
+    #[serde(default)]
+    concurrent_connections_burst: Option<u32>,
 }
 
 /// One entry in the new `targets[]` shape. `priority` defaults to the
@@ -191,6 +248,8 @@ struct TargetBody {
     port: u16,
     #[serde(default)]
     priority: Option<u32>,
+    #[serde(default)]
+    proxy_protocol: Option<String>,
 }
 
 fn default_protocol() -> String {
@@ -221,6 +280,12 @@ struct PushRuleResponse {
     /// identical bodies (`#[serde(skip_serializing_if = "Option::is_none")]`).
     #[serde(skip_serializing_if = "Option::is_none")]
     sni_pattern: Option<String>,
+    /// 011-rate-limiting-qos T016: echo the cap envelope when the
+    /// rule carries one. Omitted when absent so pre-0.11 callers see
+    /// byte-identical bodies. The shape mirrors `forward_core::RateLimit`
+    /// 1:1 — every cap dimension is independently optional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_limit: Option<forward_core::RateLimit>,
 }
 
 async fn post_rules(
@@ -283,8 +348,39 @@ async fn post_rules(
         None
     };
 
+    // 011-rate-limiting-qos T016: parse + validate the optional cap
+    // envelope before any rule mutation. Returns Err with a stable
+    // `validation.rate_limit_*` subcategory on the four documented
+    // failure modes (cap_zero, burst_without_rate, burst_range,
+    // burst_unsupported).
+    let rate_limit = parse_rate_limit_body(body.rate_limit.as_ref())?;
+
     if has_new {
-        return push_multi_target(&state, &identity, &body, listen, timeout, sni_pattern).await;
+        return push_multi_target(
+            &state,
+            &identity,
+            &body,
+            listen,
+            timeout,
+            sni_pattern,
+            rate_limit,
+        )
+        .await;
+    }
+
+    // 011-rate-limiting-qos T016: legacy `target_host` shape does not
+    // currently accept `rate_limit`. Operators who need caps must
+    // migrate to the `targets[]` shape, which is the recommended
+    // form since v0.7. Error early so operators get a clear message
+    // instead of silently dropping the cap.
+    if rate_limit.is_some() {
+        return Err(OperatorError::RateLimitValidation {
+            code: "validation.rate_limit_on_legacy_shape",
+            message:
+                "rate_limit requires the `targets[]` request shape; legacy `target_host`/`target_port` is not supported"
+                    .into(),
+        }
+        .into());
     }
 
     // Legacy single-target shape (v0.6.0).
@@ -348,6 +444,9 @@ async fn post_rules(
             protocol: rule.protocol.as_str().to_string(),
             owner: rule.owner_user_id.to_string(),
             sni_pattern: rule.sni_pattern.clone(),
+            // 011-rate-limiting-qos T016: echo the persisted cap
+            // envelope so operators can confirm what landed.
+            rate_limit: rule.rate_limit.clone(),
         }),
     ))
 }
@@ -363,6 +462,11 @@ async fn push_multi_target(
     listen: PortRange,
     timeout: Duration,
     sni_pattern: Option<String>,
+    // 011-rate-limiting-qos T016: parsed + validated cap envelope
+    // already vetted for cap-zero / burst range / reserved-burst
+    // rejection. Capability gate runs inside this helper alongside
+    // the v0.9 / v0.10 gates.
+    rate_limit: Option<forward_core::RateLimit>,
 ) -> Result<(StatusCode, Json<PushRuleResponse>), ApiError> {
     use crate::operator::rbac;
     use forward_core::rule_target;
@@ -386,12 +490,15 @@ async fn push_multi_target(
     let typed: Vec<forward_core::RuleTarget> = raw_targets
         .iter()
         .enumerate()
-        .map(|(i, t)| forward_core::RuleTarget {
-            host: t.host.clone(),
-            port: t.port,
-            priority: t.priority.unwrap_or(u32::try_from(i).unwrap_or(u32::MAX)),
+        .map(|(i, t)| {
+            Ok(forward_core::RuleTarget {
+                host: t.host.clone(),
+                port: t.port,
+                priority: t.priority.unwrap_or(u32::try_from(i).unwrap_or(u32::MAX)),
+                proxy_protocol: parse_proxy_protocol_version(t.proxy_protocol.as_deref())?,
+            })
         })
-        .collect();
+        .collect::<Result<_, OperatorError>>()?;
 
     // V-T1..V-T4 + V-R5 (FR-001, FR-005).
     rule_target::validate(&typed).map_err(OperatorError::TargetsInvalid)?;
@@ -416,6 +523,14 @@ async fn push_multi_target(
     };
     let grants = state.operator_auth.grants_for(&identity.user_id);
     rbac::enforce_push(identity, &push_req, &grants).map_err(OperatorError::Rbac)?;
+
+    if matches!(proto, ProtocolWire::Udp) && typed.iter().any(|t| t.proxy_protocol.is_some()) {
+        return Err(OperatorError::ProxyProtocolValidation {
+            code: "validation.proxy_protocol_on_unsupported_rule",
+            message: "proxy_protocol is only valid on tcp rules".into(),
+        }
+        .into());
+    }
 
     // R-007: client-version guard. Multi-target push (length >= 2) to
     // a client whose last-known Hello.client_version is < 0.7.0 is
@@ -447,6 +562,44 @@ async fn push_multi_target(
         }
         .into());
     }
+    if typed.iter().any(|t| t.proxy_protocol.is_some()) {
+        let Some(v) = state.clients.client_version_of(&client_name).await else {
+            return Err(OperatorError::ProxyProtocolUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: "unknown".into(),
+            }
+            .into());
+        };
+        if !version_at_least_0_10(&v) {
+            return Err(OperatorError::ProxyProtocolUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: v,
+            }
+            .into());
+        }
+    }
+
+    // 011-rate-limiting-qos T008/T016: rate-limit capability gate. A
+    // rule carrying any `rate_limit` field requires a v0.11+ client;
+    // older clients silently drop `Rule.rate_limit = 12` on decode and
+    // would activate uncapped, violating the operator-visible
+    // contract. An unknown / missing client_version gates conservatively.
+    if rate_limit.is_some() {
+        let Some(v) = state.clients.client_version_of(&client_name).await else {
+            return Err(OperatorError::RateLimitUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: "unknown".into(),
+            }
+            .into());
+        };
+        if !version_at_least_0_11(&v) {
+            return Err(OperatorError::RateLimitUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: v,
+            }
+            .into());
+        }
+    }
 
     // Phase 3 (T022): hand off to the multi-target push helper which
     // emits the new wire shape and waits for activation.
@@ -466,6 +619,7 @@ async fn push_multi_target(
         state.range_rule_max_ports,
         timeout,
         sni_pattern,
+        rate_limit,
     )
     .await?;
     let status = match &rule.state {
@@ -484,6 +638,9 @@ async fn push_multi_target(
             protocol: rule.protocol.as_str().to_string(),
             owner: rule.owner_user_id.to_string(),
             sni_pattern: rule.sni_pattern.clone(),
+            // 011-rate-limiting-qos T016: echo the persisted cap
+            // envelope so operators can confirm what landed.
+            rate_limit: rule.rate_limit.clone(),
         }),
     ))
 }
@@ -544,6 +701,7 @@ async fn push_legacy_with_sni(
         host: target_host.to_string(),
         port: target.start(),
         priority: 0,
+        proxy_protocol: None,
     }];
     forward_core::rule_target::validate(&synth).map_err(OperatorError::TargetsInvalid)?;
 
@@ -563,6 +721,10 @@ async fn push_legacy_with_sni(
         state.range_rule_max_ports,
         timeout,
         Some(sni_pattern),
+        // 011-rate-limiting-qos: legacy `target_host`/`target_port` shape
+        // does not currently carry a `rate_limit` field; capped rules
+        // must use the `targets[]` shape (push_multi_target).
+        None,
     )
     .await?;
     let status = match &rule.state {
@@ -581,6 +743,9 @@ async fn push_legacy_with_sni(
             protocol: rule.protocol.as_str().to_string(),
             owner: rule.owner_user_id.to_string(),
             sni_pattern: rule.sni_pattern.clone(),
+            // 011-rate-limiting-qos T016: echo the persisted cap
+            // envelope so operators can confirm what landed.
+            rate_limit: rule.rate_limit.clone(),
         }),
     ))
 }
@@ -623,6 +788,111 @@ fn version_at_least_0_9(version: &str) -> bool {
     let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     (major, minor) >= (0, 9)
+}
+
+fn version_at_least_0_10(version: &str) -> bool {
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (0, 10)
+}
+
+/// 011-rate-limiting-qos T008: semver-prefix comparison
+/// `version >= 0.11.0` for the rate-limit capability guard
+/// (FR-006). Same parsing semantics as `version_at_least_0_7` —
+/// malformed input gates conservatively. Used by both the HTTP push
+/// handler (T016) and the per-owner cap PUT/DELETE handler (T028).
+pub(crate) fn version_at_least_0_11(version: &str) -> bool {
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (0, 11)
+}
+
+/// 011-rate-limiting-qos T016: convert the operator-API rate-limit
+/// request body into a `forward_core::RateLimit` envelope, performing
+/// the four documented validation checks against the operator-visible
+/// subcategory codes:
+/// - `validation.rate_limit_burst_unsupported` — `concurrent_connections_burst`
+///   is reserved (concurrent caps are hard ceilings, not buckets).
+/// - `validation.rate_limit_cap_zero` — any cap value is 0.
+/// - `validation.rate_limit_burst_without_rate` — a `*_burst` field
+///   was supplied without its companion rate.
+/// - `validation.rate_limit_burst_range` — a `*_burst` value falls
+///   outside `[rate / 100, rate * 60]`.
+///
+/// Returns `Ok(None)` when the operator omitted `rate_limit` from the
+/// body (= uncapped, byte-stable v0.10 path). Returns
+/// `Ok(Some(envelope))` when the body parsed and validated cleanly.
+fn parse_rate_limit_body(
+    body: Option<&RateLimitBody>,
+) -> Result<Option<forward_core::RateLimit>, OperatorError> {
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    // 1. Reserved burst slot — concurrent is a hard ceiling, not a
+    //    bucket; surface a stable subcategory the operator can
+    //    pattern-match on.
+    if body.concurrent_connections_burst.is_some() {
+        return Err(OperatorError::RateLimitValidation {
+            code: "validation.rate_limit_burst_unsupported",
+            message: "concurrent_connections_burst is reserved; concurrent caps are a hard ceiling and cannot be bursted".into(),
+        });
+    }
+    // 2. Project onto the core envelope.
+    let envelope = forward_core::RateLimit {
+        bandwidth_in_bps: body.bandwidth_in_bps,
+        bandwidth_out_bps: body.bandwidth_out_bps,
+        new_connections_per_sec: body.new_connections_per_sec,
+        concurrent_connections: body.concurrent_connections,
+        bandwidth_in_burst: body.bandwidth_in_burst,
+        bandwidth_out_burst: body.bandwidth_out_burst,
+        new_connections_burst: body.new_connections_burst,
+    };
+    // 3. Validate (cap_zero / burst_without_rate / burst_range).
+    forward_core::rate_limit::validate(&envelope).map_err(|e| match e {
+        forward_core::rate_limit::RateLimitError::CapZero { .. } => {
+            OperatorError::RateLimitValidation {
+                code: "validation.rate_limit_cap_zero",
+                message: e.to_string(),
+            }
+        }
+        forward_core::rate_limit::RateLimitError::BurstWithoutRate { .. } => {
+            OperatorError::RateLimitValidation {
+                code: "validation.rate_limit_burst_without_rate",
+                message: e.to_string(),
+            }
+        }
+        forward_core::rate_limit::RateLimitError::BurstRange { .. } => {
+            OperatorError::RateLimitValidation {
+                code: "validation.rate_limit_burst_range",
+                message: e.to_string(),
+            }
+        }
+    })?;
+    Ok(Some(envelope))
+}
+
+fn parse_proxy_protocol_version(
+    raw: Option<&str>,
+) -> Result<Option<forward_core::ProxyProtocolVersion>, OperatorError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "v1" => Ok(Some(forward_core::ProxyProtocolVersion::V1)),
+        "v2" => Ok(Some(forward_core::ProxyProtocolVersion::V2)),
+        other => Err(OperatorError::ProxyProtocolValidation {
+            code: "validation.proxy_protocol_invalid",
+            message: format!("proxy_protocol must be `v1` or `v2`, got `{other}`"),
+        }),
+    }
 }
 
 /// 009-tls-sni-routing T029: validate + lowercase a candidate
@@ -790,6 +1060,7 @@ async fn rule_with_health(state: &Arc<AppState>, rule: Rule) -> serde_json::Valu
             "host": t.host,
             "port": t.port,
             "priority": t.priority,
+            "proxy_protocol": t.proxy_protocol,
             "health": health,
         }));
     }
@@ -936,7 +1207,13 @@ impl From<OperatorError> for ApiError {
             | OperatorError::HealthCheckIntervalOutOfRange { .. }
             // 009-tls-sni-routing T029: sni_pattern grammar / applicability
             // failures share the 400 family.
-            | OperatorError::SniValidation { .. } => StatusCode::BAD_REQUEST,
+            | OperatorError::SniValidation { .. }
+            | OperatorError::ProxyProtocolValidation { .. }
+            // 011-rate-limiting-qos T016: cap envelope validation
+            // failures (cap_zero, burst_without_rate, burst_range,
+            // burst_unsupported, on_legacy_shape) are 400 with stable
+            // `validation.rate_limit_*` codes.
+            | OperatorError::RateLimitValidation { .. } => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_)
             | OperatorError::ActivationFailed(_)
             // 004-udp-forward T019: capability mismatch surfaces as 422
@@ -949,7 +1226,15 @@ impl From<OperatorError> for ApiError {
             | OperatorError::MultiTargetUnsupportedByClient { .. }
             // 009-tls-sni-routing (T028): SNI capability gate mirrors
             // the v0.7 multi-target gate — same semantic class.
-            | OperatorError::SniUnsupportedByClient { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            | OperatorError::SniUnsupportedByClient { .. }
+            | OperatorError::ProxyProtocolUnsupportedByClient { .. }
+            // 011-rate-limiting-qos (T008): rate-limit capability gate
+            // is the same semantic class as the surrounding gates —
+            // client connected but its version cannot honour the new
+            // field. 422 mirrors v0.9 / v0.10.
+            | OperatorError::RateLimitUnsupportedByClient { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
             OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
             // 005-multi-user-rbac: RBAC failures use the auth_layer's

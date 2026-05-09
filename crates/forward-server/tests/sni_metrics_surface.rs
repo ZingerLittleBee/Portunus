@@ -156,7 +156,7 @@ async fn listener_counters_render_with_correct_labels() {
     let client = ClientName::from_str(CLIENT).expect("client");
 
     cache
-        .observe_sni_listener(&client, 443, 4, 3, &metrics)
+        .observe_sni_listener(&client, 443, 4, 3, &[], 0, 0, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -177,14 +177,14 @@ async fn listener_counters_keep_separate_state_per_port() {
     let client = ClientName::from_str(CLIENT).expect("client");
 
     cache
-        .observe_sni_listener(&client, 443, 10, 0, &metrics)
+        .observe_sni_listener(&client, 443, 10, 0, &[], 0, 0, &metrics)
         .await;
     cache
-        .observe_sni_listener(&client, 8443, 7, 0, &metrics)
+        .observe_sni_listener(&client, 8443, 7, 0, &[], 0, 0, &metrics)
         .await;
     // Bumps to port 443 don't leak into port 8443's prev-state.
     cache
-        .observe_sni_listener(&client, 443, 12, 0, &metrics)
+        .observe_sni_listener(&client, 443, 12, 0, &[], 0, 0, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -208,7 +208,7 @@ async fn quiet_listener_does_not_emit_collector_lines() {
     let client = ClientName::from_str(CLIENT).expect("client");
 
     cache
-        .observe_sni_listener(&client, 443, 0, 0, &metrics)
+        .observe_sni_listener(&client, 443, 0, 0, &[], 0, 0, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -244,7 +244,7 @@ async fn metrics_help_lines_describe_sni_collectors() {
         .observe_sni_per_rule(&client, rule_id, OWNER, 1, 1, 1, &metrics)
         .await;
     cache
-        .observe_sni_listener(&client, 443, 1, 1, &metrics)
+        .observe_sni_listener(&client, 443, 1, 1, &[1, 1, 1], 3_000, 1, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -252,11 +252,48 @@ async fn metrics_help_lines_describe_sni_collectors() {
         "forward_tls_sni_route_total",
         "forward_tls_sni_listener_miss_total",
         "forward_tls_sni_listener_parse_failures_total",
+        "forward_tls_client_hello_peek_duration_seconds_bucket",
+        "forward_tls_client_hello_peek_duration_seconds_sum",
+        "forward_tls_client_hello_peek_duration_seconds_count",
         "forward_tls_sni_routes_active",
     ] {
         assert_metric_line(&body, &format!("# HELP {name} "));
         assert_metric_line(&body, &format!("# TYPE {name} "));
     }
+}
+
+#[tokio::test]
+async fn listener_peek_histogram_renders_bucket_sum_and_count() {
+    let metrics = Metrics::new().expect("metrics");
+    let cache = RuleStatsCache::new();
+    let client = ClientName::from_str(CLIENT).expect("client");
+    let buckets = vec![1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4];
+
+    cache
+        .observe_sni_listener(&client, 443, 0, 0, &buckets, 3_750, 4, &metrics)
+        .await;
+
+    let body = render_text(&metrics);
+    assert_metric_line(
+        &body,
+        "forward_tls_client_hello_peek_duration_seconds_bucket{client=\"edge-metrics-test\",le=\"0.0001\",port=\"443\"} 1",
+    );
+    assert_metric_line(
+        &body,
+        "forward_tls_client_hello_peek_duration_seconds_bucket{client=\"edge-metrics-test\",le=\"3\",port=\"443\"} 4",
+    );
+    assert_metric_line(
+        &body,
+        "forward_tls_client_hello_peek_duration_seconds_bucket{client=\"edge-metrics-test\",le=\"+Inf\",port=\"443\"} 4",
+    );
+    assert_metric_line(
+        &body,
+        "forward_tls_client_hello_peek_duration_seconds_sum{client=\"edge-metrics-test\",port=\"443\"} 0.00375",
+    );
+    assert_metric_line(
+        &body,
+        "forward_tls_client_hello_peek_duration_seconds_count{client=\"edge-metrics-test\",port=\"443\"} 4",
+    );
 }
 
 #[tokio::test]

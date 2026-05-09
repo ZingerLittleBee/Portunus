@@ -253,6 +253,104 @@ async fn new_multi_target_push_parses() {
     );
 }
 
+#[tokio::test]
+async fn proxy_protocol_on_udp_rule_rejected() {
+    let f = build_fixture();
+    register_fake_client(&f, "client-a", Some("0.9.0"), true).await;
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            SUPERADMIN_TOKEN,
+            serde_json::json!({
+                "client": "client-a",
+                "listen_port": 30003,
+                "protocol": "udp",
+                "targets": [
+                    {"host": "primary.test", "port": 53, "proxy_protocol": "v1"}
+                ]
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err_code(resp).await,
+        "validation.proxy_protocol_on_unsupported_rule"
+    );
+}
+
+#[tokio::test]
+async fn udp_proxy_protocol_probe_denied_by_rbac_first() {
+    let f = build_fixture();
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": "client-a",
+                "listen_port": 30003,
+                "protocol": "udp",
+                "targets": [
+                    {"host": "primary.test", "port": 53, "proxy_protocol": "v1"}
+                ]
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(err_code(resp).await, "protocol_not_granted");
+}
+
+#[tokio::test]
+async fn proxy_protocol_requires_capable_client_version() {
+    let f = build_fixture();
+    register_fake_client(&f, "client-a", Some("0.9.0"), false).await;
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": "client-a",
+                "listen_port": 30004,
+                "protocol": "tcp",
+                "targets": [
+                    {"host": "primary.test", "port": 443, "proxy_protocol": "v1"}
+                ]
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(err_code(resp).await, "proxy_protocol_unsupported_by_client");
+}
+
+#[tokio::test]
+async fn proxy_protocol_requires_known_client_version() {
+    let f = build_fixture();
+    register_fake_client(&f, "client-a", None, false).await;
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": "client-a",
+                "listen_port": 30004,
+                "protocol": "tcp",
+                "targets": [
+                    {"host": "primary.test", "port": 443, "proxy_protocol": "v1"}
+                ]
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(err_code(resp).await, "proxy_protocol_unsupported_by_client");
+}
+
 // ---------- Rejection: both shapes (FR-004) ---------------------------
 
 #[tokio::test]

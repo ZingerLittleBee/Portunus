@@ -21,6 +21,7 @@
 #![allow(clippy::similar_names)]
 
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant, SystemTime};
@@ -35,6 +36,7 @@ use tracing::{info, warn};
 
 use super::failover::{self, HealthState};
 use super::probe;
+use super::proxy_protocol::{self, ProxyProtocolPrelude};
 use super::range::{self, BindFailure};
 use super::stats::RuleStats;
 use super::udp;
@@ -58,7 +60,7 @@ pub async fn run_tcp<R: Resolve + 'static>(
          Constitution Principle II"
     );
 
-    let listeners = match range::bind_all(&rule.listen_range).await {
+    let listeners = match range::bind_all(&rule.listen_range) {
         Ok(v) => v,
         Err(BindFailure {
             offending_port,
@@ -149,6 +151,16 @@ pub async fn run_tcp<R: Resolve + 'static>(
         let accept_states = Arc::clone(&states);
         let accept_counter = Arc::clone(&target_failovers_total);
         let accept_stats = Arc::clone(&stats);
+        // 011-rate-limiting-qos T019/T030: thread per-rule and per-
+        // owner limiters + accumulators into each multi-target accept
+        // loop. Owner layer (FR-013) is consulted before per-rule.
+        // Same shape as the legacy single-target path so a v0.7+
+        // multi-target rule and a v0.6 single-target rule observe
+        // identical gate semantics.
+        let accept_rate_limiter = rule.rate_limit.clone();
+        let accept_rate_stats = rule.rate_limit_stats.clone();
+        let accept_owner_limiter = rule.owner_rate_limit.clone();
+        let accept_owner_stats = rule.owner_rate_limit_stats.clone();
         let rule_id = rule.rule_id;
         let prefer_ipv6 = rule.prefer_ipv6;
         in_flight.spawn(async move {
@@ -164,6 +176,10 @@ pub async fn run_tcp<R: Resolve + 'static>(
                 accept_cancel,
                 conn_proxy_cancel,
                 accept_stats,
+                accept_rate_limiter,
+                accept_rate_stats,
+                accept_owner_limiter,
+                accept_owner_stats,
             )
             .await;
         });
@@ -200,7 +216,19 @@ async fn accept_loop<R: Resolve + 'static>(
     cancel: CancellationToken,
     proxy_cancel: CancellationToken,
     stats: Arc<RuleStats>,
+    // 011-rate-limiting-qos T019: per-rule cap envelope. None keeps
+    // the byte-identical v0.7 path.
+    rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
+    // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
+    // reject reasons (FR-014).
+    owner_rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<
+        Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
+    >,
 ) {
+    use crate::forwarder::rate_limit::scope::{LayeredAcquire, try_acquire_layered};
     let mut local: JoinSet<()> = JoinSet::new();
     loop {
         tokio::select! {
@@ -210,13 +238,64 @@ async fn accept_loop<R: Resolve + 'static>(
             }
             accept = listener.accept() => match accept {
                 Ok((sock, peer)) => {
+                    // 011-rate-limiting-qos T019/T030: layered gate runs
+                    // BEFORE multi-target selection (FR-010 + FR-013).
+                    // Surplus accepts at either layer get accept-then-
+                    // RST: the socket drops here and the OS sends RST.
+                    let (owner_admit, rule_admit) = match try_acquire_layered(
+                        owner_rate_limiter.as_ref(),
+                        rate_limiter.as_ref(),
+                        false,
+                    ) {
+                        LayeredAcquire::Granted { owner_guard, rule_guard } => {
+                            (owner_guard, rule_guard)
+                        }
+                        LayeredAcquire::OwnerRejected(reason) => {
+                            if let Some(s) = owner_rate_limit_stats.as_ref() {
+                                s.record_reject(reason);
+                            }
+                            tracing::debug!(
+                                event = "rule.rate_limit_reject",
+                                rule_id = %rule_id,
+                                listen_port = listen_port,
+                                peer = %peer,
+                                scope = "owner",
+                                reason = reason.as_metric_label(),
+                                multi_target = true,
+                            );
+                            drop(sock);
+                            continue;
+                        }
+                        LayeredAcquire::RuleRejected(reason) => {
+                            if let Some(s) = rate_limit_stats.as_ref() {
+                                s.record_reject(reason);
+                            }
+                            tracing::debug!(
+                                event = "rule.rate_limit_reject",
+                                rule_id = %rule_id,
+                                listen_port = listen_port,
+                                peer = %peer,
+                                scope = "rule",
+                                reason = reason.as_metric_label(),
+                                multi_target = true,
+                            );
+                            drop(sock);
+                            continue;
+                        }
+                    };
+
                     let conn_cancel = proxy_cancel.clone();
                     let conn_resolver = Arc::clone(&resolver);
                     let conn_targets = targets.clone();
                     let conn_states = Arc::clone(&states);
                     let conn_counter = Arc::clone(&target_failovers_total);
                     let conn_stats = Arc::clone(&stats);
+                    let conn_rate_limiter = rate_limiter.clone();
+                    let conn_rate_stats = rate_limit_stats.clone();
+                    let conn_owner_limiter = owner_rate_limiter.clone();
+                    let conn_owner_stats = owner_rate_limit_stats.clone();
                     local.spawn(async move {
+                        let admit_guards = (owner_admit, rule_admit);
                         handle_connection(
                             sock,
                             peer,
@@ -229,8 +308,13 @@ async fn accept_loop<R: Resolve + 'static>(
                             prefer_ipv6,
                             conn_cancel,
                             conn_stats,
+                            conn_rate_limiter,
+                            conn_rate_stats,
+                            conn_owner_limiter,
+                            conn_owner_stats,
                         )
                         .await;
+                        drop(admit_guards);
                     });
                 }
                 Err(e) => {
@@ -245,6 +329,9 @@ async fn accept_loop<R: Resolve + 'static>(
             }
         }
     }
+
+    drop(listener);
+    while local.join_next().await.is_some() {}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,7 +347,31 @@ async fn handle_connection<R: Resolve>(
     prefer_ipv6: bool,
     shutdown: CancellationToken,
     stats: Arc<RuleStats>,
+    // 011-rate-limiting-qos T020: optional bandwidth limiter +
+    // accumulator. None for uncapped or
+    // connection-only-capped rules — the multi-target path keeps the
+    // byte-stable v0.7 `tokio::io::copy_bidirectional` behaviour.
+    rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
+    // accumulator. None when the owner has no bandwidth caps.
+    owner_rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<
+        Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
+    >,
 ) {
+    let Ok(local_addr) = inbound.local_addr() else {
+        warn!(
+            event = "rule.conn_error",
+            rule_id = %rule_id,
+            listen_port = listen_port,
+            peer = %peer,
+            error = "local_addr_unavailable",
+            multi_target = true,
+        );
+        let _ = inbound.shutdown().await;
+        return;
+    };
     let outbound_result = dial_with_failover(
         rule_id,
         resolver,
@@ -268,6 +379,8 @@ async fn handle_connection<R: Resolve>(
         states,
         target_failovers_total,
         prefer_ipv6,
+        peer,
+        local_addr,
     )
     .await;
     let Some((mut outbound, idx)) = outbound_result else {
@@ -296,11 +409,39 @@ async fn handle_connection<R: Resolve>(
 
     let _guard = ActiveGuard::new(Arc::clone(&stats), listen_port);
 
+    // 011-rate-limiting-qos T020/T030: throttling fork fires when
+    // EITHER per-rule or per-owner has a bandwidth cap. Uncapped
+    // rules with no owner caps keep the byte-stable v0.7 path.
+    let rule_has_bw = rate_limit.as_ref().is_some_and(|l| l.has_bandwidth_cap());
+    let owner_has_bw = owner_rate_limit
+        .as_ref()
+        .is_some_and(|l| l.has_bandwidth_cap());
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             Err(io::Error::other("proxy_cancelled"))
         }
-        result = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {
+        result = async {
+            if rule_has_bw || owner_has_bw {
+                let rule_for_copy = rate_limit
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(
+                        crate::forwarder::rate_limit::scope::RuleRateLimiter::from_envelope(
+                            &forward_core::RateLimit::default(),
+                        )
+                    ));
+                crate::forwarder::rate_limit::copy::copy_bidirectional_with_rate_limit(
+                    &mut inbound,
+                    &mut outbound,
+                    rule_for_copy,
+                    rate_limit_stats.clone(),
+                    owner_rate_limit.clone(),
+                    owner_rate_limit_stats.clone(),
+                )
+                .await
+            } else {
+                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+            }
+        } => {
             result
         }
     };
@@ -354,6 +495,7 @@ async fn handle_connection<R: Resolve>(
 /// "highest-priority gets attempted first" guarantee and naturally
 /// handles the "all-Failed → still attempt index 0" fallback (the
 /// selector returns 0 in that case, and we walk 1..n if 0 fails).
+#[allow(clippy::too_many_arguments)]
 async fn dial_with_failover<R: Resolve>(
     rule_id: RuleId,
     resolver: &LiveResolver<R>,
@@ -361,6 +503,8 @@ async fn dial_with_failover<R: Resolve>(
     states: &[tokio::sync::Mutex<HealthState>],
     target_failovers_total: &AtomicU64,
     prefer_ipv6: bool,
+    downstream_peer: SocketAddr,
+    downstream_local: SocketAddr,
 ) -> Option<(TcpStream, usize)> {
     debug_assert_eq!(targets.len(), states.len());
 
@@ -399,7 +543,31 @@ async fn dial_with_failover<R: Resolve>(
         let now = Instant::now();
         let wall = SystemTime::now();
         match dial {
-            Ok((sock, _source)) => {
+            Ok((mut sock, _source)) => {
+                if let Some(mode) = candidate.spec.proxy_protocol
+                    && let Err(error) = write_proxy_protocol_prelude(
+                        &mut sock,
+                        mode,
+                        downstream_peer,
+                        downstream_local,
+                    )
+                    .await
+                {
+                    states[idx]
+                        .lock()
+                        .await
+                        .record_failure(now, wall, target_failovers_total);
+                    warn!(
+                        event = "rule.target.proxy_protocol_write_failed",
+                        rule_id = %rule_id,
+                        target_index = idx,
+                        target_host = %candidate.spec.host,
+                        target_port = candidate.spec.port,
+                        proxy_protocol = ?mode,
+                        error = %error,
+                    );
+                    continue;
+                }
                 states[idx]
                     .lock()
                     .await
@@ -428,6 +596,23 @@ async fn dial_with_failover<R: Resolve>(
         }
     }
     None
+}
+
+async fn write_proxy_protocol_prelude(
+    outbound: &mut TcpStream,
+    version: forward_core::ProxyProtocolVersion,
+    source: SocketAddr,
+    destination: SocketAddr,
+) -> io::Result<()> {
+    proxy_protocol::write_prelude(
+        outbound,
+        ProxyProtocolPrelude {
+            version,
+            source,
+            destination,
+        },
+    )
+    .await
 }
 
 /// 007-multi-target-failover (T024): multi-target UDP entry point.
@@ -543,6 +728,10 @@ pub async fn run_udp<R: Resolve + 'static>(
         let task_targets = Arc::clone(&targets);
         let task_states = Arc::clone(&states);
         let task_counter = Arc::clone(&target_failovers_total);
+        let task_rate_limit = rule.rate_limit.clone();
+        let task_rate_limit_stats = rule.rate_limit_stats.clone();
+        let task_owner_rate_limit = rule.owner_rate_limit.clone();
+        let task_owner_rate_limit_stats = rule.owner_rate_limit_stats.clone();
         tasks.spawn(async move {
             udp::run_listener_multi_target(
                 rule_id,
@@ -556,6 +745,10 @@ pub async fn run_udp<R: Resolve + 'static>(
                 task_stats,
                 task_resolver,
                 task_cancel,
+                task_rate_limit,
+                task_rate_limit_stats,
+                task_owner_rate_limit,
+                task_owner_rate_limit_stats,
             )
             .await;
         });

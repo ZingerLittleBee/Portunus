@@ -1,10 +1,10 @@
 //! Server-side rule registry.
 //!
-//! Owns the authoritative state of every forwarding rule. The store is
-//! purely in-memory (rules are not persisted across restarts — see
-//! `data-model.md` § Rule, "Storage"). State transitions follow Q4 of the
-//! clarifications: `Failed` is a terminal-ish state that blocks reuse of
-//! `(client_name, listen_port)` until an explicit `remove-rule`.
+//! Owns the authoritative runtime state of every forwarding rule. The
+//! operator path mirrors this state into the SQLite rule store so active
+//! rules can be replayed after a server restart. `Failed` is terminal-ish
+//! for port reuse: it blocks `(client_name, listen_port)` until an explicit
+//! `remove-rule`.
 //!
 //! Range support (002-port-range-forward): rules may now span a
 //! contiguous listen-port range. Single-port rules are the degenerate
@@ -140,6 +140,19 @@ pub struct Rule {
     /// HTTP handler before persistence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sni_pattern: Option<String>,
+
+    /// 011-rate-limiting-qos: optional per-rule cap envelope
+    /// (`Rule.rate_limit = 12`). `None` means uncapped on every
+    /// dimension — the legacy v0.10 hot path applies and the wire
+    /// shape stays byte-identical to v0.10.
+    ///
+    /// Validation lives in `forward_core::rate_limit::validate` and
+    /// is run by the operator HTTP handler before persistence; the
+    /// capability gate (`rate_limit_unsupported_by_client`) refuses
+    /// to push a non-`None` envelope to a forward-client whose
+    /// last-known `Hello.client_version` is `< 0.11.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<forward_core::RateLimit>,
 }
 
 impl crate::operator::rbac::HasOwner for Rule {
@@ -209,6 +222,7 @@ impl Rule {
                 host: self.target_host.clone(),
                 port: self.target_port,
                 priority: 0,
+                proxy_protocol: None,
             }]
         } else {
             self.targets.clone()
@@ -399,6 +413,7 @@ impl ServerRuleStore {
             Vec::new(),
             None,
             sni_pattern,
+            None,
         )
         .await
     }
@@ -437,6 +452,7 @@ impl ServerRuleStore {
             Vec::new(),
             None,
             None,
+            None,
         )
         .await
     }
@@ -464,6 +480,11 @@ impl ServerRuleStore {
         targets: Vec<forward_core::RuleTarget>,
         health_check_interval_secs: Option<u32>,
         sni_pattern: Option<String>,
+        // 011-rate-limiting-qos T015/T016: optional per-rule cap
+        // envelope. Already validated by the operator HTTP handler
+        // (`forward_core::rate_limit::validate`) before reaching this
+        // helper. None preserves v0.10 byte-stable wire shape.
+        rate_limit: Option<forward_core::RateLimit>,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
         let (listen, target) =
@@ -648,6 +669,10 @@ impl ServerRuleStore {
             targets,
             health_check_interval_secs,
             sni_pattern,
+            // 011-rate-limiting-qos T015/T016: caps received from the
+            // operator HTTP handler land here. None on a legacy push
+            // preserves the v0.10 hot path byte-for-byte.
+            rate_limit,
         };
         guard
             .by_client_listen_start
@@ -663,27 +688,34 @@ impl ServerRuleStore {
     pub async fn mark_active(&self, id: RuleId) -> Result<(), RuleStoreError> {
         let mut guard = self.inner.write().await;
         let rule = guard.rules.get_mut(&id).ok_or(RuleStoreError::NotFound)?;
-        match rule.state {
-            RuleState::Pending => {
-                rule.state = RuleState::Active;
-                rule.last_state_change_at = Utc::now();
-                Ok(())
-            }
-            _ => Err(RuleStoreError::InvalidTransition),
+        if matches!(rule.state, RuleState::Removed) {
+            return Err(RuleStoreError::InvalidTransition);
         }
+        rule.state = RuleState::Active;
+        rule.last_state_change_at = Utc::now();
+        Ok(())
     }
 
     pub async fn mark_failed(&self, id: RuleId, reason: String) -> Result<(), RuleStoreError> {
         let mut guard = self.inner.write().await;
         let rule = guard.rules.get_mut(&id).ok_or(RuleStoreError::NotFound)?;
-        match rule.state {
-            RuleState::Pending => {
-                rule.state = RuleState::Failed { reason };
-                rule.last_state_change_at = Utc::now();
-                Ok(())
-            }
-            _ => Err(RuleStoreError::InvalidTransition),
+        if matches!(rule.state, RuleState::Removed) {
+            return Err(RuleStoreError::InvalidTransition);
         }
+        rule.state = RuleState::Failed { reason };
+        rule.last_state_change_at = Utc::now();
+        Ok(())
+    }
+
+    pub async fn mark_pending(&self, id: RuleId) -> Result<(), RuleStoreError> {
+        let mut guard = self.inner.write().await;
+        let rule = guard.rules.get_mut(&id).ok_or(RuleStoreError::NotFound)?;
+        if matches!(rule.state, RuleState::Removed) {
+            return Err(RuleStoreError::InvalidTransition);
+        }
+        rule.state = RuleState::Pending;
+        rule.last_state_change_at = Utc::now();
+        Ok(())
     }
 
     /// Remove the rule and free its conflict-index entry. Returns
@@ -712,6 +744,23 @@ impl ServerRuleStore {
 
     pub async fn get(&self, id: RuleId) -> Option<Rule> {
         self.inner.read().await.rules.get(&id).cloned()
+    }
+
+    pub async fn hydrate(&self, rules: Vec<Rule>) {
+        let mut guard = self.inner.write().await;
+        let mut max_id = self.next_id.load(Ordering::Relaxed);
+        for rule in rules {
+            max_id = max_id.max(rule.id.0.saturating_add(1));
+            guard
+                .by_client_listen_start
+                .entry(rule.client_name.clone())
+                .or_default()
+                .entry(rule.listen_port)
+                .or_default()
+                .push(rule.id);
+            guard.rules.insert(rule.id, rule);
+        }
+        self.next_id.store(max_id, Ordering::Relaxed);
     }
 
     /// 005-multi-user-rbac T036: snapshot of every rule owned by `user_id`.
@@ -845,18 +894,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_cannot_become_failed_or_active_again() {
+    async fn active_can_be_replayed_or_fail_during_replay() {
         let store = ServerRuleStore::new();
         let r = push_one(&store).await;
         store.mark_active(r.id).await.unwrap();
-        assert!(matches!(
-            store.mark_active(r.id).await,
-            Err(RuleStoreError::InvalidTransition)
-        ));
-        assert!(matches!(
-            store.mark_failed(r.id, "x".into()).await,
-            Err(RuleStoreError::InvalidTransition)
-        ));
+        store.mark_active(r.id).await.unwrap();
+        let active = store.get(r.id).await.unwrap();
+        assert!(matches!(active.state, RuleState::Active));
+
+        store.mark_failed(r.id, "x".into()).await.unwrap();
+        let failed = store.get(r.id).await.unwrap();
+        assert!(matches!(failed.state, RuleState::Failed { reason } if reason == "x"));
     }
 
     #[tokio::test]

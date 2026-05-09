@@ -22,7 +22,7 @@
 //!   * W-5: a v0.7 RuleStats with both new fields populated round-trips; a
 //!     v0.6.0-shaped RuleStats (defaults) decodes identically.
 
-use forward_proto::v1::{PerTargetStats, Protocol, Rule, RuleStats, Target};
+use forward_proto::v1::{PerTargetStats, Protocol, ProxyProtocolVersion, Rule, RuleStats, Target};
 use prost::Message;
 
 // ----- W-1 / W-4 / W-6: single-target byte-identity ------------------------
@@ -43,6 +43,8 @@ fn v06_single_target_rule_emits_no_new_field_tags() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -82,6 +84,7 @@ fn v06_single_target_rule_stats_emits_no_new_field_tags() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
 
@@ -121,15 +124,19 @@ fn multi_target_rule_roundtrips() {
                 host: "primary.example.com".into(),
                 port: 80,
                 priority: 0,
+                proxy_protocol: None,
             },
             Target {
                 host: "secondary.example.com".into(),
                 port: 80,
                 priority: 1,
+                proxy_protocol: None,
             },
         ],
         health_check_interval_secs: 30,
         sni_pattern: None,
+        rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -159,9 +166,12 @@ fn multi_target_rule_with_legacy_fields_clear_keeps_back_compat_shape() {
             host: "a.test".into(),
             port: 80,
             priority: 0,
+            proxy_protocol: None,
         }],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -231,6 +241,7 @@ fn rule_stats_per_target_roundtrips() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");
@@ -251,9 +262,27 @@ fn target_message_roundtrips_with_priority_zero() {
         host: "primary.example.com".into(),
         port: 80,
         priority: 0,
+        proxy_protocol: None,
     };
     let bytes = t.encode_to_vec();
     let decoded = Target::decode(bytes.as_slice()).expect("decode");
     assert_eq!(decoded, t);
     assert_eq!(decoded.priority, 0);
+}
+
+#[test]
+fn target_message_roundtrips_with_proxy_protocol() {
+    let t = Target {
+        host: "proxy.example.com".into(),
+        port: 443,
+        priority: 0,
+        proxy_protocol: Some(ProxyProtocolVersion::V2 as i32),
+    };
+    let bytes = t.encode_to_vec();
+    let decoded = Target::decode(bytes.as_slice()).expect("decode");
+    assert_eq!(decoded, t);
+    assert_eq!(
+        ProxyProtocolVersion::try_from(decoded.proxy_protocol.expect("field present")).ok(),
+        Some(ProxyProtocolVersion::V2)
+    );
 }

@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "forward-auth"
-version = "0.9.0"
+version = "0.11.0"
 dependencies = [
  "base64",
  "bitflags",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "forward-client"
-version = "0.9.0"
+version = "0.11.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -748,6 +748,7 @@ dependencies = [
  "forward-core",
  "forward-proto",
  "hickory-resolver",
+ "nix",
  "prost",
  "rand 0.8.6",
  "rustls",
@@ -768,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "forward-core"
-version = "0.9.0"
+version = "0.11.0"
 dependencies = [
  "blake3",
  "serde",
@@ -784,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "forward-e2e"
-version = "0.9.0"
+version = "0.11.0"
 dependencies = [
  "assert_cmd",
  "forward-auth",
@@ -799,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "forward-proto"
-version = "0.9.0"
+version = "0.11.0"
 dependencies = [
  "prost",
  "tonic",
@@ -809,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "forward-server"
-version = "0.9.0"
+version = "0.11.0"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -1644,6 +1645,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1686,6 +1696,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use forward_core::{PortRange, RuleId};
 use forward_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, PerPortStats as ProtoPerPortStats,
-    PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction, RuleStats as ProtoRuleStats,
-    RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport, client_message,
-    control_client::ControlClient, server_message,
+    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction,
+    PerPortStats as ProtoPerPortStats, PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction,
+    RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
+    client_message, control_client::ControlClient, server_message,
 };
 use rand::Rng;
 use thiserror::Error;
@@ -219,6 +219,25 @@ pub async fn run_with_reconnect(
         }
     };
 
+    // 011-rate-limiting-qos T031: per-owner registry lives for the
+    // entire process lifetime — owner caps are an operator-driven
+    // tenant-isolation control and MUST survive control-plane
+    // reconnects. The server re-pushes the current owner state on
+    // reconnect (mirroring the rule-replay convention from v0.1.0)
+    // so a stale entry would be overwritten on the next push.
+    let owner_rate_limit_scope =
+        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
+    // 011-rate-limiting-qos T032: per-owner stats registry parallels
+    // the limiter registry. Aggregation across rules sharing the same
+    // owner happens here — multiple rules call `get_or_create` for
+    // the same OwnerId and increment one shared counter set, which
+    // surfaces as a single `OwnerRateLimitStats` entry on
+    // `StatsReport.owner_rate_limit_stats` (FR-014). Lives for the
+    // process lifetime so cumulative counters persist across
+    // reconnects.
+    let owner_rate_limit_stats_registry =
+        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new());
+
     let mut attempt: u32 = 0;
     let max_delay = Duration::from_secs(cfg.max_delay_secs);
     loop {
@@ -232,6 +251,8 @@ pub async fn run_with_reconnect(
                 pump(
                     session,
                     Arc::clone(&resolver),
+                    Arc::clone(&owner_rate_limit_scope),
+                    Arc::clone(&owner_rate_limit_stats_registry),
                     &cancel,
                     cfg.drain_timeout,
                     cfg.stats_report_interval,
@@ -291,11 +312,25 @@ struct RuleSlot {
     /// stats reporter can emit per-target host/port/priority alongside
     /// the per-target HealthState snapshot.
     targets_view: Vec<crate::forwarder::MultiTarget>,
+    /// 011-rate-limiting-qos (T022): per-rule rate-limit accumulator.
+    /// `Some` for capped rules; the periodic stats reporter calls
+    /// `drain_to_proto()` and stamps the result onto
+    /// `RuleStats.rate_limit`. `None` for uncapped rules — the wire
+    /// keeps proto3 default-stripping semantics so v0.10 readers see
+    /// an unchanged byte stream (T005).
+    rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 011-rate-limiting-qos (T019): the limiter holding the
+    /// `active_connections` gauge. The stats drainer mirrors the gauge
+    /// onto the accumulator before each report so the wire snapshot
+    /// reflects the limiter's source-of-truth count.
+    rate_limit_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
 }
 
 async fn pump(
     mut session: LiveSession,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
+    owner_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
+    owner_rate_limit_stats: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
     cancel: &CancellationToken,
     drain_timeout: Duration,
     stats_report_interval: Duration,
@@ -319,7 +354,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs).await;
+                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &owner_rate_limit_scope, &owner_rate_limit_stats, &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -333,7 +368,7 @@ async fn pump(
                 }
             }
             _ = stats_tick.tick() => {
-                send_stats_report(&rules, &port_groups, &session.outbound).await;
+                send_stats_report(&rules, &port_groups, &owner_rate_limit_stats, &session.outbound).await;
             }
         }
     }
@@ -361,19 +396,33 @@ async fn pump(
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-async fn handle_server_message(
+fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
     port_groups: &mut PortGroupManager,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
+    owner_rate_limit_scope: &crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+    owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
     udp_max_flows: u32,
     udp_flow_idle_secs: u32,
 ) {
-    let Some(server_message::Payload::RuleUpdate(update)) = msg.payload else {
+    let update = match msg.payload {
+        Some(server_message::Payload::RuleUpdate(u)) => u,
+        // 011-rate-limiting-qos T031: absorb owner-cap server pushes
+        // and update the process-lifetime registry. Action SET installs
+        // (or hot-reload-swaps with carryover); REMOVE drops the entry
+        // so the layered cascade short-circuits the owner branch on
+        // the next accept. Per FR-013 the registry is the single
+        // source of truth for the per-owner ceiling that binds before
+        // any per-rule cap.
+        Some(server_message::Payload::OwnerRateLimitUpdate(update)) => {
+            apply_owner_rate_limit_update(update, owner_rate_limit_scope);
+            return;
+        }
         // Welcome is consumed before pump; any other variant is ignored.
-        return;
+        _ => return,
     };
     let request_id = update.request_id;
     let action = RuleAction::try_from(update.action).unwrap_or(RuleAction::Unspecified);
@@ -502,6 +551,21 @@ async fn handle_server_message(
                                     host: t.host.clone(),
                                     port,
                                     priority: t.priority,
+                                    proxy_protocol: t
+                                        .proxy_protocol
+                                        .and_then(|v| {
+                                            forward_proto::v1::ProxyProtocolVersion::try_from(v)
+                                                .ok()
+                                        })
+                                        .and_then(|mode| match mode {
+                                            forward_proto::v1::ProxyProtocolVersion::V1 => {
+                                                Some(forward_core::ProxyProtocolVersion::V1)
+                                            }
+                                            forward_proto::v1::ProxyProtocolVersion::V2 => {
+                                                Some(forward_core::ProxyProtocolVersion::V2)
+                                            }
+                                            forward_proto::v1::ProxyProtocolVersion::Unspecified => None,
+                                        }),
                                 },
                                 target: parsed,
                             });
@@ -559,6 +623,67 @@ async fn handle_server_message(
             };
             let targets_view = multi_targets.clone();
             let multi_target_obs_for_slot = multi_target_obs.clone();
+            // 011-rate-limiting-qos T019: build the per-rule limiter +
+            // stats accumulator from the wire envelope. Both stay
+            // `None` for uncapped rules so the no-cap fast path is a
+            // null check on each accept; capped rules pay one Arc
+            // clone per spawned accept loop.
+            let (rate_limit_limiter, rate_limit_stats) = match rule.rate_limit.as_ref() {
+                Some(envelope) => {
+                    let core_envelope = forward_core::RateLimit {
+                        bandwidth_in_bps: envelope.bandwidth_in_bps,
+                        bandwidth_out_bps: envelope.bandwidth_out_bps,
+                        new_connections_per_sec: envelope.new_connections_per_sec,
+                        concurrent_connections: envelope.concurrent_connections,
+                        bandwidth_in_burst: envelope.bandwidth_in_burst,
+                        bandwidth_out_burst: envelope.bandwidth_out_burst,
+                        new_connections_burst: envelope.new_connections_burst,
+                    };
+                    let limiter = std::sync::Arc::new(
+                        crate::forwarder::rate_limit::scope::RuleRateLimiter::from_envelope(
+                            &core_envelope,
+                        ),
+                    );
+                    let acc = std::sync::Arc::new(
+                        crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                    );
+                    (Some(limiter), Some(acc))
+                }
+                None => (None, None),
+            };
+            // 011-rate-limiting-qos T031: resolve this rule's per-owner
+            // limiter from the process-lifetime registry. The server
+            // emits Rule.owner_id on the wire only when there's a v0.11
+            // cap signal in play (so legacy rules keep an empty
+            // owner_id and skip the lookup, preserving the v0.10
+            // forwarding path byte-for-byte).
+            let owner_id_str = rule.owner_id.as_ref().filter(|s| !s.is_empty()).cloned();
+            let owner_rate_limit = owner_id_str.as_ref().and_then(|owner_id| {
+                owner_rate_limit_scope.get(&crate::forwarder::rate_limit::scope::OwnerId::new(
+                    owner_id.clone(),
+                ))
+            });
+            // 011-rate-limiting-qos T032: per-owner stats are looked
+            // up from the shared registry so multiple rules sharing
+            // the same owner aggregate into one accumulator. Lookup
+            // is gated on `owner_rate_limit.is_some()` — installing
+            // an entry only when the owner has an active limiter
+            // keeps the registry from accumulating stale entries for
+            // owners whose caps were removed.
+            let rule_owner_rate_limit_stats = owner_rate_limit
+                .as_ref()
+                .zip(owner_id_str.as_ref())
+                .map(|(_, owner_id)| {
+                    owner_rate_limit_stats.get_or_create(
+                        &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                    )
+                });
+            // Hold a clone of the rate-limit handles for the RuleSlot
+            // (the periodic stats reporter and SNI/legacy paths both
+            // need to keep observing them after `client_rule` moves
+            // into the forwarder spawn).
+            let slot_rate_limit_limiter = rate_limit_limiter.clone();
+            let slot_rate_limit_stats = rate_limit_stats.clone();
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
@@ -578,6 +703,20 @@ async fn handle_server_message(
                 // reads it when the port-group manager (T042)
                 // routes this rule into the SNI dispatch path.
                 sni_pattern: rule.sni_pattern.clone(),
+                // 011-rate-limiting-qos T019: per-rule rate-limit
+                // limiter + stats. None keeps the byte-stable
+                // v0.10 forwarding path.
+                rate_limit: rate_limit_limiter,
+                rate_limit_stats,
+                // 011-rate-limiting-qos T031: per-owner limiter + stats
+                // resolved from the process-lifetime registry via
+                // Rule.owner_id (additive wire field 13). For rules
+                // pushed without a v0.11 cap signal the server omits
+                // owner_id, the lookup yields None, and the layered
+                // cascade short-circuits the owner branch — preserving
+                // the v0.10 forwarding path byte-for-byte.
+                owner_rate_limit,
+                owner_rate_limit_stats: rule_owner_rate_limit_stats,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -592,10 +731,7 @@ async fn handle_server_message(
                 && listen_end == listen_port
                 && (client_rule.sni_pattern.is_some() || port_groups.is_sni_port(listen_port));
             if routes_via_sni {
-                match port_groups
-                    .apply_push(client_rule.clone(), Arc::clone(&resolver))
-                    .await
-                {
+                match port_groups.apply_push(client_rule.clone(), Arc::clone(&resolver)) {
                     Ok(stats) => {
                         rules.insert(
                             rule_id,
@@ -607,6 +743,8 @@ async fn handle_server_message(
                                 is_range: false,
                                 multi_target_obs: multi_target_obs_for_slot,
                                 targets_view,
+                                rate_limit_stats: slot_rate_limit_stats.clone(),
+                                rate_limit_limiter: slot_rate_limit_limiter.clone(),
                             },
                         );
                         // Emit Activated synthetically — the SNI
@@ -669,6 +807,8 @@ async fn handle_server_message(
                     is_range: listen_end > listen_port,
                     multi_target_obs: multi_target_obs_for_slot,
                     targets_view,
+                    rate_limit_stats: slot_rate_limit_stats,
+                    rate_limit_limiter: slot_rate_limit_limiter,
                 },
             );
         }
@@ -705,6 +845,56 @@ async fn handle_server_message(
             event = "control.rule_update_unspecified_action",
             request_id = %request_id,
             rule_id = %rule_id,
+        ),
+    }
+}
+
+/// 011-rate-limiting-qos T031: apply a single `OwnerRateLimitUpdate`
+/// server-push to the process-lifetime owner-cap registry. SET uses
+/// `update` so an existing entry hot-reload-swaps the bucket while
+/// preserving live `tokens` / `last_refill` / `active_connections`
+/// (R-008); a fresh `(client, owner)` falls through to a from-envelope
+/// build. REMOVE drops the entry idempotently so the layered cascade
+/// short-circuits the owner branch.
+fn apply_owner_rate_limit_update(
+    update: forward_proto::v1::OwnerRateLimitUpdate,
+    owner_rate_limit_scope: &crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+) {
+    use crate::forwarder::rate_limit::scope::OwnerId;
+    let owner_id = OwnerId::new(update.owner_id.clone());
+    let action =
+        OwnerRateLimitAction::try_from(update.action).unwrap_or(OwnerRateLimitAction::Unspecified);
+    match action {
+        OwnerRateLimitAction::Set => {
+            let envelope = update.rate_limit.as_ref().map(|p| forward_core::RateLimit {
+                bandwidth_in_bps: p.bandwidth_in_bps,
+                bandwidth_out_bps: p.bandwidth_out_bps,
+                new_connections_per_sec: p.new_connections_per_sec,
+                concurrent_connections: p.concurrent_connections,
+                bandwidth_in_burst: p.bandwidth_in_burst,
+                bandwidth_out_burst: p.bandwidth_out_burst,
+                new_connections_burst: p.new_connections_burst,
+            });
+            owner_rate_limit_scope.update(&owner_id, envelope.as_ref());
+            info!(
+                event = "control.owner_rate_limit_set",
+                client_name = %update.client_name,
+                owner_id = %owner_id,
+                has_caps = envelope.is_some(),
+            );
+        }
+        OwnerRateLimitAction::Remove => {
+            owner_rate_limit_scope.remove(&owner_id);
+            info!(
+                event = "control.owner_rate_limit_remove",
+                client_name = %update.client_name,
+                owner_id = %owner_id,
+            );
+        }
+        OwnerRateLimitAction::Unspecified => warn!(
+            event = "control.owner_rate_limit_unspecified_action",
+            client_name = %update.client_name,
+            owner_id = %owner_id,
         ),
     }
 }
@@ -826,6 +1016,7 @@ fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
 async fn send_stats_report(
     rules: &HashMap<RuleId, RuleSlot>,
     port_groups: &PortGroupManager,
+    owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
     use std::sync::atomic::Ordering;
@@ -900,6 +1091,19 @@ async fn send_stats_report(
                     .stats
                     .sni_route_fallback_total
                     .load(Ordering::Relaxed),
+                // 011-rate-limiting-qos T019/T022: drain the per-rule
+                // accumulator into the wire field. Returns `None` for
+                // uncapped rules (or capped rules whose counters are
+                // all still zero) so v0.10 wire shape stays byte-
+                // identical. Capped rules with any reject / throttle
+                // event get a populated payload; the gauge is mirrored
+                // from the limiter's source-of-truth atomic.
+                rate_limit: slot.rate_limit_stats.as_ref().and_then(|acc| {
+                    if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
+                        acc.set_active_connections(limiter.active_connections());
+                    }
+                    acc.drain_to_proto()
+                }),
             }
         })
         .collect();
@@ -917,9 +1121,179 @@ async fn send_stats_report(
             // Empty when no SNI listener has bound yet — proto3
             // default-stripping keeps wire byte-stable with v0.8.
             sni_listener_stats,
+            // 011-rate-limiting-qos T032: drain per-owner counters
+            // from the shared registry. Owners whose accumulators are
+            // empty (no event ever fired and gauge zero) are skipped
+            // by `drain_to_proto`, so a deployment with no owner caps
+            // emits an empty Vec → proto3 default-stripping keeps the
+            // wire byte-identical with v0.10 (validated by
+            // rate_limit_wire_compat::t005_v010_stats_report_byte_identical_when_owner_stats_empty).
+            owner_rate_limit_stats: owner_rate_limit_stats.drain_to_proto(),
         })),
     };
     if let Err(e) = outbound.send(msg).await {
         warn!(event = "control.stats_send_failed", error = %e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 011-rate-limiting-qos T031: control-plane absorption tests for
+    //! the `OwnerRateLimitUpdate` server-push variant.
+
+    use super::*;
+    use crate::forwarder::rate_limit::scope::{OwnerId, OwnerRateLimitScopeManager};
+    use forward_proto::v1::{OwnerRateLimitAction, OwnerRateLimitUpdate, RateLimit};
+
+    fn full_envelope() -> RateLimit {
+        RateLimit {
+            bandwidth_in_bps: Some(1_048_576),
+            bandwidth_out_bps: Some(2_097_152),
+            new_connections_per_sec: Some(50),
+            concurrent_connections: Some(10),
+            bandwidth_in_burst: None,
+            bandwidth_out_burst: None,
+            new_connections_burst: None,
+        }
+    }
+
+    #[test]
+    fn t031_set_installs_owner_limiter() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        let update = OwnerRateLimitUpdate {
+            client_name: "edge-01".into(),
+            owner_id: "alice".into(),
+            rate_limit: Some(full_envelope()),
+            action: OwnerRateLimitAction::Set as i32,
+        };
+        apply_owner_rate_limit_update(update, &mgr);
+        assert!(mgr.get(&OwnerId::new("alice")).is_some());
+    }
+
+    #[test]
+    fn t031_remove_drops_owner_limiter() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        // Pre-install via SET so REMOVE has something to clear.
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: Some(full_envelope()),
+                action: OwnerRateLimitAction::Set as i32,
+            },
+            &mgr,
+        );
+        assert!(mgr.get(&OwnerId::new("alice")).is_some());
+
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: None,
+                action: OwnerRateLimitAction::Remove as i32,
+            },
+            &mgr,
+        );
+        assert!(mgr.get(&OwnerId::new("alice")).is_none());
+    }
+
+    #[test]
+    fn t031_remove_idempotent_when_owner_unknown() {
+        // REMOVE for an owner with no installed limiter must not panic
+        // — the registry's own `remove` is idempotent, but T031's
+        // wrapper must not assume prior installation.
+        let mgr = OwnerRateLimitScopeManager::new();
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "ghost".into(),
+                rate_limit: None,
+                action: OwnerRateLimitAction::Remove as i32,
+            },
+            &mgr,
+        );
+        assert!(mgr.is_empty());
+    }
+
+    #[test]
+    fn t031_set_with_no_envelope_clears_owner() {
+        // SET with rate_limit = None means "this owner is uncapped".
+        // The wrapper translates that to a registry update that drops
+        // the entry so the layered cascade short-circuits the owner
+        // branch on the next accept.
+        let mgr = OwnerRateLimitScopeManager::new();
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: Some(full_envelope()),
+                action: OwnerRateLimitAction::Set as i32,
+            },
+            &mgr,
+        );
+        assert!(mgr.get(&OwnerId::new("alice")).is_some());
+
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: None,
+                action: OwnerRateLimitAction::Set as i32,
+            },
+            &mgr,
+        );
+        assert!(mgr.get(&OwnerId::new("alice")).is_none());
+    }
+
+    #[test]
+    fn t031_set_replaces_owner_limiter_with_carryover() {
+        // Subsequent SET with a different cap value rebuilds the
+        // limiter via OwnerRateLimitScopeManager::update, which
+        // preserves live state (R-008). We assert installation
+        // succeeds — the carryover semantics themselves are pinned by
+        // scope.rs's own unit tests.
+        let mgr = OwnerRateLimitScopeManager::new();
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: Some(full_envelope()),
+                action: OwnerRateLimitAction::Set as i32,
+            },
+            &mgr,
+        );
+        let first = mgr.get(&OwnerId::new("alice")).unwrap();
+
+        let mut tighter = full_envelope();
+        tighter.concurrent_connections = Some(2);
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: Some(tighter),
+                action: OwnerRateLimitAction::Set as i32,
+            },
+            &mgr,
+        );
+        let second = mgr.get(&OwnerId::new("alice")).unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "SET on existing owner must allocate a fresh Arc",
+        );
+    }
+
+    #[test]
+    fn t031_unspecified_action_is_noop() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        apply_owner_rate_limit_update(
+            OwnerRateLimitUpdate {
+                client_name: "edge-01".into(),
+                owner_id: "alice".into(),
+                rate_limit: Some(full_envelope()),
+                action: OwnerRateLimitAction::Unspecified as i32,
+            },
+            &mgr,
+        );
+        assert!(mgr.is_empty());
     }
 }

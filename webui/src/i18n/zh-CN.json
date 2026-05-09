@@ -148,13 +148,37 @@
     "targets": "目标列表(按优先级排序)",
     "addTarget": "添加目标",
     "removeTarget": "移除该目标",
+    "proxyProtocolDisabled": "不发送 PROXY",
+    "proxyProtocolV1": "PROXY v1",
+    "proxyProtocolV2": "PROXY v2",
     "priority": "优先级",
     "healthCheckInterval": "主动健康检查间隔(秒)",
     "healthCheckIntervalPlaceholder": "留空仅启用被动检查",
     "healthCheckIntervalHelp": "可选。设置后,客户端按此间隔向每个目标发起 TCP 连接探测。范围:1–3600 秒。",
     "sniPattern": "SNI 选择器(可选)",
     "sniPatternPlaceholder": "api.example.com 或 *.example.com",
-    "sniPatternHelp": "精确主机名或单层通配符。留空为普通 TCP 转发。仅适用于 TCP 单端口规则。"
+    "sniPatternHelp": "精确主机名或单层通配符。留空为普通 TCP 转发。仅适用于 TCP 单端口规则。",
+    "rateLimitTitle": "服务质量(QoS)",
+    "rateLimitHelp": "按规则配置可选的 QoS 上限。留空表示该维度不限制。"
+  },
+  "rateLimitForm": {
+    "title": "速率限制",
+    "help": "每项上限独立可选。留空 = 该维度不受限。",
+    "uncapped": "不限制",
+    "bandwidthIn": "入站带宽(字节/秒)",
+    "bandwidthOut": "出站带宽(字节/秒)",
+    "newConnectionsPerSec": "新建连接 / 秒",
+    "concurrentConnections": "并发连接数",
+    "advanced": "高级(突发覆盖)",
+    "bandwidthInBurst": "入站突发(字节)",
+    "bandwidthOutBurst": "出站突发(字节)",
+    "newConnectionsBurst": "新建连接突发",
+    "burstDefault": "1 × 速率(默认)",
+    "burstHelp": "突发必须 ≥ 速率且 ≤ 4 × 速率。"
+  },
+  "rulesCapsCol": {
+    "header": "上限",
+    "uncapped": "—"
   },
   "ruleDetail": {
     "title": "规则",
@@ -182,6 +206,7 @@
       "host": "主机",
       "port": "端口",
       "priority": "优先级",
+      "proxyProtocol": "PROXY",
       "health": "健康状态",
       "consecutiveFailures": "连续失败",
       "bytesIn": "入向字节",
@@ -219,6 +244,34 @@
     "reveal": "显示",
     "hide": "隐藏",
     "backToList": "返回客户端列表"
+  },
+  "clientDetail": {
+    "back": "返回",
+    "tabOverview": "概览",
+    "tabOwnerQuotas": "所有者配额",
+    "overviewTitle": "连接信息",
+    "remote": "远端地址",
+    "connectedAt": "连接时间",
+    "provisionedAt": "签发时间",
+    "revokedAt": "吊销时间"
+  },
+  "ownerQuotas": {
+    "help": "所有者级别的上限会应用到该用户在此客户端上推送的全部规则。所有者上限优先于单规则上限生效。",
+    "owner": "所有者",
+    "ruleCount": "规则数",
+    "capStatus": "配额状态",
+    "capped": "已限制",
+    "uncapped": "未限制",
+    "edit": "编辑配额",
+    "setCap": "设置配额",
+    "save": "保存",
+    "delete": "移除配额",
+    "editorTitle": "编辑所有者配额",
+    "currentCap": "当前配额:",
+    "errorEmpty": "请至少设置一项上限,或选择移除整个配额。",
+    "emptyTitle": "暂无所有者",
+    "emptyBody": "当用户向该客户端推送规则后,会显示在此处,供您配置每位租户的配额。",
+    "tableAriaLabel": "每个所有者的速率限制配额"
   },
   "audit": {
     "title": "审计日志",

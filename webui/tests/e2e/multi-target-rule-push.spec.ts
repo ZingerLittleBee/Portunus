@@ -1,11 +1,11 @@
 // 007-multi-target-failover T042 — Web UI surface coverage for the
 // multi-target rule-push form. Runs against the real server fixture so
 // the form's POST body lands as actual HTTP traffic — no mocks. The
-// rule push won't activate (no connected client) so we observe via
-// the rule-listing GET that the rule was created with the right shape.
+// e2e fixture does not spin up a forward-client, so current server
+// semantics reject the push after validation with client_not_connected.
 
 import { test, expect } from "./fixtures/server";
-import { loginAs, api, provisionUserWithToken } from "./fixtures/helpers";
+import { loginAs, api } from "./fixtures/helpers";
 
 test.describe("multi-target rule push", () => {
   test("operator toggles to multi-target mode and submits the new shape", async ({
@@ -15,28 +15,11 @@ test.describe("multi-target rule push", () => {
   }) => {
     await loginAs(page, server.superadminToken);
 
-    // Provision a client + grant so the rule-push body validates
-    // server-side. The rule won't activate (no forwarder connected)
-    // but it will be accepted into the in-memory rule store.
-    await provisionUserWithToken(
-      request,
-      server.httpUrl,
-      server.superadminToken,
-      "alice",
-    );
+    // Provision a client so the rule-push body validates server-side
+    // before the expected offline-client rejection.
     await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
       method: "POST",
       body: { name: "edge-mt" },
-    });
-    await api(request, server.httpUrl, server.superadminToken, "/v1/grants", {
-      method: "POST",
-      body: {
-        user_id: "_superadmin",
-        client: "edge-mt",
-        listen_port_start: 31000,
-        listen_port_end: 31100,
-        protocols: ["tcp"],
-      },
     });
 
     await page.goto("/rules/new");
@@ -55,7 +38,7 @@ test.describe("multi-target rule push", () => {
       page.getByLabel(/active health-check interval/i),
     ).toBeVisible();
 
-    // Fill the form and submit. Use a port we know is granted.
+    // Fill the form and submit. The superadmin token bypasses grant checks.
     await page.getByLabel(/^client$/i).fill("edge-mt");
     await page.getByLabel(/listen port \(start\)/i).fill("31050");
 
@@ -68,18 +51,30 @@ test.describe("multi-target rule push", () => {
     await hostInputs.nth(2).fill("127.0.0.1");
     await portInputs.nth(2).fill("9003");
 
+    const pushResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith("/v1/rules"),
+    );
     await page.getByRole("button", { name: /^push rule$/i }).click();
-
-    // Either land on the rule detail page (rule pushed and id known) or
-    // surface a server error. Either way: the multi-target body landed.
-    // We assert the rule shows up on the listing with the MT pill.
-    await page.goto("/rules");
-    await expect(
-      page.getByText(/MT ×3/, { exact: false }).first(),
-    ).toBeVisible({ timeout: 10_000 });
+    const response = await pushResponse;
+    const pushBody: unknown = JSON.parse(response.request().postData() ?? "null");
+    expect(pushBody).toMatchObject({
+      client: "edge-mt",
+      listen_port: 31050,
+      protocol: "tcp",
+      targets: [
+        { host: "127.0.0.1", port: 9001, priority: 0 },
+        { host: "127.0.0.1", port: 9002, priority: 1 },
+        { host: "127.0.0.1", port: 9003, priority: 2 },
+      ],
+    });
+    expect(pushBody).not.toMatchObject({ target_host: expect.anything() });
+    expect(response.status()).toBe(422);
+    await expect(page.getByText(/client_not_connected/i)).toBeVisible();
   });
 
-  test("MT pill is absent for single-target rules", async ({
+  test("single-target pushes surface offline-client rejection without MT state", async ({
     page,
     request,
     server,
@@ -89,36 +84,31 @@ test.describe("multi-target rule push", () => {
       method: "POST",
       body: { name: "edge-st" },
     });
-    await api(request, server.httpUrl, server.superadminToken, "/v1/grants", {
-      method: "POST",
-      body: {
-        user_id: "_superadmin",
-        client: "edge-st",
-        listen_port_start: 32000,
-        listen_port_end: 32100,
-        protocols: ["tcp"],
-      },
-    });
 
-    // Push a legacy single-target rule via HTTP (no UI, no targets[]).
-    await api(request, server.httpUrl, server.superadminToken, "/v1/rules", {
-      method: "POST",
-      body: {
-        client: "edge-st",
-        listen_port: 32050,
-        target_host: "127.0.0.1",
-        target_port: 9000,
-        protocol: "tcp",
-      },
-    });
+    await page.goto("/rules/new");
+    await page.getByLabel(/^client$/i).fill("edge-st");
+    await page.getByLabel(/listen port \(start\)/i).fill("32050");
+    await page.getByLabel(/target host/i).fill("127.0.0.1");
+    await page.getByLabel(/target port \(start\)/i).fill("9000");
 
-    await page.goto("/rules");
-    // The rule is listed but no MT pill should appear in its row.
-    const row = page
-      .getByRole("row")
-      .filter({ hasText: "edge-st" })
-      .first();
-    await expect(row).toBeVisible({ timeout: 10_000 });
-    await expect(row.getByText(/MT ×/)).toHaveCount(0);
+    const pushResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith("/v1/rules"),
+    );
+    await page.getByRole("button", { name: /^push rule$/i }).click();
+    const response = await pushResponse;
+    const pushBody: unknown = JSON.parse(response.request().postData() ?? "null");
+    expect(pushBody).toMatchObject({
+      client: "edge-st",
+      listen_port: 32050,
+      protocol: "tcp",
+      target_host: "127.0.0.1",
+      target_port: 9000,
+    });
+    expect(pushBody).not.toMatchObject({ targets: expect.anything() });
+    expect(response.status()).toBe(422);
+    await expect(page.getByText(/client_not_connected/i)).toBeVisible();
+    await expect(page.getByText(/MT ×/)).toHaveCount(0);
   });
 });

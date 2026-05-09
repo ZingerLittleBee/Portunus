@@ -148,13 +148,37 @@
     "targets": "Targets (priority-ordered)",
     "addTarget": "Add another target",
     "removeTarget": "Remove this target",
+    "proxyProtocolDisabled": "No PROXY",
+    "proxyProtocolV1": "PROXY v1",
+    "proxyProtocolV2": "PROXY v2",
     "priority": "priority",
     "healthCheckInterval": "Active health-check interval (seconds)",
     "healthCheckIntervalPlaceholder": "leave blank for passive only",
     "healthCheckIntervalHelp": "Optional. When set, the client opens a TCP-connect probe to each target on this cadence. Range: 1–3600 seconds.",
     "sniPattern": "SNI pattern (optional)",
     "sniPatternPlaceholder": "api.example.com or *.example.com",
-    "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules."
+    "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules.",
+    "rateLimitTitle": "Quality of service",
+    "rateLimitHelp": "Optional per-rule QoS caps. Leave fields blank to leave that dimension uncapped."
+  },
+  "rateLimitForm": {
+    "title": "Rate limit",
+    "help": "Each cap is independently optional. Empty = uncapped on that dimension.",
+    "uncapped": "uncapped",
+    "bandwidthIn": "Bandwidth in (bytes/sec)",
+    "bandwidthOut": "Bandwidth out (bytes/sec)",
+    "newConnectionsPerSec": "New connections / sec",
+    "concurrentConnections": "Concurrent connections",
+    "advanced": "Advanced (burst overrides)",
+    "bandwidthInBurst": "Bandwidth in burst (bytes)",
+    "bandwidthOutBurst": "Bandwidth out burst (bytes)",
+    "newConnectionsBurst": "New connections burst",
+    "burstDefault": "1 × rate (default)",
+    "burstHelp": "Bursts must be ≥ rate and ≤ 4 × rate."
+  },
+  "rulesCapsCol": {
+    "header": "Caps",
+    "uncapped": "—"
   },
   "ruleDetail": {
     "title": "Rule",
@@ -182,6 +206,7 @@
       "host": "Host",
       "port": "Port",
       "priority": "Priority",
+      "proxyProtocol": "PROXY",
       "health": "Health",
       "consecutiveFailures": "Failures",
       "bytesIn": "Bytes in",
@@ -219,6 +244,34 @@
     "reveal": "Reveal",
     "hide": "Hide",
     "backToList": "Back to clients"
+  },
+  "clientDetail": {
+    "back": "Back",
+    "tabOverview": "Overview",
+    "tabOwnerQuotas": "Owner quotas",
+    "overviewTitle": "Connection",
+    "remote": "Remote address",
+    "connectedAt": "Connected at",
+    "provisionedAt": "Provisioned at",
+    "revokedAt": "Revoked at"
+  },
+  "ownerQuotas": {
+    "help": "Per-owner caps apply across all rules a user pushes to this client. Per-owner ceilings bind before per-rule caps.",
+    "owner": "Owner",
+    "ruleCount": "Rules",
+    "capStatus": "Cap status",
+    "capped": "capped",
+    "uncapped": "uncapped",
+    "edit": "Edit cap",
+    "setCap": "Set cap",
+    "save": "Save",
+    "delete": "Remove cap",
+    "editorTitle": "Edit owner cap",
+    "currentCap": "Current cap:",
+    "errorEmpty": "Set at least one cap, or remove the envelope instead.",
+    "emptyTitle": "No owners yet",
+    "emptyBody": "When operators push rules to this client, the owners appear here so you can apply per-tenant caps.",
+    "tableAriaLabel": "Per-owner rate-limit envelopes"
   },
   "audit": {
     "title": "Audit log",

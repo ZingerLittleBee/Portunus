@@ -39,7 +39,14 @@ export function ClientsList() {
     {
       key: "name",
       header: t("clients.name"),
-      render: (c) => <span className="font-mono">{c.client_name}</span>,
+      render: (c) => (
+        <Link
+          to={`/clients/${encodeURIComponent(c.client_name)}`}
+          className="font-mono text-primary hover:underline"
+        >
+          {c.client_name}
+        </Link>
+      ),
       sortable: true,
       sortValue: (c) => c.client_name,
     },

@@ -9,12 +9,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  EMPTY_RATE_LIMIT_FORM,
+  RateLimitForm,
+  formStateToRateLimit,
+} from "@/components/RateLimitForm";
 
 type FormMode = "single" | "multi";
 
 interface TargetRow {
   host: string;
   port: string;
+  proxyProtocol: "" | "v1" | "v2";
 }
 
 export function RulePush() {
@@ -43,13 +49,18 @@ export function RulePush() {
   // muscle memory intact.
   const [mode, setMode] = useState<FormMode>("single");
   const [targets, setTargets] = useState<TargetRow[]>([
-    { host: "127.0.0.1", port: "9000" },
-    { host: "127.0.0.1", port: "9001" },
+    { host: "127.0.0.1", port: "9000", proxyProtocol: "" },
+    { host: "127.0.0.1", port: "9001", proxyProtocol: "" },
   ]);
   const [healthCheckInterval, setHealthCheckInterval] = useState("");
+  // 011-rate-limiting-qos T039: optional QoS caps. Server validates
+  // (non-zero, burst-without-rate, range, capability gate). Empty
+  // form = no rate_limit field on the wire (preserves SC-004
+  // byte-stability for opt-out rules).
+  const [rateLimit, setRateLimit] = useState({ ...EMPTY_RATE_LIMIT_FORM });
 
   function addTarget() {
-    setTargets((rows) => [...rows, { host: "", port: "" }]);
+    setTargets((rows) => [...rows, { host: "", port: "", proxyProtocol: "" }]);
   }
   function removeTarget(idx: number) {
     setTargets((rows) => (rows.length <= 1 ? rows : rows.filter((_, i) => i !== idx)));
@@ -65,6 +76,7 @@ export function RulePush() {
     setError(null);
     try {
       const trimmedSni = sniPattern.trim();
+      const rl = formStateToRateLimit(rateLimit);
       const baseBody = {
         client,
         listen_port: Number(listenStart),
@@ -75,6 +87,10 @@ export function RulePush() {
         // the server applies its grammar-validated default (legacy
         // shape).
         ...(sniEligible && trimmedSni ? { sni_pattern: trimmedSni } : {}),
+        // 011-rate-limiting-qos T039: omit rate_limit entirely when
+        // the operator left every cap blank. Preserves SC-004 wire
+        // byte-stability for v0.10-shaped rule pushes.
+        ...(rl ? { rate_limit: rl } : {}),
       };
       const body =
         mode === "single"
@@ -90,6 +106,9 @@ export function RulePush() {
                 host: row.host,
                 port: Number(row.port),
                 priority: idx,
+                ...(protocol === "tcp" && row.proxyProtocol
+                  ? { proxy_protocol: row.proxyProtocol }
+                  : {}),
               })),
               ...(healthCheckInterval
                 ? { health_check_interval_secs: Number(healthCheckInterval) }
@@ -162,7 +181,10 @@ export function RulePush() {
               <Label>{t("rulePush.targets")}</Label>
               <div className="space-y-2">
                 {targets.map((row, idx) => (
-                  <div key={idx} className="grid grid-cols-[1fr_120px_72px_auto] gap-2 items-center">
+                  <div
+                    key={idx}
+                    className="grid grid-cols-[1fr_120px_120px_72px_auto] gap-2 items-center"
+                  >
                     <Input
                       placeholder={t("rulePush.targetHost")}
                       value={row.host}
@@ -176,6 +198,18 @@ export function RulePush() {
                       onChange={(e) => updateTarget(idx, "port", e.target.value)}
                       required
                     />
+                    <select
+                      className="h-10 rounded-md border border-input bg-background px-2 text-sm"
+                      value={row.proxyProtocol}
+                      onChange={(e) =>
+                        updateTarget(idx, "proxyProtocol", e.target.value as TargetRow["proxyProtocol"])
+                      }
+                      disabled={protocol !== "tcp"}
+                    >
+                      <option value="">{t("rulePush.proxyProtocolDisabled")}</option>
+                      <option value="v1">{t("rulePush.proxyProtocolV1")}</option>
+                      <option value="v2">{t("rulePush.proxyProtocolV2")}</option>
+                    </select>
                     <span className="text-sm text-muted-foreground">
                       {t("rulePush.priority")} {idx}
                     </span>
@@ -243,6 +277,12 @@ export function RulePush() {
               </p>
             </div>
           )}
+
+          <div className="space-y-2">
+            <Label>{t("rulePush.rateLimitTitle")}</Label>
+            <p className="text-xs text-muted-foreground">{t("rulePush.rateLimitHelp")}</p>
+            <RateLimitForm state={rateLimit} onChange={setRateLimit} />
+          </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">

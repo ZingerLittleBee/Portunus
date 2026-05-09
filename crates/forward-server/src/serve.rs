@@ -159,6 +159,13 @@ pub async fn run(opts: ServeOptions) -> Result<(), ForwardError> {
         .map_err(|e| ForwardError::Tls(format!("metrics: {e}")))?
         .with_server_config(cfg_arc),
     );
+    let persisted_rules = state
+        .rule_store
+        .list_rules()
+        .map_err(|e| ForwardError::Tls(format!("load persisted rules: {e}")))?;
+    let persisted_count = persisted_rules.len();
+    state.rules.hydrate(persisted_rules).await;
+    info!(event = "rules.hydrated", count = persisted_count);
 
     // 008-sqlite-storage T034 — spawn the durable audit writer and
     // bind its Handle into the AuditRing fan-out. Until US2 retires

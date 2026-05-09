@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiFetch } from "@/api/client";
-import type { ClientView, CredentialBundle, ProvisionClientBody } from "@/api/types";
+import { ApiError, apiFetch } from "@/api/client";
+import type {
+  ClientView,
+  CredentialBundle,
+  OwnerListEntry,
+  OwnerRateLimitView,
+  ProvisionClientBody,
+  RateLimit,
+} from "@/api/types";
 
 export const CLIENTS_KEY = ["clients"] as const;
 
@@ -34,6 +41,78 @@ export function useRevokeClient() {
       apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}/revoke`, { method: "POST" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
+// 011-rate-limiting-qos T040: per-owner rate-limit envelope CRUD on a
+// connected client. Backed by the operator endpoints implemented in
+// crates/forward-server/src/operator/owner_cap.rs.
+
+export const CLIENT_OWNERS_KEY = (client: string) =>
+  ["clients", client, "owners"] as const;
+export const CLIENT_OWNER_RATE_LIMIT_KEY = (client: string, owner: string) =>
+  ["clients", client, "owners", owner, "rate-limit"] as const;
+
+export function useClientOwnersList(clientName: string) {
+  return useQuery({
+    queryKey: CLIENT_OWNERS_KEY(clientName),
+    queryFn: () =>
+      apiFetch<OwnerListEntry[]>(
+        `/v1/clients/${encodeURIComponent(clientName)}/owners`,
+      ),
+    enabled: clientName.length > 0,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useOwnerRateLimit(clientName: string, ownerId: string) {
+  return useQuery({
+    queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientName, ownerId),
+    queryFn: async (): Promise<OwnerRateLimitView | null> => {
+      try {
+        return await apiFetch<OwnerRateLimitView>(
+          `/v1/clients/${encodeURIComponent(clientName)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
+        );
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    enabled: clientName.length > 0 && ownerId.length > 0,
+  });
+}
+
+export function usePutOwnerRateLimit(clientName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ownerId, body }: { ownerId: string; body: RateLimit }) =>
+      apiFetch<OwnerRateLimitView>(
+        `/v1/clients/${encodeURIComponent(clientName)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
+        { method: "PUT", body: JSON.stringify(body) },
+      ),
+    onSuccess: (_data, { ownerId }) => {
+      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientName) });
+      void qc.invalidateQueries({
+        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientName, ownerId),
+      });
+    },
+  });
+}
+
+export function useDeleteOwnerRateLimit(clientName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ownerId: string) =>
+      apiFetch<void>(
+        `/v1/clients/${encodeURIComponent(clientName)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
+        { method: "DELETE" },
+      ),
+    onSuccess: (_data, ownerId) => {
+      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientName) });
+      void qc.invalidateQueries({
+        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientName, ownerId),
+      });
     },
   });
 }

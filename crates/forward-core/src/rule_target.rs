@@ -19,6 +19,13 @@ use crate::target::{Target, TargetError};
 /// policies can lift this cap.
 pub const MAX_TARGETS_PER_RULE: usize = 8;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyProtocolVersion {
+    V1,
+    V2,
+}
+
 /// One upstream within a forwarding rule.
 ///
 /// Stored inline on `Rule.targets` in priority order. Lower `priority`
@@ -29,6 +36,8 @@ pub struct RuleTarget {
     pub host: String,
     pub port: u16,
     pub priority: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_protocol: Option<ProxyProtocolVersion>,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]

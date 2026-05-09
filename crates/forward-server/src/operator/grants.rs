@@ -218,6 +218,7 @@ pub async fn delete_grant(
         if rbac::enforce_push(&synthetic, &push_req, &remaining).is_err() {
             // Best-effort remove; skip on NotFound (concurrent removal).
             let _ = state.rules.remove(rule.id).await;
+            let _ = state.rule_store.delete_rule(rule.id);
             removed.push(rule.id.0);
         }
     }

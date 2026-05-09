@@ -36,7 +36,7 @@ async function waitForListener(url: string, timeoutMs = 10_000): Promise<void> {
 function spawnServer(configDir: string): ChildProcess {
   const bin =
     process.env.FORWARD_SERVER_BIN ?? join(process.cwd(), "..", "target", "release", "forward-server");
-  const proc = spawn(bin, ["--config-dir", configDir, "serve"], {
+  const proc = spawn(bin, ["--config-dir", configDir, "--data-dir", join(configDir, "state"), "serve"], {
     env: { ...process.env, RUST_LOG: "info" },
     stdio: ["ignore", "pipe", "pipe"],
   });
