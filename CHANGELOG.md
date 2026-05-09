@@ -47,6 +47,17 @@ workspace deps.
   burst and a lower doesn't strand the pool. A concurrent cap
   lowered below the live count drains gracefully (no forcible
   close).
+- **CLI** — `forward-server push-rule` accepts the four cap flags
+  plus their three burst-override siblings
+  (`--bandwidth-in-bps`, `--bandwidth-out-bps`,
+  `--new-connections-per-sec`, `--concurrent-connections`,
+  and matching `--*-burst`); `list-rules` human output gains a
+  compact `CAPS` column. New `forward-server owner-cap
+  {list|get|set|delete}` subcommand family manages per-owner
+  ceilings against the operator HTTP API; pre-flight rejects an
+  empty `set` envelope with exit 3 +
+  `validation.rate_limit_no_caps_provided` so operators don't
+  round-trip a 400.
 - **Web UI** — rule editor gains a "Quality of service" section
   (cap inputs, burst overrides folded behind an "Advanced"
   disclosure); rules table gains a compact `Caps` column; client
