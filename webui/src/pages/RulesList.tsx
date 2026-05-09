@@ -76,7 +76,12 @@ export function RulesList() {
         const proxyTargets = (r.targets ?? []).filter((target) => target.proxy_protocol);
         const proxyBadge =
           proxyTargets.length > 0 ? (
-            <Badge variant="secondary" title={proxyTargets.map((t) => `${t.host}:${t.port}=${t.proxy_protocol}`).join(", ")}>
+            <Badge
+              variant="secondary"
+              title={proxyTargets
+                .map((target) => `${target.host}:${target.port}=${target.proxy_protocol}`)
+                .join(", ")}
+            >
               PROXY {proxyTargets.length}
             </Badge>
           ) : null;
