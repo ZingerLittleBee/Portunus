@@ -394,13 +394,15 @@ async fn handle_accept<R: Resolve + 'static>(
         cancel,
         Some(Arc::clone(&slot.stats)),
         slot.listen_port,
-        // 011-rate-limiting-qos T020: the SNI dispatcher does not
-        // currently carry the per-rule limiter through PortGroupSlot
-        // (it pre-dates the cap envelope). Pre-0.11 SNI rules stay
-        // uncapped; capped SNI rules are routed through the legacy
-        // accept_loop instead because rate_limit + sni_pattern
-        // together aren't yet plumbed through the port-group cache.
-        // T024+ will revisit this for per-owner caps.
+        // 011-rate-limiting-qos T020/T030: the SNI dispatcher does
+        // not currently carry per-rule or per-owner limiters through
+        // PortGroupSlot (it pre-dates the cap envelope). Pre-0.11
+        // SNI rules stay uncapped; capped SNI rules are routed
+        // through the legacy accept_loop instead because rate_limit +
+        // sni_pattern together aren't yet plumbed through the port-
+        // group cache. Future work will revisit this end-to-end.
+        None,
+        None,
         None,
         None,
     )

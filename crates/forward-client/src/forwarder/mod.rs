@@ -439,6 +439,8 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_resolver = Arc::clone(&resolver);
                     let conn_rate_limiter = rate_limiter.clone();
                     let conn_rate_stats = rate_limit_stats.clone();
+                    let conn_owner_limiter = owner_rate_limiter.clone();
+                    let conn_owner_stats = owner_rate_limit_stats.clone();
                     local.spawn(async move {
                         // Move BOTH guards into the connection task so
                         // owner and rule gauges decrement when the
@@ -457,6 +459,8 @@ async fn accept_loop<R: Resolve + 'static>(
                             listen_port,
                             conn_rate_limiter,
                             conn_rate_stats,
+                            conn_owner_limiter,
+                            conn_owner_stats,
                         ).await {
                             Ok((bin, bout)) => {
                                 info!(

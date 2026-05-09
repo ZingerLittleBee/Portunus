@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::proxy_protocol::{self, ProxyProtocolPrelude};
-use super::rate_limit::scope::RuleRateLimiter;
+use super::rate_limit::scope::{OwnerRateLimiter, RuleRateLimiter};
 use super::rate_limit::stats::RateLimitStatsAccumulator;
 use super::stats::RuleStats;
 use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
@@ -58,6 +58,11 @@ pub async fn proxy<R: Resolve>(
     // byte-identical v0.10 `tokio::io::copy_bidirectional` fast path.
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
+    // accumulator. Consulted alongside `rate_limit` in the throttling
+    // copy loop — owner first (FR-013).
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     // Legacy plain-TCP path: no preread bytes to replay.
     proxy_with_preread(
@@ -73,6 +78,8 @@ pub async fn proxy<R: Resolve>(
         listen_port,
         rate_limit,
         rate_limit_stats,
+        owner_rate_limit,
+        owner_rate_limit_stats,
     )
     .await
 }
@@ -97,6 +104,8 @@ pub async fn proxy_with_preread<R: Resolve>(
     listen_port: u16,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     proxy_with_preread_and_prelude(
         inbound,
@@ -112,6 +121,8 @@ pub async fn proxy_with_preread<R: Resolve>(
         listen_port,
         rate_limit,
         rate_limit_stats,
+        owner_rate_limit,
+        owner_rate_limit_stats,
     )
     .await
 }
@@ -134,6 +145,8 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     listen_port: u16,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     let mut outbound = match resolver
         .connect_target(rule_id, target, target_port, prefer_ipv6)
@@ -229,17 +242,15 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
         preread_in = buf.len() as u64;
     }
 
-    // 011-rate-limiting-qos T020: route through the bandwidth-cap-
-    // aware bidi loop when the rule has at least one bandwidth bucket
-    // configured. Connection-rate / concurrent caps live at the
-    // accept layer (T019); they don't influence the per-byte path.
-    // Uncapped rules (rate_limit is None or has_bandwidth_cap is
-    // false) keep the byte-identical v0.10 `copy_bidirectional`
-    // fast path.
-    let throttle = rate_limit
-        .as_ref()
-        .filter(|l| l.has_bandwidth_cap())
-        .cloned();
+    // 011-rate-limiting-qos T020/T030: route through the bandwidth-
+    // cap-aware bidi loop when EITHER the per-rule or per-owner
+    // limiter has at least one bandwidth bucket configured. Uncapped
+    // rules with no owner caps stay on the byte-identical v0.10
+    // `copy_bidirectional` fast path (zero extra atomic ops per chunk).
+    let rule_has_bw = rate_limit
+        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
+    let owner_has_bw = owner_rate_limit
+        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             // Both streams drop at function exit, closing the sockets. We
@@ -248,12 +259,24 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
             Err(io::Error::other("proxy_cancelled"))
         }
         result = async {
-            if let Some(limiter) = throttle {
+            if rule_has_bw || owner_has_bw {
+                // The throttling loop expects a non-None rule limiter
+                // (it's the canonical per-chunk gate). When only the
+                // owner has a bandwidth cap we still pass a fresh
+                // no-cap RuleRateLimiter so the inner loop can call
+                // `acquire_bandwidth` on it as a no-op short-circuit.
+                let rule_for_copy = rate_limit
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(RuleRateLimiter::from_envelope(
+                        &forward_core::RateLimit::default(),
+                    )));
                 super::rate_limit::copy::copy_bidirectional_with_rate_limit(
                     &mut inbound,
                     &mut outbound,
-                    limiter,
+                    rule_for_copy,
                     rate_limit_stats.clone(),
+                    owner_rate_limit.clone(),
+                    owner_rate_limit_stats.clone(),
                 )
                 .await
             } else {
@@ -362,6 +385,8 @@ mod tests {
                 0,
                 None,
                 None,
+                None,
+                None,
             )
             .await
         });
@@ -401,6 +426,8 @@ mod tests {
                 cancel_proxy,
                 None,
                 0,
+                None,
+                None,
                 None,
                 None,
             )
@@ -464,6 +491,8 @@ mod tests {
                 proxy_addr.port(),
                 None,
                 None,
+                None,
+                None,
             )
             .await
         });
@@ -515,6 +544,8 @@ mod tests {
                     CancellationToken::new(),
                     Some(s),
                     0,
+                    None,
+                    None,
                     None,
                     None,
                 )
@@ -591,6 +622,8 @@ mod tests {
                     0,
                     None,
                     None,
+                    None,
+                    None,
                 )
                 .await;
             });
@@ -660,6 +693,8 @@ mod tests {
                 cancel,
                 None,
                 0,
+                None,
+                None,
                 None,
                 None,
             )

@@ -291,6 +291,8 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_stats = Arc::clone(&stats);
                     let conn_rate_limiter = rate_limiter.clone();
                     let conn_rate_stats = rate_limit_stats.clone();
+                    let conn_owner_limiter = owner_rate_limiter.clone();
+                    let conn_owner_stats = owner_rate_limit_stats.clone();
                     local.spawn(async move {
                         let _owner_admit = owner_admit;
                         let _rule_admit = rule_admit;
@@ -308,6 +310,8 @@ async fn accept_loop<R: Resolve + 'static>(
                             conn_stats,
                             conn_rate_limiter,
                             conn_rate_stats,
+                            conn_owner_limiter,
+                            conn_owner_stats,
                         )
                         .await;
                     });
@@ -348,6 +352,11 @@ async fn handle_connection<R: Resolve>(
     // byte-stable v0.7 `tokio::io::copy_bidirectional` behaviour.
     rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
+    // accumulator. None when the owner has no bandwidth caps.
+    owner_rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limit_stats:
+        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
 ) {
     let Ok(local_addr) = inbound.local_addr() else {
         warn!(
@@ -398,24 +407,33 @@ async fn handle_connection<R: Resolve>(
 
     let _guard = ActiveGuard::new(Arc::clone(&stats), listen_port);
 
-    // 011-rate-limiting-qos T020: same fork as proxy.rs. Capped
-    // bandwidth → throttling bidi loop. Uncapped → byte-stable
-    // `copy_bidirectional`.
-    let throttle = rate_limit
-        .as_ref()
-        .filter(|l| l.has_bandwidth_cap())
-        .cloned();
+    // 011-rate-limiting-qos T020/T030: throttling fork fires when
+    // EITHER per-rule or per-owner has a bandwidth cap. Uncapped
+    // rules with no owner caps keep the byte-stable v0.7 path.
+    let rule_has_bw = rate_limit
+        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
+    let owner_has_bw = owner_rate_limit
+        .as_ref().is_some_and(|l| l.has_bandwidth_cap());
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             Err(io::Error::other("proxy_cancelled"))
         }
         result = async {
-            if let Some(limiter) = throttle {
+            if rule_has_bw || owner_has_bw {
+                let rule_for_copy = rate_limit
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(
+                        crate::forwarder::rate_limit::scope::RuleRateLimiter::from_envelope(
+                            &forward_core::RateLimit::default(),
+                        )
+                    ));
                 crate::forwarder::rate_limit::copy::copy_bidirectional_with_rate_limit(
                     &mut inbound,
                     &mut outbound,
-                    limiter,
+                    rule_for_copy,
                     rate_limit_stats.clone(),
+                    owner_rate_limit.clone(),
+                    owner_rate_limit_stats.clone(),
                 )
                 .await
             } else {

@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::scope::{BandwidthAcquire, BandwidthDirection, RuleRateLimiter};
+use super::scope::{BandwidthAcquire, BandwidthDirection, OwnerRateLimiter, RuleRateLimiter};
 use super::stats::RateLimitStatsAccumulator;
 
 /// Chunk size for the half-loops. Matches the default
@@ -45,6 +45,8 @@ pub async fn copy_bidirectional_with_rate_limit<A, B>(
     outbound: &mut B,
     limiter: Arc<RuleRateLimiter>,
     stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_limiter: Option<Arc<OwnerRateLimiter>>,
+    owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin,
@@ -55,6 +57,8 @@ where
 
     let limiter_in = Arc::clone(&limiter);
     let stats_in = stats.clone();
+    let owner_in = owner_limiter.clone();
+    let owner_stats_in = owner_stats.clone();
     let in_to_out = async {
         copy_with_cap(
             &mut in_read,
@@ -62,11 +66,15 @@ where
             BandwidthDirection::In,
             &limiter_in,
             stats_in.as_deref(),
+            owner_in.as_deref(),
+            owner_stats_in.as_deref(),
         )
         .await
     };
     let limiter_out = Arc::clone(&limiter);
     let stats_out = stats.clone();
+    let owner_out = owner_limiter.clone();
+    let owner_stats_out = owner_stats.clone();
     let out_to_in = async {
         copy_with_cap(
             &mut out_read,
@@ -74,18 +82,27 @@ where
             BandwidthDirection::Out,
             &limiter_out,
             stats_out.as_deref(),
+            owner_out.as_deref(),
+            owner_stats_out.as_deref(),
         )
         .await
     };
     tokio::try_join!(in_to_out, out_to_in)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn copy_with_cap<R, W>(
     reader: &mut R,
     writer: &mut W,
     direction: BandwidthDirection,
     limiter: &RuleRateLimiter,
     stats: Option<&RateLimitStatsAccumulator>,
+    // T030: per-owner bucket consulted BEFORE the per-rule bucket on
+    // every chunk (FR-013). Effective throughput is the lesser of
+    // (owner_rate, rule_rate). Owner-direction throttle wall-clock
+    // accumulates into `owner_stats`; rule-direction into `stats`.
+    owner_limiter: Option<&OwnerRateLimiter>,
+    owner_stats: Option<&RateLimitStatsAccumulator>,
 ) -> io::Result<u64>
 where
     R: AsyncRead + Unpin,
@@ -103,11 +120,28 @@ where
             let _ = writer.shutdown().await;
             return Ok(total);
         }
-        // Acquire `n` tokens. The bucket may be partly available; the
-        // caller-side discipline is "loop until granted" because
-        // sleep duration is exactly the deficit at the configured
-        // rate, so the next acquire is guaranteed to succeed barring
-        // a hot-reload that lowered the rate (handled by re-looping).
+        // Acquire `n` tokens from each layer that's installed. Loop
+        // until granted: sleep duration is exactly the deficit at
+        // the configured rate, so the next acquire is guaranteed to
+        // succeed barring a hot-reload that lowered the rate (handled
+        // by re-looping). Owner first (FR-013): if owner is the
+        // tighter bucket, the chunk parks on owner and the rule
+        // bucket isn't consulted until owner releases tokens.
+        if let Some(o) = owner_limiter {
+            loop {
+                match o.acquire_bandwidth(direction, n as u64) {
+                    BandwidthAcquire::Granted => break,
+                    BandwidthAcquire::Throttled { deficit } => {
+                        if let Some(s) = owner_stats {
+                            let micros =
+                                u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
+                            s.record_throttle(direction, micros);
+                        }
+                        tokio::time::sleep(deficit).await;
+                    }
+                }
+            }
+        }
         loop {
             match limiter.acquire_bandwidth(direction, n as u64) {
                 BandwidthAcquire::Granted => break,
@@ -162,6 +196,8 @@ mod tests {
                 &mut outbound,
                 limiter_clone,
                 Some(acc_clone),
+                None,
+                None,
             )
             .await
         });
@@ -229,6 +265,8 @@ mod tests {
                 &mut outbound,
                 limiter_clone,
                 Some(acc_clone),
+                None,
+                None,
             )
             .await
         });
@@ -268,5 +306,89 @@ mod tests {
         );
         assert_eq!(acc.throttle_micros(BandwidthDirection::In), 0);
         assert_eq!(acc.throttle_micros(BandwidthDirection::Out), 0);
+    }
+
+    /// T030: per-owner bandwidth cap throttles even when the per-rule
+    /// bucket has plenty of tokens. Throttle wall-clock for the owner
+    /// direction lands in the OWNER stats accumulator (FR-014); the
+    /// rule accumulator stays at zero.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn t030_owner_bandwidth_cap_throttles_independently() {
+        use crate::forwarder::rate_limit::scope::OwnerRateLimiter;
+        // Rule allows 1 MiB/s — generous; owner allows 100 KiB/s — the
+        // binding ceiling. Effective throughput must converge near the
+        // owner rate, with throttle micros recorded against the owner
+        // accumulator only.
+        let rule_limiter = limiter_for(RateLimit {
+            bandwidth_in_bps: Some(1024 * 1024),
+            ..Default::default()
+        });
+        let rule_acc = Arc::new(RateLimitStatsAccumulator::new());
+        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(100 * 1024),
+            ..Default::default()
+        }));
+        let owner_acc = Arc::new(RateLimitStatsAccumulator::new());
+
+        let (mut peer, mut inbound) = duplex(64 * 1024);
+        let (mut outbound, mut target) = duplex(64 * 1024);
+
+        let task_rule = Arc::clone(&rule_limiter);
+        let task_rule_stats = Arc::clone(&rule_acc);
+        let task_owner = Arc::clone(&owner_limiter);
+        let task_owner_stats = Arc::clone(&owner_acc);
+        let proxy = tokio::spawn(async move {
+            copy_bidirectional_with_rate_limit(
+                &mut inbound,
+                &mut outbound,
+                task_rule,
+                Some(task_rule_stats),
+                Some(task_owner),
+                Some(task_owner_stats),
+            )
+            .await
+        });
+
+        let payload = vec![0xCC_u8; 1024 * 1024];
+        let writer = tokio::spawn(async move {
+            peer.write_all(&payload).await.unwrap();
+            peer.shutdown().await.unwrap();
+        });
+        let read = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024 * 1024];
+            let mut total = 0;
+            loop {
+                let n = target.read(&mut buf[total..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+            total
+        });
+
+        let started = Instant::now();
+        writer.await.unwrap();
+        let total = read.await.unwrap();
+        proxy.await.unwrap().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(total, 1024 * 1024);
+        assert!(
+            elapsed >= Duration::from_secs(5),
+            "owner cap of 100 KiB/s must throttle 1 MiB to >=5 s, took {elapsed:?}"
+        );
+        // Owner accumulator captured the throttle.
+        assert!(
+            owner_acc.throttle_micros(BandwidthDirection::In) > 0,
+            "owner throttle micros must be non-zero on the In direction"
+        );
+        // Rule accumulator stays at zero — the rule bucket was never
+        // the bottleneck (FR-014 attribution).
+        assert_eq!(
+            rule_acc.throttle_micros(BandwidthDirection::In),
+            0,
+            "rule throttle counter must NOT bump when owner is the binding cap"
+        );
     }
 }
