@@ -7,3 +7,4 @@
 
 pub mod bucket;
 pub mod scope;
+pub mod stats;
