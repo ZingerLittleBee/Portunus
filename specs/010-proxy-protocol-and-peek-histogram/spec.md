@@ -5,6 +5,14 @@
 **Status**: Draft
 **Input**: User description: see [Inputs](#inputs)
 
+## Clarifications
+
+### Session 2026-05-09
+
+- Q: Which destination endpoint should the emitted PROXY v1/v2 header report? → A: Original client→forward-client listener IP and port.
+- Q: Which peek outcomes should the peek-duration histogram record? → A: All SNI-mode peek outcomes: success, timeout, and parse error.
+- Q: For wildcard forward-client listeners, which destination IP should the PROXY header report? → A: The accepted socket's actual local IP and port.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 — Backends see the real client IP (Priority: P1)
@@ -39,8 +47,8 @@ backend has not been configured to expect PROXY protocol.
    client connecting from `203.0.113.45:54321` to forward-client on
    `:443`, **When** forward-client opens the upstream TCP connection,
    **Then** the upstream receives a single PROXY v1 ASCII line carrying
-   `203.0.113.45 <fwd-client-bound-ip> 54321 <upstream-port>` before any
-   TLS bytes flow.
+   `203.0.113.45 <fwd-client-local-ip> 54321 <fwd-client-local-port>`
+   before any TLS bytes flow.
 2. **Given** the same setup but PROXY-protocol version 2, **When**
    forward-client opens the upstream TCP connection, **Then** the upstream
    receives the 12-byte PROXY v2 signature plus a TCP4 address block with
@@ -75,7 +83,7 @@ whether the deadline could safely be tightened or needs to be raised.
 Useful for capacity planning and incident triage but not blocking the v0.9
 adoption story. Slated below PROXY-protocol because v0.9 already ships peek
 counters that flag whether peeks are failing — only the *distribution* of
-successful peek durations is new.
+all SNI-mode peek durations is new.
 
 **Independent Test**: With a forward-client running an SNI-mode listener,
 generate a controlled mix of low-RTT and high-RTT clients (e.g., via
@@ -142,6 +150,10 @@ with a PROXY header and B's does not.
   family of the **client→forward-client** connection (the original
   client's view), not the upstream connection — that is the contract
   backends rely on.
+- **Wildcard listener bind addresses**: if forward-client listens on a
+  wildcard address such as `0.0.0.0` or `::`, the PROXY header must use
+  the accepted socket's actual local IP address and port, not the
+  configured wildcard bind address.
 - **Loopback / unix-style upstream targets**: forward-rs only supports
   TCP/UDP targets; UNIX-domain sockets are not in scope. PROXY v2 has a
   UNIX address-family block; we will not emit it.
@@ -187,7 +199,9 @@ with a PROXY header and B's does not.
   the **original client→forward-client** connection and the destination IP
   and destination port that the original client targeted (the
   forward-client's listening socket), regardless of the upstream
-  connection's address family.
+  connection's address family. For wildcard listener bind addresses, the
+  destination IP and port MUST be the accepted socket's actual local
+  endpoint.
 - **FR-005**: PROXY-protocol injection MUST work for both IPv4 and IPv6
   client connections.
 - **FR-006**: PROXY-protocol injection applies to TCP rules only; UDP
@@ -242,6 +256,9 @@ with a PROXY header and B's does not.
 - **FR-019**: The on-the-wire control-plane envelope, target-message
   shape, and forwarding hot-path layout MUST remain byte-stable for v0.9
   callers that do not opt into the new fields.
+- **FR-020**: This feature MUST NOT introduce new workspace dependencies;
+  PROXY-protocol encoding and peek-duration histogram reporting must use
+  existing workspace dependencies and standard library facilities.
 
 #### Out of scope (explicit non-requirements)
 
