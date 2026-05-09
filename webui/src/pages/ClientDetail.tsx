@@ -115,7 +115,7 @@ interface OwnerQuotasTabProps {
   clientName: string;
 }
 
-function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
+export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
   const { t } = useTranslation();
   const owners = useClientOwnersList(clientName);
   const [editingOwner, setEditingOwner] = useState<string | null>(null);

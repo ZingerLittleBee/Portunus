@@ -120,8 +120,8 @@ description: "Tasks for 011 — Connection Rate Limiting & QoS"
 
 ### Tests for User Story 4 ⚠️
 
-- [ ] T036 [P] [US4] Web UI snapshot/integration test for the rule editor's QoS section (cap inputs visible, burst hidden behind disclosure) and the rules-table `Caps` column under [crates/forward-server/webui/src](/Users/zingerbee/Documents/forward-rs/crates/forward-server/webui/src) tests directory
-- [ ] T037 [P] [US4] Web UI test for the new `Owner quotas` tab on the client detail page (list, edit, delete an owner envelope; reject/throttle counters render)
+- [X] T036 [P] [US4] Web UI snapshot/integration test for the rule editor's QoS section (cap inputs visible, burst hidden behind disclosure) and the rules-table `Caps` column in [webui/tests/unit/rate-limit-form-render.test.tsx](/Users/zingerbee/Documents/forward-rs/webui/tests/unit/rate-limit-form-render.test.tsx) and [webui/tests/unit/rate-limit-form.test.ts](/Users/zingerbee/Documents/forward-rs/webui/tests/unit/rate-limit-form.test.ts)
+- [X] T037 [P] [US4] Web UI test for the new `Owner quotas` tab on the client detail page (list, edit, delete an owner envelope) in [webui/tests/unit/owner-quotas-tab-render.test.tsx](/Users/zingerbee/Documents/forward-rs/webui/tests/unit/owner-quotas-tab-render.test.tsx)
 
 ### Implementation for User Story 4
 
