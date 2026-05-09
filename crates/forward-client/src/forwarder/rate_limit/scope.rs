@@ -298,6 +298,72 @@ impl RuleRateLimiter {
     }
 }
 
+/// Outcome of [`try_acquire_layered`] — the FR-013 cascade where
+/// a connection is admitted only when BOTH the per-owner ceiling
+/// and the per-rule cap allow it. The per-owner gate runs first
+/// (FR-013 ordering); a per-rule reject after a successful owner
+/// admit transparently releases the owner slot via the dropped
+/// guard.
+#[derive(Debug)]
+pub enum LayeredAcquire {
+    /// Both gates admitted. Either guard is `None` when its layer
+    /// is uncapped (no limiter installed); callers move both into
+    /// the connection task so the gauges decrement on close.
+    Granted {
+        owner_guard: Option<ActiveGuard>,
+        rule_guard: Option<ActiveGuard>,
+    },
+    /// The per-owner gate refused. Reason is one of the `OWNER_*`
+    /// variants. The per-rule gate is NOT consulted, mirroring
+    /// FR-013 ("per-owner ceiling binds before per-rule cap").
+    OwnerRejected(RejectReason),
+    /// The per-rule gate refused after the owner gate admitted
+    /// (or the owner gate was absent). The owner slot, if any,
+    /// has been released — the local `ActiveGuard` fell out of
+    /// scope on this branch.
+    RuleRejected(RejectReason),
+}
+
+/// FR-013 / FR-014 layered admission gate. Run on every TCP accept
+/// and every UDP first-packet of a NEW flow. Order is fixed: owner
+/// first, then rule. Both layers are independently optional so
+/// uncapped rules / owners short-circuit through (and the v0.10
+/// byte-stable hot path is preserved when both are `None`).
+pub fn try_acquire_layered(
+    owner: Option<&Arc<OwnerRateLimiter>>,
+    rule: Option<&Arc<RuleRateLimiter>>,
+    is_udp_first_packet: bool,
+) -> LayeredAcquire {
+    let owner_guard = if let Some(o) = owner {
+        match o.try_acquire(CapScope::Owner, is_udp_first_packet) {
+            ConnectionAcquire::Granted(g) => Some(g),
+            ConnectionAcquire::Rejected(reason) => {
+                return LayeredAcquire::OwnerRejected(reason);
+            }
+        }
+    } else {
+        None
+    };
+    let rule_guard = if let Some(r) = rule {
+        match r.try_acquire(CapScope::Rule, is_udp_first_packet) {
+            ConnectionAcquire::Granted(g) => Some(g),
+            ConnectionAcquire::Rejected(reason) => {
+                // The local `owner_guard` (if any) drops here —
+                // releasing the owner-scope slot we just claimed.
+                // Without this branch, a rule-side reject would
+                // strand the owner gauge above the live count.
+                return LayeredAcquire::RuleRejected(reason);
+            }
+        }
+    } else {
+        None
+    };
+    LayeredAcquire::Granted {
+        owner_guard,
+        rule_guard,
+    }
+}
+
 /// Centralised reject-reason mapping for the connection-rate /
 /// flow-rate token bucket exhaustion path.
 fn rate_reject_reason(scope: CapScope, is_udp_first_packet: bool) -> RejectReason {
@@ -915,6 +981,119 @@ mod tests {
 
         mgr.remove(&alice);
         assert!(mgr.is_empty());
+    }
+
+    /// T030 / FR-013: owner gate runs before rule gate — when the
+    /// owner is at-cap and the rule still has room, the cascade
+    /// rejects with the OWNER_* reason and never touches the rule
+    /// limiter's counters.
+    #[tokio::test(start_paused = true)]
+    async fn t030_layered_owner_binds_before_rule_when_owner_full() {
+        let owner = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(1),
+            ..Default::default()
+        }));
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(10),
+            ..Default::default()
+        }));
+        // Saturate the owner cap.
+        let _hold = owner.try_acquire(CapScope::Owner, false);
+        match _hold {
+            ConnectionAcquire::Granted(_) => {}
+            ConnectionAcquire::Rejected(_) => panic!("first owner acquire admits"),
+        }
+        // Layered cascade: owner is at 1/1 → reject under
+        // OwnerConcurrent. The rule's gauge must NOT change.
+        let before_rule_active = rule.active_connections();
+        match try_acquire_layered(Some(&owner), Some(&rule), false) {
+            LayeredAcquire::OwnerRejected(RejectReason::OwnerConcurrent) => {}
+            other => panic!("expected OwnerConcurrent reject, got {other:?}"),
+        }
+        assert_eq!(
+            rule.active_connections(),
+            before_rule_active,
+            "rule limiter must be untouched when owner gate refuses"
+        );
+    }
+
+    /// T030 / FR-013: when the rule rejects after the owner admits,
+    /// the owner slot is RELEASED so the next admission attempt
+    /// doesn't see a phantom +1 on the owner gauge.
+    #[tokio::test(start_paused = true)]
+    async fn t030_layered_owner_slot_released_when_rule_rejects() {
+        let owner = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(5),
+            ..Default::default()
+        }));
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(1),
+            ..Default::default()
+        }));
+        // Saturate the rule cap via a direct (non-layered) acquire.
+        let _rule_hold = match rule.try_acquire(CapScope::Rule, false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(_) => panic!("first rule acquire admits"),
+        };
+        let owner_before = owner.active_connections();
+        match try_acquire_layered(Some(&owner), Some(&rule), false) {
+            LayeredAcquire::RuleRejected(RejectReason::ConnConcurrent) => {}
+            other => panic!("expected rule ConnConcurrent reject, got {other:?}"),
+        }
+        assert_eq!(
+            owner.active_connections(),
+            owner_before,
+            "owner slot held during the failed rule probe must be released"
+        );
+    }
+
+    /// T030: both gates pass — caller receives both guards. Their
+    /// `Drop` ordering doesn't matter (independent gauges) but BOTH
+    /// must be held by the connection task so per-owner and
+    /// per-rule active counters decrement when the connection
+    /// closes.
+    #[tokio::test(start_paused = true)]
+    async fn t030_layered_grants_both_guards_when_both_admit() {
+        let owner = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(2),
+            ..Default::default()
+        }));
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(2),
+            ..Default::default()
+        }));
+        let (og, rg) = match try_acquire_layered(Some(&owner), Some(&rule), false) {
+            LayeredAcquire::Granted {
+                owner_guard,
+                rule_guard,
+            } => (owner_guard, rule_guard),
+            other => panic!("expected Granted, got {other:?}"),
+        };
+        assert!(og.is_some());
+        assert!(rg.is_some());
+        assert_eq!(owner.active_connections(), 1);
+        assert_eq!(rule.active_connections(), 1);
+        drop(og);
+        drop(rg);
+        assert_eq!(owner.active_connections(), 0);
+        assert_eq!(rule.active_connections(), 0);
+    }
+
+    /// T030: when both layers are uncapped (or absent), the cascade
+    /// short-circuits to Granted with both guards None — no atomic
+    /// ops, byte-stable v0.10 path.
+    #[tokio::test(start_paused = true)]
+    async fn t030_layered_short_circuits_when_no_limiters() {
+        match try_acquire_layered(None, None, false) {
+            LayeredAcquire::Granted {
+                owner_guard,
+                rule_guard,
+            } => {
+                assert!(owner_guard.is_none());
+                assert!(rule_guard.is_none());
+            }
+            other => panic!("expected Granted with both None, got {other:?}"),
+        }
     }
 
     /// T030: owner update with carryover preserves the live-count
