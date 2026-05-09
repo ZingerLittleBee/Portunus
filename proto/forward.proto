@@ -185,6 +185,18 @@ message Target {
   uint32 port     = 2;  // 1..=65535
   uint32 priority = 3;  // lower = higher priority. Two targets MAY
                         // share a value; row order breaks ties.
+  // Additive in v1.6 (spec 010-proxy-protocol-and-peek-histogram).
+  // Absent means legacy raw upstream forwarding. Present opts this
+  // target into one PROXY protocol prelude before any forwarded bytes.
+  // Server-side validation rejects it on UDP rules; the capability
+  // gate prevents pre-v1.0 clients from seeing the field.
+  optional ProxyProtocolVersion proxy_protocol = 4;
+}
+
+enum ProxyProtocolVersion {
+  PROXY_PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROXY_PROTOCOL_VERSION_V1 = 1;
+  PROXY_PROTOCOL_VERSION_V2 = 2;
 }
 
 enum RuleAction {
@@ -353,6 +365,14 @@ message SniListenerStats {
   uint32 listen_port                       = 1;
   uint64 sni_route_miss_total              = 2;
   uint64 client_hello_parse_failures_total = 3;
+  // Additive in v1.6 (spec 010-proxy-protocol-and-peek-histogram).
+  // One cumulative counter per fixed bucket in
+  // `forward_core::PEEK_HISTOGRAM_BUCKETS_SECS`, in bucket order.
+  repeated uint64 client_hello_peek_bucket_counts = 4;
+  // Cumulative sum of observed peek durations, in microseconds.
+  uint64 client_hello_peek_sum_micros = 5;
+  // Cumulative count of observed peeks (success, timeout, parse failure).
+  uint64 client_hello_peek_count = 6;
 }
 
 message StatsReport {

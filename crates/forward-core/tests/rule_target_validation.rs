@@ -10,6 +10,7 @@ fn t(host: &str, port: u16, priority: u32) -> RuleTarget {
         host: host.to_string(),
         port,
         priority,
+        proxy_protocol: None,
     }
 }
 
