@@ -245,6 +245,34 @@
     "hide": "隐藏",
     "backToList": "返回客户端列表"
   },
+  "clientDetail": {
+    "back": "返回",
+    "tabOverview": "概览",
+    "tabOwnerQuotas": "所有者配额",
+    "overviewTitle": "连接信息",
+    "remote": "远端地址",
+    "connectedAt": "连接时间",
+    "provisionedAt": "签发时间",
+    "revokedAt": "吊销时间"
+  },
+  "ownerQuotas": {
+    "help": "所有者级别的上限会应用到该用户在此客户端上推送的全部规则。所有者上限优先于单规则上限生效。",
+    "owner": "所有者",
+    "ruleCount": "规则数",
+    "capStatus": "配额状态",
+    "capped": "已限制",
+    "uncapped": "未限制",
+    "edit": "编辑配额",
+    "setCap": "设置配额",
+    "save": "保存",
+    "delete": "移除配额",
+    "editorTitle": "编辑所有者配额",
+    "currentCap": "当前配额:",
+    "errorEmpty": "请至少设置一项上限,或选择移除整个配额。",
+    "emptyTitle": "暂无所有者",
+    "emptyBody": "当用户向该客户端推送规则后,会显示在此处,供您配置每位租户的配额。",
+    "tableAriaLabel": "每个所有者的速率限制配额"
+  },
   "audit": {
     "title": "审计日志",
     "timestamp": "时间",

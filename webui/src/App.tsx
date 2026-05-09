@@ -22,6 +22,9 @@ const ClientsList = lazy(() => import("@/pages/ClientsList").then((m) => ({ defa
 const ClientProvision = lazy(() =>
   import("@/pages/ClientProvision").then((m) => ({ default: m.ClientProvision })),
 );
+const ClientDetail = lazy(() =>
+  import("@/pages/ClientDetail").then((m) => ({ default: m.ClientDetail })),
+);
 const AuditLog = lazy(() => import("@/pages/AuditLog").then((m) => ({ default: m.AuditLog })));
 const Metrics = lazy(() => import("@/pages/Metrics").then((m) => ({ default: m.Metrics })));
 const Settings = lazy(() => import("@/pages/Settings").then((m) => ({ default: m.Settings })));
@@ -148,6 +151,16 @@ export function App() {
           <AuthGate role="superadmin">
             <Shell>
               <ClientProvision />
+            </Shell>
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/clients/:clientName"
+        element={
+          <AuthGate>
+            <Shell>
+              <ClientDetail />
             </Shell>
           </AuthGate>
         }

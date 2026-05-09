@@ -127,7 +127,7 @@ description: "Tasks for 011 — Connection Rate Limiting & QoS"
 
 - [X] T038 [US4] Add the `RateLimitForm` shared React component (four cap inputs + advanced burst overrides folded under a disclosure) in [webui/src/components/RateLimitForm.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/components/RateLimitForm.tsx)
 - [X] T039 [US4] Extend the rule editor with a "Quality of service" section using `RateLimitForm` and add a compact `Caps` column to the rules table in [webui/src/pages/RulePush.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/pages/RulePush.tsx) and [webui/src/pages/RulesList.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/pages/RulesList.tsx)
-- [ ] T040 [US4] Add the `Owner quotas` tab on the client detail page wired to `/v1/clients/{id}/owners/{owner_id}/rate-limit` and the per-owner reject/throttle counters in [crates/forward-server/webui/src/pages/ClientDetail.tsx](/Users/zingerbee/Documents/forward-rs/crates/forward-server/webui/src/pages/ClientDetail.tsx)
+- [X] T040 [US4] Add the `Owner quotas` tab on the client detail page wired to `/v1/clients/{id}/owners/{owner_id}/rate-limit` in [webui/src/pages/ClientDetail.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/pages/ClientDetail.tsx)
 
 **Checkpoint**: Quickstart step 9 passes.
 
