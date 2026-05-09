@@ -21,6 +21,16 @@
 > rules from starving another's. Hot-reload of cap values without dropping
 > in-flight forwarding.
 
+## Clarifications
+
+### Session 2026-05-09
+
+- Q: What is the tenant boundary for "per-client" caps? → A: Per-owner within a forward-client — cap envelope keyed `(client, owner)`, aggregating that owner's rules on that client. Node-level (per-client-aggregate) caps are explicitly out of scope for v0.11.
+- Q: How is token-bucket burst configured? → A: Hidden default of `burst = 1 × rate` (1 second of rate) for every cap, with an optional per-cap `burst_*` field operators can submit to override. Common-case UI shows only `rate`.
+- Q: How is a TCP connection rejected when concurrent / new-connection caps are exceeded? → A: Accept-then-RST — the listener always accepts the socket and closes it with RST before any bytes flow to the upstream. Listener-pause was rejected because v0.7 multi-target and v0.9 SNI dispatch share a listener across rules, so pausing would penalise innocent rules.
+- Q: When a hot-reload lowers a concurrent-connection cap below the live count, what happens to the excess connections? → A: Graceful drain — existing connections run to natural completion; only new connections are rejected against the lowered cap. Active count is permitted to remain temporarily above the new cap until enough connections close.
+- Q: Where does the per-owner cap envelope live in the operator API and Web UI? → A: Nested under client — operator API resource path `/clients/{id}/owners/{owner_id}/rate-limit`, and the Web UI surfaces it as an "Owner quotas" tab on the client detail page (adjacent to the existing v0.5 RBAC editor).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 — Per-rule bandwidth and connection caps (Priority: P1)
@@ -234,6 +244,12 @@ rules table column shows a "throttling" badge.
   API and persisted alongside RBAC state.
 - **FR-004**: Caps MUST be expressible with units the operator UI can
   display (bytes/sec with K/M/G suffixes, integer counts).
+- **FR-004a**: Each cap field MUST accept an optional companion
+  `burst_*` field. When omitted, the system MUST default the burst
+  to one second of the cap's `rate`. When supplied, the operator's
+  value overrides the default. The Web UI MUST hide `burst_*` inputs
+  behind an "advanced" disclosure and MUST NOT show them by default
+  in either the rule editor or the rules table.
 
 **Wire compatibility**
 
@@ -263,7 +279,11 @@ rules table column shows a "throttling" badge.
   target connect failure.
 - **FR-011**: Hot-reload of cap values MUST take effect within one
   token-refill cycle (≤ 1 second by spec) without closing existing
-  connections.
+  connections. When a hot-reload lowers a concurrent-connection cap
+  below the live count, the excess MUST be drained gracefully —
+  existing connections run to natural completion and only new
+  connections are rejected against the lowered cap. Active count
+  MAY temporarily exceed the new cap until enough connections close.
 - **FR-012**: Data-plane events emitted by the rate limiter (throttle,
   reject) MUST be tracing-only and MUST NOT enter the SQLite operator
   audit ring (consistent with v0.9 D13).
@@ -299,8 +319,12 @@ rules table column shows a "throttling" badge.
 - **FR-018**: The operator API rule create / update endpoints MUST
   accept the new cap fields with backward-compatible JSON / proto
   encoding (omitted = no cap).
-- **FR-019**: The operator API MUST expose a separate endpoint or sub-
-  resource for setting per-owner cap envelopes per `(client, owner)`.
+- **FR-019**: The operator API MUST expose per-owner cap envelopes
+  as a nested sub-resource keyed by `(client, owner)` at the path
+  `/clients/{id}/owners/{owner_id}/rate-limit`. The Web UI MUST
+  surface this as an "Owner quotas" tab on the client detail page,
+  adjacent to the existing v0.5 RBAC editor, so the owner-cap
+  configuration sits next to the membership it constrains.
 - **FR-020**: Validation MUST reject cap = 0 and negative values at
   API boundary with a 400 / structured error before persistence.
 - **FR-021**: The Web UI rules table MUST add a column showing
@@ -361,9 +385,10 @@ rules table column shows a "throttling" badge.
   level caps can be added later if needed.
 - **Bucket model**: Token-bucket with `{rate, burst}` is the
   enforcement mechanism for both bandwidth and connection-rate caps.
-  Default burst = 1 second of rate when the operator does not specify
-  a burst explicitly. Smaller burst trades smoother shaping for worse
-  small-message latency.
+  Default burst = 1 second of rate, hidden from the common UI; an
+  optional `burst_*` companion field on every cap lets advanced
+  operators override (Q2, 2026-05-09). Smaller burst trades smoother
+  shaping for worse small-message latency.
 - **Throttle behaviour**: Bandwidth-cap exhaustion **blocks** the
   affected direction's read/write loop (preserves connections, adds
   latency). Connections are never closed by the rate limiter directly;
