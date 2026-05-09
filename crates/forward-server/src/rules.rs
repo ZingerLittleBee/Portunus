@@ -413,6 +413,7 @@ impl ServerRuleStore {
             Vec::new(),
             None,
             sni_pattern,
+            None,
         )
         .await
     }
@@ -451,6 +452,7 @@ impl ServerRuleStore {
             Vec::new(),
             None,
             None,
+            None,
         )
         .await
     }
@@ -478,6 +480,11 @@ impl ServerRuleStore {
         targets: Vec<forward_core::RuleTarget>,
         health_check_interval_secs: Option<u32>,
         sni_pattern: Option<String>,
+        // 011-rate-limiting-qos T015/T016: optional per-rule cap
+        // envelope. Already validated by the operator HTTP handler
+        // (`forward_core::rate_limit::validate`) before reaching this
+        // helper. None preserves v0.10 byte-stable wire shape.
+        rate_limit: Option<forward_core::RateLimit>,
     ) -> Result<Rule, RuleStoreError> {
         // Structural validation (length match etc.).
         let (listen, target) =
@@ -662,11 +669,10 @@ impl ServerRuleStore {
             targets,
             health_check_interval_secs,
             sni_pattern,
-            // 011-rate-limiting-qos T015: caps land here once the
-            // operator HTTP push handler plumbs them through this
-            // helper. For Phase 2 the path is still dormant — every
-            // rule goes through uncapped.
-            rate_limit: None,
+            // 011-rate-limiting-qos T015/T016: caps received from the
+            // operator HTTP handler land here. None on a legacy push
+            // preserves the v0.10 hot path byte-for-byte.
+            rate_limit,
         };
         guard
             .by_client_listen_start

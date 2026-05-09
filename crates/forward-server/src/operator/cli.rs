@@ -862,6 +862,11 @@ pub async fn push_rule_multi_target(
     // lowercased by the HTTP handler (operator::http::post_rules)
     // before reaching this helper.
     sni_pattern: Option<String>,
+    // 011-rate-limiting-qos T016: optional per-rule cap envelope.
+    // Already validated by `forward_core::rate_limit::validate` and
+    // capability-gated by the HTTP handler before reaching this
+    // helper. None preserves v0.10 byte-stable wire shape.
+    rate_limit: Option<forward_core::RateLimit>,
 ) -> Result<Rule, OperatorError> {
     debug_assert!(
         !targets.is_empty(),
@@ -911,6 +916,7 @@ pub async fn push_rule_multi_target(
             targets.clone(),
             health_check_interval_secs,
             sni_pattern,
+            rate_limit,
         )
         .await?;
     state
@@ -981,11 +987,15 @@ pub async fn push_rule_multi_target(
                 // refused upstream by the capability gate, so this is
                 // safe to send unconditionally.
                 sni_pattern: rule.sni_pattern.clone(),
-                // 011-rate-limiting-qos T015/T016: cap fields plumb
-                // through from the persisted rule when present. The
-                // capability gate refuses pushes that would target a
-                // pre-0.11 client, so this is safe unconditionally.
-                rate_limit: None,
+                // 011-rate-limiting-qos T016: forward the validated
+                // cap envelope to the data plane. Pre-0.11 clients
+                // are refused upstream by the capability gate
+                // (rate_limit_unsupported_by_client), so emitting
+                // here is safe unconditionally.
+                rate_limit: rule
+                    .rate_limit
+                    .as_ref()
+                    .map(crate::grpc::service::rate_limit_to_proto),
             }),
         })),
     };

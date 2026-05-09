@@ -598,6 +598,7 @@ pub(crate) fn rate_limit_to_proto(rl: &forward_core::RateLimit) -> forward_proto
 /// core envelope. Inverse of [`rate_limit_to_proto`]. Used by the HTTP
 /// push handler (T016) to hydrate caps received from the operator API
 /// — and any future inbound path that needs to read caps off the wire.
+#[allow(dead_code)] // wired up in T030 (per-owner caps inbound path)
 pub(crate) fn rate_limit_from_proto(p: &forward_proto::v1::RateLimit) -> forward_core::RateLimit {
     forward_core::RateLimit {
         bandwidth_in_bps: p.bandwidth_in_bps,

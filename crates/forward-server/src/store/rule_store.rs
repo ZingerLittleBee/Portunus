@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use forward_auth::UserId;
-use forward_core::{ClientName, RuleId, RuleTarget};
+use forward_core::{ClientName, RateLimit, RuleId, RuleTarget};
 use rusqlite::params;
 use tracing::warn;
 
@@ -29,12 +29,20 @@ impl SqliteRuleStore {
                 RuleState::Failed { reason } => ("failed", Some(reason.as_str())),
                 RuleState::Removed => ("removed", None),
             };
+            // 011-rate-limiting-qos T015: rate_limit lands as seven
+            // independently-nullable INTEGER columns. Absent envelope
+            // ⇒ all seven NULL ⇒ rule load returns rate_limit=None,
+            // preserving v0.10 behaviour byte-for-byte.
+            let rl = rule.rate_limit.as_ref();
             tx.execute(
                 "INSERT INTO rules (
                     id, client_name, listen_port, listen_port_end, target_host, target_port,
                     target_port_end, prefer_ipv6, protocol, state_kind, state_reason,
-                    owner_user_id, health_check_interval_secs, created_at, updated_at, sni_pattern
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    owner_user_id, health_check_interval_secs, created_at, updated_at, sni_pattern,
+                    rl_bandwidth_in_bps, rl_bandwidth_out_bps, rl_new_connections_per_sec,
+                    rl_concurrent_connections, rl_bandwidth_in_burst, rl_bandwidth_out_burst,
+                    rl_new_connections_burst
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     client_name = excluded.client_name,
                     listen_port = excluded.listen_port,
@@ -49,7 +57,14 @@ impl SqliteRuleStore {
                     owner_user_id = excluded.owner_user_id,
                     health_check_interval_secs = excluded.health_check_interval_secs,
                     updated_at = excluded.updated_at,
-                    sni_pattern = excluded.sni_pattern",
+                    sni_pattern = excluded.sni_pattern,
+                    rl_bandwidth_in_bps = excluded.rl_bandwidth_in_bps,
+                    rl_bandwidth_out_bps = excluded.rl_bandwidth_out_bps,
+                    rl_new_connections_per_sec = excluded.rl_new_connections_per_sec,
+                    rl_concurrent_connections = excluded.rl_concurrent_connections,
+                    rl_bandwidth_in_burst = excluded.rl_bandwidth_in_burst,
+                    rl_bandwidth_out_burst = excluded.rl_bandwidth_out_burst,
+                    rl_new_connections_burst = excluded.rl_new_connections_burst",
                 params![
                     rule.id.0,
                     rule.client_name.as_str(),
@@ -67,6 +82,13 @@ impl SqliteRuleStore {
                     rule.created_at.to_rfc3339(),
                     rule.last_state_change_at.to_rfc3339(),
                     rule.sni_pattern,
+                    rl.and_then(|r| r.bandwidth_in_bps),
+                    rl.and_then(|r| r.bandwidth_out_bps),
+                    rl.and_then(|r| r.new_connections_per_sec),
+                    rl.and_then(|r| r.concurrent_connections),
+                    rl.and_then(|r| r.bandwidth_in_burst),
+                    rl.and_then(|r| r.bandwidth_out_burst),
+                    rl.and_then(|r| r.new_connections_burst),
                 ],
             )
             .map_err(map_rusqlite)?;
@@ -135,7 +157,10 @@ impl SqliteRuleStore {
                 .prepare(
                     "SELECT id, client_name, listen_port, listen_port_end, target_host, target_port,
                             target_port_end, prefer_ipv6, protocol, state_kind, state_reason,
-                            owner_user_id, health_check_interval_secs, created_at, updated_at, sni_pattern
+                            owner_user_id, health_check_interval_secs, created_at, updated_at, sni_pattern,
+                            rl_bandwidth_in_bps, rl_bandwidth_out_bps, rl_new_connections_per_sec,
+                            rl_concurrent_connections, rl_bandwidth_in_burst, rl_bandwidth_out_burst,
+                            rl_new_connections_burst
                      FROM rules
                      WHERE client_name IS NOT NULL
                      ORDER BY id ASC",
@@ -179,6 +204,13 @@ impl SqliteRuleStore {
                     };
                     let created_at = parse_ts(row.get::<_, String>(13)?)?;
                     let updated_at = parse_ts(row.get::<_, String>(14)?)?;
+                    // 011-rate-limiting-qos T015: rebuild RateLimit
+                    // from columns 16..=22. Returns None when every
+                    // column is NULL (= uncapped — preserves v0.10
+                    // shape). Any non-NULL column promotes the
+                    // envelope to Some(..) with the other dimensions
+                    // staying None.
+                    let rate_limit = build_rate_limit_from_row(row)?;
                     Ok(Rule {
                         id,
                         client_name,
@@ -196,7 +228,7 @@ impl SqliteRuleStore {
                         targets: Vec::new(),
                         health_check_interval_secs: row.get(12)?,
                         sni_pattern: row.get(15)?,
-                        rate_limit: None,
+                        rate_limit,
                     })
                 })
                 .map_err(map_rusqlite)?;
@@ -257,6 +289,44 @@ fn parse_ts(raw: String) -> Result<DateTime<Utc>, rusqlite::Error> {
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })
+}
+
+/// 011-rate-limiting-qos T015: hydrate `Rule.rate_limit` from columns
+/// 16..=22 of the `list_rules` SELECT. Returns `None` when every cap
+/// column is NULL — that's the v0.10-shape "uncapped" rule the
+/// loader has always produced. Any non-NULL cap promotes the envelope
+/// to `Some(..)`; SQLite-side CHECK constraints already guard against
+/// `NOT NULL OR > 0`, so the per-column `> 0` invariant holds even
+/// across hand-edited databases.
+fn build_rate_limit_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<Option<RateLimit>, rusqlite::Error> {
+    let bandwidth_in_bps: Option<u64> = row.get(16)?;
+    let bandwidth_out_bps: Option<u64> = row.get(17)?;
+    let new_connections_per_sec: Option<u32> = row.get(18)?;
+    let concurrent_connections: Option<u32> = row.get(19)?;
+    let bandwidth_in_burst: Option<u64> = row.get(20)?;
+    let bandwidth_out_burst: Option<u64> = row.get(21)?;
+    let new_connections_burst: Option<u32> = row.get(22)?;
+    if bandwidth_in_bps.is_none()
+        && bandwidth_out_bps.is_none()
+        && new_connections_per_sec.is_none()
+        && concurrent_connections.is_none()
+        && bandwidth_in_burst.is_none()
+        && bandwidth_out_burst.is_none()
+        && new_connections_burst.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(RateLimit {
+        bandwidth_in_bps,
+        bandwidth_out_bps,
+        new_connections_per_sec,
+        concurrent_connections,
+        bandwidth_in_burst,
+        bandwidth_out_burst,
+        new_connections_burst,
+    }))
 }
 
 #[cfg(test)]
@@ -342,6 +412,140 @@ mod tests {
             Some(forward_core::ProxyProtocolVersion::V2)
         );
         assert_eq!(loaded.targets[1].proxy_protocol, None);
+    }
+
+    #[test]
+    fn roundtrip_rule_with_rate_limit_envelope() {
+        // 011-rate-limiting-qos T015: a rule with every cap dimension
+        // set must round-trip through SQLite verbatim. Burst overrides
+        // round-trip alongside their companion rates.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        crate::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store))
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        let rule_store = SqliteRuleStore::new(store);
+        let rule = Rule {
+            id: RuleId(101),
+            client_name: ClientName::new("edge-02".to_string()).unwrap(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.5".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: Protocol::Tcp,
+            state: RuleState::Active,
+            created_at: Utc::now(),
+            last_state_change_at: Utc::now(),
+            owner_user_id: UserId::reserved("_legacy"),
+            targets: vec![RuleTarget {
+                host: "10.0.0.5".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: None,
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: Some(RateLimit {
+                bandwidth_in_bps: Some(1_048_576),
+                bandwidth_out_bps: Some(2_097_152),
+                new_connections_per_sec: Some(50),
+                concurrent_connections: Some(200),
+                bandwidth_in_burst: Some(2_097_152),
+                bandwidth_out_burst: Some(4_194_304),
+                new_connections_burst: Some(100),
+            }),
+        };
+        rule_store.upsert_rule(&rule).unwrap();
+        let loaded = rule_store.get_rule(rule.id).unwrap().expect("rule exists");
+        assert_eq!(loaded.rate_limit, rule.rate_limit);
+    }
+
+    #[test]
+    fn rule_without_caps_loads_with_rate_limit_none() {
+        // The byte-stability invariant on the storage side: a rule
+        // pushed without any cap field must come back as
+        // `rate_limit: None` (not `Some(empty envelope)`). This is
+        // what keeps the v0.10 hot path active for legacy traffic.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        crate::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store))
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        let rule_store = SqliteRuleStore::new(store);
+        let rule = Rule {
+            id: RuleId(102),
+            client_name: ClientName::new("edge-03".to_string()).unwrap(),
+            listen_port: 80,
+            listen_port_end: None,
+            target_host: "10.0.0.7".into(),
+            target_port: 8080,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: Protocol::Tcp,
+            state: RuleState::Active,
+            created_at: Utc::now(),
+            last_state_change_at: Utc::now(),
+            owner_user_id: UserId::reserved("_legacy"),
+            targets: vec![RuleTarget {
+                host: "10.0.0.7".into(),
+                port: 8080,
+                priority: 0,
+                proxy_protocol: None,
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: None,
+        };
+        rule_store.upsert_rule(&rule).unwrap();
+        let loaded = rule_store.get_rule(rule.id).unwrap().expect("rule exists");
+        assert!(loaded.rate_limit.is_none());
+    }
+
+    #[test]
+    fn roundtrip_rule_with_partial_rate_limit_envelope() {
+        // Only one cap dimension set — the loader must still promote
+        // to Some(..), with the other six dimensions remaining None.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        crate::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store))
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        let rule_store = SqliteRuleStore::new(store);
+        let rule = Rule {
+            id: RuleId(103),
+            client_name: ClientName::new("edge-04".to_string()).unwrap(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.9".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: Protocol::Tcp,
+            state: RuleState::Active,
+            created_at: Utc::now(),
+            last_state_change_at: Utc::now(),
+            owner_user_id: UserId::reserved("_legacy"),
+            targets: vec![RuleTarget {
+                host: "10.0.0.9".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: None,
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: Some(RateLimit {
+                concurrent_connections: Some(64),
+                ..RateLimit::default()
+            }),
+        };
+        rule_store.upsert_rule(&rule).unwrap();
+        let loaded = rule_store.get_rule(rule.id).unwrap().expect("rule exists");
+        let rl = loaded.rate_limit.expect("partial envelope persists");
+        assert_eq!(rl.concurrent_connections, Some(64));
+        assert!(rl.bandwidth_in_bps.is_none());
+        assert!(rl.new_connections_per_sec.is_none());
     }
 
     #[test]
