@@ -238,6 +238,15 @@ impl RuleRateLimiter {
             && self.concurrent_max.is_none()
     }
 
+    /// True when at least one bandwidth bucket is configured. The
+    /// proxy hot path uses this to decide between
+    /// `tokio::io::copy_bidirectional` (byte-stable, no extra atomics
+    /// per chunk) and the throttling manual bidi loop (T020).
+    #[must_use]
+    pub fn has_bandwidth_cap(&self) -> bool {
+        self.bandwidth_in.is_some() || self.bandwidth_out.is_some()
+    }
+
     /// Try to admit `n` bytes through a bandwidth bucket. Returns
     /// `Granted` immediately when the requested direction is
     /// uncapped.

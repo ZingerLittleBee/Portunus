@@ -13,6 +13,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::proxy_protocol::{self, ProxyProtocolPrelude};
+use super::rate_limit::scope::RuleRateLimiter;
+use super::rate_limit::stats::RateLimitStatsAccumulator;
 use super::stats::RuleStats;
 use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
 
@@ -51,6 +53,11 @@ pub async fn proxy<R: Resolve>(
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
+    // 011-rate-limiting-qos T020: per-rule bandwidth limiter +
+    // accumulator. None on uncapped rules — the proxy stays on the
+    // byte-identical v0.10 `tokio::io::copy_bidirectional` fast path.
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     // Legacy plain-TCP path: no preread bytes to replay.
     proxy_with_preread(
@@ -64,6 +71,8 @@ pub async fn proxy<R: Resolve>(
         shutdown,
         stats,
         listen_port,
+        rate_limit,
+        rate_limit_stats,
     )
     .await
 }
@@ -86,6 +95,8 @@ pub async fn proxy_with_preread<R: Resolve>(
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     proxy_with_preread_and_prelude(
         inbound,
@@ -99,6 +110,8 @@ pub async fn proxy_with_preread<R: Resolve>(
         shutdown,
         stats,
         listen_port,
+        rate_limit,
+        rate_limit_stats,
     )
     .await
 }
@@ -119,6 +132,8 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
+    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     let mut outbound = match resolver
         .connect_target(rule_id, target, target_port, prefer_ipv6)
@@ -214,6 +229,17 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
         preread_in = buf.len() as u64;
     }
 
+    // 011-rate-limiting-qos T020: route through the bandwidth-cap-
+    // aware bidi loop when the rule has at least one bandwidth bucket
+    // configured. Connection-rate / concurrent caps live at the
+    // accept layer (T019); they don't influence the per-byte path.
+    // Uncapped rules (rate_limit is None or has_bandwidth_cap is
+    // false) keep the byte-identical v0.10 `copy_bidirectional`
+    // fast path.
+    let throttle = rate_limit
+        .as_ref()
+        .filter(|l| l.has_bandwidth_cap())
+        .cloned();
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             // Both streams drop at function exit, closing the sockets. We
@@ -221,7 +247,19 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
             // than "completed".
             Err(io::Error::other("proxy_cancelled"))
         }
-        result = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {
+        result = async {
+            if let Some(limiter) = throttle {
+                super::rate_limit::copy::copy_bidirectional_with_rate_limit(
+                    &mut inbound,
+                    &mut outbound,
+                    limiter,
+                    rate_limit_stats.clone(),
+                )
+                .await
+            } else {
+                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+            }
+        } => {
             result
         }
     };
@@ -322,6 +360,8 @@ mod tests {
                 cancel_proxy,
                 None,
                 0,
+                None,
+                None,
             )
             .await
         });
@@ -361,6 +401,8 @@ mod tests {
                 cancel_proxy,
                 None,
                 0,
+                None,
+                None,
             )
             .await
         });
@@ -420,6 +462,8 @@ mod tests {
                 CancellationToken::new(),
                 None,
                 proxy_addr.port(),
+                None,
+                None,
             )
             .await
         });
@@ -471,6 +515,8 @@ mod tests {
                     CancellationToken::new(),
                     Some(s),
                     0,
+                    None,
+                    None,
                 )
                 .await;
             });
@@ -543,6 +589,8 @@ mod tests {
                     CancellationToken::new(),
                     Some(stats),
                     0,
+                    None,
+                    None,
                 )
                 .await;
             });
@@ -612,6 +660,8 @@ mod tests {
                 cancel,
                 None,
                 0,
+                None,
+                None,
             )
             .await
         });

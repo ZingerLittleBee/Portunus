@@ -392,6 +392,8 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_cancel = proxy_cancel.clone();
                     let conn_stats = Arc::clone(&stats);
                     let conn_resolver = Arc::clone(&resolver);
+                    let conn_rate_limiter = rate_limiter.clone();
+                    let conn_rate_stats = rate_limit_stats.clone();
                     local.spawn(async move {
                         // Move the ActiveGuard into the connection task
                         // so its `Drop` runs `fetch_sub(1)` on the
@@ -407,6 +409,8 @@ async fn accept_loop<R: Resolve + 'static>(
                             conn_cancel,
                             Some(conn_stats),
                             listen_port,
+                            conn_rate_limiter,
+                            conn_rate_stats,
                         ).await {
                             Ok((bin, bout)) => {
                                 info!(

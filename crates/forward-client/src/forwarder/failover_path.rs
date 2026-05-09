@@ -259,6 +259,8 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_states = Arc::clone(&states);
                     let conn_counter = Arc::clone(&target_failovers_total);
                     let conn_stats = Arc::clone(&stats);
+                    let conn_rate_limiter = rate_limiter.clone();
+                    let conn_rate_stats = rate_limit_stats.clone();
                     local.spawn(async move {
                         let _admit_guard = admit_guard;
                         handle_connection(
@@ -273,6 +275,8 @@ async fn accept_loop<R: Resolve + 'static>(
                             prefer_ipv6,
                             conn_cancel,
                             conn_stats,
+                            conn_rate_limiter,
+                            conn_rate_stats,
                         )
                         .await;
                     });
@@ -307,6 +311,12 @@ async fn handle_connection<R: Resolve>(
     prefer_ipv6: bool,
     shutdown: CancellationToken,
     stats: Arc<RuleStats>,
+    // 011-rate-limiting-qos T020: optional bandwidth limiter +
+    // accumulator. None for uncapped or
+    // connection-only-capped rules — the multi-target path keeps the
+    // byte-stable v0.7 `tokio::io::copy_bidirectional` behaviour.
+    rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
 ) {
     let Ok(local_addr) = inbound.local_addr() else {
         warn!(
@@ -357,11 +367,30 @@ async fn handle_connection<R: Resolve>(
 
     let _guard = ActiveGuard::new(Arc::clone(&stats), listen_port);
 
+    // 011-rate-limiting-qos T020: same fork as proxy.rs. Capped
+    // bandwidth → throttling bidi loop. Uncapped → byte-stable
+    // `copy_bidirectional`.
+    let throttle = rate_limit
+        .as_ref()
+        .filter(|l| l.has_bandwidth_cap())
+        .cloned();
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             Err(io::Error::other("proxy_cancelled"))
         }
-        result = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {
+        result = async {
+            if let Some(limiter) = throttle {
+                crate::forwarder::rate_limit::copy::copy_bidirectional_with_rate_limit(
+                    &mut inbound,
+                    &mut outbound,
+                    limiter,
+                    rate_limit_stats.clone(),
+                )
+                .await
+            } else {
+                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+            }
+        } => {
             result
         }
     };
