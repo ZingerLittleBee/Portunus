@@ -135,8 +135,8 @@ description: "Tasks for 011 — Connection Rate Limiting & QoS"
 
 ## Phase 7: Polish
 
-- [ ] T041 [P] Update [AGENTS.md](/Users/zingerbee/Documents/forward-rs/AGENTS.md) with the v0.11 active-feature block (mirror the SPECKIT block in CLAUDE.md set during /speckit-plan)
-- [ ] T042 [P] Update the embedded changelog / release notes draft in [CHANGELOG.md](/Users/zingerbee/Documents/forward-rs/CHANGELOG.md) with the v0.11 wire / migration / metrics surface (Constitution: human-readable changelog required)
+- [X] T041 [P] Update [AGENTS.md](/Users/zingerbee/Documents/forward-rs/AGENTS.md) with the v0.11 active-feature block (mirror the SPECKIT block in CLAUDE.md set during /speckit-plan)
+- [X] T042 [P] Update the embedded changelog / release notes draft in [CHANGELOG.md](/Users/zingerbee/Documents/forward-rs/CHANGELOG.md) with the v0.11 wire / migration / metrics surface (Constitution: human-readable changelog required)
 - [ ] T043 Run quickstart.md end-to-end on a fresh build (`cargo run` server + client; exercise all 9 steps)
 - [ ] T044 Run `cargo fmt`, `cargo clippy --all --benches --tests --examples --all-features`, and the full `cargo test` suite; confirm SC-001..SC-007 pass
 

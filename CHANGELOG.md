@@ -7,7 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(no changes since v0.9.0)
+### Added (011-rate-limiting-qos — draft)
+
+Per-rule and per-owner connection rate limiting / QoS. Each cap is
+independently optional; absent fields preserve v0.10 behaviour
+byte-for-byte. Token-bucket implementation is hand-rolled — zero new
+workspace deps.
+
+- **Per-rule caps** on `Rule.rate_limit`:
+  - `bandwidth_in_bps` / `bandwidth_out_bps` — token-bucket throttle
+    on the bidirectional copy loop. Cumulative throttle wall-clock
+    time per direction surfaces as
+    `rate_limit_throttle_seconds_total{direction}`. Connection is
+    never closed by the limiter — the read or write half parks until
+    the next refill.
+  - `new_connections_per_sec` — TCP accept-then-RST or UDP first-
+    packet drop on rate exhaustion. Listener-pause was rejected so a
+    capped rule never penalises another rule sharing a v0.7/v0.9 SNI
+    listener.
+  - `concurrent_connections` — atomic `fetch_add` then cap check on
+    accept (TCP) or first-packet (UDP). RAII guard releases the slot
+    on close; soft-cap overshoot of ±1 under concurrent accepts is
+    closed before any byte flows.
+  - Each cap has an optional sibling `*_burst` field; absent →
+    `burst = 1 × rate`. Server validation clamps to
+    `[rate/100, rate*60]` and rejects negative or zero rates.
+- **Per-owner ceilings** (per-RBAC-owner within a forward-client)
+  bind **before** per-rule caps; rejects carry distinct
+  `owner_*` reasons (`OwnerConnRate`, `OwnerConnConcurrent`,
+  `OwnerUdpFlowRate`). REST surface:
+  `/v1/clients/{id}/owners/{owner_id}/rate-limit`.
+- **Capability gate** — pushing `rate_limit` (or any owner-cap
+  mutation) to a pre-v0.11 client returns HTTP 422
+  `rate_limit_unsupported_by_client` before any rule activates
+  anywhere.
+- **Hot-reload** — cap mutations swap the rule's
+  `Arc<RuleRateLimiter>` while preserving `tokens` and
+  `last_refill_micros` carryover so a raise doesn't mint a free
+  burst and a lower doesn't strand the pool. A concurrent cap
+  lowered below the live count drains gracefully (no forcible
+  close).
+- **Web UI** — rule editor gains a "Quality of service" section
+  (cap inputs, burst overrides folded behind an "Advanced"
+  disclosure); rules table gains a compact `Caps` column; client
+  detail page gains an `Owner quotas` tab.
+- **Observability** — three new Prometheus collectors:
+  `forward_rate_limit_reject_total{client,rule,owner,reason}`,
+  `forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}`,
+  `forward_rate_limit_active_connections{client,rule,owner}`.
+  `owner` label is empty for per-rule rejects, populated for owner-
+  scoped rejects. Data-plane reject/throttle events are tracing-only;
+  they do NOT enter the SQLite operator audit ring (mirrors v0.9 D13).
+
+### Wire (additive only — draft)
+
+- `Rule.rate_limit = 12` (`RateLimit` message: four optional caps +
+  three optional `*_burst` overrides).
+- `RuleStats.rate_limit = 16` (`RateLimitStats` message: per-reason
+  reject totals, throttle micros per direction, active-connection
+  gauge).
+- `StatsReport.owner_rate_limit_stats = 4` (repeated
+  `OwnerRateLimitStats { owner_id, stats }`).
+- New server-push variant `OwnerRateLimitUpdate { client_id,
+  owner_id, action: SET | REMOVE, rate_limit }` on the existing
+  control stream.
+- New enums `RateLimitRejectReason` (6 values: `ConnConcurrent`,
+  `ConnRate`, `UdpFlowRate`, `OwnerConcurrent`, `OwnerConnRate`,
+  `OwnerUdpFlowRate`) and `OwnerRateLimitAction`.
+
+A v0.10 client connected to a v0.11 server sees no behavioural
+difference (server gates pushes via the capability check); a v0.11
+client connected to a v0.10 server transparently omits the new fields
+under proto3 default-stripping. Schema-version range shifts
+`[1,3] → [1,4]` via additive SQL migration V005 (nullable cap
+columns on `rules` plus a new `rate_limit_owner` table).
+
+### No breaking changes
+
+- v0.10 PROXY-protocol prelude + SNI peek-duration histogram, v0.9
+  SNI routing, v0.8 SQLite storage, v0.7 multi-target failover, v0.6
+  management UI, v0.5 RBAC, v0.4 UDP, v0.3 DNS resolution, v0.2
+  port-range rules, and v0.1 TCP MVP all behave unchanged on
+  uncapped rules.
 
 ## [0.9.0] — 2026-05-09
 
