@@ -163,6 +163,25 @@ pub struct Metrics {
     /// `irate()` over time tells operators when SNI rule density
     /// changes meaningfully.
     pub tls_sni_routes_active: IntGauge,
+    /// 011-rate-limiting-qos T023: per-rule cumulative count of
+    /// connections (or UDP first-packets) rejected by a rate-limit
+    /// cap. Labelled `(client, rule, owner, reason)`. `reason` is one
+    /// of `conn_concurrent`, `conn_rate`, `udp_flow_rate`,
+    /// `owner_concurrent`, `owner_conn_rate`, `owner_udp_flow_rate`.
+    /// Cardinality budget: rules × 6 worst-case (almost always far
+    /// fewer because reasons are sparse-emitted).
+    pub rate_limit_reject_total: IntCounterVec,
+    /// 011-rate-limiting-qos T023: per-rule cumulative wall-clock time
+    /// the bandwidth cap blocked the read / write half-loop, in
+    /// seconds. Labelled `(client, rule, owner, direction)` where
+    /// `direction` ∈ {`in`, `out`}. Always 0 for rules with no
+    /// bandwidth cap (proto3 default-strip means the field is absent).
+    pub rate_limit_throttle_seconds_total: CounterVec,
+    /// 011-rate-limiting-qos T023: per-rule live count of capped
+    /// connections (TCP) or NAT-bound flows (UDP). Mirrors the
+    /// limiter's `active_connections` atomic. Always 0 for rules
+    /// with no concurrent cap.
+    pub rate_limit_active_connections: GaugeVec,
 }
 
 impl Metrics {
@@ -307,6 +326,28 @@ impl Metrics {
             "forward_tls_sni_routes_active",
             "Number of currently-active rules whose `sni_pattern` is non-empty (009-tls-sni-routing T081).",
         )?;
+        // ----- 011-rate-limiting-qos T023 -----
+        let rate_limit_reject_total = IntCounterVec::new(
+            opts!(
+                "forward_rate_limit_reject_total",
+                "Per-rule cumulative count of connections / UDP first-packets rejected by a rate-limit cap (011-rate-limiting-qos T023). `reason` ∈ {conn_concurrent, conn_rate, udp_flow_rate, owner_concurrent, owner_conn_rate, owner_udp_flow_rate}."
+            ),
+            &["client", "rule", "owner", "reason"],
+        )?;
+        let rate_limit_throttle_seconds_total = CounterVec::new(
+            opts!(
+                "forward_rate_limit_throttle_seconds_total",
+                "Per-rule cumulative wall-clock time a bandwidth cap blocked the copy half-loop, in seconds (011-rate-limiting-qos T023). `direction` ∈ {in, out}."
+            ),
+            &["client", "rule", "owner", "direction"],
+        )?;
+        let rate_limit_active_connections = GaugeVec::new(
+            opts!(
+                "forward_rate_limit_active_connections",
+                "Per-rule live count of capped connections (TCP) or NAT-bound flows (UDP) (011-rate-limiting-qos T023)."
+            ),
+            &["client", "rule", "owner"],
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
@@ -333,6 +374,9 @@ impl Metrics {
             tls_client_hello_peek_duration_seconds_count.clone(),
         ))?;
         registry.register(Box::new(tls_sni_routes_active.clone()))?;
+        registry.register(Box::new(rate_limit_reject_total.clone()))?;
+        registry.register(Box::new(rate_limit_throttle_seconds_total.clone()))?;
+        registry.register(Box::new(rate_limit_active_connections.clone()))?;
 
         Ok(Self {
             registry,
@@ -358,6 +402,9 @@ impl Metrics {
             tls_client_hello_peek_duration_seconds_sum,
             tls_client_hello_peek_duration_seconds_count,
             tls_sni_routes_active,
+            rate_limit_reject_total,
+            rate_limit_throttle_seconds_total,
+            rate_limit_active_connections,
         })
     }
 
@@ -440,6 +487,17 @@ struct CachedEntry {
     prev_sni_route_exact_total: u64,
     prev_sni_route_wildcard_total: u64,
     prev_sni_route_fallback_total: u64,
+    /// 011-rate-limiting-qos T023: per-rule cumulative reject totals
+    /// from the previous tick, indexed 1:1 with the `RejectReason`
+    /// enum's six variants (ConnConcurrent, ConnRate, UdpFlowRate,
+    /// OwnerConcurrent, OwnerConnRate, OwnerUdpFlowRate). Same
+    /// baseline-reset rule as the other deltas.
+    prev_rate_limit_reject_by_reason: [u64; 6],
+    /// 011-rate-limiting-qos T023: per-rule cumulative throttle micros
+    /// per direction from the previous tick. Converted to seconds on
+    /// the wire.
+    prev_rate_limit_throttle_micros_in: u64,
+    prev_rate_limit_throttle_micros_out: u64,
 }
 
 impl RuleStatsCache {
@@ -546,6 +604,9 @@ impl RuleStatsCache {
             prev_sni_route_exact_total: 0,
             prev_sni_route_wildcard_total: 0,
             prev_sni_route_fallback_total: 0,
+            prev_rate_limit_reject_by_reason: [0; 6],
+            prev_rate_limit_throttle_micros_in: 0,
+            prev_rate_limit_throttle_micros_out: 0,
         });
 
         let rule_id_str = rule_id.0.to_string();
@@ -708,6 +769,86 @@ impl RuleStatsCache {
         entry.prev_sni_route_fallback_total = sni_route_fallback_total;
     }
 
+    /// 011-rate-limiting-qos T023: fold a per-rule `RateLimitStats`
+    /// payload into the three new collectors (`reject_total`,
+    /// `throttle_seconds_total`, `active_connections`). `reject_totals`
+    /// is the dense 6-slot vector indexed by [`RejectReason`] — call
+    /// sites in `service.rs` flatten the proto's sparse repeated
+    /// `reject_total` into this shape so the cache can take direct
+    /// deltas.
+    ///
+    /// Saturating-sub on the deltas mirrors the other observe paths
+    /// — a client-side rebaseline (e.g. process restart) is treated
+    /// as a fresh window and counters never decrement.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn observe_rate_limit_per_rule(
+        &self,
+        client_name: &ClientName,
+        rule_id: RuleId,
+        owner: &str,
+        reject_totals: [u64; 6],
+        throttle_micros_in: u64,
+        throttle_micros_out: u64,
+        active_connections: u32,
+        metrics: &Metrics,
+    ) {
+        let mut guard = self.inner.write().await;
+        let Some(entry) = guard.get_mut(&rule_id) else {
+            // Same race as observe_sni_per_rule: rule was just
+            // removed between observe() and here. Drop silently.
+            return;
+        };
+        let rule_id_str = rule_id.0.to_string();
+        const REASON_LABELS: [&str; 6] = [
+            "conn_concurrent",
+            "conn_rate",
+            "udp_flow_rate",
+            "owner_concurrent",
+            "owner_conn_rate",
+            "owner_udp_flow_rate",
+        ];
+        for (idx, &total) in reject_totals.iter().enumerate() {
+            let prev = entry.prev_rate_limit_reject_by_reason[idx];
+            let delta = total.saturating_sub(prev);
+            if delta > 0 {
+                metrics
+                    .rate_limit_reject_total
+                    .with_label_values(&[
+                        client_name.as_str(),
+                        rule_id_str.as_str(),
+                        owner,
+                        REASON_LABELS[idx],
+                    ])
+                    .inc_by(delta);
+            }
+            entry.prev_rate_limit_reject_by_reason[idx] = total;
+        }
+        let in_delta = throttle_micros_in.saturating_sub(entry.prev_rate_limit_throttle_micros_in);
+        if in_delta > 0 {
+            metrics
+                .rate_limit_throttle_seconds_total
+                .with_label_values(&[client_name.as_str(), rule_id_str.as_str(), owner, "in"])
+                .inc_by(precise_f64(in_delta) / 1_000_000.0);
+        }
+        let out_delta =
+            throttle_micros_out.saturating_sub(entry.prev_rate_limit_throttle_micros_out);
+        if out_delta > 0 {
+            metrics
+                .rate_limit_throttle_seconds_total
+                .with_label_values(&[client_name.as_str(), rule_id_str.as_str(), owner, "out"])
+                .inc_by(precise_f64(out_delta) / 1_000_000.0);
+        }
+        entry.prev_rate_limit_throttle_micros_in = throttle_micros_in;
+        entry.prev_rate_limit_throttle_micros_out = throttle_micros_out;
+        // Active-connections is a gauge — `set` not `inc_by`. The
+        // limiter's atomic is the source of truth and may decrease as
+        // connections close.
+        metrics
+            .rate_limit_active_connections
+            .with_label_values(&[client_name.as_str(), rule_id_str.as_str(), owner])
+            .set(f64::from(active_connections));
+    }
+
     /// 009-tls-sni-routing T080: fold per-listener counters into the
     /// new `forward_tls_sni_listener_*` collectors.
     #[allow(clippy::too_many_arguments)]
@@ -857,6 +998,34 @@ impl RuleStatsCache {
             let _ = metrics
                 .rule_target_failovers_total
                 .remove_label_values(&labels);
+            // 011-rate-limiting-qos T023: strip the rate-limit rows.
+            // `reject_total` carries an extra `reason` label so each
+            // of the six possibilities must be peeled off explicitly.
+            // remove_label_values silently ignores absent rows, so
+            // peeling all six is correct regardless of which actually
+            // fired.
+            let _ = metrics
+                .rate_limit_active_connections
+                .remove_label_values(&labels);
+            for direction in ["in", "out"] {
+                let labels_dir = [client_name.as_str(), rule_id_str.as_str(), owner, direction];
+                let _ = metrics
+                    .rate_limit_throttle_seconds_total
+                    .remove_label_values(&labels_dir);
+            }
+            for reason in [
+                "conn_concurrent",
+                "conn_rate",
+                "udp_flow_rate",
+                "owner_concurrent",
+                "owner_conn_rate",
+                "owner_udp_flow_rate",
+            ] {
+                let labels_reason = [client_name.as_str(), rule_id_str.as_str(), owner, reason];
+                let _ = metrics
+                    .rate_limit_reject_total
+                    .remove_label_values(&labels_reason);
+            }
         }
     }
 }
@@ -1216,5 +1385,209 @@ mod tests {
                 "dropped rule row MUST disappear from {collector}: {body}"
             );
         }
+    }
+
+    // ----- 011-rate-limiting-qos T023: rate-limit fold tests -----
+
+    #[tokio::test]
+    async fn observe_rate_limit_emits_per_reason_rows() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        // Seed an entry via the standard observe path so the cached
+        // record exists.
+        cache
+            .observe(
+                &name("edge-a"),
+                RuleId(11),
+                "alice",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
+            .await;
+        // Two reasons fired; throttle micros are non-zero on both
+        // directions; gauge says 4 active.
+        cache
+            .observe_rate_limit_per_rule(
+                &name("edge-a"),
+                RuleId(11),
+                "alice",
+                [3, 0, 0, 0, 1, 0],
+                500_000,
+                250_000,
+                4,
+                &metrics,
+            )
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(
+            body.contains(
+                "forward_rate_limit_reject_total{client=\"edge-a\",owner=\"alice\",reason=\"conn_concurrent\",rule=\"11\"} 3"
+            ),
+            "missing conn_concurrent row in: {body}"
+        );
+        assert!(
+            body.contains(
+                "forward_rate_limit_reject_total{client=\"edge-a\",owner=\"alice\",reason=\"owner_conn_rate\",rule=\"11\"} 1"
+            ),
+            "missing owner_conn_rate row in: {body}"
+        );
+        // Untouched reason MUST NOT emit a row (cardinality budget).
+        assert!(
+            !body.contains("reason=\"udp_flow_rate\""),
+            "unfired reason emitted a row: {body}"
+        );
+        assert!(body.contains(
+            "forward_rate_limit_throttle_seconds_total{client=\"edge-a\",direction=\"in\",owner=\"alice\",rule=\"11\"} 0.5"
+        ));
+        assert!(body.contains(
+            "forward_rate_limit_throttle_seconds_total{client=\"edge-a\",direction=\"out\",owner=\"alice\",rule=\"11\"} 0.25"
+        ));
+        assert!(body.contains(
+            "forward_rate_limit_active_connections{client=\"edge-a\",owner=\"alice\",rule=\"11\"} 4"
+        ));
+    }
+
+    #[tokio::test]
+    async fn observe_rate_limit_takes_monotonic_deltas() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        cache
+            .observe(
+                &name("edge-a"),
+                RuleId(12),
+                "bob",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
+            .await;
+        cache
+            .observe_rate_limit_per_rule(
+                &name("edge-a"),
+                RuleId(12),
+                "bob",
+                [10, 0, 0, 0, 0, 0],
+                100_000,
+                0,
+                2,
+                &metrics,
+            )
+            .await;
+        cache
+            .observe_rate_limit_per_rule(
+                &name("edge-a"),
+                RuleId(12),
+                "bob",
+                [25, 0, 0, 0, 0, 0],
+                150_000,
+                0,
+                3,
+                &metrics,
+            )
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        // Cumulative delta = 10 + 15 = 25 (monotonic).
+        assert!(
+            body.contains(
+                "forward_rate_limit_reject_total{client=\"edge-a\",owner=\"bob\",reason=\"conn_concurrent\",rule=\"12\"} 25"
+            ),
+            "expected cumulative 25, got: {body}"
+        );
+        assert!(body.contains(
+            "forward_rate_limit_throttle_seconds_total{client=\"edge-a\",direction=\"in\",owner=\"bob\",rule=\"12\"} 0.15"
+        ));
+        // Gauge tracks the latest value.
+        assert!(body.contains(
+            "forward_rate_limit_active_connections{client=\"edge-a\",owner=\"bob\",rule=\"12\"} 3"
+        ));
+    }
+
+    #[tokio::test]
+    async fn drop_rule_removes_rate_limit_rows() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        cache
+            .observe(
+                &name("edge-a"),
+                RuleId(13),
+                "alice",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &metrics,
+            )
+            .await;
+        cache
+            .observe_rate_limit_per_rule(
+                &name("edge-a"),
+                RuleId(13),
+                "alice",
+                [1, 0, 0, 0, 1, 0],
+                500_000,
+                500_000,
+                4,
+                &metrics,
+            )
+            .await;
+        // Sanity: rows exist before drop.
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(body.contains("rule=\"13\""));
+
+        cache
+            .drop_rule(RuleId(13), &name("edge-a"), "alice", &metrics)
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        for collector in [
+            "forward_rate_limit_reject_total{",
+            "forward_rate_limit_throttle_seconds_total{",
+            "forward_rate_limit_active_connections{",
+        ] {
+            assert!(
+                !body.lines().any(|l| l.starts_with(collector)),
+                "dropped rule row MUST disappear from {collector}: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_rate_limit_silently_drops_when_rule_absent() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        // RuleId(99) was never observed; the call must be a no-op.
+        cache
+            .observe_rate_limit_per_rule(
+                &name("edge-a"),
+                RuleId(99),
+                "alice",
+                [5, 0, 0, 0, 0, 0],
+                123,
+                456,
+                7,
+                &metrics,
+            )
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(
+            !body.contains("rule=\"99\""),
+            "absent-rule observe must not emit any rows: {body}"
+        );
     }
 }

@@ -395,6 +395,45 @@ async fn handle_client_message(
                         &state.metrics,
                     )
                     .await;
+                // 011-rate-limiting-qos T023: fold per-rule rate-limit
+                // stats into the three new collectors. v0.10 wire's
+                // proto3 default-strip means `entry.rate_limit` stays
+                // `None` for uncapped rules, so we skip the fold and
+                // emit no series — preserves SC-006 cardinality budget.
+                if let Some(rl) = entry.rate_limit.as_ref() {
+                    let mut reject_totals = [0u64; 6];
+                    for c in &rl.reject_total {
+                        if let Ok(reason) =
+                            forward_proto::v1::RateLimitRejectReason::try_from(c.reason)
+                        {
+                            let idx = match reason {
+                                forward_proto::v1::RateLimitRejectReason::ConnConcurrent => 0,
+                                forward_proto::v1::RateLimitRejectReason::ConnRate => 1,
+                                forward_proto::v1::RateLimitRejectReason::UdpFlowRate => 2,
+                                forward_proto::v1::RateLimitRejectReason::OwnerConcurrent => 3,
+                                forward_proto::v1::RateLimitRejectReason::OwnerConnRate => 4,
+                                forward_proto::v1::RateLimitRejectReason::OwnerUdpFlowRate => 5,
+                                // Unspecified is the proto default; the
+                                // client never emits it.
+                                forward_proto::v1::RateLimitRejectReason::Unspecified => continue,
+                            };
+                            reject_totals[idx] = c.total;
+                        }
+                    }
+                    state
+                        .stats_cache
+                        .observe_rate_limit_per_rule(
+                            &identity.client_name,
+                            rule_id,
+                            owner.as_str(),
+                            reject_totals,
+                            rl.throttle_micros_in,
+                            rl.throttle_micros_out,
+                            rl.active_connections,
+                            &state.metrics,
+                        )
+                        .await;
+                }
                 if !entry.per_port.is_empty() {
                     let snapshots = entry
                         .per_port
