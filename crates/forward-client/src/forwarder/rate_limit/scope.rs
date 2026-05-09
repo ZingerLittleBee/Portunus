@@ -225,6 +225,19 @@ impl RuleRateLimiter {
         })
     }
 
+    /// True when no limiter dimensions exist — bandwidth, connection
+    /// rate, and concurrent ceiling are all `None`. Hot-path callers
+    /// can use this to short-circuit out without performing a full
+    /// `try_acquire_connection` round-trip on rules where the
+    /// envelope was structurally non-null but every cap was unset.
+    #[must_use]
+    pub fn is_no_op(&self) -> bool {
+        self.bandwidth_in.is_none()
+            && self.bandwidth_out.is_none()
+            && self.new_connections.is_none()
+            && self.concurrent_max.is_none()
+    }
+
     /// Try to admit `n` bytes through a bandwidth bucket. Returns
     /// `Granted` immediately when the requested direction is
     /// uncapped.
@@ -311,12 +324,14 @@ impl RateLimitScopeManager {
 
     /// Number of currently-installed limiters. For tests + diagnostics.
     #[must_use]
+    #[allow(dead_code)] // tests + future operator-debug surface
     pub fn len(&self) -> usize {
         let guard = self.rules.read().expect("rate-limit registry poisoned");
         guard.len()
     }
 
     #[must_use]
+    #[allow(dead_code)] // tests + future operator-debug surface
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

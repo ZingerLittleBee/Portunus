@@ -113,6 +113,16 @@ pub struct ClientRule {
     /// plain-TCP path. Lowercased + grammar-validated by the server
     /// before reaching the client (operator-api.md §1.2).
     pub sni_pattern: Option<String>,
+    /// 011-rate-limiting-qos (T019): per-rule data-plane limiter built
+    /// from the wire `Rule.rate_limit` envelope. `None` for uncapped
+    /// rules — the no-cap fast path observes a null check and falls
+    /// through to the byte-identical v0.10 forwarding path.
+    pub rate_limit: Option<Arc<rate_limit::scope::RuleRateLimiter>>,
+    /// 011-rate-limiting-qos (T022): per-rule rate-limit stats
+    /// accumulator. Constructed alongside `rate_limit` in control.rs;
+    /// `None` for uncapped rules. Drained into `RuleStats.rate_limit`
+    /// on every report tick.
+    pub rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
 }
 
 /// One entry in `ClientRule.targets`. Holds both the wire-shape
@@ -296,6 +306,12 @@ fn run_accept_loops<R: Resolve + 'static>(
         let conn_proxy_cancel = proxy_cancel.clone();
         let accept_stats = Arc::clone(&stats);
         let accept_resolver = Arc::clone(&resolver);
+        // 011-rate-limiting-qos T019: clone the per-rule limiter +
+        // stats accumulator into each accept-loop task so the gate
+        // call site only pays a hash-free Arc clone (no registry
+        // lookup on the per-accept hot path).
+        let accept_rate_limiter = rule.rate_limit.clone();
+        let accept_rate_stats = rule.rate_limit_stats.clone();
         in_flight.spawn(async move {
             accept_loop(
                 listener,
@@ -308,6 +324,8 @@ fn run_accept_loops<R: Resolve + 'static>(
                 accept_cancel,
                 conn_proxy_cancel,
                 accept_stats,
+                accept_rate_limiter,
+                accept_rate_stats,
             )
             .await;
         });
@@ -327,6 +345,11 @@ async fn accept_loop<R: Resolve + 'static>(
     cancel: CancellationToken,
     proxy_cancel: CancellationToken,
     stats: Arc<RuleStats>,
+    // 011-rate-limiting-qos T019: per-rule cap envelope. `None` keeps
+    // the byte-identical v0.10 path (no extra atomic loads, no extra
+    // allocations).
+    rate_limiter: Option<Arc<rate_limit::scope::RuleRateLimiter>>,
+    rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
 ) {
     // Per-listener in-flight set: lets us reap finished proxies for
     // logging without holding open the rule-level JoinSet's slot.
@@ -339,11 +362,41 @@ async fn accept_loop<R: Resolve + 'static>(
             }
             accept = listener.accept() => match accept {
                 Ok((sock, peer)) => {
+                    // 011-rate-limiting-qos T019: gate the accept BEFORE
+                    // spawning the proxy task. Surplus accepts get
+                    // accept-then-RST (Q3 / FR-009): we already accepted,
+                    // so let the socket drop here — the OS sends RST.
+                    let admit_guard = if let Some(limiter) = rate_limiter.as_ref() {
+                        match limiter.try_acquire_connection(false) {
+                            rate_limit::scope::ConnectionAcquire::Granted(g) => Some(g),
+                            rate_limit::scope::ConnectionAcquire::Rejected(reason) => {
+                                if let Some(s) = rate_limit_stats.as_ref() {
+                                    s.record_reject(reason);
+                                }
+                                tracing::debug!(
+                                    event = "rule.rate_limit_reject",
+                                    rule_id = %rule_id,
+                                    listen_port = listen_port,
+                                    peer = %peer,
+                                    reason = reason.as_metric_label(),
+                                );
+                                drop(sock);
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     let target = target.clone();
                     let conn_cancel = proxy_cancel.clone();
                     let conn_stats = Arc::clone(&stats);
                     let conn_resolver = Arc::clone(&resolver);
                     local.spawn(async move {
+                        // Move the ActiveGuard into the connection task
+                        // so its `Drop` runs `fetch_sub(1)` on the
+                        // limiter's gauge when the proxy returns.
+                        let _admit_guard = admit_guard;
                         match proxy::proxy(
                             sock,
                             conn_resolver.as_ref(),
@@ -756,6 +809,8 @@ mod tests {
             health_check_interval_secs: None,
             multi_target_obs: None,
             sni_pattern: None,
+            rate_limit: None,
+            rate_limit_stats: None,
         }
     }
 
@@ -786,6 +841,8 @@ mod tests {
                 states,
             })),
             sni_pattern: None,
+            rate_limit: None,
+            rate_limit_stats: None,
         }
     }
 
@@ -859,6 +916,8 @@ mod tests {
                 health_check_interval_secs: None,
                 multi_target_obs: None,
                 sni_pattern: None,
+                rate_limit: None,
+                rate_limit_stats: None,
             },
             ip_resolver(),
             tx,
@@ -1215,6 +1274,8 @@ mod tests {
                     health_check_interval_secs: None,
                     multi_target_obs: None,
                     sni_pattern: None,
+                    rate_limit: None,
+                    rate_limit_stats: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1296,6 +1357,8 @@ mod tests {
                     health_check_interval_secs: None,
                     multi_target_obs: None,
                     sni_pattern: None,
+                    rate_limit: None,
+                    rate_limit_stats: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1460,6 +1523,8 @@ mod tests {
             health_check_interval_secs: None,
             multi_target_obs: None,
             sni_pattern: None,
+            rate_limit: None,
+            rate_limit_stats: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);
@@ -1721,6 +1786,150 @@ mod tests {
             captured.lock().await.as_slice(),
             payload.as_slice(),
             "byte-stability: upstream must receive the exact bytes the client sent"
+        );
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+    }
+
+    // ----- 011-rate-limiting-qos T019: concurrent-cap RST surplus -----
+    //
+    // T011 spirit (full integration test landing under
+    // tests/rate_limit_concurrent.rs follows the same shape but goes
+    // through the gRPC stack). This in-tree variant exercises the
+    // accept-loop directly so it stays quick and doesn't need the
+    // full session harness.
+
+    #[tokio::test]
+    async fn t019_concurrent_cap_rsts_surplus_accepts() {
+        use crate::forwarder::rate_limit::scope::RuleRateLimiter;
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+
+        let envelope = forward_core::RateLimit {
+            concurrent_connections: Some(2),
+            ..Default::default()
+        };
+        let limiter = Arc::new(RuleRateLimiter::from_envelope(&envelope));
+        let stats_acc = Arc::new(RateLimitStatsAccumulator::new());
+
+        let mut rule = single_rule(101, port, echo);
+        rule.rate_limit = Some(Arc::clone(&limiter));
+        rule.rate_limit_stats = Some(Arc::clone(&stats_acc));
+
+        let task = tokio::spawn(async move {
+            run(
+                rule,
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        // Wait for Activated.
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(101)));
+
+        // Open 2 connections (cap = 2). Both must succeed AND be able
+        // to forward bytes — accept-then-RST surplus only fires above
+        // the cap.
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            let mut c = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
+            c.write_all(b"ok").await.unwrap();
+            let mut buf = [0u8; 2];
+            tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&buf, b"ok");
+            clients.push(c);
+        }
+
+        // Wait briefly for the accept loop to register both opens —
+        // active_connections is incremented in the accept handler, not
+        // synchronously with our connect().
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while limiter.active_connections() < 2 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "accept loop never reached active_connections=2"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(limiter.active_connections(), 2);
+
+        // 3rd connect: TCP handshake completes (the listener is open),
+        // but the accept loop drops the socket → peer sees RST.
+        let surplus = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        // Wait for the accept loop to observe + reject. The reject is
+        // synchronous with the accept(), so a brief sleep + retry is
+        // enough.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while stats_acc.reject_total(forward_core::RejectReason::ConnConcurrent) == 0 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "rate-limit reject not recorded within 2s"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            stats_acc.reject_total(forward_core::RejectReason::ConnConcurrent),
+            1,
+            "ConnConcurrent rejection must be recorded exactly once"
+        );
+        // Surplus connection should observe peer-RST or EOF on its
+        // first read. We don't assert the exact errno (varies by OS);
+        // the fact the accept loop dropped the socket without forwarding
+        // is what the test cares about.
+        drop(surplus);
+
+        // Cap must NOT be exceeded across the lifetime of the test.
+        assert_eq!(limiter.active_connections(), 2);
+
+        // Drop one of the live connections. After it closes, a new
+        // accept must be admitted.
+        drop(clients.pop().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while limiter.active_connections() > 1 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "active_connections never decremented after close"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut readmit = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        readmit.write_all(b"ok").await.unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(2), readmit.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"ok");
+
+        // Reject counter is still 1 — the readmit should not have
+        // bumped it.
+        assert_eq!(
+            stats_acc.reject_total(forward_core::RejectReason::ConnConcurrent),
+            1
         );
 
         cancel.cancel();

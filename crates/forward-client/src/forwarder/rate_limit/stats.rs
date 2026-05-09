@@ -99,6 +99,7 @@ impl RateLimitStatsAccumulator {
     /// Bump the cumulative throttle-time counter for `direction` by
     /// `micros`. Called from the bandwidth copy loop (T020) on each
     /// `BandwidthAcquire::Throttled` deficit.
+    #[allow(dead_code)] // wired up in T020 (bandwidth throttle in copy loop)
     pub fn record_throttle(&self, direction: BandwidthDirection, micros: u64) {
         match direction {
             BandwidthDirection::In => {
@@ -127,12 +128,14 @@ impl RateLimitStatsAccumulator {
 
     /// Snapshot the cumulative reject count for `reason`.
     #[must_use]
+    #[allow(dead_code)] // tests + future diagnostic / introspection callers
     pub fn reject_total(&self, reason: RejectReason) -> u64 {
         self.reject_total_by_reason[reason_index(reason)].load(Ordering::Relaxed)
     }
 
     /// Snapshot the cumulative throttle micros for `direction`.
     #[must_use]
+    #[allow(dead_code)] // tests + future diagnostic / introspection callers
     pub fn throttle_micros(&self, direction: BandwidthDirection) -> u64 {
         match direction {
             BandwidthDirection::In => self.throttle_micros_in.load(Ordering::Relaxed),

@@ -291,6 +291,18 @@ struct RuleSlot {
     /// stats reporter can emit per-target host/port/priority alongside
     /// the per-target HealthState snapshot.
     targets_view: Vec<crate::forwarder::MultiTarget>,
+    /// 011-rate-limiting-qos (T022): per-rule rate-limit accumulator.
+    /// `Some` for capped rules; the periodic stats reporter calls
+    /// `drain_to_proto()` and stamps the result onto
+    /// `RuleStats.rate_limit`. `None` for uncapped rules — the wire
+    /// keeps proto3 default-stripping semantics so v0.10 readers see
+    /// an unchanged byte stream (T005).
+    rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 011-rate-limiting-qos (T019): the limiter holding the
+    /// `active_connections` gauge. The stats drainer mirrors the gauge
+    /// onto the accumulator before each report so the wire snapshot
+    /// reflects the limiter's source-of-truth count.
+    rate_limit_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
 }
 
 async fn pump(
@@ -574,6 +586,40 @@ fn handle_server_message(
             };
             let targets_view = multi_targets.clone();
             let multi_target_obs_for_slot = multi_target_obs.clone();
+            // 011-rate-limiting-qos T019: build the per-rule limiter +
+            // stats accumulator from the wire envelope. Both stay
+            // `None` for uncapped rules so the no-cap fast path is a
+            // null check on each accept; capped rules pay one Arc
+            // clone per spawned accept loop.
+            let (rate_limit_limiter, rate_limit_stats) = match rule.rate_limit.as_ref() {
+                Some(envelope) => {
+                    let core_envelope = forward_core::RateLimit {
+                        bandwidth_in_bps: envelope.bandwidth_in_bps,
+                        bandwidth_out_bps: envelope.bandwidth_out_bps,
+                        new_connections_per_sec: envelope.new_connections_per_sec,
+                        concurrent_connections: envelope.concurrent_connections,
+                        bandwidth_in_burst: envelope.bandwidth_in_burst,
+                        bandwidth_out_burst: envelope.bandwidth_out_burst,
+                        new_connections_burst: envelope.new_connections_burst,
+                    };
+                    let limiter = std::sync::Arc::new(
+                        crate::forwarder::rate_limit::scope::RuleRateLimiter::from_envelope(
+                            &core_envelope,
+                        ),
+                    );
+                    let acc = std::sync::Arc::new(
+                        crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                    );
+                    (Some(limiter), Some(acc))
+                }
+                None => (None, None),
+            };
+            // Hold a clone of the rate-limit handles for the RuleSlot
+            // (the periodic stats reporter and SNI/legacy paths both
+            // need to keep observing them after `client_rule` moves
+            // into the forwarder spawn).
+            let slot_rate_limit_limiter = rate_limit_limiter.clone();
+            let slot_rate_limit_stats = rate_limit_stats.clone();
             let client_rule = ClientRule {
                 rule_id,
                 listen_range,
@@ -593,6 +639,11 @@ fn handle_server_message(
                 // reads it when the port-group manager (T042)
                 // routes this rule into the SNI dispatch path.
                 sni_pattern: rule.sni_pattern.clone(),
+                // 011-rate-limiting-qos T019: per-rule rate-limit
+                // limiter + stats. None keeps the byte-stable
+                // v0.10 forwarding path.
+                rate_limit: rate_limit_limiter,
+                rate_limit_stats,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -619,6 +670,8 @@ fn handle_server_message(
                                 is_range: false,
                                 multi_target_obs: multi_target_obs_for_slot,
                                 targets_view,
+                                rate_limit_stats: slot_rate_limit_stats.clone(),
+                                rate_limit_limiter: slot_rate_limit_limiter.clone(),
                             },
                         );
                         // Emit Activated synthetically — the SNI
@@ -681,6 +734,8 @@ fn handle_server_message(
                     is_range: listen_end > listen_port,
                     multi_target_obs: multi_target_obs_for_slot,
                     targets_view,
+                    rate_limit_stats: slot_rate_limit_stats,
+                    rate_limit_limiter: slot_rate_limit_limiter,
                 },
             );
         }
@@ -912,11 +967,19 @@ async fn send_stats_report(
                     .stats
                     .sni_route_fallback_total
                     .load(Ordering::Relaxed),
-                // 011-rate-limiting-qos T022: per-rule rate-limit
-                // stats payload. None until Phase 3 wires the
-                // accumulator drain. Wire shape is byte-identical to
-                // v0.10 in this absence (proto3 default-stripping).
-                rate_limit: None,
+                // 011-rate-limiting-qos T019/T022: drain the per-rule
+                // accumulator into the wire field. Returns `None` for
+                // uncapped rules (or capped rules whose counters are
+                // all still zero) so v0.10 wire shape stays byte-
+                // identical. Capped rules with any reject / throttle
+                // event get a populated payload; the gauge is mirrored
+                // from the limiter's source-of-truth atomic.
+                rate_limit: slot.rate_limit_stats.as_ref().and_then(|acc| {
+                    if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
+                        acc.set_active_connections(limiter.active_connections());
+                    }
+                    acc.drain_to_proto()
+                }),
             }
         })
         .collect();

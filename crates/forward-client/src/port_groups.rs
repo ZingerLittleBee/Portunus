@@ -430,6 +430,8 @@ mod tests {
             health_check_interval_secs: None,
             multi_target_obs: None,
             sni_pattern: sni.map(str::to_string),
+            rate_limit: None,
+            rate_limit_stats: None,
         }
     }
 
@@ -600,6 +602,8 @@ mod e2e_tests {
             health_check_interval_secs: None,
             multi_target_obs: None,
             sni_pattern: sni.map(str::to_string),
+            rate_limit: None,
+            rate_limit_stats: None,
         }
     }
 
