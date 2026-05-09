@@ -1168,6 +1168,30 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
         rule_id = %rule_id,
         client_name = %removed.client_name,
     );
+    // 011-rate-limiting-qos T027: owner-cap GC sweep. If this was the
+    // owner's last rule on `client_name`, drop their cap envelope so
+    // a subsequent reconnect of the client doesn't re-receive an
+    // OwnerRateLimitUpdate for an owner with zero rules.
+    let rules_remaining = state
+        .rules
+        .list_owned_by(&removed.owner_user_id)
+        .await
+        .into_iter()
+        .filter(|r| r.client_name == removed.client_name)
+        .count();
+    if let Err(e) = state
+        .owner_caps
+        .gc_after_rule_removed(&removed.client_name, owner.as_str(), rules_remaining)
+        .await
+    {
+        warn!(
+            event = "owner_cap.gc_sweep_failed",
+            rule_id = %rule_id,
+            client_name = %removed.client_name,
+            owner_user_id = %owner,
+            error = %e,
+        );
+    }
     Ok(removed)
 }
 

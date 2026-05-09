@@ -9,6 +9,7 @@ use crate::clients::ConnectedClients;
 use crate::metrics::{Metrics, RuleStatsCache};
 use crate::operator::audit::AuditRing;
 use crate::operator::per_port_stats::PerPortStatsCache;
+use crate::owner::OwnerCapService;
 use crate::rules::ServerRuleStore;
 use crate::store::Store;
 use crate::store::operator_store::SqliteOperatorStore;
@@ -70,6 +71,11 @@ pub struct AppState {
     pub store: Arc<Store>,
     /// Persisted rule definitions / runtime state.
     pub rule_store: Arc<SqliteRuleStore>,
+    /// 011-rate-limiting-qos T027: per-owner cap service. Wraps the
+    /// SQLite `rate_limit_owner` table with validation, in-memory
+    /// cache, and GC-on-rule-removal sweep. REST handlers (T028) and
+    /// the gRPC `OwnerRateLimitUpdate` push path (T029) read from this.
+    pub owner_caps: OwnerCapService,
 }
 
 impl AppState {
@@ -92,6 +98,24 @@ impl AppState {
         let audit = Arc::new(AuditRing::new());
         let metrics = Arc::new(Metrics::new()?);
         let rule_store = Arc::new(SqliteRuleStore::new(Arc::clone(&store)));
+        // 011-rate-limiting-qos T027: hydrate the owner-cap service from
+        // SQLite. Boot path failures degrade to an empty cache so the
+        // server still comes up — the rate-limit subsystem treats a
+        // missing envelope as "uncapped" anyway, and a corrupted cap row
+        // would have failed the migration's CHECK constraint at write
+        // time.
+        let owner_caps = match OwnerCapService::open(Arc::clone(&store)) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    event = "owner_cap.hydrate_failed",
+                    error = %e,
+                );
+                return Err(prometheus::Error::Msg(format!(
+                    "owner_cap_service_open: {e}"
+                )));
+            }
+        };
         // T009: stitch the audit ring's drop counter into Prometheus so
         // an oversaturated buffer becomes visible without grepping logs.
         audit.bind_drops_metric(metrics.audit_buffer_drops_total.clone());
@@ -112,6 +136,7 @@ impl AppState {
             audit,
             store,
             rule_store,
+            owner_caps,
         })
     }
 
