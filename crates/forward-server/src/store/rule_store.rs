@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use forward_auth::UserId;
 use forward_core::{ClientName, RuleId, RuleTarget};
 use rusqlite::params;
+use tracing::warn;
 
 use crate::rules::{Protocol, Rule, RuleState};
 use crate::store::{Store, StoreError, map_rusqlite};
@@ -118,6 +119,18 @@ impl SqliteRuleStore {
 
     pub fn list_rules(&self) -> Result<Vec<Rule>, StoreError> {
         self.store.with_conn(|conn| {
+            let skipped_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM rules WHERE client_name IS NULL", [], |row| {
+                    row.get(0)
+                })
+                .map_err(map_rusqlite)?;
+            if skipped_count > 0 {
+                warn!(
+                    skipped_count,
+                    "skipping persisted rules with missing client_name"
+                );
+            }
+
             let mut stmt = conn
                 .prepare(
                     "SELECT id, client_name, listen_port, listen_port_end, target_host, target_port,
@@ -248,7 +261,33 @@ fn parse_ts(raw: String) -> Result<DateTime<Utc>, rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::tempdir;
+    use tracing_subscriber::{fmt, layer::SubscriberExt};
+
+    #[derive(Clone, Default)]
+    struct SharedBuf {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl SharedBuf {
+        fn snapshot(&self) -> String {
+            let guard: MutexGuard<'_, Vec<u8>> = self.inner.lock().unwrap();
+            String::from_utf8_lossy(&guard).into_owned()
+        }
+    }
+
+    impl io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn roundtrip_rule_with_proxy_protocol_target() {
@@ -301,5 +340,44 @@ mod tests {
             Some(forward_core::ProxyProtocolVersion::V2)
         );
         assert_eq!(loaded.targets[1].proxy_protocol, None);
+    }
+
+    #[test]
+    fn list_rules_warns_when_missing_client_name_rows_are_skipped() {
+        let buf = SharedBuf::default();
+        let buf_for_writer = buf.clone();
+        let subscriber = tracing_subscriber::registry().with(
+            fmt::layer()
+                .json()
+                .with_writer(move || buf_for_writer.clone()),
+        );
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        crate::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store))
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO rules (
+                        id, listen_port, target_host, target_port, protocol,
+                        owner_user_id, created_at, updated_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![77, 443, "127.0.0.1", 8443, "tcp", "_legacy", now, now],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+
+        let rule_store = SqliteRuleStore::new(store);
+        assert!(rule_store.list_rules().unwrap().is_empty());
+
+        let logs = buf.snapshot();
+        assert!(logs.contains("skipping persisted rules with missing client_name"));
+        assert!(logs.contains("\"skipped_count\":1"));
     }
 }
