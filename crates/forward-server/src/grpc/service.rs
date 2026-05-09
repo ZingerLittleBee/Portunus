@@ -196,6 +196,14 @@ impl Control for ControlService {
         tokio::spawn(async move {
             let _outbound = tx;
             replay_rules_for_client(&pump_state, &pump_identity, &_outbound).await;
+            // 011-rate-limiting-qos T029: after the rule replay, push
+            // every persisted owner-cap envelope so the client's
+            // OwnerRateLimitScopeManager (T031) hydrates before any
+            // rule's per-owner gate is consulted on the data plane.
+            // Capability-gated against pre-0.11 clients per FR-006 —
+            // a v0.10 client sees no OwnerRateLimitUpdate frames so
+            // its decode is byte-identical with the v0.10 wire shape.
+            replay_owner_caps_for_client(&pump_state, &pump_identity, &_outbound).await;
             // If the first inbound message wasn't a Hello, replay it
             // through the existing handler now (v0.3 client back-compat).
             if let Some(replay) = pending_first_msg {
@@ -569,6 +577,46 @@ async fn replay_rules_for_client(
             if outbound.send(Ok(msg)).await.is_err() {
                 break;
             }
+        }
+    }
+}
+
+/// 011-rate-limiting-qos T029: push every persisted owner-cap envelope
+/// for `client_name` as `OwnerRateLimitUpdate{SET}` frames. Skipped
+/// entirely for pre-0.11 clients per FR-006 — those clients have no
+/// concept of `OwnerRateLimitUpdate` and would log it as an unknown
+/// payload variant.
+async fn replay_owner_caps_for_client(
+    state: &AppState,
+    identity: &ClientIdentity,
+    outbound: &OutboundSender,
+) {
+    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    if !version_at_least(client_version.as_deref(), 0, 11) {
+        // v0.10 (and earlier) clients silently drop the new
+        // ServerMessage oneof variant; emitting nothing keeps the
+        // wire byte-identical with the pre-0.11 contract.
+        return;
+    }
+    let envelopes = state.owner_caps.list_for_client(&identity.client_name).await;
+    if envelopes.is_empty() {
+        return;
+    }
+    for envelope in envelopes {
+        let push = ServerMessage {
+            payload: Some(server_message::Payload::OwnerRateLimitUpdate(
+                forward_proto::v1::OwnerRateLimitUpdate {
+                    client_name: envelope.client_name.as_str().to_string(),
+                    owner_id: envelope.owner_id.clone(),
+                    rate_limit: Some(rate_limit_to_proto(&envelope.rate_limit)),
+                    action: forward_proto::v1::OwnerRateLimitAction::Set as i32,
+                },
+            )),
+        };
+        if outbound.send(Ok(push)).await.is_err() {
+            // The pump's outbound channel closed (client dropped).
+            // Bail out — there's nothing left to push.
+            break;
         }
     }
 }
@@ -1134,5 +1182,124 @@ mod tests {
                 .state,
             crate::rules::RuleState::Active
         ));
+    }
+
+    // ==========================================================
+    //  T029: owner-cap welcome-replay
+    // ==========================================================
+
+    fn cap_envelope() -> forward_core::RateLimit {
+        forward_core::RateLimit {
+            bandwidth_in_bps: Some(1_048_576),
+            bandwidth_out_bps: None,
+            new_connections_per_sec: Some(50),
+            concurrent_connections: Some(10),
+            bandwidth_in_burst: None,
+            bandwidth_out_burst: None,
+            new_connections_burst: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_pushes_set_for_each_persisted_envelope() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-owner-replay", "0.11.0").await;
+        // Seed two cap envelopes for this client.
+        state
+            .owner_caps
+            .upsert(&identity.client_name, "alice", cap_envelope())
+            .await
+            .unwrap();
+        state
+            .owner_caps
+            .upsert(&identity.client_name, "bob", cap_envelope())
+            .await
+            .unwrap();
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        // Drain the receiver and pick up two SET pushes (order is
+        // alphabetical because list_for_client wraps the in-memory
+        // BTreeMap-backed snapshot).
+        let mut owners_seen = std::collections::HashSet::new();
+        for _ in 0..2 {
+            let msg = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .expect("push arrives")
+                .expect("message present")
+                .expect("server message");
+            let Some(server_message::Payload::OwnerRateLimitUpdate(update)) = msg.payload else {
+                panic!("expected OwnerRateLimitUpdate");
+            };
+            assert_eq!(
+                update.action,
+                forward_proto::v1::OwnerRateLimitAction::Set as i32,
+            );
+            assert_eq!(update.client_name, identity.client_name.as_str());
+            assert!(update.rate_limit.is_some());
+            owners_seen.insert(update.owner_id);
+        }
+        assert!(owners_seen.contains("alice"));
+        assert!(owners_seen.contains("bob"));
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_skips_pre_011_clients() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-owner-replay-old", "0.10.5").await;
+        state
+            .owner_caps
+            .upsert(&identity.client_name, "alice", cap_envelope())
+            .await
+            .unwrap();
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        // No OwnerRateLimitUpdate must reach the wire — pre-0.11
+        // clients have no concept of the new oneof variant.
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "no message should arrive within the timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_noop_when_no_envelopes() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-owner-replay-empty", "0.11.0").await;
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "no message should arrive when no caps exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn t029_replay_owner_caps_isolates_by_client_name() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-target", "0.11.0").await;
+        // Cap on a DIFFERENT client must not leak.
+        let other = forward_core::ClientName::new("edge-other".to_string()).unwrap();
+        state
+            .owner_caps
+            .upsert(&other, "alice", cap_envelope())
+            .await
+            .unwrap();
+
+        replay_owner_caps_for_client(&state, &identity, &outbound).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "cap envelope on another client must not be replayed",
+        );
     }
 }
