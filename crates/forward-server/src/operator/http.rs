@@ -73,6 +73,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/grants", get(grants::get_grants).post(grants::post_grants))
         .route("/v1/grants/{grant_id}", delete(grants::delete_grant))
+        // 011-rate-limiting-qos T028: per-owner cap endpoints. Nested
+        // under client (Q5) so /v1/clients/{id}/owners is the listing
+        // surface and /v1/clients/{id}/owners/{owner_id}/rate-limit
+        // carries the envelope GET / PUT / DELETE.
+        .route(
+            "/v1/clients/{client_id}/owners",
+            get(crate::operator::owner_cap::get_owners_under_client),
+        )
+        .route(
+            "/v1/clients/{client_id}/owners/{owner_id}/rate-limit",
+            get(crate::operator::owner_cap::get_owner_rate_limit)
+                .put(crate::operator::owner_cap::put_owner_rate_limit)
+                .delete(crate::operator::owner_cap::delete_owner_rate_limit),
+        )
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
