@@ -151,13 +151,16 @@ pub async fn run_tcp<R: Resolve + 'static>(
         let accept_states = Arc::clone(&states);
         let accept_counter = Arc::clone(&target_failovers_total);
         let accept_stats = Arc::clone(&stats);
-        // 011-rate-limiting-qos T019: thread the per-rule limiter +
-        // accumulator into each multi-target accept-loop task. Same
-        // shape as the legacy single-target path so a v0.7+ multi-
-        // target rule and a v0.6 single-target rule observe identical
-        // gate semantics.
+        // 011-rate-limiting-qos T019/T030: thread per-rule and per-
+        // owner limiters + accumulators into each multi-target accept
+        // loop. Owner layer (FR-013) is consulted before per-rule.
+        // Same shape as the legacy single-target path so a v0.7+
+        // multi-target rule and a v0.6 single-target rule observe
+        // identical gate semantics.
         let accept_rate_limiter = rule.rate_limit.clone();
         let accept_rate_stats = rule.rate_limit_stats.clone();
+        let accept_owner_limiter = rule.owner_rate_limit.clone();
+        let accept_owner_stats = rule.owner_rate_limit_stats.clone();
         let rule_id = rule.rule_id;
         let prefer_ipv6 = rule.prefer_ipv6;
         in_flight.spawn(async move {
@@ -175,6 +178,8 @@ pub async fn run_tcp<R: Resolve + 'static>(
                 accept_stats,
                 accept_rate_limiter,
                 accept_rate_stats,
+                accept_owner_limiter,
+                accept_owner_stats,
             )
             .await;
         });
@@ -215,8 +220,14 @@ async fn accept_loop<R: Resolve + 'static>(
     // the byte-identical v0.7 path.
     rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
+    // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
+    // reject reasons (FR-014).
+    owner_rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limit_stats:
+        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
 ) {
-    use crate::forwarder::rate_limit::scope::ConnectionAcquire;
+    use crate::forwarder::rate_limit::scope::{LayeredAcquire, try_acquire_layered};
     let mut local: JoinSet<()> = JoinSet::new();
     loop {
         tokio::select! {
@@ -226,31 +237,50 @@ async fn accept_loop<R: Resolve + 'static>(
             }
             accept = listener.accept() => match accept {
                 Ok((sock, peer)) => {
-                    // 011-rate-limiting-qos T019: gate runs BEFORE
-                    // multi-target selection (FR-010). Surplus accepts
-                    // get accept-then-RST: the socket drops here and
-                    // the OS sends RST.
-                    let admit_guard = if let Some(limiter) = rate_limiter.as_ref() {
-                        match limiter.try_acquire_connection(false) {
-                            ConnectionAcquire::Granted(g) => Some(g),
-                            ConnectionAcquire::Rejected(reason) => {
-                                if let Some(s) = rate_limit_stats.as_ref() {
-                                    s.record_reject(reason);
-                                }
-                                tracing::debug!(
-                                    event = "rule.rate_limit_reject",
-                                    rule_id = %rule_id,
-                                    listen_port = listen_port,
-                                    peer = %peer,
-                                    reason = reason.as_metric_label(),
-                                    multi_target = true,
-                                );
-                                drop(sock);
-                                continue;
-                            }
+                    // 011-rate-limiting-qos T019/T030: layered gate runs
+                    // BEFORE multi-target selection (FR-010 + FR-013).
+                    // Surplus accepts at either layer get accept-then-
+                    // RST: the socket drops here and the OS sends RST.
+                    let (owner_admit, rule_admit) = match try_acquire_layered(
+                        owner_rate_limiter.as_ref(),
+                        rate_limiter.as_ref(),
+                        false,
+                    ) {
+                        LayeredAcquire::Granted { owner_guard, rule_guard } => {
+                            (owner_guard, rule_guard)
                         }
-                    } else {
-                        None
+                        LayeredAcquire::OwnerRejected(reason) => {
+                            if let Some(s) = owner_rate_limit_stats.as_ref() {
+                                s.record_reject(reason);
+                            }
+                            tracing::debug!(
+                                event = "rule.rate_limit_reject",
+                                rule_id = %rule_id,
+                                listen_port = listen_port,
+                                peer = %peer,
+                                scope = "owner",
+                                reason = reason.as_metric_label(),
+                                multi_target = true,
+                            );
+                            drop(sock);
+                            continue;
+                        }
+                        LayeredAcquire::RuleRejected(reason) => {
+                            if let Some(s) = rate_limit_stats.as_ref() {
+                                s.record_reject(reason);
+                            }
+                            tracing::debug!(
+                                event = "rule.rate_limit_reject",
+                                rule_id = %rule_id,
+                                listen_port = listen_port,
+                                peer = %peer,
+                                scope = "rule",
+                                reason = reason.as_metric_label(),
+                                multi_target = true,
+                            );
+                            drop(sock);
+                            continue;
+                        }
                     };
 
                     let conn_cancel = proxy_cancel.clone();
@@ -262,7 +292,8 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_rate_limiter = rate_limiter.clone();
                     let conn_rate_stats = rate_limit_stats.clone();
                     local.spawn(async move {
-                        let _admit_guard = admit_guard;
+                        let _owner_admit = owner_admit;
+                        let _rule_admit = rule_admit;
                         handle_connection(
                             sock,
                             peer,
@@ -679,6 +710,8 @@ pub async fn run_udp<R: Resolve + 'static>(
         let task_counter = Arc::clone(&target_failovers_total);
         let task_rate_limit = rule.rate_limit.clone();
         let task_rate_limit_stats = rule.rate_limit_stats.clone();
+        let task_owner_rate_limit = rule.owner_rate_limit.clone();
+        let task_owner_rate_limit_stats = rule.owner_rate_limit_stats.clone();
         tasks.spawn(async move {
             udp::run_listener_multi_target(
                 rule_id,
@@ -694,6 +727,8 @@ pub async fn run_udp<R: Resolve + 'static>(
                 task_cancel,
                 task_rate_limit,
                 task_rate_limit_stats,
+                task_owner_rate_limit,
+                task_owner_rate_limit_stats,
             )
             .await;
         });
