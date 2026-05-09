@@ -140,6 +140,19 @@ pub struct Rule {
     /// HTTP handler before persistence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sni_pattern: Option<String>,
+
+    /// 011-rate-limiting-qos: optional per-rule cap envelope
+    /// (`Rule.rate_limit = 12`). `None` means uncapped on every
+    /// dimension — the legacy v0.10 hot path applies and the wire
+    /// shape stays byte-identical to v0.10.
+    ///
+    /// Validation lives in `forward_core::rate_limit::validate` and
+    /// is run by the operator HTTP handler before persistence; the
+    /// capability gate (`rate_limit_unsupported_by_client`) refuses
+    /// to push a non-`None` envelope to a forward-client whose
+    /// last-known `Hello.client_version` is `< 0.11.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<forward_core::RateLimit>,
 }
 
 impl crate::operator::rbac::HasOwner for Rule {
@@ -649,6 +662,11 @@ impl ServerRuleStore {
             targets,
             health_check_interval_secs,
             sni_pattern,
+            // 011-rate-limiting-qos T015: caps land here once the
+            // operator HTTP push handler plumbs them through this
+            // helper. For Phase 2 the path is still dormant — every
+            // rule goes through uncapped.
+            rate_limit: None,
         };
         guard
             .by_client_listen_start

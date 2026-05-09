@@ -514,6 +514,18 @@ fn replay_gate_reason(
     {
         return Err("proxy_protocol_unsupported_by_client".into());
     }
+    // 011-rate-limiting-qos T008 / FR-006: refuse to replay a rule
+    // carrying any rate-limit cap to a forward-client whose
+    // self-reported client_version is below 0.11.0. Pre-0.11 readers
+    // would silently drop `Rule.rate_limit = 12` on decode and the
+    // rule would activate uncapped — violating the operator-visible
+    // contract. The HTTP push path enforces the same gate at submit
+    // time (operator/http.rs); this branch covers the post-restart
+    // rule-replay path so a rule that survived persistence cannot
+    // sneak past the gate after a server bounce.
+    if rule.rate_limit.is_some() && !version_at_least(client_version, 0, 11) {
+        return Err("rate_limit_unsupported_by_client".into());
+    }
     Ok(())
 }
 
@@ -556,11 +568,45 @@ fn proto_rule_from_rule(rule: &crate::rules::Rule) -> Rule {
             .collect(),
         health_check_interval_secs: rule.health_check_interval_secs.unwrap_or(0),
         sni_pattern: rule.sni_pattern.clone(),
-        // 011-rate-limiting-qos T015/T016: caps land here once
-        // persistence is wired (Phase 3). Until then this branch is
-        // unreachable for capped rules — the capability gate refuses
-        // such pushes upstream.
-        rate_limit: None,
+        // 011-rate-limiting-qos T007: per-rule cap envelope. None on
+        // both sides preserves byte-identical wire shape with v0.10
+        // (proto3 default-stripping). Capability gate
+        // (rate_limit_unsupported_by_client) refuses to send a non-
+        // None envelope to a pre-0.11 client; that gate runs upstream
+        // of this mapping in operator/http.rs and replay_gate_reason.
+        rate_limit: rule.rate_limit.as_ref().map(rate_limit_to_proto),
+    }
+}
+
+/// 011-rate-limiting-qos T007: encode a `forward_core::RateLimit` into
+/// the wire-shape `forward_proto::v1::RateLimit`. Field tags are
+/// 1-1 with the `RateLimit` definition in `proto/forward.proto` and
+/// every cap is independently optional.
+pub(crate) fn rate_limit_to_proto(rl: &forward_core::RateLimit) -> forward_proto::v1::RateLimit {
+    forward_proto::v1::RateLimit {
+        bandwidth_in_bps: rl.bandwidth_in_bps,
+        bandwidth_out_bps: rl.bandwidth_out_bps,
+        new_connections_per_sec: rl.new_connections_per_sec,
+        concurrent_connections: rl.concurrent_connections,
+        bandwidth_in_burst: rl.bandwidth_in_burst,
+        bandwidth_out_burst: rl.bandwidth_out_burst,
+        new_connections_burst: rl.new_connections_burst,
+    }
+}
+
+/// 011-rate-limiting-qos T007: decode a wire `RateLimit` back into the
+/// core envelope. Inverse of [`rate_limit_to_proto`]. Used by the HTTP
+/// push handler (T016) to hydrate caps received from the operator API
+/// — and any future inbound path that needs to read caps off the wire.
+pub(crate) fn rate_limit_from_proto(p: &forward_proto::v1::RateLimit) -> forward_core::RateLimit {
+    forward_core::RateLimit {
+        bandwidth_in_bps: p.bandwidth_in_bps,
+        bandwidth_out_bps: p.bandwidth_out_bps,
+        new_connections_per_sec: p.new_connections_per_sec,
+        concurrent_connections: p.concurrent_connections,
+        bandwidth_in_burst: p.bandwidth_in_burst,
+        bandwidth_out_burst: p.bandwidth_out_burst,
+        new_connections_burst: p.new_connections_burst,
     }
 }
 
@@ -778,6 +824,7 @@ mod tests {
             }],
             health_check_interval_secs: None,
             sni_pattern: None,
+            rate_limit: None,
         };
         state.rules.hydrate(vec![rule.clone()]).await;
 
@@ -825,6 +872,7 @@ mod tests {
             }],
             health_check_interval_secs: None,
             sni_pattern: None,
+            rate_limit: None,
         };
         state.rules.hydrate(vec![rule]).await;
 
@@ -881,6 +929,7 @@ mod tests {
                     }],
                     health_check_interval_secs: None,
                     sni_pattern: None,
+                    rate_limit: None,
                 },
                 crate::rules::Rule {
                     id: forward_core::RuleId(10),
@@ -904,6 +953,7 @@ mod tests {
                     }],
                     health_check_interval_secs: None,
                     sni_pattern: None,
+                    rate_limit: None,
                 },
             ])
             .await;
@@ -966,6 +1016,7 @@ mod tests {
                 }],
                 health_check_interval_secs: None,
                 sni_pattern: None,
+                rate_limit: None,
             }])
             .await;
 

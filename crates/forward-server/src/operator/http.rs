@@ -663,6 +663,19 @@ fn version_at_least_0_10(version: &str) -> bool {
     (major, minor) >= (0, 10)
 }
 
+/// 011-rate-limiting-qos T008: semver-prefix comparison
+/// `version >= 0.11.0` for the rate-limit capability guard
+/// (FR-006). Same parsing semantics as `version_at_least_0_7` —
+/// malformed input gates conservatively. Used by both the HTTP push
+/// handler (T016) and the per-owner cap PUT/DELETE handler (T028).
+pub(crate) fn version_at_least_0_11(version: &str) -> bool {
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (0, 11)
+}
+
 fn parse_proxy_protocol_version(
     raw: Option<&str>,
 ) -> Result<Option<forward_core::ProxyProtocolVersion>, OperatorError> {
@@ -1010,7 +1023,12 @@ impl From<OperatorError> for ApiError {
             // 009-tls-sni-routing (T028): SNI capability gate mirrors
             // the v0.7 multi-target gate — same semantic class.
             | OperatorError::SniUnsupportedByClient { .. }
-            | OperatorError::ProxyProtocolUnsupportedByClient { .. } => {
+            | OperatorError::ProxyProtocolUnsupportedByClient { .. }
+            // 011-rate-limiting-qos (T008): rate-limit capability gate
+            // is the same semantic class as the surrounding gates —
+            // client connected but its version cannot honour the new
+            // field. 422 mirrors v0.9 / v0.10.
+            | OperatorError::RateLimitUnsupportedByClient { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,

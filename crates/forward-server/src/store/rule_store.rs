@@ -196,6 +196,7 @@ impl SqliteRuleStore {
                         targets: Vec::new(),
                         health_check_interval_secs: row.get(12)?,
                         sni_pattern: row.get(15)?,
+                        rate_limit: None,
                     })
                 })
                 .map_err(map_rusqlite)?;
@@ -327,6 +328,7 @@ mod tests {
             ],
             health_check_interval_secs: Some(30),
             sni_pattern: Some("api.example.com".into()),
+            rate_limit: None,
         };
 
         rule_store.upsert_rule(&rule).unwrap();

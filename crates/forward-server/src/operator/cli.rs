@@ -182,6 +182,34 @@ pub enum OperatorError {
     },
     #[error("{code}: {message}")]
     ProxyProtocolValidation { code: &'static str, message: String },
+
+    /// 011-rate-limiting-qos T008 / FR-006: capability gate. Returned
+    /// when the operator pushes a rule with any `rate_limit` field set
+    /// — or mutates a `(client, owner)` rate-limit envelope — toward
+    /// a forward-client whose last-known `Hello.client_version` is
+    /// `< 0.11.0`. Pre-0.11 clients silently drop the field on decode
+    /// and would activate an uncapped rule, violating the operator-
+    /// visible contract.
+    ///
+    /// Maps to HTTP 422 / `rate_limit_unsupported_by_client`.
+    #[error(
+        "rate_limit_unsupported_by_client: client {client_name} (version {client_version}) requires >= 0.11.0"
+    )]
+    RateLimitUnsupportedByClient {
+        client_name: ClientName,
+        client_version: String,
+    },
+    /// 011-rate-limiting-qos T008 / FR-020: `rate_limit` validation
+    /// failure. The `code` carries the operator-api stable
+    /// subcategory:
+    /// - `validation.rate_limit_cap_zero`
+    /// - `validation.rate_limit_burst_without_rate`
+    /// - `validation.rate_limit_burst_range`
+    /// - `validation.rate_limit_burst_unsupported`
+    ///
+    /// Maps to HTTP 400 / exit 3.
+    #[error("{code}: {message}")]
+    RateLimitValidation { code: &'static str, message: String },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -220,7 +248,11 @@ impl OperatorError {
             | Self::SniUnsupportedByClient { .. }
             | Self::SniValidation { .. }
             | Self::ProxyProtocolUnsupportedByClient { .. }
-            | Self::ProxyProtocolValidation { .. } => 3,
+            | Self::ProxyProtocolValidation { .. }
+            // 011-rate-limiting-qos: rate-limit capability + validation
+            // gates share exit 3 with the surrounding family.
+            | Self::RateLimitUnsupportedByClient { .. }
+            | Self::RateLimitValidation { .. } => 3,
             Self::ClientNotConnected(_) => 4,
             // 009-tls-sni-routing: SNI conflicts share exit 5 with
             // PortInUse (the closest analogue: rule shape rejected
@@ -272,7 +304,8 @@ impl OperatorError {
             // field; merging the arms keeps the dispatch trivial.
             Self::InvalidTargetHost { code, .. }
             | Self::SniValidation { code, .. }
-            | Self::ProxyProtocolValidation { code, .. } => code,
+            | Self::ProxyProtocolValidation { code, .. }
+            | Self::RateLimitValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -303,6 +336,8 @@ impl OperatorError {
             Self::LegacyToSniUnsupported { .. } => "conflict.legacy_to_sni_unsupported",
             Self::SniUnsupportedByClient { .. } => "sni_unsupported_by_client",
             Self::ProxyProtocolUnsupportedByClient { .. } => "proxy_protocol_unsupported_by_client",
+            // 011-rate-limiting-qos (operator-api.md §1.x):
+            Self::RateLimitUnsupportedByClient { .. } => "rate_limit_unsupported_by_client",
         }
     }
 }
