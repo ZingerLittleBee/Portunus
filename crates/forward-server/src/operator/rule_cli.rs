@@ -87,7 +87,10 @@ fn code_to_exit(code: &str) -> u8 {
         | "invalid_target_host_label_hyphen"
         // 004-udp-forward T018/T034: capability mismatch reuses exit 3
         // (input-validation family) per operator-api.md stability rules.
-        | "unsupported_protocol" => 3,
+        | "unsupported_protocol"
+        | "proxy_protocol_unsupported_by_client"
+        | "validation.proxy_protocol_invalid"
+        | "validation.proxy_protocol_on_unsupported_rule" => 3,
         "client_not_connected" => 4,
         "port_in_use" => 5,
         "activation_failed" => 6,
@@ -634,7 +637,7 @@ fn render_rules_text(rules: &[Rule]) -> String {
     let _ = writeln!(
         s,
         "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
-        "ID", "CLIENT", "PORT", "TARGET", "SNI", "STATE"
+        "ID", "CLIENT", "PORT", "TARGET", "SNI/PROXY", "STATE"
     );
     for r in rules {
         let state = match &r.state {
@@ -643,7 +646,26 @@ fn render_rules_text(rules: &[Rule]) -> String {
             RuleState::Failed { reason } => format!("failed:{reason}"),
             RuleState::Removed => "removed".to_string(),
         };
-        let sni = r.sni_pattern.as_deref().unwrap_or("-");
+        let proxy = r
+            .targets_view()
+            .iter()
+            .filter_map(|target| {
+                target.proxy_protocol.map(|mode| {
+                    let mode = match mode {
+                        forward_core::ProxyProtocolVersion::V1 => "v1",
+                        forward_core::ProxyProtocolVersion::V2 => "v2",
+                    };
+                    format!("{}:{}={mode}", target.host, target.port)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let selector = match (r.sni_pattern.as_deref(), proxy.is_empty()) {
+            (Some(sni), false) => format!("{sni} | {proxy}"),
+            (Some(sni), true) => sni.to_string(),
+            (None, false) => proxy,
+            (None, true) => "-".to_string(),
+        };
         let _ = writeln!(
             s,
             "{:<6} {:<20} {:<6} {:<32} {:<24} {:<10}",
@@ -651,9 +673,25 @@ fn render_rules_text(rules: &[Rule]) -> String {
             r.client_name,
             r.listen_port,
             format!("{}:{}", r.target_host, r.target_port),
-            sni,
+            selector,
             state,
         );
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_protocol_errors_use_input_validation_exit_code() {
+        for code in [
+            "proxy_protocol_unsupported_by_client",
+            "validation.proxy_protocol_invalid",
+            "validation.proxy_protocol_on_unsupported_rule",
+        ] {
+            assert_eq!(code_to_exit(code), 3, "{code}");
+        }
+    }
 }

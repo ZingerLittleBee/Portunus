@@ -10,8 +10,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use forward_auth::ClientIdentity;
+use forward_core::RuleId;
 use forward_proto::v1::{
-    ClientMessage, Protocol, ServerMessage, Welcome, control_server::Control, server_message,
+    ClientMessage, Protocol, ProxyProtocolVersion, Rule, RuleAction, RuleUpdate, ServerMessage,
+    Welcome, control_server::Control, server_message,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -193,6 +195,7 @@ impl Control for ControlService {
         // sends rule pushes through this same channel.)
         tokio::spawn(async move {
             let _outbound = tx;
+            replay_rules_for_client(&pump_state, &pump_identity, &_outbound).await;
             // If the first inbound message wasn't a Hello, replay it
             // through the existing handler now (v0.3 client back-compat).
             if let Some(replay) = pending_first_msg {
@@ -306,12 +309,7 @@ async fn handle_client_message(
             if let Some(tx) = guard.remove(&request_id) {
                 let _ = tx.send(rs);
             } else {
-                info!(
-                    event = "client.rule_status_unmatched",
-                    client_name = %identity.client_name,
-                    request_id = %request_id,
-                    rule_id = rs.rule_id,
-                );
+                apply_unsolicited_rule_status(state, identity, &rs).await;
             }
         }
         Some(Payload::StatsReport(report)) => {
@@ -432,6 +430,9 @@ async fn handle_client_message(
                         port,
                         listener.sni_route_miss_total,
                         listener.client_hello_parse_failures_total,
+                        &listener.client_hello_peek_bucket_counts,
+                        listener.client_hello_peek_sum_micros,
+                        listener.client_hello_peek_count,
                         &state.metrics,
                     )
                     .await;
@@ -447,6 +448,172 @@ async fn handle_client_message(
     }
 }
 
+async fn replay_rules_for_client(
+    state: &AppState,
+    identity: &ClientIdentity,
+    outbound: &OutboundSender,
+) {
+    let rules = state.rules.list(Some(&identity.client_name)).await;
+    if rules.is_empty() {
+        return;
+    }
+    let caps = state
+        .clients
+        .snapshot()
+        .await
+        .get(&identity.client_name)
+        .map_or_else(HashSet::new, |c| c.supported_protocols.clone());
+    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    for rule in rules {
+        if !matches!(rule.state, crate::rules::RuleState::Active) {
+            continue;
+        }
+        if let Err(reason) = replay_gate_reason(&rule, &caps, client_version.as_deref()) {
+            let _ = state.rules.mark_failed(rule.id, reason.clone()).await;
+            if let Some(updated) = state.rules.get(rule.id).await {
+                let _ = state.rule_store.upsert_rule(&updated);
+            }
+            continue;
+        }
+        let _ = state.rules.mark_pending(rule.id).await;
+        if let Some(updated) = state.rules.get(rule.id).await {
+            let _ = state.rule_store.upsert_rule(&updated);
+            let msg = ServerMessage {
+                payload: Some(server_message::Payload::RuleUpdate(RuleUpdate {
+                    request_id: format!("replay-{}", ulid::Ulid::new()),
+                    action: RuleAction::Push as i32,
+                    rule: Some(proto_rule_from_rule(&updated)),
+                })),
+            };
+            if outbound.send(Ok(msg)).await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+fn replay_gate_reason(
+    rule: &crate::rules::Rule,
+    caps: &HashSet<Protocol>,
+    client_version: Option<&str>,
+) -> Result<(), String> {
+    if matches!(rule.protocol, crate::rules::Protocol::Udp) && !caps.contains(&Protocol::Udp) {
+        return Err("unsupported_protocol".into());
+    }
+    if !rule.targets.is_empty()
+        && rule.targets.len() >= 2
+        && !version_at_least(client_version, 0, 7)
+    {
+        return Err("multi_target_unsupported_by_client".into());
+    }
+    if rule.sni_pattern.is_some() && !version_at_least(client_version, 0, 9) {
+        return Err("sni_unsupported_by_client".into());
+    }
+    if rule.targets.iter().any(|t| t.proxy_protocol.is_some())
+        && !version_at_least(client_version, 0, 10)
+    {
+        return Err("proxy_protocol_unsupported_by_client".into());
+    }
+    Ok(())
+}
+
+fn version_at_least(version: Option<&str>, major_floor: u32, minor_floor: u32) -> bool {
+    let Some(version) = version else {
+        return false;
+    };
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (major_floor, minor_floor)
+}
+
+fn proto_rule_from_rule(rule: &crate::rules::Rule) -> Rule {
+    Rule {
+        rule_id: rule.id.0,
+        listen_port: u32::from(rule.listen_port),
+        target_host: rule.target_host.clone(),
+        target_port: u32::from(rule.target_port),
+        protocol: match rule.protocol {
+            crate::rules::Protocol::Tcp => Protocol::Tcp as i32,
+            crate::rules::Protocol::Udp => Protocol::Udp as i32,
+        },
+        listen_port_end: rule.listen_port_end.map_or(0, u32::from),
+        target_port_end: rule.target_port_end.map_or(0, u32::from),
+        prefer_ipv6: rule.prefer_ipv6,
+        targets: rule
+            .targets
+            .iter()
+            .map(|target| forward_proto::v1::Target {
+                host: target.host.clone(),
+                port: u32::from(target.port),
+                priority: target.priority,
+                proxy_protocol: target.proxy_protocol.map(|mode| match mode {
+                    forward_core::ProxyProtocolVersion::V1 => ProxyProtocolVersion::V1 as i32,
+                    forward_core::ProxyProtocolVersion::V2 => ProxyProtocolVersion::V2 as i32,
+                }),
+            })
+            .collect(),
+        health_check_interval_secs: rule.health_check_interval_secs.unwrap_or(0),
+        sni_pattern: rule.sni_pattern.clone(),
+    }
+}
+
+async fn apply_unsolicited_rule_status(
+    state: &AppState,
+    identity: &ClientIdentity,
+    status: &forward_proto::v1::RuleStatus,
+) {
+    let rule_id = RuleId(status.rule_id);
+    let Some(existing) = state.rules.get(rule_id).await else {
+        info!(
+            event = "client.rule_status_unmatched",
+            client_name = %identity.client_name,
+            request_id = %status.request_id,
+            rule_id = status.rule_id,
+        );
+        return;
+    };
+    if existing.client_name != identity.client_name {
+        warn!(
+            event = "client.rule_status_wrong_client",
+            client_name = %identity.client_name,
+            rule_owner = %existing.client_name,
+            request_id = %status.request_id,
+            rule_id = status.rule_id,
+        );
+        return;
+    }
+    let outcome = forward_proto::v1::ActivationOutcome::try_from(status.outcome)
+        .unwrap_or(forward_proto::v1::ActivationOutcome::Unspecified);
+    match outcome {
+        forward_proto::v1::ActivationOutcome::Activated => {
+            let _ = state.rules.mark_active(rule_id).await;
+        }
+        forward_proto::v1::ActivationOutcome::Failed => {
+            let reason = if status.reason.is_empty() {
+                "unspecified".to_string()
+            } else {
+                status.reason.clone()
+            };
+            let _ = state.rules.mark_failed(rule_id, reason).await;
+        }
+        forward_proto::v1::ActivationOutcome::Removed
+        | forward_proto::v1::ActivationOutcome::Unspecified => {
+            info!(
+                event = "client.rule_status_unmatched",
+                client_name = %identity.client_name,
+                request_id = %status.request_id,
+                rule_id = status.rule_id,
+            );
+            return;
+        }
+    }
+    if let Some(rule) = state.rules.get(rule_id).await {
+        let _ = state.rule_store.upsert_rule(&rule);
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -457,6 +624,14 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::ConnectedClients;
+    use crate::state::AppState;
+    use crate::store::Store;
+    use crate::store::operator_store::SqliteOperatorStore;
+    use crate::store::token_store::SqliteTokenStore;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     // 004-udp-forward T009. The end-to-end Hello-gated path is exercised
     // through the existing register/handle integration suites in
@@ -512,5 +687,303 @@ mod tests {
         // HashSet iteration is non-deterministic; the rendering must
         // be stable so log scrapers can pin on it.
         assert_eq!(caps_for_log(&caps), vec!["TCP", "UDP"]);
+    }
+
+    fn build_state() -> Arc<AppState> {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+        operator_store
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        Arc::new(
+            AppState::new(
+                tokens,
+                operator_store,
+                ConnectedClients::default(),
+                "127.0.0.1:0",
+                "deadbeef",
+                "-----BEGIN CERTIFICATE-----\n",
+                16,
+                store,
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn register_client(
+        state: &Arc<AppState>,
+        name: &str,
+        version: &str,
+    ) -> (
+        ClientIdentity,
+        OutboundSender,
+        mpsc::Receiver<Result<ServerMessage, Status>>,
+    ) {
+        let client_name = forward_core::ClientName::new(name.to_string()).unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let waiters: StatusWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let session_id = state
+            .clients
+            .register(
+                client_name.clone(),
+                None,
+                CancellationToken::new(),
+                tx.clone(),
+                waiters,
+            )
+            .await;
+        let mut caps = HashSet::new();
+        caps.insert(Protocol::Tcp);
+        state
+            .clients
+            .set_supported_protocols(&client_name, session_id, caps)
+            .await;
+        state
+            .clients
+            .set_client_version(&client_name, session_id, version.to_string())
+            .await;
+        (ClientIdentity { client_name }, tx, rx)
+    }
+
+    #[tokio::test]
+    async fn replay_rules_sends_proxy_protocol_targets_to_capable_client() {
+        let state = build_state();
+        let (identity, outbound, mut rx) = register_client(&state, "edge-replay", "0.10.0").await;
+        let rule = crate::rules::Rule {
+            id: forward_core::RuleId(7),
+            client_name: identity.client_name.clone(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.1".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: crate::rules::Protocol::Tcp,
+            state: crate::rules::RuleState::Active,
+            created_at: chrono::Utc::now(),
+            last_state_change_at: chrono::Utc::now(),
+            owner_user_id: forward_auth::UserId::reserved("alice"),
+            targets: vec![forward_core::RuleTarget {
+                host: "10.0.0.1".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: Some(forward_core::ProxyProtocolVersion::V1),
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+        };
+        state.rules.hydrate(vec![rule.clone()]).await;
+
+        replay_rules_for_client(&state, &identity, &outbound).await;
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("replay arrives")
+            .expect("message present")
+            .expect("server message");
+        let Some(server_message::Payload::RuleUpdate(update)) = msg.payload else {
+            panic!("expected RuleUpdate");
+        };
+        let rule = update.rule.expect("rule");
+        assert_eq!(rule.targets.len(), 1);
+        assert_eq!(
+            rule.targets[0].proxy_protocol,
+            Some(ProxyProtocolVersion::V1 as i32)
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_rules_marks_incompatible_proxy_rule_failed() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-replay-old", "0.8.0").await;
+        let rule = crate::rules::Rule {
+            id: forward_core::RuleId(8),
+            client_name: identity.client_name.clone(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.1".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: crate::rules::Protocol::Tcp,
+            state: crate::rules::RuleState::Active,
+            created_at: chrono::Utc::now(),
+            last_state_change_at: chrono::Utc::now(),
+            owner_user_id: forward_auth::UserId::reserved("alice"),
+            targets: vec![forward_core::RuleTarget {
+                host: "10.0.0.1".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: Some(forward_core::ProxyProtocolVersion::V1),
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+        };
+        state.rules.hydrate(vec![rule]).await;
+
+        replay_rules_for_client(&state, &identity, &outbound).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "incompatible rule should not replay"
+        );
+        let loaded = state
+            .rules
+            .get(forward_core::RuleId(8))
+            .await
+            .expect("rule");
+        match loaded.state {
+            crate::rules::RuleState::Failed { reason } => {
+                assert_eq!(reason, "proxy_protocol_unsupported_by_client");
+            }
+            other => panic!("expected failed state, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_rules_skips_non_active_rules() {
+        let state = build_state();
+        let (identity, outbound, mut rx) =
+            register_client(&state, "edge-replay-skip", "0.10.0").await;
+        let now = chrono::Utc::now();
+        state
+            .rules
+            .hydrate(vec![
+                crate::rules::Rule {
+                    id: forward_core::RuleId(9),
+                    client_name: identity.client_name.clone(),
+                    listen_port: 443,
+                    listen_port_end: None,
+                    target_host: "10.0.0.1".into(),
+                    target_port: 8443,
+                    target_port_end: None,
+                    prefer_ipv6: None,
+                    protocol: crate::rules::Protocol::Tcp,
+                    state: crate::rules::RuleState::Failed {
+                        reason: "port_in_use".into(),
+                    },
+                    created_at: now,
+                    last_state_change_at: now,
+                    owner_user_id: forward_auth::UserId::reserved("alice"),
+                    targets: vec![forward_core::RuleTarget {
+                        host: "10.0.0.1".into(),
+                        port: 8443,
+                        priority: 0,
+                        proxy_protocol: None,
+                    }],
+                    health_check_interval_secs: None,
+                    sni_pattern: None,
+                },
+                crate::rules::Rule {
+                    id: forward_core::RuleId(10),
+                    client_name: identity.client_name.clone(),
+                    listen_port: 444,
+                    listen_port_end: None,
+                    target_host: "10.0.0.2".into(),
+                    target_port: 8444,
+                    target_port_end: None,
+                    prefer_ipv6: None,
+                    protocol: crate::rules::Protocol::Tcp,
+                    state: crate::rules::RuleState::Pending,
+                    created_at: now,
+                    last_state_change_at: now,
+                    owner_user_id: forward_auth::UserId::reserved("alice"),
+                    targets: vec![forward_core::RuleTarget {
+                        host: "10.0.0.2".into(),
+                        port: 8444,
+                        priority: 0,
+                        proxy_protocol: None,
+                    }],
+                    health_check_interval_secs: None,
+                    sni_pattern: None,
+                },
+            ])
+            .await;
+
+        replay_rules_for_client(&state, &identity, &outbound).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "non-active rules should not replay"
+        );
+        assert!(matches!(
+            state
+                .rules
+                .get(forward_core::RuleId(9))
+                .await
+                .expect("failed rule")
+                .state,
+            crate::rules::RuleState::Failed { .. }
+        ));
+        assert!(matches!(
+            state
+                .rules
+                .get(forward_core::RuleId(10))
+                .await
+                .expect("pending rule")
+                .state,
+            crate::rules::RuleState::Pending
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsolicited_rule_status_ignores_rules_owned_by_other_client() {
+        let state = build_state();
+        let (identity, _outbound, _rx) = register_client(&state, "edge-a", "0.10.0").await;
+        let other_client = forward_core::ClientName::new("edge-b".to_string()).unwrap();
+        let now = chrono::Utc::now();
+        state
+            .rules
+            .hydrate(vec![crate::rules::Rule {
+                id: forward_core::RuleId(11),
+                client_name: other_client,
+                listen_port: 443,
+                listen_port_end: None,
+                target_host: "10.0.0.1".into(),
+                target_port: 8443,
+                target_port_end: None,
+                prefer_ipv6: None,
+                protocol: crate::rules::Protocol::Tcp,
+                state: crate::rules::RuleState::Active,
+                created_at: now,
+                last_state_change_at: now,
+                owner_user_id: forward_auth::UserId::reserved("alice"),
+                targets: vec![forward_core::RuleTarget {
+                    host: "10.0.0.1".into(),
+                    port: 8443,
+                    priority: 0,
+                    proxy_protocol: None,
+                }],
+                health_check_interval_secs: None,
+                sni_pattern: None,
+            }])
+            .await;
+
+        apply_unsolicited_rule_status(
+            &state,
+            &identity,
+            &forward_proto::v1::RuleStatus {
+                request_id: "stale-or-forged".into(),
+                rule_id: 11,
+                outcome: forward_proto::v1::ActivationOutcome::Failed as i32,
+                reason: "forged_failure".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            state
+                .rules
+                .get(forward_core::RuleId(11))
+                .await
+                .expect("other client rule")
+                .state,
+            crate::rules::RuleState::Active
+        ));
     }
 }

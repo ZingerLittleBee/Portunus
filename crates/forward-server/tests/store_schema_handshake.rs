@@ -1,7 +1,7 @@
 //! Schema-version handshake regression test (009-tls-sni-routing T014).
 //!
 //! Covers:
-//! - Fresh open lands at the v0.9 target schema version (2 after V002).
+//! - Fresh open lands at the current target schema version (4 after V004).
 //! - A simulated v0.8 state.db (only V001 applied) is auto-migrated up
 //!   to V002 on open — the additive `sni_pattern` column appears.
 //! - A state.db whose `schema_migrations` head exceeds the binary's
@@ -20,14 +20,17 @@ fn fresh_open_lands_at_v09_target() {
     let dir = tempdir().unwrap();
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
-    assert_eq!(v, 2, "v0.9 target schema is 2 (V001 + V002)");
+    assert_eq!(
+        v, 4,
+        "current target schema is 4 (V001 + V002 + V003 + V004)"
+    );
     assert_eq!(v, Store::target_schema_version());
 }
 
 /// Open the freshly-migrated state.db, confirm `sni_pattern` is a real
 /// column on `rules`, and confirm the partial helper index exists.
 #[test]
-fn v002_adds_sni_pattern_column_and_index() {
+fn v002_v003_add_columns_and_index() {
     let dir = tempdir().unwrap();
     let store = Store::open(dir.path()).expect("open fresh");
 
@@ -45,6 +48,21 @@ fn v002_adds_sni_pattern_column_and_index() {
     assert!(
         cols.iter().any(|c| c == "sni_pattern"),
         "rules table missing sni_pattern column; got {cols:?}"
+    );
+    let target_cols: Vec<String> = store
+        .with_conn(|c| {
+            let mut stmt = c.prepare("PRAGMA table_info(rule_targets)").unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            Ok(rows)
+        })
+        .unwrap();
+    assert!(
+        target_cols.iter().any(|c| c == "proxy_protocol"),
+        "rule_targets table missing proxy_protocol column; got {target_cols:?}"
     );
 
     let helper_index_present = store
@@ -120,7 +138,7 @@ fn v08_state_db_auto_migrates_to_v09() {
 }
 
 /// A state.db whose `schema_migrations` head is greater than the
-/// binary's compiled-in target version (currently 2) MUST be refused
+/// binary's compiled-in target version (currently 3) MUST be refused
 /// with `BootError::SchemaTooNew`.
 #[test]
 fn refuses_schema_newer_than_binary() {

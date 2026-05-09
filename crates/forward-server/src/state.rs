@@ -12,6 +12,7 @@ use crate::operator::per_port_stats::PerPortStatsCache;
 use crate::rules::ServerRuleStore;
 use crate::store::Store;
 use crate::store::operator_store::SqliteOperatorStore;
+use crate::store::rule_store::SqliteRuleStore;
 use crate::store::token_store::SqliteTokenStore;
 
 #[derive(Clone)]
@@ -67,6 +68,8 @@ pub struct AppState {
     /// connection pool, schema migrations, and (after US1's wiring)
     /// the audit-write durable sink. `Arc<Store>` is cheap to clone.
     pub store: Arc<Store>,
+    /// Persisted rule definitions / runtime state.
+    pub rule_store: Arc<SqliteRuleStore>,
 }
 
 impl AppState {
@@ -88,6 +91,7 @@ impl AppState {
         let operator_auth: Arc<dyn OperatorAuthenticator> = operator_store.clone();
         let audit = Arc::new(AuditRing::new());
         let metrics = Arc::new(Metrics::new()?);
+        let rule_store = Arc::new(SqliteRuleStore::new(Arc::clone(&store)));
         // T009: stitch the audit ring's drop counter into Prometheus so
         // an oversaturated buffer becomes visible without grepping logs.
         audit.bind_drops_metric(metrics.audit_buffer_drops_total.clone());
@@ -107,6 +111,7 @@ impl AppState {
             operator_auth,
             audit,
             store,
+            rule_store,
         })
     }
 

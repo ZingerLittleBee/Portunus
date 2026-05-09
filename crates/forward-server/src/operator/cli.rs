@@ -173,6 +173,15 @@ pub enum OperatorError {
     /// Maps to HTTP 400 / exit 3.
     #[error("{code}: {message}")]
     SniValidation { code: &'static str, message: String },
+    #[error(
+        "proxy_protocol_unsupported_by_client: client {client_name} (version {client_version}) requires >= 0.10.0"
+    )]
+    ProxyProtocolUnsupportedByClient {
+        client_name: ClientName,
+        client_version: String,
+    },
+    #[error("{code}: {message}")]
+    ProxyProtocolValidation { code: &'static str, message: String },
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -209,7 +218,9 @@ impl OperatorError {
             // 009-tls-sni-routing: SNI capability gate mirrors the
             // 007 multi-target gate (HTTP 422 / exit 3).
             | Self::SniUnsupportedByClient { .. }
-            | Self::SniValidation { .. } => 3,
+            | Self::SniValidation { .. }
+            | Self::ProxyProtocolUnsupportedByClient { .. }
+            | Self::ProxyProtocolValidation { .. } => 3,
             Self::ClientNotConnected(_) => 4,
             // 009-tls-sni-routing: SNI conflicts share exit 5 with
             // PortInUse (the closest analogue: rule shape rejected
@@ -259,7 +270,9 @@ impl OperatorError {
             // `InvalidTargetHost` and `SniValidation` (below) both
             // store an operator-api-stable subcode in their `code`
             // field; merging the arms keeps the dispatch trivial.
-            Self::InvalidTargetHost { code, .. } | Self::SniValidation { code, .. } => code,
+            Self::InvalidTargetHost { code, .. }
+            | Self::SniValidation { code, .. }
+            | Self::ProxyProtocolValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -289,6 +302,7 @@ impl OperatorError {
             Self::SniFallbackDuplicate { .. } => "conflict.sni_fallback_duplicate",
             Self::LegacyToSniUnsupported { .. } => "conflict.legacy_to_sni_unsupported",
             Self::SniUnsupportedByClient { .. } => "sni_unsupported_by_client",
+            Self::ProxyProtocolUnsupportedByClient { .. } => "proxy_protocol_unsupported_by_client",
         }
     }
 }
@@ -631,6 +645,10 @@ pub async fn push_rule(
             identity.user_id.clone(),
         )
         .await?;
+    state
+        .rule_store
+        .upsert_rule(&rule)
+        .map_err(|e| OperatorError::ActivationFailed(format!("persist_rule: {e}")))?;
     let request_id = RequestId::new().to_string();
     let (tx, rx) = oneshot::channel();
     {
@@ -698,6 +716,7 @@ pub async fn push_rule(
         // client_not_connected. Drop the pending entry so re-push can succeed
         // after a reconnect.
         let _ = state.rules.remove(rule.id).await;
+        let _ = state.rule_store.delete_rule(rule.id);
         let mut guard = waiters.lock().await;
         guard.remove(&request_id);
         return Err(OperatorError::ClientNotConnected(client_name));
@@ -710,6 +729,9 @@ pub async fn push_rule(
             match outcome {
                 ActivationOutcome::Activated => {
                     state.rules.mark_active(rule.id).await?;
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     info!(
                         event = "audit.rule_push",
                         outcome = "activated",
@@ -730,6 +752,9 @@ pub async fn push_rule(
                         status.reason.clone()
                     };
                     state.rules.mark_failed(rule.id, reason.clone()).await.ok();
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     warn!(
                         event = "audit.rule_push",
                         outcome = "failed",
@@ -849,6 +874,10 @@ pub async fn push_rule_multi_target(
             sni_pattern,
         )
         .await?;
+    state
+        .rule_store
+        .upsert_rule(&rule)
+        .map_err(|e| OperatorError::ActivationFailed(format!("persist_rule: {e}")))?;
     let request_id = RequestId::new().to_string();
     let (tx, rx) = oneshot::channel();
     {
@@ -876,6 +905,14 @@ pub async fn push_rule_multi_target(
             host: t.host.clone(),
             port: u32::from(t.port),
             priority: t.priority,
+            proxy_protocol: t.proxy_protocol.map(|mode| match mode {
+                forward_core::ProxyProtocolVersion::V1 => {
+                    forward_proto::v1::ProxyProtocolVersion::V1 as i32
+                }
+                forward_core::ProxyProtocolVersion::V2 => {
+                    forward_proto::v1::ProxyProtocolVersion::V2 as i32
+                }
+            }),
         })
         .collect();
     let update = ServerMessage {
@@ -910,6 +947,7 @@ pub async fn push_rule_multi_target(
     };
     if outbound.send(Ok(update)).await.is_err() {
         let _ = state.rules.remove(rule.id).await;
+        let _ = state.rule_store.delete_rule(rule.id);
         let mut guard = waiters.lock().await;
         guard.remove(&request_id);
         return Err(OperatorError::ClientNotConnected(client_name));
@@ -922,6 +960,9 @@ pub async fn push_rule_multi_target(
             match outcome {
                 ActivationOutcome::Activated => {
                     state.rules.mark_active(rule.id).await?;
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     info!(
                         event = "audit.rule_push",
                         outcome = "activated",
@@ -943,6 +984,9 @@ pub async fn push_rule_multi_target(
                         status.reason.clone()
                     };
                     state.rules.mark_failed(rule.id, reason.clone()).await.ok();
+                    if let Some(rule) = state.rules.get(rule.id).await {
+                        let _ = state.rule_store.upsert_rule(&rule);
+                    }
                     warn!(
                         event = "audit.rule_push",
                         outcome = "failed",
@@ -992,6 +1036,7 @@ pub async fn push_rule_multi_target(
 /// from the store", not "client confirmed teardown".
 pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, OperatorError> {
     let removed = state.rules.remove(rule_id).await?;
+    let _ = state.rule_store.delete_rule(rule_id);
     let owner = removed.owner_user_id.to_string();
     state
         .stats_cache

@@ -120,6 +120,7 @@ fn v08_shape_rule() -> Rule {
             host: "127.0.0.1".to_string(),
             port: 9000,
             priority: 0,
+            proxy_protocol: None,
         }],
         health_check_interval_secs: 0,
         sni_pattern: None,

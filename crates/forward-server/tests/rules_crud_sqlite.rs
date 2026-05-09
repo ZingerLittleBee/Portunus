@@ -95,11 +95,13 @@ async fn multi_target_rule_round_trip_preserves_v07_shape() {
                     host: "10.0.0.1".into(),
                     port: 9001,
                     priority: 0,
+                    proxy_protocol: Some(forward_core::ProxyProtocolVersion::V1),
                 },
                 RuleTarget {
                     host: "10.0.0.2".into(),
                     port: 9002,
                     priority: 1,
+                    proxy_protocol: None,
                 },
             ],
             None,
@@ -137,6 +139,8 @@ async fn multi_target_rule_round_trip_preserves_v07_shape() {
             assert!(obj.contains_key(k), "target missing `{k}`: {t}");
         }
     }
+    assert_eq!(targets[0]["proxy_protocol"], "v1");
+    assert!(targets[1]["proxy_protocol"].is_null());
     assert_eq!(mine["client_name"], "client-multi");
     assert_eq!(mine["protocol"], "tcp");
 

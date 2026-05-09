@@ -191,6 +191,8 @@ struct TargetBody {
     port: u16,
     #[serde(default)]
     priority: Option<u32>,
+    #[serde(default)]
+    proxy_protocol: Option<String>,
 }
 
 fn default_protocol() -> String {
@@ -386,12 +388,15 @@ async fn push_multi_target(
     let typed: Vec<forward_core::RuleTarget> = raw_targets
         .iter()
         .enumerate()
-        .map(|(i, t)| forward_core::RuleTarget {
-            host: t.host.clone(),
-            port: t.port,
-            priority: t.priority.unwrap_or(u32::try_from(i).unwrap_or(u32::MAX)),
+        .map(|(i, t)| {
+            Ok(forward_core::RuleTarget {
+                host: t.host.clone(),
+                port: t.port,
+                priority: t.priority.unwrap_or(u32::try_from(i).unwrap_or(u32::MAX)),
+                proxy_protocol: parse_proxy_protocol_version(t.proxy_protocol.as_deref())?,
+            })
         })
-        .collect();
+        .collect::<Result<_, OperatorError>>()?;
 
     // V-T1..V-T4 + V-R5 (FR-001, FR-005).
     rule_target::validate(&typed).map_err(OperatorError::TargetsInvalid)?;
@@ -400,6 +405,13 @@ async fn push_multi_target(
     let client_name =
         forward_core::ClientName::from_str(&body.client).map_err(OperatorError::InvalidName)?;
     let proto = parse_protocol_str(&body.protocol)?;
+    if matches!(proto, ProtocolWire::Udp) && typed.iter().any(|t| t.proxy_protocol.is_some()) {
+        return Err(OperatorError::ProxyProtocolValidation {
+            code: "validation.proxy_protocol_on_unsupported_rule",
+            message: "proxy_protocol is only valid on tcp rules".into(),
+        }
+        .into());
+    }
 
     // RBAC: same envelope as legacy push (FR-021 — targets are NOT
     // gated). enforce_push only inspects (client, listen-port range,
@@ -446,6 +458,22 @@ async fn push_multi_target(
             client_version: v,
         }
         .into());
+    }
+    if typed.iter().any(|t| t.proxy_protocol.is_some()) {
+        let Some(v) = state.clients.client_version_of(&client_name).await else {
+            return Err(OperatorError::ProxyProtocolUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: "unknown".into(),
+            }
+            .into());
+        };
+        if !version_at_least_0_10(&v) {
+            return Err(OperatorError::ProxyProtocolUnsupportedByClient {
+                client_name: client_name.clone(),
+                client_version: v,
+            }
+            .into());
+        }
     }
 
     // Phase 3 (T022): hand off to the multi-target push helper which
@@ -544,6 +572,7 @@ async fn push_legacy_with_sni(
         host: target_host.to_string(),
         port: target.start(),
         priority: 0,
+        proxy_protocol: None,
     }];
     forward_core::rule_target::validate(&synth).map_err(OperatorError::TargetsInvalid)?;
 
@@ -623,6 +652,34 @@ fn version_at_least_0_9(version: &str) -> bool {
     let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     (major, minor) >= (0, 9)
+}
+
+fn version_at_least_0_10(version: &str) -> bool {
+    let trimmed = version.split(['-', '+']).next().unwrap_or("");
+    let mut parts = trimmed.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (0, 10)
+}
+
+fn parse_proxy_protocol_version(
+    raw: Option<&str>,
+) -> Result<Option<forward_core::ProxyProtocolVersion>, OperatorError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "v1" => Ok(Some(forward_core::ProxyProtocolVersion::V1)),
+        "v2" => Ok(Some(forward_core::ProxyProtocolVersion::V2)),
+        other => Err(OperatorError::ProxyProtocolValidation {
+            code: "validation.proxy_protocol_invalid",
+            message: format!("proxy_protocol must be `v1` or `v2`, got `{other}`"),
+        }),
+    }
 }
 
 /// 009-tls-sni-routing T029: validate + lowercase a candidate
@@ -790,6 +847,7 @@ async fn rule_with_health(state: &Arc<AppState>, rule: Rule) -> serde_json::Valu
             "host": t.host,
             "port": t.port,
             "priority": t.priority,
+            "proxy_protocol": t.proxy_protocol,
             "health": health,
         }));
     }
@@ -936,7 +994,8 @@ impl From<OperatorError> for ApiError {
             | OperatorError::HealthCheckIntervalOutOfRange { .. }
             // 009-tls-sni-routing T029: sni_pattern grammar / applicability
             // failures share the 400 family.
-            | OperatorError::SniValidation { .. } => StatusCode::BAD_REQUEST,
+            | OperatorError::SniValidation { .. }
+            | OperatorError::ProxyProtocolValidation { .. } => StatusCode::BAD_REQUEST,
             OperatorError::ClientNotConnected(_)
             | OperatorError::ActivationFailed(_)
             // 004-udp-forward T019: capability mismatch surfaces as 422
@@ -949,7 +1008,10 @@ impl From<OperatorError> for ApiError {
             | OperatorError::MultiTargetUnsupportedByClient { .. }
             // 009-tls-sni-routing (T028): SNI capability gate mirrors
             // the v0.7 multi-target gate — same semantic class.
-            | OperatorError::SniUnsupportedByClient { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            | OperatorError::SniUnsupportedByClient { .. }
+            | OperatorError::ProxyProtocolUnsupportedByClient { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
             OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
             // 005-multi-user-rbac: RBAC failures use the auth_layer's
