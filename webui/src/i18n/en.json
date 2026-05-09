@@ -157,7 +157,28 @@
     "healthCheckIntervalHelp": "Optional. When set, the client opens a TCP-connect probe to each target on this cadence. Range: 1–3600 seconds.",
     "sniPattern": "SNI pattern (optional)",
     "sniPatternPlaceholder": "api.example.com or *.example.com",
-    "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules."
+    "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules.",
+    "rateLimitTitle": "Quality of service",
+    "rateLimitHelp": "Optional per-rule QoS caps. Leave fields blank to leave that dimension uncapped."
+  },
+  "rateLimitForm": {
+    "title": "Rate limit",
+    "help": "Each cap is independently optional. Empty = uncapped on that dimension.",
+    "uncapped": "uncapped",
+    "bandwidthIn": "Bandwidth in (bytes/sec)",
+    "bandwidthOut": "Bandwidth out (bytes/sec)",
+    "newConnectionsPerSec": "New connections / sec",
+    "concurrentConnections": "Concurrent connections",
+    "advanced": "Advanced (burst overrides)",
+    "bandwidthInBurst": "Bandwidth in burst (bytes)",
+    "bandwidthOutBurst": "Bandwidth out burst (bytes)",
+    "newConnectionsBurst": "New connections burst",
+    "burstDefault": "1 × rate (default)",
+    "burstHelp": "Bursts must be ≥ rate and ≤ 4 × rate."
+  },
+  "rulesCapsCol": {
+    "header": "Caps",
+    "uncapped": "—"
   },
   "ruleDetail": {
     "title": "Rule",

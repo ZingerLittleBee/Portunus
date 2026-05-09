@@ -9,6 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  EMPTY_RATE_LIMIT_FORM,
+  RateLimitForm,
+  formStateToRateLimit,
+} from "@/components/RateLimitForm";
 
 type FormMode = "single" | "multi";
 
@@ -48,6 +53,11 @@ export function RulePush() {
     { host: "127.0.0.1", port: "9001", proxyProtocol: "" },
   ]);
   const [healthCheckInterval, setHealthCheckInterval] = useState("");
+  // 011-rate-limiting-qos T039: optional QoS caps. Server validates
+  // (non-zero, burst-without-rate, range, capability gate). Empty
+  // form = no rate_limit field on the wire (preserves SC-004
+  // byte-stability for opt-out rules).
+  const [rateLimit, setRateLimit] = useState({ ...EMPTY_RATE_LIMIT_FORM });
 
   function addTarget() {
     setTargets((rows) => [...rows, { host: "", port: "", proxyProtocol: "" }]);
@@ -66,6 +76,7 @@ export function RulePush() {
     setError(null);
     try {
       const trimmedSni = sniPattern.trim();
+      const rl = formStateToRateLimit(rateLimit);
       const baseBody = {
         client,
         listen_port: Number(listenStart),
@@ -76,6 +87,10 @@ export function RulePush() {
         // the server applies its grammar-validated default (legacy
         // shape).
         ...(sniEligible && trimmedSni ? { sni_pattern: trimmedSni } : {}),
+        // 011-rate-limiting-qos T039: omit rate_limit entirely when
+        // the operator left every cap blank. Preserves SC-004 wire
+        // byte-stability for v0.10-shaped rule pushes.
+        ...(rl ? { rate_limit: rl } : {}),
       };
       const body =
         mode === "single"
@@ -262,6 +277,12 @@ export function RulePush() {
               </p>
             </div>
           )}
+
+          <div className="space-y-2">
+            <Label>{t("rulePush.rateLimitTitle")}</Label>
+            <p className="text-xs text-muted-foreground">{t("rulePush.rateLimitHelp")}</p>
+            <RateLimitForm state={rateLimit} onChange={setRateLimit} />
+          </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">

@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
 import { parseRuleState, type Rule } from "@/api/types";
+import { summarizeRateLimit } from "@/components/RateLimitForm";
 
 export function RulesList() {
   const { t } = useTranslation();
@@ -126,6 +127,24 @@ export function RulesList() {
         ) : (
           <span className="text-muted-foreground">—</span>
         ),
+    },
+    {
+      // 011-rate-limiting-qos T039: compact `Caps` column. `—` for
+      // rules without rate_limit (preserves v0.10 row spacing); a
+      // monospace summary like `↓1.0M · ≤100` for capped rules.
+      key: "caps",
+      header: t("rulesCapsCol.header"),
+      width: "180px",
+      render: (r) => {
+        const summary = summarizeRateLimit(r.rate_limit);
+        return summary ? (
+          <span className="font-mono text-xs" title={summary}>
+            {summary}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">{t("rulesCapsCol.uncapped")}</span>
+        );
+      },
     },
     {
       key: "state",

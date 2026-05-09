@@ -157,7 +157,28 @@
     "healthCheckIntervalHelp": "可选。设置后,客户端按此间隔向每个目标发起 TCP 连接探测。范围:1–3600 秒。",
     "sniPattern": "SNI 选择器(可选)",
     "sniPatternPlaceholder": "api.example.com 或 *.example.com",
-    "sniPatternHelp": "精确主机名或单层通配符。留空为普通 TCP 转发。仅适用于 TCP 单端口规则。"
+    "sniPatternHelp": "精确主机名或单层通配符。留空为普通 TCP 转发。仅适用于 TCP 单端口规则。",
+    "rateLimitTitle": "服务质量(QoS)",
+    "rateLimitHelp": "按规则配置可选的 QoS 上限。留空表示该维度不限制。"
+  },
+  "rateLimitForm": {
+    "title": "速率限制",
+    "help": "每项上限独立可选。留空 = 该维度不受限。",
+    "uncapped": "不限制",
+    "bandwidthIn": "入站带宽(字节/秒)",
+    "bandwidthOut": "出站带宽(字节/秒)",
+    "newConnectionsPerSec": "新建连接 / 秒",
+    "concurrentConnections": "并发连接数",
+    "advanced": "高级(突发覆盖)",
+    "bandwidthInBurst": "入站突发(字节)",
+    "bandwidthOutBurst": "出站突发(字节)",
+    "newConnectionsBurst": "新建连接突发",
+    "burstDefault": "1 × 速率(默认)",
+    "burstHelp": "突发必须 ≥ 速率且 ≤ 4 × 速率。"
+  },
+  "rulesCapsCol": {
+    "header": "上限",
+    "uncapped": "—"
   },
   "ruleDetail": {
     "title": "规则",

@@ -137,6 +137,24 @@ export interface Rule {
   /// (`*.example.com`). Present only on TCP single-port rules; `null`
   /// or absent for legacy plain-TCP rules and the SNI fallback shape.
   sni_pattern?: string | null;
+  /// 011-rate-limiting-qos: optional per-rule QoS envelope. Absent on
+  /// pre-0.11 rules and on rules created without caps. Each cap field
+  /// is independently optional — omitted = uncapped on that dimension.
+  rate_limit?: RateLimit | null;
+}
+
+/// 011-rate-limiting-qos: per-rule and per-owner QoS envelope. All
+/// fields independently optional. Caps must be `> 0` when present.
+/// Burst overrides default to `1× rate`; `concurrent_connections_burst`
+/// is reserved (server rejects when non-null).
+export interface RateLimit {
+  bandwidth_in_bps?: number | null;
+  bandwidth_out_bps?: number | null;
+  new_connections_per_sec?: number | null;
+  concurrent_connections?: number | null;
+  bandwidth_in_burst?: number | null;
+  bandwidth_out_burst?: number | null;
+  new_connections_burst?: number | null;
 }
 
 /// 007-multi-target-failover T044: a single target on a rule. Mirrors
@@ -206,6 +224,29 @@ export interface PushRuleBody {
   /// rejects this field on UDP rules, port-range rules, and grammar
   /// violations. Omit (or pass empty) for the legacy / fallback shape.
   sni_pattern?: string;
+  /// 011-rate-limiting-qos: optional per-rule QoS caps. Server-side
+  /// validation rejects: any cap = 0, burst-without-rate, burst out
+  /// of [rate, 4×rate] range, or `concurrent_connections_burst` set.
+  /// Capability gate: pre-0.11 client → 422
+  /// `rate_limit_unsupported_by_client` before the rule activates.
+  rate_limit?: RateLimit;
+}
+
+/// 011-rate-limiting-qos: per-owner cap envelope returned by
+/// `GET /v1/clients/{id}/owners/{owner_id}/rate-limit`.
+export interface OwnerRateLimitView {
+  client_name: string;
+  owner_id: string;
+  rate_limit: RateLimit;
+  updated_at_unix_ms: number;
+}
+
+/// 011-rate-limiting-qos: row in `GET /v1/clients/{id}/owners`. Used
+/// by the Web UI to populate the Owner quotas tab.
+export interface OwnerListEntry {
+  owner_id: string;
+  rule_count: number;
+  has_rate_limit: boolean;
 }
 
 export interface PushRuleResponse {

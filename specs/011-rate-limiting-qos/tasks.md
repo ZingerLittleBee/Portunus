@@ -106,7 +106,7 @@ description: "Tasks for 011 — Connection Rate Limiting & QoS"
 
 ### Implementation for User Story 3
 
-- [ ] T035 [US3] Implement the `Arc<RateLimitConfig>` swap on rule-update push in [crates/forward-client/src/forwarder/rate_limit/scope.rs](/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/forwarder/rate_limit/scope.rs); preserve `tokens` / `last_refill` across swap (R-008); guarantee no in-flight close path on lowered concurrent cap (Q4)
+- [X] T035 [US3] Implement the `Arc<RateLimitConfig>` swap on rule-update push in [crates/forward-client/src/forwarder/rate_limit/scope.rs](/Users/zingerbee/Documents/forward-rs/crates/forward-client/src/forwarder/rate_limit/scope.rs); preserve `tokens` / `last_refill` across swap (R-008); guarantee no in-flight close path on lowered concurrent cap (Q4)
 
 **Checkpoint**: Quickstart step 5 + step 7 pass. SC-005 satisfied.
 
@@ -125,8 +125,8 @@ description: "Tasks for 011 — Connection Rate Limiting & QoS"
 
 ### Implementation for User Story 4
 
-- [ ] T038 [US4] Add the `RateLimitForm` shared React component (four cap inputs + advanced burst overrides folded under a disclosure) in [crates/forward-server/webui/src/components/RateLimitForm.tsx](/Users/zingerbee/Documents/forward-rs/crates/forward-server/webui/src/components/RateLimitForm.tsx)
-- [ ] T039 [US4] Extend the rule editor with a "Quality of service" section using `RateLimitForm` and add a compact `Caps` column to the rules table in [crates/forward-server/webui/src/pages/RuleEditor.tsx](/Users/zingerbee/Documents/forward-rs/crates/forward-server/webui/src/pages/RuleEditor.tsx) and the rules-table component
+- [X] T038 [US4] Add the `RateLimitForm` shared React component (four cap inputs + advanced burst overrides folded under a disclosure) in [webui/src/components/RateLimitForm.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/components/RateLimitForm.tsx)
+- [X] T039 [US4] Extend the rule editor with a "Quality of service" section using `RateLimitForm` and add a compact `Caps` column to the rules table in [webui/src/pages/RulePush.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/pages/RulePush.tsx) and [webui/src/pages/RulesList.tsx](/Users/zingerbee/Documents/forward-rs/webui/src/pages/RulesList.tsx)
 - [ ] T040 [US4] Add the `Owner quotas` tab on the client detail page wired to `/v1/clients/{id}/owners/{owner_id}/rate-limit` and the per-owner reject/throttle counters in [crates/forward-server/webui/src/pages/ClientDetail.tsx](/Users/zingerbee/Documents/forward-rs/crates/forward-server/webui/src/pages/ClientDetail.tsx)
 
 **Checkpoint**: Quickstart step 9 passes.
