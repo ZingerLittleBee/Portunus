@@ -11,6 +11,7 @@ use forward_server::clients::ConnectedClients;
 use forward_server::operator::bootstrap;
 use forward_server::operator::cli::{self, OperatorError};
 use forward_server::operator::identity_cli;
+use forward_server::operator::owner_cap_cli;
 use forward_server::operator::rule_cli;
 use forward_server::serve;
 use forward_server::state::AppState;
@@ -314,6 +315,13 @@ enum Cmd {
     /// Audit-table maintenance subcommands (008-sqlite-storage T076).
     #[command(subcommand)]
     Audit(AuditCmd),
+    /// 011-rate-limiting-qos T028: per-owner rate-limit envelope
+    /// CRUD. Wraps `/v1/clients/{id}/owners/{owner_id}/rate-limit`
+    /// for operators who don't want to hand-craft curl invocations.
+    /// Per-owner ceilings bind before per-rule caps (FR-013) and
+    /// apply to every rule the user pushes to the named client.
+    #[command(subcommand)]
+    OwnerCap(OwnerCapCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -325,6 +333,76 @@ enum AuditCmd {
         before: String,
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum OwnerCapCmd {
+    /// `owner-cap list <client>` — list every owner pushing rules
+    /// to this client and whether each currently carries a cap
+    /// envelope.
+    List {
+        client: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    /// `owner-cap get <client> <owner>` — fetch the current cap
+    /// envelope. Exits with `rule_not_found`-family code 8 when the
+    /// owner has no envelope (uncapped is the default state).
+    Get {
+        client: String,
+        owner: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    /// `owner-cap set <client> <owner> [--bandwidth-in-bps ...]` —
+    /// upsert the envelope. Idempotent; later calls overwrite
+    /// earlier values. At least one cap must be provided.
+    Set {
+        client: String,
+        owner: String,
+        /// Aggregate ingress bytes/sec across all the owner's
+        /// rules on this client. Must be `> 0`; absent leaves
+        /// ingress uncapped.
+        #[arg(long)]
+        bandwidth_in_bps: Option<u64>,
+        /// Aggregate egress bytes/sec. Same shape as
+        /// `--bandwidth-in-bps`.
+        #[arg(long)]
+        bandwidth_out_bps: Option<u64>,
+        /// Aggregate new TCP connections / new UDP flows per
+        /// second across the owner's rules.
+        #[arg(long)]
+        new_connections_per_sec: Option<u32>,
+        /// Aggregate ceiling on simultaneously-active connections
+        /// + UDP flows.
+        #[arg(long)]
+        concurrent_connections: Option<u32>,
+        /// Optional burst override for `--bandwidth-in-bps`;
+        /// defaults to `1 × rate`.
+        #[arg(long)]
+        bandwidth_in_burst: Option<u64>,
+        /// Optional burst override for `--bandwidth-out-bps`.
+        #[arg(long)]
+        bandwidth_out_burst: Option<u64>,
+        /// Optional burst override for
+        /// `--new-connections-per-sec`.
+        #[arg(long)]
+        new_connections_burst: Option<u32>,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
+    },
+    /// `owner-cap delete <client> <owner>` — remove the envelope.
+    /// Idempotent; absent envelope returns success.
+    Delete {
+        client: String,
+        owner: String,
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
     },
 }
 
@@ -640,6 +718,47 @@ fn run(cli: Cli) -> Result<(), u8> {
                 }
             }
         }
+        Cmd::OwnerCap(OwnerCapCmd::List {
+            client,
+            format,
+            http_endpoint,
+        }) => owner_cap_cli::list(&http_endpoint, &client, format),
+        Cmd::OwnerCap(OwnerCapCmd::Get {
+            client,
+            owner,
+            format,
+            http_endpoint,
+        }) => owner_cap_cli::get(&http_endpoint, &client, &owner, format),
+        Cmd::OwnerCap(OwnerCapCmd::Set {
+            client,
+            owner,
+            bandwidth_in_bps,
+            bandwidth_out_bps,
+            new_connections_per_sec,
+            concurrent_connections,
+            bandwidth_in_burst,
+            bandwidth_out_burst,
+            new_connections_burst,
+            http_endpoint,
+        }) => owner_cap_cli::set(
+            &http_endpoint,
+            &client,
+            &owner,
+            rule_cli::RateLimitArgs {
+                bandwidth_in_bps,
+                bandwidth_out_bps,
+                new_connections_per_sec,
+                concurrent_connections,
+                bandwidth_in_burst,
+                bandwidth_out_burst,
+                new_connections_burst,
+            },
+        ),
+        Cmd::OwnerCap(OwnerCapCmd::Delete {
+            client,
+            owner,
+            http_endpoint,
+        }) => owner_cap_cli::delete(&http_endpoint, &client, &owner),
     }
 }
 

@@ -133,7 +133,8 @@ pub struct RateLimitArgs {
 }
 
 impl RateLimitArgs {
-    fn is_empty(&self) -> bool {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.bandwidth_in_bps.is_none()
             && self.bandwidth_out_bps.is_none()
             && self.new_connections_per_sec.is_none()
@@ -143,7 +144,8 @@ impl RateLimitArgs {
             && self.new_connections_burst.is_none()
     }
 
-    fn to_json(self) -> serde_json::Value {
+    #[must_use]
+    pub fn to_json(self) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
         if let Some(v) = self.bandwidth_in_bps {
             obj.insert("bandwidth_in_bps".into(), v.into());
