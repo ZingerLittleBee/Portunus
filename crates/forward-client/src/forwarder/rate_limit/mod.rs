@@ -6,3 +6,4 @@
 //! the `is_none` branch compiles to a single null check.
 
 pub mod bucket;
+pub mod scope;
