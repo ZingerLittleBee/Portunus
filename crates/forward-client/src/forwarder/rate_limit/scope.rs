@@ -56,7 +56,13 @@ pub struct RuleRateLimiter {
     concurrent_max: Option<u32>,
     /// Live count of accepted-but-not-closed connections. Mirrors the
     /// `RateLimitStats.active_connections` gauge.
-    active_connections: AtomicU64,
+    ///
+    /// `Arc<AtomicU64>` (not bare `AtomicU64`) so [`with_carryover`]
+    /// shares the gauge with the prior frame (R-008 / Q4): guards
+    /// admitted under the prior limiter still decrement the same
+    /// counter when they close, so graceful drain converges on the
+    /// successor limiter without force-closing in-flight connections.
+    active_connections: Arc<AtomicU64>,
 }
 
 /// Result of a connection-rate / concurrent-cap acquire. Distinct from
@@ -128,7 +134,7 @@ impl RuleRateLimiter {
             bandwidth_out,
             new_connections,
             concurrent_max: rl.concurrent_connections,
-            active_connections: AtomicU64::new(0),
+            active_connections: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -168,9 +174,13 @@ impl RuleRateLimiter {
             bandwidth_out,
             new_connections,
             concurrent_max: next.concurrent_connections,
-            // Carry the live count forward so a lower cap drains
-            // gracefully instead of force-closing connections.
-            active_connections: AtomicU64::new(prior.active_connections.load(Ordering::Acquire)),
+            // Share the live-count gauge with the prior frame so
+            // existing `ActiveGuard`s (whose `Drop` reads the prior's
+            // Arc) still decrement the counter the new limiter
+            // observes. Without this, lowering the cap below the
+            // live count would never let the gauge drain back down,
+            // and new accepts would stay rejected forever.
+            active_connections: Arc::clone(&prior.active_connections),
         }
     }
 
@@ -470,6 +480,109 @@ mod tests {
             l.acquire_bandwidth(BandwidthDirection::Out, 10_000_000),
             BandwidthAcquire::Granted
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn t035_carryover_drains_concurrent_cap_below_live_count_without_force_close() {
+        // R-008 / Q4 / FR-011: when the operator lowers the concurrent
+        // cap below the current live count, the swap must NEVER force-
+        // close in-flight connections. Existing `ActiveGuard`s stay
+        // valid; new accepts reject; once enough guards drop the cap
+        // becomes admissible again under the new ceiling.
+        let prior = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(5),
+            ..Default::default()
+        }));
+        let g1 = match prior.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(_) => panic!("g1 must admit"),
+        };
+        let g2 = match prior.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(_) => panic!("g2 must admit"),
+        };
+        let g3 = match prior.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(_) => panic!("g3 must admit"),
+        };
+        assert_eq!(prior.active_connections(), 3);
+
+        // Operator lowers the cap to 2 — strictly below the live count
+        // of 3. The successor limiter inherits the gauge; the existing
+        // guards must remain bound to it.
+        let next = Arc::new(RuleRateLimiter::with_carryover(
+            &prior,
+            &RateLimit {
+                concurrent_connections: Some(2),
+                ..Default::default()
+            },
+        ));
+        assert_eq!(next.active_connections(), 3, "live count carries forward");
+        // New accept under the new lower cap rejects.
+        match next.try_acquire_connection(false) {
+            ConnectionAcquire::Rejected(RejectReason::ConnConcurrent) => {}
+            other => panic!("expected ConnConcurrent under lowered cap, got {other:?}"),
+        }
+        // Drop one guard from the prior frame — it decrements the
+        // shared gauge. Live count goes from 3 to 2.
+        drop(g1);
+        assert_eq!(prior.active_connections(), 2);
+        assert_eq!(next.active_connections(), 2);
+        // Still at-cap — new accept rejects.
+        match next.try_acquire_connection(false) {
+            ConnectionAcquire::Rejected(RejectReason::ConnConcurrent) => {}
+            other => panic!("at-cap accept must reject, got {other:?}"),
+        }
+        // Drop another guard — live count drops to 1, room for one
+        // more under the new cap.
+        drop(g2);
+        assert_eq!(next.active_connections(), 1);
+        let _g4 = match next.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(_) => panic!("admit allowed under new cap"),
+        };
+        assert_eq!(next.active_connections(), 2);
+        drop(g3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn t035_carryover_preserves_bandwidth_token_state_across_rate_raise() {
+        // R-008: a cap raise must NOT mint a free burst. Drain the
+        // bucket through `acquire_bandwidth`, then update to a higher
+        // rate; the new bucket inherits the depleted token state, so
+        // the next large acquire still throttles.
+        let prior = RuleRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(1_000),
+            ..Default::default()
+        });
+        // Drain the full 1 KiB burst.
+        assert_eq!(
+            prior.acquire_bandwidth(BandwidthDirection::In, 1_000),
+            BandwidthAcquire::Granted
+        );
+        // Pool empty — additional 500 must throttle on the prior.
+        match prior.acquire_bandwidth(BandwidthDirection::In, 500) {
+            BandwidthAcquire::Throttled { .. } => {}
+            BandwidthAcquire::Granted => panic!("prior bucket must be drained"),
+        }
+        // Hot-reload: raise rate to 10x. The new burst defaults to
+        // 1 × rate = 10_000, but the depleted token state carries.
+        let next = RuleRateLimiter::with_carryover(
+            &prior,
+            &RateLimit {
+                bandwidth_in_bps: Some(10_000),
+                ..Default::default()
+            },
+        );
+        // Immediately requesting 5_000 must NOT be granted — there
+        // are no free tokens despite the larger burst (FR-011 / R-008
+        // "no free burst on raise").
+        match next.acquire_bandwidth(BandwidthDirection::In, 5_000) {
+            BandwidthAcquire::Throttled { .. } => {}
+            BandwidthAcquire::Granted => {
+                panic!("rate raise must not mint a free burst (R-008)");
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]
