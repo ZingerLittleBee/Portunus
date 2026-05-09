@@ -5,9 +5,9 @@ All notable changes to `forward-rs` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] — 2026-05-09
 
-### Added (011-rate-limiting-qos — draft)
+### Added (011-rate-limiting-qos)
 
 Per-rule and per-owner connection rate limiting / QoS. Each cap is
 independently optional; absent fields preserve v0.10 behaviour

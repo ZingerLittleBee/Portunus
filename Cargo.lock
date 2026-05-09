@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "forward-auth"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64",
  "bitflags",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "forward-client"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "forward-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "blake3",
  "serde",
@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "forward-e2e"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "assert_cmd",
  "forward-auth",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "forward-proto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "prost",
  "tonic",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "forward-server"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "assert_cmd",
  "axum",
