@@ -457,6 +457,20 @@ pub struct RuleStatsCache {
     /// cumulative `(miss, parse_failures)` so the new tick can feed
     /// monotonic deltas into the per-listener Prometheus collectors.
     sni_listener_prev: Arc<RwLock<SniListenerPrevMap>>,
+    /// 011-rate-limiting-qos T032: per-owner delta cache keyed on
+    /// `(client_name, owner_id)`. Mirrors `prev_rate_limit_*` on the
+    /// per-rule entry but lives at owner granularity so the
+    /// cross-rule aggregation surfaced by the client's
+    /// `OwnerRateLimitStatsRegistry` feeds into stable monotonic
+    /// deltas in Prometheus.
+    owner_rate_limit_prev: Arc<RwLock<HashMap<(ClientName, String), OwnerRateLimitPrevEntry>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OwnerRateLimitPrevEntry {
+    reject_by_reason: [u64; 6],
+    throttle_micros_in: u64,
+    throttle_micros_out: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -846,6 +860,72 @@ impl RuleStatsCache {
         metrics
             .rate_limit_active_connections
             .with_label_values(&[client_name.as_str(), rule_id_str.as_str(), owner])
+            .set(f64::from(active_connections));
+    }
+
+    /// 011-rate-limiting-qos T032: fold per-owner cumulative counters
+    /// into the existing `forward_rate_limit_*` collectors using
+    /// `rule=""` to denote owner-aggregated rows. Operators slice with
+    /// `forward_rate_limit_reject_total{rule="",owner="alice"}` for the
+    /// owner aggregate or `rule!=""` for per-rule rows. Same monotonic
+    /// delta semantics and baseline-reset rule as the per-rule path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn observe_rate_limit_per_owner(
+        &self,
+        client_name: &ClientName,
+        owner_id: &str,
+        reject_totals: [u64; 6],
+        throttle_micros_in: u64,
+        throttle_micros_out: u64,
+        active_connections: u32,
+        metrics: &Metrics,
+    ) {
+        const REASON_LABELS: [&str; 6] = [
+            "conn_concurrent",
+            "conn_rate",
+            "udp_flow_rate",
+            "owner_concurrent",
+            "owner_conn_rate",
+            "owner_udp_flow_rate",
+        ];
+        let key = (client_name.clone(), owner_id.to_string());
+        let mut guard = self.owner_rate_limit_prev.write().await;
+        let entry = guard.entry(key).or_default();
+        for (idx, &total) in reject_totals.iter().enumerate() {
+            let prev = entry.reject_by_reason[idx];
+            let delta = total.saturating_sub(prev);
+            if delta > 0 {
+                metrics
+                    .rate_limit_reject_total
+                    .with_label_values(&[
+                        client_name.as_str(),
+                        "",
+                        owner_id,
+                        REASON_LABELS[idx],
+                    ])
+                    .inc_by(delta);
+            }
+            entry.reject_by_reason[idx] = total;
+        }
+        let in_delta = throttle_micros_in.saturating_sub(entry.throttle_micros_in);
+        if in_delta > 0 {
+            metrics
+                .rate_limit_throttle_seconds_total
+                .with_label_values(&[client_name.as_str(), "", owner_id, "in"])
+                .inc_by(precise_f64(in_delta) / 1_000_000.0);
+        }
+        let out_delta = throttle_micros_out.saturating_sub(entry.throttle_micros_out);
+        if out_delta > 0 {
+            metrics
+                .rate_limit_throttle_seconds_total
+                .with_label_values(&[client_name.as_str(), "", owner_id, "out"])
+                .inc_by(precise_f64(out_delta) / 1_000_000.0);
+        }
+        entry.throttle_micros_in = throttle_micros_in;
+        entry.throttle_micros_out = throttle_micros_out;
+        metrics
+            .rate_limit_active_connections
+            .with_label_values(&[client_name.as_str(), "", owner_id])
             .set(f64::from(active_connections));
     }
 
@@ -1588,6 +1668,103 @@ mod tests {
         assert!(
             !body.contains("rule=\"99\""),
             "absent-rule observe must not emit any rows: {body}"
+        );
+    }
+
+    /// 011-rate-limiting-qos T032: per-owner observe writes
+    /// owner-aggregated rows with `rule=""` so operators can slice
+    /// owner totals separately from per-rule rows.
+    #[tokio::test]
+    async fn t032_observe_per_owner_emits_aggregated_rows_with_empty_rule() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        cache
+            .observe_rate_limit_per_owner(
+                &name("edge-a"),
+                "alice",
+                [0, 0, 0, 7, 0, 2], // owner_concurrent=7, owner_udp_flow_rate=2
+                3_000_000,          // 3s throttle in
+                0,
+                15,
+                &metrics,
+            )
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(
+            body.contains(
+                "forward_rate_limit_reject_total{client=\"edge-a\",owner=\"alice\",reason=\"owner_concurrent\",rule=\"\"} 7"
+            ),
+            "missing owner_concurrent owner-aggregate row in: {body}"
+        );
+        assert!(
+            body.contains(
+                "forward_rate_limit_reject_total{client=\"edge-a\",owner=\"alice\",reason=\"owner_udp_flow_rate\",rule=\"\"} 2"
+            ),
+            "missing owner_udp_flow_rate owner-aggregate row in: {body}"
+        );
+        assert!(
+            body.contains(
+                "forward_rate_limit_throttle_seconds_total{client=\"edge-a\",direction=\"in\",owner=\"alice\",rule=\"\"} 3"
+            ),
+            "missing throttle-in owner-aggregate row in: {body}"
+        );
+        assert!(
+            body.contains(
+                "forward_rate_limit_active_connections{client=\"edge-a\",owner=\"alice\",rule=\"\"} 15"
+            ),
+            "missing active-connections owner-aggregate row in: {body}"
+        );
+    }
+
+    /// 011-rate-limiting-qos T032: per-owner observe takes monotonic
+    /// deltas across ticks (no double-counting on the second drain).
+    #[tokio::test]
+    async fn t032_observe_per_owner_takes_monotonic_deltas() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        cache
+            .observe_rate_limit_per_owner(
+                &name("edge-a"),
+                "alice",
+                [0, 0, 0, 5, 0, 0],
+                1_000_000,
+                0,
+                3,
+                &metrics,
+            )
+            .await;
+        cache
+            .observe_rate_limit_per_owner(
+                &name("edge-a"),
+                "alice",
+                [0, 0, 0, 8, 0, 0], // +3
+                2_500_000,          // +1.5s
+                0,
+                4,
+                &metrics,
+            )
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        // Counter is cumulative — total is 8 (5 from first tick +
+        // delta 3 from second).
+        assert!(
+            body.contains(
+                "forward_rate_limit_reject_total{client=\"edge-a\",owner=\"alice\",reason=\"owner_concurrent\",rule=\"\"} 8"
+            ),
+            "monotonic counter must reach total=8 in: {body}"
+        );
+        assert!(
+            body.contains(
+                "forward_rate_limit_throttle_seconds_total{client=\"edge-a\",direction=\"in\",owner=\"alice\",rule=\"\"} 2.5"
+            ),
+            "monotonic throttle counter must reach 2.5s in: {body}"
+        );
+        // Gauge reflects latest value, not delta.
+        assert!(
+            body.contains(
+                "forward_rate_limit_active_connections{client=\"edge-a\",owner=\"alice\",rule=\"\"} 4"
+            ),
+            "gauge must show latest value 4 in: {body}"
         );
     }
 }

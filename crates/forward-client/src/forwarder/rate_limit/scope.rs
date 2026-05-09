@@ -579,6 +579,104 @@ impl OwnerRateLimitScopeManager {
     }
 }
 
+/// 011-rate-limiting-qos T032: registry of `OwnerId →
+/// Arc<RateLimitStatsAccumulator>` for per-owner cumulative counters.
+/// Multiple rules sharing the same owner share a single accumulator so
+/// the `StatsReport.owner_rate_limit_stats` entry aggregates traffic
+/// across the owner's rule set (FR-014). Allocation is lazy: the
+/// per-rule control-plane lookup constructs the entry the first time
+/// an owner-capped rule is installed and reuses it on subsequent
+/// pushes for the same owner. Lifetime mirrors
+/// [`OwnerRateLimitScopeManager`] — process-wide, surviving
+/// reconnects.
+#[derive(Debug, Default)]
+pub struct OwnerRateLimitStatsRegistry {
+    owners: RwLock<HashMap<OwnerId, Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>>,
+}
+
+impl OwnerRateLimitStatsRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get-or-allocate the accumulator for `owner_id`. Per-rule wiring
+    /// calls this once at rule activation; subsequent rules under the
+    /// same owner reuse the same Arc so all of them increment one
+    /// shared counter set.
+    #[must_use]
+    pub fn get_or_create(
+        &self,
+        owner_id: &OwnerId,
+    ) -> Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator> {
+        // Fast path: acquire read lock first to avoid contention when
+        // the owner is already registered.
+        if let Some(existing) = self
+            .owners
+            .read()
+            .expect("owner-stats registry poisoned")
+            .get(owner_id)
+            .cloned()
+        {
+            return existing;
+        }
+        let mut guard = self.owners.write().expect("owner-stats registry poisoned");
+        // Double-check under the write lock (race window between
+        // releasing the read lock and acquiring the write lock).
+        if let Some(existing) = guard.get(owner_id).cloned() {
+            return existing;
+        }
+        let acc = Arc::new(crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new());
+        guard.insert(owner_id.clone(), Arc::clone(&acc));
+        acc
+    }
+
+    /// Snapshot every owner's current counters as a wire-shape
+    /// `repeated OwnerRateLimitStats` payload. Owners whose
+    /// accumulator drains to `None` (no event ever fired and gauge
+    /// zero) are skipped — proto3 default-stripping keeps the wire
+    /// shape byte-stable with v0.10 when no owner caps have fired.
+    #[must_use]
+    pub fn drain_to_proto(&self) -> Vec<forward_proto::v1::OwnerRateLimitStats> {
+        let guard = self.owners.read().expect("owner-stats registry poisoned");
+        let mut out = Vec::with_capacity(guard.len());
+        for (owner_id, acc) in guard.iter() {
+            if let Some(stats) = acc.drain_to_proto() {
+                out.push(forward_proto::v1::OwnerRateLimitStats {
+                    owner_id: owner_id.0.clone(),
+                    stats: Some(stats),
+                });
+            }
+        }
+        out
+    }
+
+    /// Drop the accumulator for `owner_id`. Idempotent. Called when
+    /// the last rule under `owner_id` is removed AND the owner has no
+    /// installed cap — preserves the registry's "alive while
+    /// observable" invariant. Currently unwired; the control loop
+    /// keeps accumulators for the process lifetime so a removed-and-
+    /// re-added owner keeps continuity.
+    #[allow(dead_code)] // future GC sweep
+    pub fn remove(&self, owner_id: &OwnerId) {
+        let mut guard = self.owners.write().expect("owner-stats registry poisoned");
+        guard.remove(owner_id);
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // tests + future operator-debug surface
+    pub fn len(&self) -> usize {
+        let guard = self.owners.read().expect("owner-stats registry poisoned");
+        guard.len()
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // tests + future operator-debug surface
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1121,5 +1219,55 @@ mod tests {
         let next = mgr.get(&owner).unwrap();
         assert!(!Arc::ptr_eq(&prior, &next), "update must swap the Arc");
         assert_eq!(next.active_connections(), 1);
+    }
+
+    /// T032: the stats registry returns the SAME Arc on repeated
+    /// `get_or_create` calls for the same owner — cross-rule
+    /// aggregation depends on a shared accumulator.
+    #[test]
+    fn t032_stats_registry_aggregates_across_rules_for_same_owner() {
+        let reg = OwnerRateLimitStatsRegistry::new();
+        let alice = OwnerId::new("alice");
+        let bob = OwnerId::new("bob");
+        let a1 = reg.get_or_create(&alice);
+        let a2 = reg.get_or_create(&alice);
+        let b1 = reg.get_or_create(&bob);
+        assert!(Arc::ptr_eq(&a1, &a2), "same owner → same Arc");
+        assert!(!Arc::ptr_eq(&a1, &b1), "different owners → distinct Arcs");
+        assert_eq!(reg.len(), 2);
+    }
+
+    /// T032: drain emits one OwnerRateLimitStats entry per owner with
+    /// non-empty counters; owners whose accumulators have no events
+    /// are skipped (proto3 default-stripping preserves byte-stability
+    /// with v0.10).
+    #[test]
+    fn t032_stats_registry_drain_skips_idle_owners() {
+        use crate::forwarder::rate_limit::scope::RejectReason;
+        let reg = OwnerRateLimitStatsRegistry::new();
+        let alice = reg.get_or_create(&OwnerId::new("alice"));
+        let _bob = reg.get_or_create(&OwnerId::new("bob"));
+        // Alice has activity; Bob is idle.
+        alice.record_reject(RejectReason::OwnerConcurrent);
+
+        let drained = reg.drain_to_proto();
+        assert_eq!(drained.len(), 1, "only owners with activity drain");
+        assert_eq!(drained[0].owner_id, "alice");
+        let stats = drained[0].stats.as_ref().expect("stats present");
+        assert_eq!(stats.reject_total.len(), 1);
+        assert_eq!(
+            stats.reject_total[0].reason,
+            forward_proto::v1::RateLimitRejectReason::OwnerConcurrent as i32,
+        );
+        assert_eq!(stats.reject_total[0].total, 1);
+    }
+
+    /// T032: drain on an empty registry is a no-op — keeps the
+    /// `StatsReport.owner_rate_limit_stats` Vec empty so proto3
+    /// default-stripping preserves v0.10 wire shape.
+    #[test]
+    fn t032_stats_registry_drain_empty_when_no_owners() {
+        let reg = OwnerRateLimitStatsRegistry::new();
+        assert!(reg.drain_to_proto().is_empty());
     }
 }

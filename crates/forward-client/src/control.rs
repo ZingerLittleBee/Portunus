@@ -228,6 +228,17 @@ pub async fn run_with_reconnect(
     let owner_rate_limit_scope = Arc::new(
         crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new(),
     );
+    // 011-rate-limiting-qos T032: per-owner stats registry parallels
+    // the limiter registry. Aggregation across rules sharing the same
+    // owner happens here — multiple rules call `get_or_create` for
+    // the same OwnerId and increment one shared counter set, which
+    // surfaces as a single `OwnerRateLimitStats` entry on
+    // `StatsReport.owner_rate_limit_stats` (FR-014). Lives for the
+    // process lifetime so cumulative counters persist across
+    // reconnects.
+    let owner_rate_limit_stats_registry = Arc::new(
+        crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new(),
+    );
 
     let mut attempt: u32 = 0;
     let max_delay = Duration::from_secs(cfg.max_delay_secs);
@@ -243,6 +254,7 @@ pub async fn run_with_reconnect(
                     session,
                     Arc::clone(&resolver),
                     Arc::clone(&owner_rate_limit_scope),
+                    Arc::clone(&owner_rate_limit_stats_registry),
                     &cancel,
                     cfg.drain_timeout,
                     cfg.stats_report_interval,
@@ -320,6 +332,7 @@ async fn pump(
     mut session: LiveSession,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
     owner_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
+    owner_rate_limit_stats: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
     cancel: &CancellationToken,
     drain_timeout: Duration,
     stats_report_interval: Duration,
@@ -343,7 +356,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &owner_rate_limit_scope, &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
+                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &owner_rate_limit_scope, &owner_rate_limit_stats, &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -357,7 +370,7 @@ async fn pump(
                 }
             }
             _ = stats_tick.tick() => {
-                send_stats_report(&rules, &port_groups, &session.outbound).await;
+                send_stats_report(&rules, &port_groups, &owner_rate_limit_stats, &session.outbound).await;
             }
         }
     }
@@ -391,6 +404,7 @@ fn handle_server_message(
     port_groups: &mut PortGroupManager,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
     owner_rate_limit_scope: &crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+    owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
     udp_max_flows: u32,
@@ -645,25 +659,27 @@ fn handle_server_message(
             // cap signal in play (so legacy rules keep an empty
             // owner_id and skip the lookup, preserving the v0.10
             // forwarding path byte-for-byte).
-            let owner_rate_limit = rule
-                .owner_id
+            let owner_id_str = rule.owner_id.as_ref().filter(|s| !s.is_empty()).cloned();
+            let owner_rate_limit = owner_id_str.as_ref().and_then(|owner_id| {
+                owner_rate_limit_scope.get(
+                    &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                )
+            });
+            // 011-rate-limiting-qos T032: per-owner stats are looked
+            // up from the shared registry so multiple rules sharing
+            // the same owner aggregate into one accumulator. Lookup
+            // is gated on `owner_rate_limit.is_some()` — installing
+            // an entry only when the owner has an active limiter
+            // keeps the registry from accumulating stale entries for
+            // owners whose caps were removed.
+            let rule_owner_rate_limit_stats = owner_rate_limit
                 .as_ref()
-                .filter(|s| !s.is_empty())
-                .and_then(|owner_id| {
-                    owner_rate_limit_scope.get(
+                .zip(owner_id_str.as_ref())
+                .map(|(_, owner_id)| {
+                    owner_rate_limit_stats.get_or_create(
                         &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
                     )
                 });
-            // Per-owner stats accumulators are scoped per-rule for now
-            // (one accumulator per rule's owner cap). T032 will swap
-            // this for a registry keyed by owner_id so multiple rules
-            // sharing the same owner aggregate into a single
-            // OwnerRateLimitStats entry on StatsReport.
-            let owner_rate_limit_stats = owner_rate_limit.as_ref().map(|_| {
-                std::sync::Arc::new(
-                    crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
-                )
-            });
             // Hold a clone of the rate-limit handles for the RuleSlot
             // (the periodic stats reporter and SNI/legacy paths both
             // need to keep observing them after `client_rule` moves
@@ -702,7 +718,7 @@ fn handle_server_message(
                 // cascade short-circuits the owner branch — preserving
                 // the v0.10 forwarding path byte-for-byte.
                 owner_rate_limit,
-                owner_rate_limit_stats,
+                owner_rate_limit_stats: rule_owner_rate_limit_stats,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -1002,6 +1018,7 @@ fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
 async fn send_stats_report(
     rules: &HashMap<RuleId, RuleSlot>,
     port_groups: &PortGroupManager,
+    owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
     use std::sync::atomic::Ordering;
@@ -1106,11 +1123,14 @@ async fn send_stats_report(
             // Empty when no SNI listener has bound yet — proto3
             // default-stripping keeps wire byte-stable with v0.8.
             sni_listener_stats,
-            // 011-rate-limiting-qos T032: per-owner rate-limit stats.
-            // Empty until Phase 4 wires the per-owner limiter drain.
-            // Default-stripping keeps wire shape byte-stable with
-            // v0.10 in the meantime.
-            owner_rate_limit_stats: Vec::new(),
+            // 011-rate-limiting-qos T032: drain per-owner counters
+            // from the shared registry. Owners whose accumulators are
+            // empty (no event ever fired and gauge zero) are skipped
+            // by `drain_to_proto`, so a deployment with no owner caps
+            // emits an empty Vec → proto3 default-stripping keeps the
+            // wire byte-identical with v0.10 (validated by
+            // rate_limit_wire_compat::t005_v010_stats_report_byte_identical_when_owner_stats_empty).
+            owner_rate_limit_stats: owner_rate_limit_stats.drain_to_proto(),
         })),
     };
     if let Err(e) = outbound.send(msg).await {

@@ -454,6 +454,48 @@ async fn handle_client_message(
                     state.per_port_stats.update(rule_id, snapshots).await;
                 }
             }
+            // 011-rate-limiting-qos T032: per-owner cumulative
+            // counters from the new `StatsReport.owner_rate_limit_stats`
+            // payload. Fed into the same Prometheus collectors with
+            // `rule=""` so operators can slice owner-aggregated traffic
+            // separately from per-rule rows. Per-rule rows already
+            // carry the `owner` label set on each entry — these owner
+            // rows are the cross-rule aggregation surface that the
+            // Web UI (T040) and future operator API hooks depend on.
+            for owner_stats in &report.owner_rate_limit_stats {
+                let Some(payload) = owner_stats.stats.as_ref() else {
+                    continue;
+                };
+                let mut reject_totals = [0u64; 6];
+                for c in &payload.reject_total {
+                    if let Ok(reason) =
+                        forward_proto::v1::RateLimitRejectReason::try_from(c.reason)
+                    {
+                        let idx = match reason {
+                            forward_proto::v1::RateLimitRejectReason::ConnConcurrent => 0,
+                            forward_proto::v1::RateLimitRejectReason::ConnRate => 1,
+                            forward_proto::v1::RateLimitRejectReason::UdpFlowRate => 2,
+                            forward_proto::v1::RateLimitRejectReason::OwnerConcurrent => 3,
+                            forward_proto::v1::RateLimitRejectReason::OwnerConnRate => 4,
+                            forward_proto::v1::RateLimitRejectReason::OwnerUdpFlowRate => 5,
+                            forward_proto::v1::RateLimitRejectReason::Unspecified => continue,
+                        };
+                        reject_totals[idx] = c.total;
+                    }
+                }
+                state
+                    .stats_cache
+                    .observe_rate_limit_per_owner(
+                        &identity.client_name,
+                        owner_stats.owner_id.as_str(),
+                        reject_totals,
+                        payload.throttle_micros_in,
+                        payload.throttle_micros_out,
+                        payload.active_connections,
+                        &state.metrics,
+                    )
+                    .await;
+            }
             // 009-tls-sni-routing T080: per-listener SNI counters
             // (StatsReport.sni_listener_stats = 3). Independent of rule
             // identity — keyed on (client, listen_port) — so the cache
