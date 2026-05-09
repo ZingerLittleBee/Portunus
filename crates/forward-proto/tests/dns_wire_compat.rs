@@ -35,6 +35,7 @@ fn v0_2_0_rule_byte_compatible_when_prefer_ipv6_absent() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -65,6 +66,7 @@ fn rule_with_prefer_ipv6_true_roundtrips() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -90,6 +92,7 @@ fn rule_with_prefer_ipv6_false_roundtrips() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");

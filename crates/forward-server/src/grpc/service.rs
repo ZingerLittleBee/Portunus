@@ -614,6 +614,17 @@ fn proto_rule_from_rule(rule: &crate::rules::Rule) -> Rule {
         // None envelope to a pre-0.11 client; that gate runs upstream
         // of this mapping in operator/http.rs and replay_gate_reason.
         rate_limit: rule.rate_limit.as_ref().map(rate_limit_to_proto),
+        // 011-rate-limiting-qos T031: owner_id surfaces on the wire
+        // only when this rule carries any v0.11 cap signal so the
+        // forward-client can resolve its per-owner limiter (FR-013).
+        // Gated on rate_limit.is_some() preserves byte-stability for
+        // uncapped rules (validated by the wire-compat suite). When
+        // T027/T028 land, owner-cap-presence will broaden the gate
+        // to cover the "uncapped rule whose owner has caps" case.
+        owner_id: rule
+            .rate_limit
+            .as_ref()
+            .map(|_| rule.owner_user_id.to_string()),
     }
 }
 

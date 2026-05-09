@@ -121,6 +121,7 @@ fn t004_rule_rate_limit_roundtrip_when_present() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: Some(full_rate_limit()),
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decodes");
@@ -152,6 +153,7 @@ fn t004_rule_rate_limit_partial_caps_roundtrip() {
             bandwidth_in_bps: Some(1_000_000),
             ..empty_rate_limit()
         }),
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decodes");
@@ -184,6 +186,7 @@ fn t005_v010_rule_byte_identical_when_rate_limit_absent() {
         health_check_interval_secs: 0,
         sni_pattern: Some(String::from("api.example.com")),
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     assert!(
@@ -347,6 +350,7 @@ fn t005_v010_full_feature_rule_byte_identical_when_rate_limit_absent() {
         health_check_interval_secs: 30,
         sni_pattern: Some(String::from("api.example.com")),
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     assert!(

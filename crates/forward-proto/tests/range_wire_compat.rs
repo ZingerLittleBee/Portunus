@@ -36,6 +36,7 @@ fn legacy_rule_wire_compat() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let mut without_ends = with_zero_ends.clone();
     without_ends.listen_port_end = 0;
@@ -76,6 +77,7 @@ fn range_rule_roundtrips() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");

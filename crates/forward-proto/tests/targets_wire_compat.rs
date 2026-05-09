@@ -44,6 +44,7 @@ fn v06_single_target_rule_emits_no_new_field_tags() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -135,6 +136,7 @@ fn multi_target_rule_roundtrips() {
         health_check_interval_secs: 30,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -169,6 +171,7 @@ fn multi_target_rule_with_legacy_fields_clear_keeps_back_compat_shape() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
 

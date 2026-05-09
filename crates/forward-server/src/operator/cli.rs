@@ -747,6 +747,11 @@ pub async fn push_rule(
                 // a cap. The cap-aware push path (T015/T016) plumbs
                 // this from rule.rate_limit.
                 rate_limit: None,
+                // owner_id stays None on the wire when there's no
+                // v0.11 cap signal (per-rule cap or owner cap).
+                // Byte-stable with v0.10 — see proto_rule_from_rule
+                // for the cap-aware emit path.
+                owner_id: None,
             }),
         })),
     };
@@ -996,6 +1001,16 @@ pub async fn push_rule_multi_target(
                     .rate_limit
                     .as_ref()
                     .map(crate::grpc::service::rate_limit_to_proto),
+                // 011-rate-limiting-qos T031: emit owner_id alongside
+                // the per-rule cap so the forward-client can resolve
+                // its per-owner limiter (FR-013). Gated on
+                // rate_limit.is_some() preserves byte-stability for
+                // uncapped rules; future owner-cap-presence detection
+                // (T027/T028) will broaden the gate.
+                owner_id: rule
+                    .rate_limit
+                    .as_ref()
+                    .map(|_| rule.owner_user_id.to_string()),
             }),
         })),
     };
@@ -1129,8 +1144,10 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     // on the receiving side; SNI is irrelevant here.
                     sni_pattern: None,
                     // 011-rate-limiting-qos: REMOVE-only path; caps
-                    // irrelevant.
+                    // and owner_id are irrelevant — the receiver
+                    // only reads rule_id.
                     rate_limit: None,
+                    owner_id: None,
                 }),
             })),
         };

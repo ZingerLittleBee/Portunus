@@ -193,6 +193,25 @@ message Rule {
   // from ever sending such a rule down a pre-0.11 channel —
   // see crates/forward-server/src/operator/http.rs::push_rule.
   optional RateLimit rate_limit = 12;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). Wire field number 13.
+  // The v0.5 RBAC owner_user_id of this rule, threaded so the
+  // forward-client can look up the rule's per-owner limiter in the
+  // process-lifetime OwnerRateLimitScopeManager (FR-013: per-owner
+  // ceiling binds before per-rule cap).
+  //
+  // Byte-stability: emitted only when the server has any v0.11
+  // rate-limit signal in play for this rule (per-rule cap set OR a
+  // matching owner cap exists). For pure v0.10-shaped rules with no
+  // caps anywhere, the server omits it and the wire stays
+  // byte-identical with v0.10 (validated by the wire-compat suite in
+  // forward-proto/tests/rate_limit_wire_compat.rs).
+  //
+  // v0.10 readers drop it on decode and see a rule with no owner;
+  // since v0.10 has no owner-cap concept, this is a no-op for them.
+  // The capability gate prevents a v0.11-server from sending caps
+  // down a pre-0.11 channel.
+  optional string owner_id = 13;
 }
 
 // New in v1.7 (spec 011-rate-limiting-qos).

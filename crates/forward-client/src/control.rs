@@ -639,6 +639,31 @@ fn handle_server_message(
                 }
                 None => (None, None),
             };
+            // 011-rate-limiting-qos T031: resolve this rule's per-owner
+            // limiter from the process-lifetime registry. The server
+            // emits Rule.owner_id on the wire only when there's a v0.11
+            // cap signal in play (so legacy rules keep an empty
+            // owner_id and skip the lookup, preserving the v0.10
+            // forwarding path byte-for-byte).
+            let owner_rate_limit = rule
+                .owner_id
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .and_then(|owner_id| {
+                    owner_rate_limit_scope.get(
+                        &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                    )
+                });
+            // Per-owner stats accumulators are scoped per-rule for now
+            // (one accumulator per rule's owner cap). T032 will swap
+            // this for a registry keyed by owner_id so multiple rules
+            // sharing the same owner aggregate into a single
+            // OwnerRateLimitStats entry on StatsReport.
+            let owner_rate_limit_stats = owner_rate_limit.as_ref().map(|_| {
+                std::sync::Arc::new(
+                    crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                )
+            });
             // Hold a clone of the rate-limit handles for the RuleSlot
             // (the periodic stats reporter and SNI/legacy paths both
             // need to keep observing them after `client_rule` moves
@@ -669,16 +694,15 @@ fn handle_server_message(
                 // v0.10 forwarding path.
                 rate_limit: rate_limit_limiter,
                 rate_limit_stats,
-                // 011-rate-limiting-qos: per-owner limiter + stats are
-                // not yet attached to ClientRule. T031 lands the
-                // OwnerRateLimitScopeManager and absorbs the server
-                // push, but the per-rule lookup needs `Rule.owner_id`
-                // on the wire (a follow-up additive proto field) to
-                // resolve a rule to its owner. Until that lands, the
-                // layered cascade short-circuits the owner branch and
-                // behaves identically to the v0.10 path.
-                owner_rate_limit: None,
-                owner_rate_limit_stats: None,
+                // 011-rate-limiting-qos T031: per-owner limiter + stats
+                // resolved from the process-lifetime registry via
+                // Rule.owner_id (additive wire field 13). For rules
+                // pushed without a v0.11 cap signal the server omits
+                // owner_id, the lookup yields None, and the layered
+                // cascade short-circuits the owner branch — preserving
+                // the v0.10 forwarding path byte-for-byte.
+                owner_rate_limit,
+                owner_rate_limit_stats,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();

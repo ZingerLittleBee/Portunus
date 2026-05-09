@@ -110,6 +110,7 @@ fn t007_rule_sni_pattern_roundtrip() {
         health_check_interval_secs: 0,
         sni_pattern: Some(String::from("api.example.com")),
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decodes");
@@ -140,6 +141,7 @@ fn t007_rule_sni_pattern_absent_byte_stable_with_v08() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     assert!(
@@ -355,6 +357,7 @@ fn t010_rule_encoding_deterministic_under_no_sni() {
         health_check_interval_secs: 0,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let a = mk().encode_to_vec();
     let b = mk().encode_to_vec();
@@ -391,6 +394,7 @@ fn t010_multi_target_rule_unchanged_when_no_sni() {
         health_check_interval_secs: 30,
         sni_pattern: None,
         rate_limit: None,
+        owner_id: None,
     };
     let bytes = r.encode_to_vec();
     assert!(
