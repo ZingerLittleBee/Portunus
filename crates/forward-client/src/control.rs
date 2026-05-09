@@ -644,6 +644,14 @@ fn handle_server_message(
                 // v0.10 forwarding path.
                 rate_limit: rate_limit_limiter,
                 rate_limit_stats,
+                // 011-rate-limiting-qos T030: per-owner limiter +
+                // stats default to None until OwnerRateLimitUpdate
+                // (T031) wires them from the OwnerRateLimitScopeManager.
+                // Without owner caps installed, the layered cascade
+                // short-circuits the owner branch and behaves
+                // identically to the v0.10 path.
+                owner_rate_limit: None,
+                owner_rate_limit_stats: None,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();

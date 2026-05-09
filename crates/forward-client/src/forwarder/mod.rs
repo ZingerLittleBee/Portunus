@@ -123,6 +123,18 @@ pub struct ClientRule {
     /// `None` for uncapped rules. Drained into `RuleStats.rate_limit`
     /// on every report tick.
     pub rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 011-rate-limiting-qos (T030): per-owner data-plane limiter the
+    /// rule's RBAC owner is bound to. `None` when the owner has no
+    /// rate-limit envelope installed; otherwise a clone of the
+    /// `Arc<OwnerRateLimiter>` from the `OwnerRateLimitScopeManager`.
+    /// FR-013: this layer binds BEFORE [`Self::rate_limit`] on every
+    /// TCP accept, UDP first-packet, and bandwidth acquire.
+    pub owner_rate_limit: Option<Arc<rate_limit::scope::OwnerRateLimiter>>,
+    /// 011-rate-limiting-qos (T032): per-owner rate-limit stats
+    /// accumulator. `None` mirror of [`Self::owner_rate_limit`].
+    /// Drained into `StatsReport.owner_rate_limit_stats` on every
+    /// report tick.
+    pub owner_rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
 }
 
 /// One entry in `ClientRule.targets`. Holds both the wire-shape
@@ -306,12 +318,16 @@ fn run_accept_loops<R: Resolve + 'static>(
         let conn_proxy_cancel = proxy_cancel.clone();
         let accept_stats = Arc::clone(&stats);
         let accept_resolver = Arc::clone(&resolver);
-        // 011-rate-limiting-qos T019: clone the per-rule limiter +
-        // stats accumulator into each accept-loop task so the gate
-        // call site only pays a hash-free Arc clone (no registry
-        // lookup on the per-accept hot path).
+        // 011-rate-limiting-qos T019/T030: clone the per-rule and
+        // per-owner limiter handles + stats accumulators into each
+        // accept-loop task. The owner layer (FR-013) is consulted
+        // BEFORE the per-rule layer in the gate; both are independently
+        // optional so a rule with neither cap pays the byte-identical
+        // v0.10 hot path.
         let accept_rate_limiter = rule.rate_limit.clone();
         let accept_rate_stats = rule.rate_limit_stats.clone();
+        let accept_owner_limiter = rule.owner_rate_limit.clone();
+        let accept_owner_stats = rule.owner_rate_limit_stats.clone();
         in_flight.spawn(async move {
             accept_loop(
                 listener,
@@ -326,6 +342,8 @@ fn run_accept_loops<R: Resolve + 'static>(
                 accept_stats,
                 accept_rate_limiter,
                 accept_rate_stats,
+                accept_owner_limiter,
+                accept_owner_stats,
             )
             .await;
         });
@@ -350,6 +368,11 @@ async fn accept_loop<R: Resolve + 'static>(
     // allocations).
     rate_limiter: Option<Arc<rate_limit::scope::RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
+    // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
+    // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
+    // reject reasons (FR-014).
+    owner_rate_limiter: Option<Arc<rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
 ) {
     // Per-listener in-flight set: lets us reap finished proxies for
     // logging without holding open the rule-level JoinSet's slot.
@@ -362,30 +385,52 @@ async fn accept_loop<R: Resolve + 'static>(
             }
             accept = listener.accept() => match accept {
                 Ok((sock, peer)) => {
-                    // 011-rate-limiting-qos T019: gate the accept BEFORE
-                    // spawning the proxy task. Surplus accepts get
-                    // accept-then-RST (Q3 / FR-009): we already accepted,
-                    // so let the socket drop here — the OS sends RST.
-                    let admit_guard = if let Some(limiter) = rate_limiter.as_ref() {
-                        match limiter.try_acquire_connection(false) {
-                            rate_limit::scope::ConnectionAcquire::Granted(g) => Some(g),
-                            rate_limit::scope::ConnectionAcquire::Rejected(reason) => {
-                                if let Some(s) = rate_limit_stats.as_ref() {
-                                    s.record_reject(reason);
-                                }
-                                tracing::debug!(
-                                    event = "rule.rate_limit_reject",
-                                    rule_id = %rule_id,
-                                    listen_port = listen_port,
-                                    peer = %peer,
-                                    reason = reason.as_metric_label(),
-                                );
-                                drop(sock);
-                                continue;
+                    // 011-rate-limiting-qos T019/T030: gate the accept
+                    // BEFORE spawning the proxy task. The layered
+                    // cascade consults owner first (FR-013); on either
+                    // layer's reject the already-accepted socket is
+                    // dropped here so the OS sends RST (Q3 / FR-009).
+                    let (owner_admit, rule_admit) = match
+                        rate_limit::scope::try_acquire_layered(
+                            owner_rate_limiter.as_ref(),
+                            rate_limiter.as_ref(),
+                            false,
+                        )
+                    {
+                        rate_limit::scope::LayeredAcquire::Granted {
+                            owner_guard,
+                            rule_guard,
+                        } => (owner_guard, rule_guard),
+                        rate_limit::scope::LayeredAcquire::OwnerRejected(reason) => {
+                            if let Some(s) = owner_rate_limit_stats.as_ref() {
+                                s.record_reject(reason);
                             }
+                            tracing::debug!(
+                                event = "rule.rate_limit_reject",
+                                rule_id = %rule_id,
+                                listen_port = listen_port,
+                                peer = %peer,
+                                scope = "owner",
+                                reason = reason.as_metric_label(),
+                            );
+                            drop(sock);
+                            continue;
                         }
-                    } else {
-                        None
+                        rate_limit::scope::LayeredAcquire::RuleRejected(reason) => {
+                            if let Some(s) = rate_limit_stats.as_ref() {
+                                s.record_reject(reason);
+                            }
+                            tracing::debug!(
+                                event = "rule.rate_limit_reject",
+                                rule_id = %rule_id,
+                                listen_port = listen_port,
+                                peer = %peer,
+                                scope = "rule",
+                                reason = reason.as_metric_label(),
+                            );
+                            drop(sock);
+                            continue;
+                        }
                     };
 
                     let target = target.clone();
@@ -395,10 +440,11 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_rate_limiter = rate_limiter.clone();
                     let conn_rate_stats = rate_limit_stats.clone();
                     local.spawn(async move {
-                        // Move the ActiveGuard into the connection task
-                        // so its `Drop` runs `fetch_sub(1)` on the
-                        // limiter's gauge when the proxy returns.
-                        let _admit_guard = admit_guard;
+                        // Move BOTH guards into the connection task so
+                        // owner and rule gauges decrement when the
+                        // proxy returns.
+                        let _owner_admit = owner_admit;
+                        let _rule_admit = rule_admit;
                         match proxy::proxy(
                             sock,
                             conn_resolver.as_ref(),
@@ -819,6 +865,8 @@ mod tests {
             sni_pattern: None,
             rate_limit: None,
             rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
         }
     }
 
@@ -851,6 +899,8 @@ mod tests {
             sni_pattern: None,
             rate_limit: None,
             rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
         }
     }
 
@@ -926,6 +976,8 @@ mod tests {
                 sni_pattern: None,
                 rate_limit: None,
                 rate_limit_stats: None,
+                owner_rate_limit: None,
+                owner_rate_limit_stats: None,
             },
             ip_resolver(),
             tx,
@@ -1284,6 +1336,8 @@ mod tests {
                     sni_pattern: None,
                     rate_limit: None,
                     rate_limit_stats: None,
+                    owner_rate_limit: None,
+                    owner_rate_limit_stats: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1367,6 +1421,8 @@ mod tests {
                     sni_pattern: None,
                     rate_limit: None,
                     rate_limit_stats: None,
+                    owner_rate_limit: None,
+                    owner_rate_limit_stats: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1533,6 +1589,8 @@ mod tests {
             sni_pattern: None,
             rate_limit: None,
             rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);
@@ -1939,6 +1997,120 @@ mod tests {
             stats_acc.reject_total(forward_core::RejectReason::ConnConcurrent),
             1
         );
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+    }
+
+    /// T030 / FR-013: when both per-owner and per-rule caps exist
+    /// and the OWNER cap is the tighter one, surplus accepts must
+    /// reject under an `OWNER_*` reason and the per-rule reject
+    /// counter must stay at zero.
+    #[tokio::test]
+    async fn t030_owner_cap_binds_before_rule_cap_on_tcp_accept() {
+        use crate::forwarder::rate_limit::scope::{OwnerRateLimiter, RuleRateLimiter};
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+
+        // Rule cap = 5, owner cap = 1 — the owner is the binding
+        // ceiling. The first accept must succeed; the second must
+        // reject under `OwnerConcurrent`.
+        let rule_limiter = Arc::new(RuleRateLimiter::from_envelope(&forward_core::RateLimit {
+            concurrent_connections: Some(5),
+            ..Default::default()
+        }));
+        let rule_stats = Arc::new(RateLimitStatsAccumulator::new());
+        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&forward_core::RateLimit {
+            concurrent_connections: Some(1),
+            ..Default::default()
+        }));
+        let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
+
+        let mut rule = single_rule(202, port, echo);
+        rule.rate_limit = Some(Arc::clone(&rule_limiter));
+        rule.rate_limit_stats = Some(Arc::clone(&rule_stats));
+        rule.owner_rate_limit = Some(Arc::clone(&owner_limiter));
+        rule.owner_rate_limit_stats = Some(Arc::clone(&owner_stats));
+
+        let task = tokio::spawn(async move {
+            run(
+                rule,
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(202)));
+
+        // First connect must succeed end-to-end.
+        let mut admit = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        admit.write_all(b"ok").await.unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(2), admit.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"ok");
+
+        // Wait for the accept loop to register the bump on the owner
+        // limiter (the gauge is the source of truth).
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_limiter.active_connections() < 1 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "accept loop never reached owner active_connections=1"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(owner_limiter.active_connections(), 1);
+        assert_eq!(rule_limiter.active_connections(), 1);
+
+        // Second connect: owner cap exhausted → must observe a reject
+        // under `OwnerConcurrent`. The rule reject counter stays at 0.
+        let surplus = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_stats.reject_total(forward_core::RejectReason::OwnerConcurrent) == 0 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "owner-scope reject not recorded within 2s"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            owner_stats.reject_total(forward_core::RejectReason::OwnerConcurrent),
+            1,
+            "OwnerConcurrent rejection must be recorded exactly once"
+        );
+        assert_eq!(
+            rule_stats.reject_total(forward_core::RejectReason::ConnConcurrent),
+            0,
+            "rule reject counter must NOT be bumped when the owner gate refuses (FR-013)"
+        );
+        // Owner gauge stays at 1 (we did not admit a second).
+        assert_eq!(owner_limiter.active_connections(), 1);
+        // Rule gauge also stays at 1 — FR-013 ordering means the rule
+        // counter was never touched on the rejected accept.
+        assert_eq!(rule_limiter.active_connections(), 1);
+        drop(surplus);
+        drop(admit);
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;

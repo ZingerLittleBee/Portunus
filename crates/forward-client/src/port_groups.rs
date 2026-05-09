@@ -432,6 +432,8 @@ mod tests {
             sni_pattern: sni.map(str::to_string),
             rate_limit: None,
             rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
         }
     }
 
@@ -604,6 +606,8 @@ mod e2e_tests {
             sni_pattern: sni.map(str::to_string),
             rate_limit: None,
             rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
         }
     }
 
