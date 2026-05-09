@@ -81,13 +81,13 @@ where
 /// `path` need not exist; we walk up the parent chain until we find
 /// an extant ancestor (typically the data-dir itself or its parent).
 #[cfg(target_os = "linux")]
+#[must_use]
 pub fn probe_fs_class(path: &Path) -> FsClass {
     use nix::sys::statfs::statfs;
 
     let probe_target = nearest_existing_ancestor(path);
-    let stat = match statfs(probe_target.as_path()) {
-        Ok(s) => s,
-        Err(_) => return FsClass::Unknown,
+    let Ok(stat) = statfs(probe_target.as_path()) else {
+        return FsClass::Unknown;
     };
 
     // Magic numbers from `man 2 statfs`. `f_type` returns `FsType` in
@@ -97,20 +97,20 @@ pub fn probe_fs_class(path: &Path) -> FsClass {
         // Network / pseudo / volatile filesystems we refuse.
         0x6969 => FsClass::Unsupported("nfs"),               // NFS_SUPER_MAGIC
         0x517B => FsClass::Unsupported("smbfs"),             // SMB_SUPER_MAGIC
-        0xFE534D42 => FsClass::Unsupported("smb2"),          // SMB2_MAGIC_NUMBER
-        0x01021994 => FsClass::Unsupported("tmpfs"),         // TMPFS_MAGIC
-        0x858458F6 => FsClass::Unsupported("ramfs"),         // RAMFS_MAGIC
-        0x65735546 => FsClass::Unsupported("fuse"),          // FUSE_SUPER_MAGIC
-        0x73757245 => FsClass::Unsupported("ceph"),          // CEPH_SUPER_MAGIC
+        0xFE53_4D42 => FsClass::Unsupported("smb2"),         // SMB2_MAGIC_NUMBER
+        0x0102_1994 => FsClass::Unsupported("tmpfs"),        // TMPFS_MAGIC
+        0x8584_58F6 => FsClass::Unsupported("ramfs"),        // RAMFS_MAGIC
+        0x6573_5546 => FsClass::Unsupported("fuse"),         // FUSE_SUPER_MAGIC
+        0x7375_7245 => FsClass::Unsupported("ceph"),         // CEPH_SUPER_MAGIC
         // Local supported filesystems.
         0xEF53        // EXT2/3/4
-        | 0x58465342  // XFS
-        | 0x9123683E  // BTRFS
-        | 0x2FC12FC1  // ZFS
-        | 0xF2F52010  // F2FS
+        | 0x5846_5342  // XFS
+        | 0x9123_683E  // BTRFS
+        | 0x2FC1_2FC1  // ZFS
+        | 0xF2F5_2010  // F2FS
         | 0x4D44      // VFAT (msdos) — host iteration only
-        | 0x5346544E  // NTFS
-        | 0x52654973  // REISERFS
+        | 0x5346_544E  // NTFS
+        | 0x5265_4973  // REISERFS
         => FsClass::Supported,
         _ => FsClass::Unknown,
     }

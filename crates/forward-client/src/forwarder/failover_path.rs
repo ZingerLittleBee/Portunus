@@ -295,8 +295,7 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_owner_limiter = owner_rate_limiter.clone();
                     let conn_owner_stats = owner_rate_limit_stats.clone();
                     local.spawn(async move {
-                        let _owner_admit = owner_admit;
-                        let _rule_admit = rule_admit;
+                        let admit_guards = (owner_admit, rule_admit);
                         handle_connection(
                             sock,
                             peer,
@@ -315,6 +314,7 @@ async fn accept_loop<R: Resolve + 'static>(
                             conn_owner_stats,
                         )
                         .await;
+                        drop(admit_guards);
                     });
                 }
                 Err(e) => {

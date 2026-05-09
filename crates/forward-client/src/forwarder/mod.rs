@@ -442,11 +442,7 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_owner_limiter = owner_rate_limiter.clone();
                     let conn_owner_stats = owner_rate_limit_stats.clone();
                     local.spawn(async move {
-                        // Move BOTH guards into the connection task so
-                        // owner and rule gauges decrement when the
-                        // proxy returns.
-                        let _owner_admit = owner_admit;
-                        let _rule_admit = rule_admit;
+                        let admit_guards = (owner_admit, rule_admit);
                         match proxy::proxy(
                             sock,
                             conn_resolver.as_ref(),
@@ -482,6 +478,7 @@ async fn accept_loop<R: Resolve + 'static>(
                                 );
                             }
                         }
+                        drop(admit_guards);
                     });
                 }
                 Err(e) => {
