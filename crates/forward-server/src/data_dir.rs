@@ -91,8 +91,8 @@ pub fn probe_fs_class(path: &Path) -> FsClass {
     };
 
     // Magic numbers from `man 2 statfs`. `f_type` returns `FsType` in
-    // nix 0.29; we compare via its inner i64 representation.
-    let magic = stat.filesystem_type().0 as i64;
+    // nix 0.29; we compare via its inner representation.
+    let magic = stat.filesystem_type().0;
     match magic {
         // Network / pseudo / volatile filesystems we refuse.
         0x6969 => FsClass::Unsupported("nfs"),               // NFS_SUPER_MAGIC

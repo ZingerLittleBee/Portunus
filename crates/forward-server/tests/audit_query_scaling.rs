@@ -114,7 +114,7 @@ async fn envelope_queries_under_two_seconds_at_100k_rows() {
     // 3) since/until + cursor — narrow to a 24-hour window in the
     // middle of the seeded range, paginate one page deep.
     let mid = base + chrono::Duration::days(4);
-    let q3a = AuditQuery {
+    let time_window_query = AuditQuery {
         limit: 100,
         outcome: None,
         since: Some(mid),
@@ -122,26 +122,30 @@ async fn envelope_queries_under_two_seconds_at_100k_rows() {
         before_seq: None,
     };
     let t = Instant::now();
-    let p3a = store.query_audit_envelope(&q3a).expect("q3a");
-    let e3a = t.elapsed();
+    let time_window_page = store
+        .query_audit_envelope(&time_window_query)
+        .expect("time_window_query");
+    let time_window_elapsed = t.elapsed();
     assert!(
-        e3a < BUDGET,
-        "since-until envelope took {e3a:?}; budget {BUDGET:?}"
+        time_window_elapsed < BUDGET,
+        "since-until envelope took {time_window_elapsed:?}; budget {BUDGET:?}"
     );
-    if let Some(_cursor) = p3a.next_cursor.clone() {
-        let q3b = AuditQuery {
+    if let Some(_cursor) = time_window_page.next_cursor.clone() {
+        let second_page_query = AuditQuery {
             limit: 100,
             outcome: None,
             since: Some(mid),
             until: Some(mid + chrono::Duration::days(1)),
-            before_seq: p3a.last_seq,
+            before_seq: time_window_page.last_seq,
         };
         let t = Instant::now();
-        let _p3b = store.query_audit_envelope(&q3b).expect("q3b");
-        let e3b = t.elapsed();
+        let _second_page = store
+            .query_audit_envelope(&second_page_query)
+            .expect("second_page_query");
+        let second_page_elapsed = t.elapsed();
         assert!(
-            e3b < BUDGET,
-            "since-until-cursor envelope took {e3b:?}; budget {BUDGET:?}"
+            second_page_elapsed < BUDGET,
+            "since-until-cursor envelope took {second_page_elapsed:?}; budget {BUDGET:?}"
         );
     }
 }
