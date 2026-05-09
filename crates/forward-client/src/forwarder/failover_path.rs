@@ -21,6 +21,7 @@
 #![allow(clippy::similar_names)]
 
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant, SystemTime};
@@ -35,6 +36,7 @@ use tracing::{info, warn};
 
 use super::failover::{self, HealthState};
 use super::probe;
+use super::proxy_protocol::{self, ProxyProtocolPrelude};
 use super::range::{self, BindFailure};
 use super::stats::RuleStats;
 use super::udp;
@@ -58,7 +60,7 @@ pub async fn run_tcp<R: Resolve + 'static>(
          Constitution Principle II"
     );
 
-    let listeners = match range::bind_all(&rule.listen_range).await {
+    let listeners = match range::bind_all(&rule.listen_range) {
         Ok(v) => v,
         Err(BindFailure {
             offending_port,
@@ -245,6 +247,9 @@ async fn accept_loop<R: Resolve + 'static>(
             }
         }
     }
+
+    drop(listener);
+    while local.join_next().await.is_some() {}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,6 +266,18 @@ async fn handle_connection<R: Resolve>(
     shutdown: CancellationToken,
     stats: Arc<RuleStats>,
 ) {
+    let Ok(local_addr) = inbound.local_addr() else {
+        warn!(
+            event = "rule.conn_error",
+            rule_id = %rule_id,
+            listen_port = listen_port,
+            peer = %peer,
+            error = "local_addr_unavailable",
+            multi_target = true,
+        );
+        let _ = inbound.shutdown().await;
+        return;
+    };
     let outbound_result = dial_with_failover(
         rule_id,
         resolver,
@@ -268,6 +285,8 @@ async fn handle_connection<R: Resolve>(
         states,
         target_failovers_total,
         prefer_ipv6,
+        peer,
+        local_addr,
     )
     .await;
     let Some((mut outbound, idx)) = outbound_result else {
@@ -354,6 +373,7 @@ async fn handle_connection<R: Resolve>(
 /// "highest-priority gets attempted first" guarantee and naturally
 /// handles the "all-Failed → still attempt index 0" fallback (the
 /// selector returns 0 in that case, and we walk 1..n if 0 fails).
+#[allow(clippy::too_many_arguments)]
 async fn dial_with_failover<R: Resolve>(
     rule_id: RuleId,
     resolver: &LiveResolver<R>,
@@ -361,6 +381,8 @@ async fn dial_with_failover<R: Resolve>(
     states: &[tokio::sync::Mutex<HealthState>],
     target_failovers_total: &AtomicU64,
     prefer_ipv6: bool,
+    downstream_peer: SocketAddr,
+    downstream_local: SocketAddr,
 ) -> Option<(TcpStream, usize)> {
     debug_assert_eq!(targets.len(), states.len());
 
@@ -399,7 +421,31 @@ async fn dial_with_failover<R: Resolve>(
         let now = Instant::now();
         let wall = SystemTime::now();
         match dial {
-            Ok((sock, _source)) => {
+            Ok((mut sock, _source)) => {
+                if let Some(mode) = candidate.spec.proxy_protocol
+                    && let Err(error) = write_proxy_protocol_prelude(
+                        &mut sock,
+                        mode,
+                        downstream_peer,
+                        downstream_local,
+                    )
+                    .await
+                {
+                    states[idx]
+                        .lock()
+                        .await
+                        .record_failure(now, wall, target_failovers_total);
+                    warn!(
+                        event = "rule.target.proxy_protocol_write_failed",
+                        rule_id = %rule_id,
+                        target_index = idx,
+                        target_host = %candidate.spec.host,
+                        target_port = candidate.spec.port,
+                        proxy_protocol = ?mode,
+                        error = %error,
+                    );
+                    continue;
+                }
                 states[idx]
                     .lock()
                     .await
@@ -428,6 +474,23 @@ async fn dial_with_failover<R: Resolve>(
         }
     }
     None
+}
+
+async fn write_proxy_protocol_prelude(
+    outbound: &mut TcpStream,
+    version: forward_core::ProxyProtocolVersion,
+    source: SocketAddr,
+    destination: SocketAddr,
+) -> io::Result<()> {
+    proxy_protocol::write_prelude(
+        outbound,
+        ProxyProtocolPrelude {
+            version,
+            source,
+            destination,
+        },
+    )
+    .await
 }
 
 /// 007-multi-target-failover (T024): multi-target UDP entry point.

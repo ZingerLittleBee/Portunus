@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use forward_core::{ClientName, RuleId};
+use forward_core::{ClientName, RuleId, peek_histogram::PEEK_HISTOGRAM_BUCKETS_SECS};
 use prometheus::{
     CounterVec, Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder, opts,
 };
@@ -154,6 +154,9 @@ pub struct Metrics {
     /// peeked bytes that failed to parse as a ClientHello (or
     /// timed out / hit size cap). Labelled `(client, port)`.
     pub tls_sni_listener_parse_failures_total: IntCounterVec,
+    pub tls_client_hello_peek_duration_seconds_bucket: IntCounterVec,
+    pub tls_client_hello_peek_duration_seconds_sum: CounterVec,
+    pub tls_client_hello_peek_duration_seconds_count: IntCounterVec,
     /// 009-tls-sni-routing T081: gauge of active rules whose
     /// `sni_pattern.is_some()`. Refreshed each metrics tick from
     /// `ServerRuleStore`. Single global series — no labels — so
@@ -279,6 +282,27 @@ impl Metrics {
             ),
             &["client", "port"],
         )?;
+        let tls_client_hello_peek_duration_seconds_bucket = IntCounterVec::new(
+            opts!(
+                "forward_tls_client_hello_peek_duration_seconds_bucket",
+                "Classic histogram bucket counters for SNI ClientHello peek duration by listener."
+            ),
+            &["client", "port", "le"],
+        )?;
+        let tls_client_hello_peek_duration_seconds_sum = CounterVec::new(
+            opts!(
+                "forward_tls_client_hello_peek_duration_seconds_sum",
+                "Cumulative sum of SNI ClientHello peek durations in seconds."
+            ),
+            &["client", "port"],
+        )?;
+        let tls_client_hello_peek_duration_seconds_count = IntCounterVec::new(
+            opts!(
+                "forward_tls_client_hello_peek_duration_seconds_count",
+                "Cumulative count of SNI ClientHello peek observations."
+            ),
+            &["client", "port"],
+        )?;
         let tls_sni_routes_active = IntGauge::new(
             "forward_tls_sni_routes_active",
             "Number of currently-active rules whose `sni_pattern` is non-empty (009-tls-sni-routing T081).",
@@ -301,6 +325,13 @@ impl Metrics {
         registry.register(Box::new(tls_sni_route_total.clone()))?;
         registry.register(Box::new(tls_sni_listener_miss_total.clone()))?;
         registry.register(Box::new(tls_sni_listener_parse_failures_total.clone()))?;
+        registry.register(Box::new(
+            tls_client_hello_peek_duration_seconds_bucket.clone(),
+        ))?;
+        registry.register(Box::new(tls_client_hello_peek_duration_seconds_sum.clone()))?;
+        registry.register(Box::new(
+            tls_client_hello_peek_duration_seconds_count.clone(),
+        ))?;
         registry.register(Box::new(tls_sni_routes_active.clone()))?;
 
         Ok(Self {
@@ -323,6 +354,9 @@ impl Metrics {
             tls_sni_route_total,
             tls_sni_listener_miss_total,
             tls_sni_listener_parse_failures_total,
+            tls_client_hello_peek_duration_seconds_bucket,
+            tls_client_hello_peek_duration_seconds_sum,
+            tls_client_hello_peek_duration_seconds_count,
             tls_sni_routes_active,
         })
     }
@@ -348,7 +382,16 @@ const STATS_BROADCAST_CAPACITY: usize = 16;
 
 /// 009-tls-sni-routing T080: typedef for the per-listener delta map
 /// (factors `clippy::type_complexity` out of `RuleStatsCache`).
-type SniListenerPrevMap = HashMap<(String, u16), (u64, u64)>;
+type SniListenerPrevMap = HashMap<(String, u16), SniListenerPrevEntry>;
+
+#[derive(Debug, Clone, Default)]
+struct SniListenerPrevEntry {
+    miss_total: u64,
+    parse_failures_total: u64,
+    peek_bucket_counts: Vec<u64>,
+    peek_sum_micros: u64,
+    peek_count: u64,
+}
 
 /// Cache the latest `StatsReport` per rule. Cheap to clone (`Arc` internal).
 ///
@@ -667,19 +710,29 @@ impl RuleStatsCache {
 
     /// 009-tls-sni-routing T080: fold per-listener counters into the
     /// new `forward_tls_sni_listener_*` collectors.
+    #[allow(clippy::too_many_arguments)]
     pub async fn observe_sni_listener(
         &self,
         client_name: &ClientName,
         port: u16,
         sni_route_miss_total: u64,
         client_hello_parse_failures_total: u64,
+        client_hello_peek_bucket_counts: &[u64],
+        client_hello_peek_sum_micros: u64,
+        client_hello_peek_count: u64,
         metrics: &Metrics,
     ) {
         let key = (client_name.as_str().to_string(), port);
         let mut guard = self.sni_listener_prev.write().await;
-        let prev = guard.entry(key.clone()).or_insert((0, 0));
-        let miss_delta = sni_route_miss_total.saturating_sub(prev.0);
-        let parse_delta = client_hello_parse_failures_total.saturating_sub(prev.1);
+        let prev = guard
+            .entry(key.clone())
+            .or_insert_with(|| SniListenerPrevEntry {
+                peek_bucket_counts: vec![0; PEEK_HISTOGRAM_BUCKETS_SECS.len()],
+                ..SniListenerPrevEntry::default()
+            });
+        let miss_delta = sni_route_miss_total.saturating_sub(prev.miss_total);
+        let parse_delta =
+            client_hello_parse_failures_total.saturating_sub(prev.parse_failures_total);
         let port_str = port.to_string();
         if miss_delta > 0 {
             metrics
@@ -693,7 +746,44 @@ impl RuleStatsCache {
                 .with_label_values(&[client_name.as_str(), port_str.as_str()])
                 .inc_by(parse_delta);
         }
-        *prev = (sni_route_miss_total, client_hello_parse_failures_total);
+        for (idx, upper) in PEEK_HISTOGRAM_BUCKETS_SECS.iter().enumerate() {
+            let next = client_hello_peek_bucket_counts
+                .get(idx)
+                .copied()
+                .unwrap_or(0);
+            let baseline = prev.peek_bucket_counts.get(idx).copied().unwrap_or(0);
+            let delta = next.saturating_sub(baseline);
+            if delta > 0 {
+                let le = upper.to_string();
+                metrics
+                    .tls_client_hello_peek_duration_seconds_bucket
+                    .with_label_values(&[client_name.as_str(), port_str.as_str(), le.as_str()])
+                    .inc_by(delta);
+            }
+        }
+        let sum_delta_micros = client_hello_peek_sum_micros.saturating_sub(prev.peek_sum_micros);
+        if sum_delta_micros > 0 {
+            metrics
+                .tls_client_hello_peek_duration_seconds_sum
+                .with_label_values(&[client_name.as_str(), port_str.as_str()])
+                .inc_by(precise_f64(sum_delta_micros) / 1_000_000.0);
+        }
+        let count_delta = client_hello_peek_count.saturating_sub(prev.peek_count);
+        if count_delta > 0 {
+            metrics
+                .tls_client_hello_peek_duration_seconds_bucket
+                .with_label_values(&[client_name.as_str(), port_str.as_str(), "+Inf"])
+                .inc_by(count_delta);
+            metrics
+                .tls_client_hello_peek_duration_seconds_count
+                .with_label_values(&[client_name.as_str(), port_str.as_str()])
+                .inc_by(count_delta);
+        }
+        prev.miss_total = sni_route_miss_total;
+        prev.parse_failures_total = client_hello_parse_failures_total;
+        prev.peek_bucket_counts = client_hello_peek_bucket_counts.to_vec();
+        prev.peek_sum_micros = client_hello_peek_sum_micros;
+        prev.peek_count = client_hello_peek_count;
     }
 
     /// 006-management-web-ui T011: subscribe to live snapshots for a

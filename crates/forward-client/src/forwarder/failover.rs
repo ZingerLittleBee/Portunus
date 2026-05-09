@@ -317,6 +317,7 @@ mod tests {
             host: host.to_string(),
             port,
             priority,
+            proxy_protocol: None,
         }
     }
 

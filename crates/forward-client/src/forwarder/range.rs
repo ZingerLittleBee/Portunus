@@ -7,35 +7,35 @@
 //! independently of the forwarder lifecycle (which deals with accept
 //! loops, drain timeouts, and event channels).
 
-use std::net::Ipv4Addr;
+use std::io;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use forward_core::PortRange;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpSocket};
 
-/// Atomically bind every port in `listen` to `0.0.0.0:port`. On any bind
+/// Atomically bind every port in `listen` on IPv4 and IPv6. On any bind
 /// failure, every previously-bound listener is dropped before returning,
 /// so the kernel observes "no partial state" — operators can re-push the
 /// same range after fixing the offending port without waiting for stray
 /// `TIME_WAIT` slots.
 ///
-/// The returned vector is ordered identically to `listen.iter()`:
-/// `[(start, _), (start+1, _), …, (end, _)]`. Callers that want a
-/// `HashMap` can fold themselves; we return an ordered `Vec` because the
-/// caller (`forwarder::run`) immediately spawns one accept task per
-/// listener and benefits from deterministic ordering for log/test
-/// readability.
+/// The returned vector is grouped in `listen.iter()` order. Each port may
+/// contribute both an IPv6 and an IPv4 listener, so callers should treat the
+/// port value as the key rather than assuming exactly one listener per port.
 ///
 /// # Errors
 ///
 /// Returns `BindFailure { offending_port, reason }` on the first port
 /// that fails to bind. `reason` comes from [`classify_bind_error`] and
 /// matches the strings the forwarder reports via `RuleStatusEvent::Failed`.
-pub async fn bind_all(listen: &PortRange) -> Result<Vec<(u16, TcpListener)>, BindFailure> {
+pub fn bind_all(listen: &PortRange) -> Result<Vec<(u16, TcpListener)>, BindFailure> {
     let mut bound: Vec<(u16, TcpListener)> =
         Vec::with_capacity(usize::try_from(listen.len()).unwrap_or(usize::MAX));
     for port in listen.iter() {
-        match TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).await {
-            Ok(l) => bound.push((port, l)),
+        match bind_port(port) {
+            Ok(listeners) => {
+                bound.extend(listeners.into_iter().map(|listener| (port, listener)));
+            }
             Err(e) => {
                 let reason = classify_bind_error(&e);
                 // Drop all previously-bound listeners *before* surfacing
@@ -52,6 +52,44 @@ pub async fn bind_all(listen: &PortRange) -> Result<Vec<(u16, TcpListener)>, Bin
         }
     }
     Ok(bound)
+}
+
+fn bind_port(port: u16) -> io::Result<Vec<TcpListener>> {
+    let mut listeners = Vec::with_capacity(2);
+    match bind_ipv6(port) {
+        Ok(listener) => listeners.push(listener),
+        Err(err) if should_fallback_to_ipv4(&err) => {
+            return bind_ipv4(port).map(|listener| vec![listener]);
+        }
+        Err(err) => return Err(err),
+    }
+    listeners.push(bind_ipv4(port)?);
+    Ok(listeners)
+}
+
+fn bind_ipv6(port: u16) -> io::Result<TcpListener> {
+    let socket = TcpSocket::new_v6()?;
+    set_ipv6_only(&socket)?;
+    socket.bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))?;
+    socket.listen(1024)
+}
+
+fn bind_ipv4(port: u16) -> io::Result<TcpListener> {
+    let socket = TcpSocket::new_v4()?;
+    socket.bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))?;
+    socket.listen(1024)
+}
+
+fn set_ipv6_only(socket: &TcpSocket) -> io::Result<()> {
+    nix::sys::socket::setsockopt(socket, nix::sys::socket::sockopt::Ipv6V6Only, &true)
+        .map_err(io::Error::other)
+}
+
+fn should_fallback_to_ipv4(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::AddrNotAvailable | io::ErrorKind::Unsupported
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,39 +132,28 @@ mod tests {
         super::test_port_pool_lock()
     }
 
-    /// Pick `n` consecutive free ports. Race-resistant strategy:
-    ///   1. Let the OS pick a base port (`bind(0)`).
-    ///   2. Hold that listener AND try to bind every subsequent port
-    ///      `(base+1)..(base+n-1)` to `0.0.0.0:port` — same address
-    ///      family `bind_all` uses, so a successful probe means
-    ///      `bind_all` will see the port as free moments later.
-    ///   3. If any probe fails, drop everything and retry with a new
-    ///      base port (parallel tests grab from the same ephemeral
-    ///      pool, so the first attempt sometimes loses the race).
-    ///
-    /// All probe listeners are held until *after* we resolve the
-    /// chosen range, so other tests can't squat in the middle while
-    /// the helper is searching.
+    /// Pick `n` consecutive ports that are free for both IPv4 and IPv6.
     async fn pick_consecutive_free(n: u16) -> PortRange {
         for _ in 0..50 {
-            // bind(0) on 0.0.0.0 to match bind_all's address family.
+            // Let the OS pick a candidate base, then release it and verify the
+            // whole range through bind_port so IPv4 and IPv6 availability agree
+            // with the production path.
             let Ok(probe) = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await else {
                 continue;
             };
             let start = probe.local_addr().unwrap().port();
+            drop(probe);
             if u32::from(start) + u32::from(n) > 65_536 {
-                drop(probe);
                 continue;
             }
-            let mut probes: Vec<TcpListener> = vec![probe];
+            let mut probes: Vec<TcpListener> = Vec::new();
             let mut ok = true;
-            for offset in 1..n {
-                if let Ok(l) = TcpListener::bind((Ipv4Addr::UNSPECIFIED, start + offset)).await {
-                    probes.push(l);
-                } else {
+            for offset in 0..n {
+                let Ok(listeners) = bind_port(start + offset) else {
                     ok = false;
                     break;
-                }
+                };
+                probes.extend(listeners);
             }
             if ok {
                 drop(probes);
@@ -141,11 +168,14 @@ mod tests {
     async fn bind_all_succeeds_for_50_consecutive_ports() {
         let _guard = port_pool_lock().lock().await;
         let range = pick_consecutive_free(50).await;
-        let bound = bind_all(&range).await.unwrap();
-        assert_eq!(bound.len(), 50);
-        assert_eq!(bound[0].0, range.start());
-        assert_eq!(bound[49].0, range.end());
-        // Each listener has the right local port.
+        let bound = bind_all(&range).unwrap();
+        let ports = bound
+            .iter()
+            .map(|(port, _)| *port)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ports.len(), 50);
+        assert!(ports.contains(&range.start()));
+        assert!(ports.contains(&range.end()));
         for (port, listener) in &bound {
             assert_eq!(listener.local_addr().unwrap().port(), *port);
         }
@@ -165,7 +195,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = bind_all(&range).await.unwrap_err();
+        let err = bind_all(&range).unwrap_err();
         assert_eq!(err.offending_port, busy_port);
         assert_eq!(err.reason, "port_in_use");
 
@@ -202,8 +232,21 @@ mod tests {
         let _guard = port_pool_lock().lock().await;
         // Degenerate range — same call path as a single-port rule.
         let range = pick_consecutive_free(1).await;
-        let bound = bind_all(&range).await.unwrap();
-        assert_eq!(bound.len(), 1);
-        assert_eq!(bound[0].0, range.start());
+        let bound = bind_all(&range).unwrap();
+        assert!(!bound.is_empty());
+        assert!(bound.iter().all(|(port, _)| *port == range.start()));
+    }
+
+    #[tokio::test]
+    async fn bind_all_accepts_ipv6_loopback_connections() {
+        let _guard = port_pool_lock().lock().await;
+        let range = pick_consecutive_free(1).await;
+        let bound = bind_all(&range).unwrap();
+        let port = bound[0].0;
+        let connect = TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await;
+        assert!(
+            connect.is_ok(),
+            "dual-stack listener must accept IPv6 clients"
+        );
     }
 }

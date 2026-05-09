@@ -224,6 +224,7 @@ mod tests {
                 host: host.to_string(),
                 port,
                 priority: 0,
+                proxy_protocol: None,
             },
             target: Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         }

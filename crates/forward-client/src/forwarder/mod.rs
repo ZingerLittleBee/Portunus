@@ -21,6 +21,7 @@ pub mod failover;
 pub mod failover_path;
 pub mod probe;
 pub mod proxy;
+pub mod proxy_protocol;
 pub mod range;
 pub mod sni;
 pub mod stats;
@@ -174,7 +175,7 @@ pub async fn run<R: Resolve + 'static>(
         return;
     }
 
-    let listeners = match range::bind_all(&rule.listen_range).await {
+    let listeners = match range::bind_all(&rule.listen_range) {
         Ok(v) => v,
         Err(BindFailure {
             offending_port,
@@ -757,6 +758,36 @@ mod tests {
         }
     }
 
+    fn multi_target_rule(rule_id: u64, port: u16, target: std::net::SocketAddr) -> ClientRule {
+        let states = Arc::new(vec![tokio::sync::Mutex::new(failover::HealthState::new())]);
+        ClientRule {
+            rule_id: RuleId(rule_id),
+            listen_range: PortRange::single(port),
+            target_host: target.ip().to_string(),
+            target: Target::Ip(target.ip()),
+            target_range: PortRange::single(target.port()),
+            prefer_ipv6: false,
+            protocol: Protocol::Tcp,
+            udp_max_flows: 0,
+            udp_flow_idle_secs: 0,
+            targets: vec![MultiTarget {
+                spec: forward_core::RuleTarget {
+                    host: target.ip().to_string(),
+                    port: target.port(),
+                    priority: 0,
+                    proxy_protocol: None,
+                },
+                target: Target::Ip(target.ip()),
+            }],
+            health_check_interval_secs: None,
+            multi_target_obs: Some(Arc::new(MultiTargetObservability {
+                target_failovers_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                states,
+            })),
+            sni_pattern: None,
+        }
+    }
+
     #[tokio::test]
     async fn run_emits_activated_then_forwards_then_removed() {
         let _guard = port_pool_lock().lock().await;
@@ -1079,6 +1110,62 @@ mod tests {
         let mut buf = [0u8; 12];
         let echoed = tokio::time::timeout(Duration::from_secs(1), conn.read_exact(&mut buf)).await;
         assert!(echoed.is_ok(), "in-flight read timed out post-cancel");
+        echoed.unwrap().unwrap();
+        assert_eq!(&buf, b"after-cancel");
+
+        let fresh = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await;
+        assert!(fresh.is_err(), "listener still accepting after cancel");
+
+        drop(conn);
+        let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn multi_target_cancel_drains_in_flight_connection() {
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let task = tokio::spawn(async move {
+            run(
+                multi_target_rule(43, port, echo),
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(3),
+                RuleStats::new(),
+            )
+            .await;
+        });
+        let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        conn.write_all(b"warmup").await.unwrap();
+        let mut buf = [0u8; 6];
+        conn.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"warmup");
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        conn.write_all(b"after-cancel").await.unwrap();
+        let mut buf = [0u8; 12];
+        let echoed = tokio::time::timeout(Duration::from_secs(1), conn.read_exact(&mut buf)).await;
+        assert!(
+            echoed.is_ok(),
+            "multi-target in-flight read timed out post-cancel"
+        );
         echoed.unwrap().unwrap();
         assert_eq!(&buf, b"after-cancel");
 

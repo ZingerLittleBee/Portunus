@@ -37,6 +37,7 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 tokio-stream = { workspace = true }
+nix = { workspace = true }
 
 # Async DNS resolver (system-resolv.conf, no DoT/DoH per v0.3.0 OOS).
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }

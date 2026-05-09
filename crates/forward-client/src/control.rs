@@ -319,7 +319,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs).await;
+                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -361,7 +361,7 @@ async fn pump(
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-async fn handle_server_message(
+fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
     port_groups: &mut PortGroupManager,
@@ -502,6 +502,21 @@ async fn handle_server_message(
                                     host: t.host.clone(),
                                     port,
                                     priority: t.priority,
+                                    proxy_protocol: t
+                                        .proxy_protocol
+                                        .and_then(|v| {
+                                            forward_proto::v1::ProxyProtocolVersion::try_from(v)
+                                                .ok()
+                                        })
+                                        .and_then(|mode| match mode {
+                                            forward_proto::v1::ProxyProtocolVersion::V1 => {
+                                                Some(forward_core::ProxyProtocolVersion::V1)
+                                            }
+                                            forward_proto::v1::ProxyProtocolVersion::V2 => {
+                                                Some(forward_core::ProxyProtocolVersion::V2)
+                                            }
+                                            forward_proto::v1::ProxyProtocolVersion::Unspecified => None,
+                                        }),
                                 },
                                 target: parsed,
                             });
@@ -592,10 +607,7 @@ async fn handle_server_message(
                 && listen_end == listen_port
                 && (client_rule.sni_pattern.is_some() || port_groups.is_sni_port(listen_port));
             if routes_via_sni {
-                match port_groups
-                    .apply_push(client_rule.clone(), Arc::clone(&resolver))
-                    .await
-                {
+                match port_groups.apply_push(client_rule.clone(), Arc::clone(&resolver)) {
                     Ok(stats) => {
                         rules.insert(
                             rule_id,

@@ -12,6 +12,7 @@ use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use super::proxy_protocol::{self, ProxyProtocolPrelude};
 use super::stats::RuleStats;
 use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
 
@@ -75,6 +76,38 @@ pub async fn proxy<R: Resolve>(
 /// identical v0.7 hot path.
 #[allow(clippy::too_many_arguments)]
 pub async fn proxy_with_preread<R: Resolve>(
+    inbound: TcpStream,
+    preread: Option<Vec<u8>>,
+    resolver: &LiveResolver<R>,
+    rule_id: RuleId,
+    target: &Target,
+    target_port: u16,
+    prefer_ipv6: bool,
+    shutdown: CancellationToken,
+    stats: Option<Arc<RuleStats>>,
+    listen_port: u16,
+) -> io::Result<(u64, u64)> {
+    proxy_with_preread_and_prelude(
+        inbound,
+        preread,
+        resolver,
+        rule_id,
+        target,
+        target_port,
+        prefer_ipv6,
+        None,
+        shutdown,
+        stats,
+        listen_port,
+    )
+    .await
+}
+
+/// Variant used by SNI dispatch when an upstream target also requests a
+/// PROXY protocol prelude. The injected prelude is written before any preread
+/// ClientHello bytes so the upstream sees `PROXY ...\r\n` then TLS.
+#[allow(clippy::too_many_arguments)]
+pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     mut inbound: TcpStream,
     preread: Option<Vec<u8>>,
     resolver: &LiveResolver<R>,
@@ -82,6 +115,7 @@ pub async fn proxy_with_preread<R: Resolve>(
     target: &Target,
     target_port: u16,
     prefer_ipv6: bool,
+    proxy_prelude: Option<ProxyProtocolPrelude>,
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
@@ -161,6 +195,10 @@ pub async fn proxy_with_preread<R: Resolve>(
     let _guard = stats
         .as_ref()
         .map(|s| ActiveGuard::new(Arc::clone(s), listen_port));
+
+    if let Some(prelude) = proxy_prelude {
+        proxy_protocol::write_prelude(&mut outbound, prelude).await?;
+    }
 
     // 009-tls-sni-routing T041: replay the captured ClientHello to the
     // upstream BEFORE switching to bidirectional copy. The bytes count
@@ -336,6 +374,63 @@ mod tests {
             err.to_string().contains("proxy_cancelled"),
             "expected proxy_cancelled, got {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_with_preread_writes_proxy_prelude_before_preread() {
+        let backend = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = backend.accept().await.unwrap();
+            let mut captured = Vec::new();
+            let mut buf = [0u8; 256];
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                captured.extend_from_slice(&buf[..n]);
+                if captured.ends_with(b"client-hello") {
+                    break;
+                }
+            }
+            captured_tx.send(captured).unwrap();
+        });
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let resolver = Arc::new(ip_resolver());
+        let proxy_task = tokio::spawn(async move {
+            let (sock, peer) = listener.accept().await.unwrap();
+            let local = sock.local_addr().unwrap();
+            proxy_with_preread_and_prelude(
+                sock,
+                Some(b"client-hello".to_vec()),
+                resolver.as_ref(),
+                RuleId(10),
+                &Target::Ip(backend_addr.ip()),
+                backend_addr.port(),
+                false,
+                Some(crate::forwarder::proxy_protocol::ProxyProtocolPrelude {
+                    version: forward_core::ProxyProtocolVersion::V1,
+                    source: peer,
+                    destination: local,
+                }),
+                CancellationToken::new(),
+                None,
+                proxy_addr.port(),
+            )
+            .await
+        });
+
+        let client = TcpStream::connect(proxy_addr).await.unwrap();
+        let captured = captured_rx.await.unwrap();
+        drop(client);
+        let _ = proxy_task.await.unwrap();
+        let captured = String::from_utf8(captured).unwrap();
+        assert!(captured.starts_with("PROXY TCP4 "));
+        assert!(captured.ends_with("client-hello"));
     }
 
     /// T043 (US4): NXDOMAIN-only path bumps `dns_failures` exactly

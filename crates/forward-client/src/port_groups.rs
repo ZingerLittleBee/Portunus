@@ -43,8 +43,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use forward_core::{RuleId, Target};
-use tokio::net::TcpListener;
+use forward_core::{PortRange, RuleId, Target};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -66,7 +65,7 @@ pub enum PortGroupError {
     /// REMOVE referenced an unknown rule_id. Inner value is the
     /// rule_id surfaced in the structured warn log.
     UnknownRuleId(#[allow(dead_code)] RuleId),
-    /// Bind on `0.0.0.0:listen_port` failed. Inner value carries the
+    /// Bind on `listen_port` failed. Inner value carries the
     /// underlying `io::Error` for the structured failure log.
     BindFailed(#[allow(dead_code)] std::io::Error),
     /// A duplicate rule_id was pushed. Inner value is the rule_id
@@ -82,6 +81,7 @@ struct GroupMember {
     sni_pattern: Option<String>,
     target: Target,
     target_port: u16,
+    proxy_protocol: Option<forward_core::ProxyProtocolVersion>,
     prefer_ipv6: bool,
     listen_port: u16,
     stats: Arc<RuleStats>,
@@ -102,7 +102,7 @@ struct GroupState {
     cancel: CancellationToken,
     /// Listener join handle. Dropped (and cancelled) when the group
     /// loses its last member.
-    _join: tokio::task::JoinHandle<()>,
+    _joins: Vec<tokio::task::JoinHandle<()>>,
 }
 
 pub struct PortGroupManager {
@@ -138,7 +138,7 @@ impl PortGroupManager {
     ///
     /// The control loop (T043) keeps UDP and range rules on the v0.7
     /// per-rule path, so those never reach this method.
-    pub async fn apply_push<R: Resolve + 'static>(
+    pub fn apply_push<R: Resolve + 'static>(
         &mut self,
         rule: ClientRule,
         resolver: Arc<LiveResolver<R>>,
@@ -161,6 +161,10 @@ impl PortGroupManager {
             sni_pattern: rule.sni_pattern.clone(),
             target: rule.target.clone(),
             target_port: rule.target_range.start(),
+            proxy_protocol: rule
+                .targets
+                .first()
+                .and_then(|target| target.spec.proxy_protocol),
             prefer_ipv6: rule.prefer_ipv6,
             listen_port,
             stats: Arc::clone(&stats),
@@ -187,30 +191,34 @@ impl PortGroupManager {
                 Ok(stats)
             }
             None => {
-                // First member — bind the listener.
-                let bind_addr = std::net::SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                    listen_port,
-                );
-                let listener = TcpListener::bind(bind_addr)
-                    .await
-                    .map_err(PortGroupError::BindFailed)?;
+                // First member — bind both IPv4 and IPv6 listeners where the
+                // platform supports them, sharing one routing table.
+                let listeners = crate::forwarder::range::bind_all(&PortRange::single(listen_port))
+                    .map_err(|err| {
+                        PortGroupError::BindFailed(std::io::Error::new(
+                            std::io::ErrorKind::AddrInUse,
+                            err.reason,
+                        ))
+                    })?;
                 let counters = Arc::new(SniListenerCounters::default());
                 let cancel = CancellationToken::new();
                 let (table_tx, table_rx) = watch::channel(Arc::new(SniRoutingTable::default()));
                 let (resolver_tx, resolver_rx) =
                     watch::channel(Arc::new(SniRouteResolver::default()));
-                let listener_task = SniListener {
-                    listen_port,
-                    counters: Arc::clone(&counters),
-                    table_rx,
-                    resolver_rx,
-                    cancel: cancel.clone(),
-                };
-                let live_resolver = Arc::clone(&resolver);
-                let join = tokio::spawn(async move {
-                    listener_task.run(listener, live_resolver).await;
-                });
+                let mut joins = Vec::with_capacity(listeners.len());
+                for (_port, listener) in listeners {
+                    let listener_task = SniListener {
+                        listen_port,
+                        counters: Arc::clone(&counters),
+                        table_rx: table_rx.clone(),
+                        resolver_rx: resolver_rx.clone(),
+                        cancel: cancel.clone(),
+                    };
+                    let live_resolver = Arc::clone(&resolver);
+                    joins.push(tokio::spawn(async move {
+                        listener_task.run(listener, live_resolver).await;
+                    }));
+                }
 
                 let mut state = GroupState {
                     listen_port,
@@ -219,7 +227,7 @@ impl PortGroupManager {
                     resolver_tx,
                     counters,
                     cancel,
-                    _join: join,
+                    _joins: joins,
                 };
                 state.members.insert(rule.rule_id, member);
                 rebuild_watches(&mut state)?;
@@ -315,13 +323,20 @@ impl PortGroupManager {
         use std::sync::atomic::Ordering;
         self.groups
             .iter()
-            .map(|(port, group)| forward_proto::v1::SniListenerStats {
-                listen_port: u32::from(*port),
-                sni_route_miss_total: group.counters.miss.load(Ordering::Relaxed),
-                client_hello_parse_failures_total: group
-                    .counters
-                    .parse_failures
-                    .load(Ordering::Relaxed),
+            .map(|(port, group)| {
+                let (peek_buckets, peek_sum_micros, peek_count) =
+                    group.counters.peek_histogram.snapshot();
+                forward_proto::v1::SniListenerStats {
+                    client_hello_peek_bucket_counts: peek_buckets,
+                    client_hello_peek_sum_micros: peek_sum_micros,
+                    client_hello_peek_count: peek_count,
+                    listen_port: u32::from(*port),
+                    sni_route_miss_total: group.counters.miss.load(Ordering::Relaxed),
+                    client_hello_parse_failures_total: group
+                        .counters
+                        .parse_failures
+                        .load(Ordering::Relaxed),
+                }
             })
             .collect()
     }
@@ -362,6 +377,7 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
                 rule_id: m.rule_id,
                 target: m.target.clone(),
                 target_port: m.target_port,
+                proxy_protocol: m.proxy_protocol,
                 prefer_ipv6: m.prefer_ipv6,
                 listen_port: m.listen_port,
                 stats: Arc::clone(&m.stats),
@@ -432,10 +448,10 @@ mod tests {
         for port in 50_000..50_100 {
             let mut mgr = PortGroupManager::new();
             let r1 = rule(1, port, 9001, Some("api.example.com"));
-            if let Ok(_) = mgr.apply_push(r1, live_resolver()).await {
+            if let Ok(_) = mgr.apply_push(r1, live_resolver()) {
                 assert!(mgr.is_sni_port(port));
                 let r2 = rule(2, port, 9002, Some("admin.example.com"));
-                let res = mgr.apply_push(r2, live_resolver()).await;
+                let res = mgr.apply_push(r2, live_resolver());
                 assert!(res.is_ok(), "second push must share listener: {res:?}");
                 mgr.shutdown();
                 return;
@@ -445,11 +461,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sni_resolver_slot_carries_first_target_proxy_protocol() {
+        for port in 50_100..50_200 {
+            let mut mgr = PortGroupManager::new();
+            let mut rule = rule(1, port, 9001, Some("api.example.com"));
+            rule.targets = vec![crate::forwarder::MultiTarget {
+                spec: forward_core::RuleTarget {
+                    host: "127.0.0.1".into(),
+                    port: 9001,
+                    priority: 0,
+                    proxy_protocol: Some(forward_core::ProxyProtocolVersion::V2),
+                },
+                target: Target::Ip(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            }];
+
+            if mgr.apply_push(rule, live_resolver()).is_ok() {
+                {
+                    let group = mgr.groups.get(&port).expect("group");
+                    let routes = group.resolver_tx.borrow();
+                    let slot = routes.slots.get(&RuleId(1)).expect("slot");
+                    assert_eq!(
+                        slot.proxy_protocol,
+                        Some(forward_core::ProxyProtocolVersion::V2)
+                    );
+                }
+                mgr.shutdown();
+                return;
+            }
+        }
+        panic!("could not bind a free port in 50100..50200");
+    }
+
+    #[tokio::test]
     async fn remove_last_member_unbinds_listener() {
         for port in 50_200..50_300 {
             let mut mgr = PortGroupManager::new();
             let r1 = rule(1, port, 9001, Some("api.example.com"));
-            if let Ok(_) = mgr.apply_push(r1, live_resolver()).await {
+            if let Ok(_) = mgr.apply_push(r1, live_resolver()) {
                 assert!(mgr.is_sni_port(port));
                 mgr.apply_remove(RuleId(1)).expect("remove ok");
                 assert!(!mgr.is_sni_port(port));
@@ -572,13 +620,11 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_a, Some("api.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push api");
         mgr.apply_push(
             make_rule(2, listen_port, addr_b, Some("web.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push web");
 
         let bytes_api = build_client_hello(Some("api.example.com"));
@@ -633,7 +679,6 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_a, Some("api.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push");
 
         let bytes = build_client_hello(Some("nope.example.com"));
@@ -664,10 +709,8 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_match, Some("api.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push exact");
         mgr.apply_push(make_rule(2, listen_port, addr_fb, None), live_resolver())
-            .await
             .expect("push fallback");
 
         let bytes = build_client_hello(Some("nope.example.com"));
@@ -717,7 +760,6 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_match, Some("*.web.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push wildcard");
 
         // Match: tenant.web.example.com (one label before suffix).
@@ -804,10 +846,8 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_exact, Some("api.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push exact");
         mgr.apply_push(make_rule(2, listen_port, addr_fb, None), live_resolver())
-            .await
             .expect("push fallback");
 
         // 3 exact hits.
@@ -876,7 +916,6 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_exact, Some("api.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push");
 
         // 4 SNI misses (unmatched SNI, no fallback rule).
@@ -941,13 +980,11 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_a, Some("a.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push 1");
         mgr.apply_push(
             make_rule(2, listen_port, addr_b, Some("b.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push 2");
         assert!(mgr.is_sni_port(listen_port));
 
@@ -1034,7 +1071,6 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_a, Some("a.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push");
 
         // Connect and write nothing. The listener will eventually
@@ -1067,7 +1103,6 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_a, Some("a.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push");
 
         let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port))
@@ -1136,7 +1171,6 @@ mod e2e_tests {
             make_rule(1, listen_port, addr_a, Some("a.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push 1");
 
         // Open the long-running connection. We send the ClientHello
@@ -1174,7 +1208,6 @@ mod e2e_tests {
             make_rule(2, listen_port, addr_b, Some("b.example.com")),
             live_resolver(),
         )
-        .await
         .expect("push 2 mid-flight");
 
         // Stream a payload over the in-flight connection. Each byte
