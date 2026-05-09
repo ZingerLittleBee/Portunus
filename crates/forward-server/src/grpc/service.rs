@@ -556,6 +556,11 @@ fn proto_rule_from_rule(rule: &crate::rules::Rule) -> Rule {
             .collect(),
         health_check_interval_secs: rule.health_check_interval_secs.unwrap_or(0),
         sni_pattern: rule.sni_pattern.clone(),
+        // 011-rate-limiting-qos T015/T016: caps land here once
+        // persistence is wired (Phase 3). Until then this branch is
+        // unreachable for capped rules — the capability gate refuses
+        // such pushes upstream.
+        rate_limit: None,
     }
 }
 

@@ -34,6 +34,7 @@ fn v0_2_0_rule_byte_compatible_when_prefer_ipv6_absent() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
     };
     let bytes = r.encode_to_vec();
 
@@ -63,6 +64,7 @@ fn rule_with_prefer_ipv6_true_roundtrips() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -87,6 +89,7 @@ fn rule_with_prefer_ipv6_false_roundtrips() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decode");
@@ -111,6 +114,7 @@ fn v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
 
@@ -144,6 +148,7 @@ fn rule_stats_with_dns_failures_roundtrips() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

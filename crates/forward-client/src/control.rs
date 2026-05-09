@@ -912,6 +912,11 @@ async fn send_stats_report(
                     .stats
                     .sni_route_fallback_total
                     .load(Ordering::Relaxed),
+                // 011-rate-limiting-qos T022: per-rule rate-limit
+                // stats payload. None until Phase 3 wires the
+                // accumulator drain. Wire shape is byte-identical to
+                // v0.10 in this absence (proto3 default-stripping).
+                rate_limit: None,
             }
         })
         .collect();
@@ -929,6 +934,11 @@ async fn send_stats_report(
             // Empty when no SNI listener has bound yet — proto3
             // default-stripping keeps wire byte-stable with v0.8.
             sni_listener_stats,
+            // 011-rate-limiting-qos T032: per-owner rate-limit stats.
+            // Empty until Phase 4 wires the per-owner limiter drain.
+            // Default-stripping keeps wire shape byte-stable with
+            // v0.10 in the meantime.
+            owner_rate_limit_stats: Vec::new(),
         })),
     };
     if let Err(e) = outbound.send(msg).await {

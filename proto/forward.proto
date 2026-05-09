@@ -51,6 +51,13 @@ message ServerMessage {
   oneof payload {
     Welcome welcome = 1;        // sent by server right after successful auth
     RuleUpdate rule_update = 2;
+    // Additive in v1.7 (spec 011-rate-limiting-qos). One push per
+    // operator API call to PUT/DELETE
+    // /v1/clients/{id}/owners/{owner_id}/rate-limit. Carries SET (with
+    // rate_limit body) or REMOVE. v0.10 clients (no awareness of this
+    // variant) ignore it; the v0.11 capability gate refuses to emit it
+    // toward pre-0.11 clients (HTTP 422 rate_limit_unsupported_by_client).
+    OwnerRateLimitUpdate owner_rate_limit_update = 3;
   }
 }
 
@@ -173,6 +180,58 @@ message Rule {
   // such a rule down a v0.8 channel — see
   // `crates/forward-server/src/operator/http.rs::push_rule`.
   optional string sni_pattern = 11;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). Wire field number 12.
+  // Absent → uncapped on every dimension (legacy v0.10 behaviour, byte-
+  // identical wire). Present → optional caps for bandwidth (in/out),
+  // new-connection rate (TCP conn/s or UDP flow/s), concurrent
+  // connection / flow count, plus optional burst overrides.
+  //
+  // v0.10 readers (no awareness of field 12) drop it on decode and see
+  // an uncapped rule. The v0.11 forward-server's capability gate
+  // (HTTP 422 `rate_limit_unsupported_by_client`) prevents a server
+  // from ever sending such a rule down a pre-0.11 channel —
+  // see crates/forward-server/src/operator/http.rs::push_rule.
+  optional RateLimit rate_limit = 12;
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos).
+// Bundle of four optional caps. Used both as `Rule.rate_limit` and as
+// the value side of the per-owner cap envelope. Each cap is
+// independently optional; absent (== proto3 default-zero on the wire)
+// means "uncapped on this dimension".
+//
+// Burst defaults to one second of `rate` when the companion
+// `*_burst` field is absent. When supplied, server validation clamps
+// to `rate / 100 ≤ burst ≤ rate * 60`. The
+// `concurrent_connections_burst` slot is reserved for future use;
+// current server validation rejects any non-zero value (concurrent is
+// a hard ceiling, not a token bucket).
+message RateLimit {
+  optional uint64 bandwidth_in_bps          = 1;  // bytes/sec ingress
+  optional uint64 bandwidth_out_bps         = 2;  // bytes/sec egress
+  optional uint32 new_connections_per_sec   = 3;  // TCP conn/s or UDP flow/s
+  optional uint32 concurrent_connections    = 4;  // concurrent TCP conn or UDP NAT bindings
+  optional uint64 bandwidth_in_burst        = 5;  // override default burst (bytes)
+  optional uint64 bandwidth_out_burst       = 6;  // override default burst (bytes)
+  optional uint32 new_connections_burst     = 7;  // override default burst (count)
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos). Server-push variant carried
+// in `ServerMessage.payload` (tag 3). Pushed to the target client on
+// every PUT/DELETE of an owner-cap envelope.
+message OwnerRateLimitUpdate {
+  string client_name = 1;
+  string owner_id    = 2;
+  // Body. Required when action == SET; ignored when action == REMOVE.
+  optional RateLimit rate_limit = 3;
+  OwnerRateLimitAction action   = 4;
+}
+
+enum OwnerRateLimitAction {
+  OWNER_RATE_LIMIT_ACTION_UNSPECIFIED = 0;
+  OWNER_RATE_LIMIT_ACTION_SET    = 1;
+  OWNER_RATE_LIMIT_ACTION_REMOVE = 2;
 }
 
 // New in v1.4 (spec 007-multi-target-failover).
@@ -314,6 +373,59 @@ message RuleStats {
   uint64 sni_route_exact_total    = 13;
   uint64 sni_route_wildcard_total = 14;
   uint64 sni_route_fallback_total = 15;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). Field number 16
+  // continues after v0.9 (fields 13/14/15). Absent for rules with no
+  // cap fields set (uncapped path produces no rate-limit telemetry).
+  //
+  // The v0.11 forward-server `/metrics` endpoint folds this entry into
+  // `forward_rate_limit_reject_total{client,rule,owner,reason}`,
+  // `forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}`,
+  // and `forward_rate_limit_active_connections{client,rule,owner}`.
+  // The `owner` label is empty for per-rule reasons (owner attribution
+  // belongs to the per-owner counterpart on `StatsReport.owner_rate_limit_stats`).
+  optional RateLimitStats rate_limit = 16;
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos). Per-scope rate-limit stats
+// payload. Used as `RuleStats.rate_limit` (per-rule scope) and as the
+// `stats` field of `OwnerRateLimitStats` (per-owner scope).
+message RateLimitStats {
+  // Cumulative reject totals by reason. Sparse — only reasons that
+  // ever fired are present. Reasons map 1:1 to RateLimitRejectReason.
+  repeated RateLimitRejectCount reject_total = 1;
+  // Cumulative wall-clock time the bandwidth cap blocked the read /
+  // write half-loop, in microseconds. Always 0 if no bandwidth cap is
+  // set on this scope.
+  uint64 throttle_micros_in  = 2;
+  uint64 throttle_micros_out = 3;
+  // Live count of connections (TCP) or NAT-bound flows (UDP) under
+  // this scope. Mirrors the limiter's `active_connections` atomic.
+  uint32 active_connections  = 4;
+}
+
+message RateLimitRejectCount {
+  RateLimitRejectReason reason = 1;
+  uint64 total                 = 2;
+}
+
+enum RateLimitRejectReason {
+  RATE_LIMIT_REJECT_REASON_UNSPECIFIED = 0;
+  RATE_LIMIT_REJECT_REASON_CONN_CONCURRENT     = 1;
+  RATE_LIMIT_REJECT_REASON_CONN_RATE           = 2;
+  RATE_LIMIT_REJECT_REASON_UDP_FLOW_RATE       = 3;
+  RATE_LIMIT_REJECT_REASON_OWNER_CONCURRENT    = 4;
+  RATE_LIMIT_REJECT_REASON_OWNER_CONN_RATE     = 5;
+  RATE_LIMIT_REJECT_REASON_OWNER_UDP_FLOW_RATE = 6;
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos). One per owner with a cap
+// envelope active on this client. Carried alongside RuleStats in
+// StatsReport so the server can attribute owner-level reject /
+// throttle counts to the owner's RBAC ID without per-rule join-back.
+message OwnerRateLimitStats {
+  string owner_id = 1;
+  RateLimitStats stats = 2;
 }
 
 // New in v1.4 (spec 007-multi-target-failover).
@@ -385,4 +497,12 @@ message StatsReport {
   // `forward_tls_client_hello_parse_failures_total{client,port}` in
   // the existing StatsReport handler.
   repeated SniListenerStats sni_listener_stats = 3;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). One entry per owner
+  // with at least one active rule under a per-owner cap envelope on
+  // this client. Empty for clients with no per-owner caps. Folded into
+  // `forward_rate_limit_owner_active_connections{client,owner}` and
+  // the per-owner reject / throttle counters with reason ∈
+  // {OWNER_CONCURRENT, OWNER_CONN_RATE, OWNER_UDP_FLOW_RATE}.
+  repeated OwnerRateLimitStats owner_rate_limit_stats = 4;
 }

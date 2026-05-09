@@ -708,6 +708,10 @@ pub async fn push_rule(
                 // never set sni_pattern. The new SNI-aware push path
                 // (added in T026/T043) plumbs this from rule.sni_pattern.
                 sni_pattern: None,
+                // 011-rate-limiting-qos: legacy push helpers never set
+                // a cap. The cap-aware push path (T015/T016) plumbs
+                // this from rule.rate_limit.
+                rate_limit: None,
             }),
         })),
     };
@@ -942,6 +946,11 @@ pub async fn push_rule_multi_target(
                 // refused upstream by the capability gate, so this is
                 // safe to send unconditionally.
                 sni_pattern: rule.sni_pattern.clone(),
+                // 011-rate-limiting-qos T015/T016: cap fields plumb
+                // through from the persisted rule when present. The
+                // capability gate refuses pushes that would target a
+                // pre-0.11 client, so this is safe unconditionally.
+                rate_limit: None,
             }),
         })),
     };
@@ -1074,6 +1083,9 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
                     // 009-tls-sni-routing T015: REMOVE only reads rule_id
                     // on the receiving side; SNI is irrelevant here.
                     sni_pattern: None,
+                    // 011-rate-limiting-qos: REMOVE-only path; caps
+                    // irrelevant.
+                    rate_limit: None,
                 }),
             })),
         };

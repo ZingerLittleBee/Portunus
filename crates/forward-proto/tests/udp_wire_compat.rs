@@ -45,6 +45,7 @@ fn tcp_rule_stats_byte_compatible_when_udp_fields_zero() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
 
@@ -84,6 +85,7 @@ fn udp_rule_stats_with_all_udp_fields_roundtrips() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decode");

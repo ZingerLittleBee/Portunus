@@ -124,6 +124,7 @@ fn v08_shape_rule() -> Rule {
         }],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
     }
 }
 
@@ -195,6 +196,7 @@ fn explicit_unset_sni_pattern_encodes_identically_to_default() {
     let rule_explicit = v08_shape_rule();
     let rule_default_sni = Rule {
         sni_pattern: None,
+        rate_limit: None,
         ..v08_shape_rule()
     };
     assert_eq!(

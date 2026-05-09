@@ -1,7 +1,8 @@
 //! Schema-version handshake regression test (009-tls-sni-routing T014).
 //!
 //! Covers:
-//! - Fresh open lands at the current target schema version (4 after V004).
+//! - Fresh open lands at the current target schema version
+//!   (5 after V005 added by 011-rate-limiting-qos).
 //! - A simulated v0.8 state.db (only V001 applied) is auto-migrated up
 //!   to V002 on open — the additive `sni_pattern` column appears.
 //! - A state.db whose `schema_migrations` head exceeds the binary's
@@ -21,8 +22,8 @@ fn fresh_open_lands_at_v09_target() {
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 4,
-        "current target schema is 4 (V001 + V002 + V003 + V004)"
+        v, 5,
+        "current target schema is 5 (V001 + V002 + V003 + V004 + V005)"
     );
     assert_eq!(v, Store::target_schema_version());
 }

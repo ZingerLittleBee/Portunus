@@ -109,6 +109,7 @@ fn t007_rule_sni_pattern_roundtrip() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: Some(String::from("api.example.com")),
+        rate_limit: None,
     };
     let bytes = r.encode_to_vec();
     let decoded = Rule::decode(bytes.as_slice()).expect("decodes");
@@ -138,6 +139,7 @@ fn t007_rule_sni_pattern_absent_byte_stable_with_v08() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
     };
     let bytes = r.encode_to_vec();
     assert!(
@@ -166,6 +168,7 @@ fn t008_rule_stats_sni_counters_roundtrip() {
         sni_route_exact_total: 7,
         sni_route_wildcard_total: 3,
         sni_route_fallback_total: 1,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
     let decoded = RuleStats::decode(bytes.as_slice()).expect("decodes");
@@ -205,6 +208,7 @@ fn t008_rule_stats_sni_counters_zero_omits_tags() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
     for f in [13u32, 14, 15] {
@@ -240,6 +244,7 @@ fn t009_stats_report_sni_listener_stats_roundtrip() {
                 client_hello_peek_count: 0,
             },
         ],
+        owner_rate_limit_stats: Vec::new(),
     };
     let bytes = report.encode_to_vec();
     let decoded = StatsReport::decode(bytes.as_slice()).expect("decodes");
@@ -259,6 +264,7 @@ fn t009_stats_report_empty_sni_list_omits_field_3() {
         sent_at_unix_ms: 1_700_000_000,
         stats: vec![],
         sni_listener_stats: vec![],
+        owner_rate_limit_stats: Vec::new(),
     };
     let bytes = report.encode_to_vec();
     assert!(
@@ -305,6 +311,7 @@ fn t010_rule_stats_v07_fields_unchanged_when_no_sni() {
         sni_route_exact_total: 0,
         sni_route_wildcard_total: 0,
         sni_route_fallback_total: 0,
+        rate_limit: None,
     };
     let bytes = s.encode_to_vec();
 
@@ -347,6 +354,7 @@ fn t010_rule_encoding_deterministic_under_no_sni() {
         targets: vec![],
         health_check_interval_secs: 0,
         sni_pattern: None,
+        rate_limit: None,
     };
     let a = mk().encode_to_vec();
     let b = mk().encode_to_vec();
@@ -382,6 +390,7 @@ fn t010_multi_target_rule_unchanged_when_no_sni() {
         ],
         health_check_interval_secs: 30,
         sni_pattern: None,
+        rate_limit: None,
     };
     let bytes = r.encode_to_vec();
     assert!(
