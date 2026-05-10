@@ -123,13 +123,12 @@ pub struct ClientRule {
     /// `None` for uncapped rules. Drained into `RuleStats.rate_limit`
     /// on every report tick.
     pub rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
-    /// 011-rate-limiting-qos (T030): per-owner data-plane limiter the
-    /// rule's RBAC owner is bound to. `None` when the owner has no
-    /// rate-limit envelope installed; otherwise a clone of the
-    /// `Arc<OwnerRateLimiter>` from the `OwnerRateLimitScopeManager`.
-    /// FR-013: this layer binds BEFORE [`Self::rate_limit`] on every
-    /// TCP accept, UDP first-packet, and bandwidth acquire.
-    pub owner_rate_limit: Option<Arc<rate_limit::scope::OwnerRateLimiter>>,
+    /// 011-rate-limiting-qos (T030): dynamic per-owner data-plane
+    /// limiter handle. Rules outlive owner-cap mutations, so this
+    /// cannot be a one-time `Arc<OwnerRateLimiter>` snapshot. Instead
+    /// the forwarder snapshots the current limiter from the
+    /// process-lifetime registry on each admission / bandwidth acquire.
+    pub owner_rate_limit: Option<Arc<rate_limit::scope::OwnerRateLimitHandle>>,
     /// 011-rate-limiting-qos (T032): per-owner rate-limit stats
     /// accumulator. `None` mirror of [`Self::owner_rate_limit`].
     /// Drained into `StatsReport.owner_rate_limit_stats` on every
@@ -371,7 +370,7 @@ async fn accept_loop<R: Resolve + 'static>(
     // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
     // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
     // reject reasons (FR-014).
-    owner_rate_limiter: Option<Arc<rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limiter: Option<Arc<rate_limit::scope::OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
 ) {
     // Per-listener in-flight set: lets us reap finished proxies for
@@ -2014,7 +2013,9 @@ mod tests {
     /// counter must stay at zero.
     #[tokio::test]
     async fn t030_owner_cap_binds_before_rule_cap_on_tcp_accept() {
-        use crate::forwarder::rate_limit::scope::{OwnerRateLimiter, RuleRateLimiter};
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager, RuleRateLimiter,
+        };
         use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         let _guard = port_pool_lock().lock().await;
         let echo = spawn_echo().await;
@@ -2031,10 +2032,16 @@ mod tests {
             ..Default::default()
         }));
         let rule_stats = Arc::new(RateLimitStatsAccumulator::new());
-        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&forward_core::RateLimit {
-            concurrent_connections: Some(1),
-            ..Default::default()
-        }));
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&forward_core::RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, owner_mgr));
         let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
 
         let mut rule = single_rule(202, port, echo);
@@ -2076,14 +2083,25 @@ mod tests {
         // Wait for the accept loop to register the bump on the owner
         // limiter (the gauge is the source of truth).
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while owner_limiter.active_connections() < 1 {
+        while owner_limiter
+            .snapshot()
+            .expect("owner limiter installed")
+            .active_connections()
+            < 1
+        {
             assert!(
                 std::time::Instant::now() <= deadline,
                 "accept loop never reached owner active_connections=1"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(owner_limiter.active_connections(), 1);
+        assert_eq!(
+            owner_limiter
+                .snapshot()
+                .expect("owner limiter installed")
+                .active_connections(),
+            1
+        );
         assert_eq!(rule_limiter.active_connections(), 1);
 
         // Second connect: owner cap exhausted → must observe a reject
@@ -2110,7 +2128,13 @@ mod tests {
             "rule reject counter must NOT be bumped when the owner gate refuses (FR-013)"
         );
         // Owner gauge stays at 1 (we did not admit a second).
-        assert_eq!(owner_limiter.active_connections(), 1);
+        assert_eq!(
+            owner_limiter
+                .snapshot()
+                .expect("owner limiter installed")
+                .active_connections(),
+            1
+        );
         // Rule gauge also stays at 1 — FR-013 ordering means the rule
         // counter was never touched on the rejected accept.
         assert_eq!(rule_limiter.active_connections(), 1);

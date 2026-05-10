@@ -223,7 +223,7 @@ async fn accept_loop<R: Resolve + 'static>(
     // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
     // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
     // reject reasons (FR-014).
-    owner_rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<
         Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
     >,
@@ -355,7 +355,7 @@ async fn handle_connection<R: Resolve>(
     rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
     // accumulator. None when the owner has no bandwidth caps.
-    owner_rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<
         Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
     >,

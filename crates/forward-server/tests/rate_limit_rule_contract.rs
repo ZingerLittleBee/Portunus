@@ -124,11 +124,16 @@ fn build_fixture() -> Fixture {
 /// the HTTP `POST /v1/rules` handler complete end-to-end without a real
 /// gRPC stream — a contract-test approximation of a healthy v0.11
 /// client.
-async fn register_fake_client(fixture: &Fixture, name: &str, client_version: Option<&str>) {
+async fn register_fake_client(
+    fixture: &Fixture,
+    name: &str,
+    client_version: Option<&str>,
+) -> Arc<tokio::sync::Mutex<Vec<forward_proto::v1::RuleUpdate>>> {
     use forward_proto::v1::server_message::Payload;
     let client_name = ClientName::new(name.to_string()).expect("valid client");
     let cancel = CancellationToken::new();
     let (outbound, mut rx) = tokio::sync::mpsc::channel(8);
+    let seen_updates = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let waiters: Arc<
         tokio::sync::Mutex<
             std::collections::HashMap<
@@ -160,12 +165,14 @@ async fn register_fake_client(fixture: &Fixture, name: &str, client_version: Opt
     // Auto-ack: drain RuleUpdate messages and resolve waiters with
     // `Activated`. Mirrors the success path that grpc/service.rs runs
     // when a real client sends back `RuleStatus`.
+    let seen_updates_bg = Arc::clone(&seen_updates);
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let Ok(server_msg) = msg else { continue };
             let Some(Payload::RuleUpdate(update)) = server_msg.payload else {
                 continue;
             };
+            seen_updates_bg.lock().await.push(update.clone());
             let request_id = update.request_id.clone();
             let rule_id = update.rule.as_ref().map(|r| r.rule_id).unwrap_or_default();
             let mut guard = waiters.lock().await;
@@ -179,6 +186,7 @@ async fn register_fake_client(fixture: &Fixture, name: &str, client_version: Opt
             }
         }
     });
+    seen_updates
 }
 
 fn push(bearer: &str, body: serde_json::Value) -> Request<Body> {
@@ -211,7 +219,7 @@ async fn err_code(resp: axum::response::Response) -> String {
 #[tokio::test]
 async fn rule_with_rate_limit_persists_and_echoes_in_response() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -249,7 +257,7 @@ async fn rule_without_rate_limit_omits_field_in_response() {
     // Byte-stable: a rule pushed without rate_limit must omit the
     // field from the response so pre-0.11 callers see an unchanged body.
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -277,7 +285,7 @@ async fn rule_without_rate_limit_omits_field_in_response() {
 #[tokio::test]
 async fn rate_limit_cap_zero_returns_400() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -301,7 +309,7 @@ async fn rate_limit_cap_zero_returns_400() {
 #[tokio::test]
 async fn rate_limit_burst_without_rate_returns_400() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -328,7 +336,7 @@ async fn rate_limit_burst_without_rate_returns_400() {
 #[tokio::test]
 async fn rate_limit_burst_below_floor_returns_400() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -355,7 +363,7 @@ async fn rate_limit_burst_below_floor_returns_400() {
 #[tokio::test]
 async fn rate_limit_concurrent_burst_reserved_returns_400() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -389,7 +397,7 @@ async fn rate_limit_concurrent_burst_reserved_returns_400() {
 #[tokio::test]
 async fn rate_limit_unsupported_by_v010_client_returns_422() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.10.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.10.0")).await;
 
     let resp = f
         .router
@@ -414,7 +422,7 @@ async fn rate_limit_unsupported_by_v010_client_returns_422() {
 async fn rate_limit_unsupported_by_unknown_version_returns_422() {
     // No Hello received yet — gate conservatively.
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, None).await;
+    let _updates = register_fake_client(&f, CLIENT, None).await;
 
     let resp = f
         .router
@@ -440,7 +448,7 @@ async fn rule_without_rate_limit_passes_through_for_pre_011_client() {
     // The capability gate must not fire when the rule carries no
     // rate_limit field — pre-0.11 clients keep working unchanged.
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.10.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.10.0")).await;
 
     let resp = f
         .router
@@ -466,7 +474,7 @@ async fn rule_without_rate_limit_passes_through_for_pre_011_client() {
 #[tokio::test]
 async fn rate_limit_on_legacy_target_host_shape_returns_400() {
     let f = build_fixture();
-    register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
 
     let resp = f
         .router
@@ -489,4 +497,59 @@ async fn rate_limit_on_legacy_target_host_shape_returns_400() {
         err_code(resp).await,
         "validation.rate_limit_on_legacy_shape"
     );
+}
+
+#[tokio::test]
+async fn uncapped_rule_emits_owner_id_when_owner_cap_exists() {
+    let f = build_fixture();
+    let updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+
+    let put_owner = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"))
+        .header("content-type", "application/json")
+        .header("Authorization", format!("Bearer {SUPERADMIN_TOKEN}"))
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "bandwidth_in_bps": 1_048_576u64
+            }))
+            .expect("body"),
+        ))
+        .expect("build request");
+    let put_resp = f
+        .router
+        .clone()
+        .oneshot(put_owner)
+        .await
+        .expect("owner cap");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": CLIENT,
+                "listen_port": 30033,
+                "protocol": "tcp",
+                "targets": [{"host": "127.0.0.1", "port": 9033}],
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let seen = updates.lock().await;
+    let pushed = seen
+        .iter()
+        .find(|u| u.rule.as_ref().is_some_and(|r| r.listen_port == 30033))
+        .expect("rule update captured");
+    let owner_id = pushed
+        .rule
+        .as_ref()
+        .and_then(|r| r.owner_id.clone())
+        .expect("owner_id must be present when owner cap exists");
+    assert_eq!(owner_id, "alice");
 }

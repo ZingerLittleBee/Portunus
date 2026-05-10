@@ -330,16 +330,17 @@ pub enum LayeredAcquire {
 /// uncapped rules / owners short-circuit through (and the v0.10
 /// byte-stable hot path is preserved when both are `None`).
 pub fn try_acquire_layered(
-    owner: Option<&Arc<OwnerRateLimiter>>,
+    owner: Option<&Arc<OwnerRateLimitHandle>>,
     rule: Option<&Arc<RuleRateLimiter>>,
     is_udp_first_packet: bool,
 ) -> LayeredAcquire {
     let owner_guard = if let Some(o) = owner {
-        match o.try_acquire(CapScope::Owner, is_udp_first_packet) {
-            ConnectionAcquire::Granted(g) => Some(g),
-            ConnectionAcquire::Rejected(reason) => {
+        match o.try_acquire(is_udp_first_packet) {
+            Some(ConnectionAcquire::Granted(g)) => Some(g),
+            Some(ConnectionAcquire::Rejected(reason)) => {
                 return LayeredAcquire::OwnerRejected(reason);
             }
+            None => None,
         }
     } else {
         None
@@ -400,6 +401,54 @@ impl OwnerId {
 impl std::fmt::Display for OwnerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// Dynamic view over the current per-owner limiter for a rule's owner.
+///
+/// Rules outlive owner-cap mutations, so the data plane cannot hold a
+/// one-time `Arc<OwnerRateLimiter>` snapshot and expect later
+/// `OwnerRateLimitUpdate{SET|REMOVE}` pushes to take effect. Instead the
+/// rule keeps this lightweight handle and snapshots the current limiter
+/// from the process-lifetime registry at each admission / bandwidth
+/// acquire.
+#[derive(Debug)]
+pub struct OwnerRateLimitHandle {
+    owner_id: OwnerId,
+    scope: Arc<OwnerRateLimitScopeManager>,
+}
+
+impl OwnerRateLimitHandle {
+    #[must_use]
+    pub fn new(owner_id: OwnerId, scope: Arc<OwnerRateLimitScopeManager>) -> Self {
+        Self { owner_id, scope }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Option<Arc<OwnerRateLimiter>> {
+        self.scope.get(&self.owner_id)
+    }
+
+    #[must_use]
+    pub fn has_bandwidth_cap(&self) -> bool {
+        self.snapshot()
+            .is_some_and(|limiter| limiter.has_bandwidth_cap())
+    }
+
+    #[must_use]
+    pub fn try_acquire(&self, is_udp_first_packet: bool) -> Option<ConnectionAcquire> {
+        self.snapshot()
+            .map(|limiter| limiter.try_acquire(CapScope::Owner, is_udp_first_packet))
+    }
+
+    #[must_use]
+    pub fn acquire_bandwidth(
+        &self,
+        direction: BandwidthDirection,
+        bytes: u64,
+    ) -> Option<BandwidthAcquire> {
+        self.snapshot()
+            .map(|limiter| limiter.acquire_bandwidth(direction, bytes))
     }
 }
 
@@ -1121,22 +1170,56 @@ mod tests {
         assert!(mgr.is_empty());
     }
 
+    fn owner_handle_with(rl: RateLimit) -> Arc<OwnerRateLimitHandle> {
+        let mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner = OwnerId::new("alice");
+        mgr.install(&owner, Some(&rl));
+        Arc::new(OwnerRateLimitHandle::new(owner, mgr))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn t030_owner_handle_observes_updates_after_rule_activation() {
+        let mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let alice = OwnerId::new("alice");
+        let handle = OwnerRateLimitHandle::new(alice.clone(), Arc::clone(&mgr));
+
+        assert!(handle.snapshot().is_none(), "no cap installed yet");
+
+        mgr.update(
+            &alice,
+            Some(&RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            }),
+        );
+
+        let limiter = handle
+            .snapshot()
+            .expect("handle must see later owner-cap install");
+        let guard = match handle.try_acquire(false) {
+            Some(ConnectionAcquire::Granted(guard)) => guard,
+            other => panic!("expected granted acquire, got {other:?}"),
+        };
+        assert_eq!(limiter.active_connections(), 1);
+        drop(guard);
+    }
+
     /// T030 / FR-013: owner gate runs before rule gate — when the
     /// owner is at-cap and the rule still has room, the cascade
     /// rejects with the OWNER_* reason and never touches the rule
     /// limiter's counters.
     #[tokio::test(start_paused = true)]
     async fn t030_layered_owner_binds_before_rule_when_owner_full() {
-        let owner = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+        let owner = owner_handle_with(RateLimit {
             concurrent_connections: Some(1),
             ..Default::default()
-        }));
+        });
         let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
             concurrent_connections: Some(10),
             ..Default::default()
         }));
         // Saturate the owner cap.
-        let _hold = owner.try_acquire(CapScope::Owner, false);
+        let _hold = owner.try_acquire(false).expect("owner limiter installed");
         match _hold {
             ConnectionAcquire::Granted(_) => {}
             ConnectionAcquire::Rejected(_) => panic!("first owner acquire admits"),
@@ -1160,10 +1243,10 @@ mod tests {
     /// doesn't see a phantom +1 on the owner gauge.
     #[tokio::test(start_paused = true)]
     async fn t030_layered_owner_slot_released_when_rule_rejects() {
-        let owner = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+        let owner = owner_handle_with(RateLimit {
             concurrent_connections: Some(5),
             ..Default::default()
-        }));
+        });
         let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
             concurrent_connections: Some(1),
             ..Default::default()
@@ -1173,13 +1256,19 @@ mod tests {
             ConnectionAcquire::Granted(g) => g,
             ConnectionAcquire::Rejected(_) => panic!("first rule acquire admits"),
         };
-        let owner_before = owner.active_connections();
+        let owner_before = owner
+            .snapshot()
+            .expect("owner limiter installed")
+            .active_connections();
         match try_acquire_layered(Some(&owner), Some(&rule), false) {
             LayeredAcquire::RuleRejected(RejectReason::ConnConcurrent) => {}
             other => panic!("expected rule ConnConcurrent reject, got {other:?}"),
         }
         assert_eq!(
-            owner.active_connections(),
+            owner
+                .snapshot()
+                .expect("owner limiter installed")
+                .active_connections(),
             owner_before,
             "owner slot held during the failed rule probe must be released"
         );
@@ -1192,10 +1281,10 @@ mod tests {
     /// closes.
     #[tokio::test(start_paused = true)]
     async fn t030_layered_grants_both_guards_when_both_admit() {
-        let owner = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+        let owner = owner_handle_with(RateLimit {
             concurrent_connections: Some(2),
             ..Default::default()
-        }));
+        });
         let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
             concurrent_connections: Some(2),
             ..Default::default()
@@ -1209,11 +1298,23 @@ mod tests {
         };
         assert!(og.is_some());
         assert!(rg.is_some());
-        assert_eq!(owner.active_connections(), 1);
+        assert_eq!(
+            owner
+                .snapshot()
+                .expect("owner limiter installed")
+                .active_connections(),
+            1
+        );
         assert_eq!(rule.active_connections(), 1);
         drop(og);
         drop(rg);
-        assert_eq!(owner.active_connections(), 0);
+        assert_eq!(
+            owner
+                .snapshot()
+                .expect("owner limiter installed")
+                .active_connections(),
+            0
+        );
         assert_eq!(rule.active_connections(), 0);
     }
 

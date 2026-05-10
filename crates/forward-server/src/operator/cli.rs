@@ -1001,16 +1001,11 @@ pub async fn push_rule_multi_target(
                     .rate_limit
                     .as_ref()
                     .map(crate::grpc::service::rate_limit_to_proto),
-                // 011-rate-limiting-qos T031: emit owner_id alongside
-                // the per-rule cap so the forward-client can resolve
-                // its per-owner limiter (FR-013). Gated on
-                // rate_limit.is_some() preserves byte-stability for
-                // uncapped rules; future owner-cap-presence detection
-                // (T027/T028) will broaden the gate.
-                owner_id: rule
-                    .rate_limit
-                    .as_ref()
-                    .map(|_| rule.owner_user_id.to_string()),
+                // 011-rate-limiting-qos: always emit owner_id for
+                // v0.11+ rules so the forward-client can bind later
+                // owner-cap mutations to already-active rules. Older
+                // clients ignore the additive field on decode.
+                owner_id: Some(rule.owner_user_id.to_string()),
             }),
         })),
     };

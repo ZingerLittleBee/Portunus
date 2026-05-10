@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::proxy_protocol::{self, ProxyProtocolPrelude};
-use super::rate_limit::scope::{OwnerRateLimiter, RuleRateLimiter};
+use super::rate_limit::scope::{OwnerRateLimitHandle, RuleRateLimiter};
 use super::rate_limit::stats::RateLimitStatsAccumulator;
 use super::stats::RuleStats;
 use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
@@ -61,7 +61,7 @@ pub async fn proxy<R: Resolve>(
     // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
     // accumulator. Consulted alongside `rate_limit` in the throttling
     // copy loop — owner first (FR-013).
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     // Legacy plain-TCP path: no preread bytes to replay.
@@ -104,7 +104,7 @@ pub async fn proxy_with_preread<R: Resolve>(
     listen_port: u16,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     proxy_with_preread_and_prelude(
@@ -145,7 +145,7 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     listen_port: u16,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)> {
     let mut outbound = match resolver

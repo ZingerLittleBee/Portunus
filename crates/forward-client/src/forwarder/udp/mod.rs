@@ -37,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::forwarder::rate_limit::scope::{
-    ActiveGuard, LayeredAcquire, OwnerRateLimiter, RuleRateLimiter, try_acquire_layered,
+    ActiveGuard, LayeredAcquire, OwnerRateLimitHandle, RuleRateLimiter, try_acquire_layered,
 };
 use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
@@ -75,7 +75,7 @@ pub async fn run_listener_multi_target<R: Resolve + 'static>(
     cancel: CancellationToken,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
@@ -165,7 +165,7 @@ async fn handle_inbound_multi_target<R: Resolve>(
     resolver: Arc<LiveResolver<R>>,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     use crate::forwarder::failover;
@@ -370,7 +370,7 @@ fn acquire_first_packet(
     source: SocketAddr,
     rate_limit: Option<&Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<&RateLimitStatsAccumulator>,
-    owner_rate_limit: Option<&Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<&Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<&RateLimitStatsAccumulator>,
 ) -> Option<AdmitPair> {
     match try_acquire_layered(owner_rate_limit, rate_limit, true) {
@@ -446,7 +446,7 @@ pub async fn run_listener<R: Resolve + 'static>(
     cancel: CancellationToken,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
@@ -537,7 +537,7 @@ async fn handle_inbound<R: Resolve>(
     resolver: Arc<LiveResolver<R>>,
     rate_limit: Option<Arc<RuleRateLimiter>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimiter>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) {
     // Fast path: existing flow. Skips both resolver and upstream-bind
@@ -1115,7 +1115,9 @@ mod tests {
     /// and the per-rule flow-rate counter must stay at zero.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn t030_owner_cap_binds_before_rule_cap_on_udp_first_packet() {
-        use crate::forwarder::rate_limit::scope::{OwnerRateLimiter, RuleRateLimiter};
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager, RuleRateLimiter,
+        };
         use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         use forward_core::{RateLimit, RejectReason};
 
@@ -1132,10 +1134,16 @@ mod tests {
             ..Default::default()
         }));
         let rule_stats = Arc::new(RateLimitStatsAccumulator::new());
-        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
-            new_connections_per_sec: Some(1),
-            ..Default::default()
-        }));
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&RateLimit {
+                new_connections_per_sec: Some(1),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, owner_mgr));
         let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
 
         let stats = RuleStats::new();

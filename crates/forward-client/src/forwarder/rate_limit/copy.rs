@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::scope::{BandwidthAcquire, BandwidthDirection, OwnerRateLimiter, RuleRateLimiter};
+use super::scope::{BandwidthAcquire, BandwidthDirection, OwnerRateLimitHandle, RuleRateLimiter};
 use super::stats::RateLimitStatsAccumulator;
 
 /// Chunk size for the half-loops. Matches the default
@@ -45,7 +45,7 @@ pub async fn copy_bidirectional_with_rate_limit<A, B>(
     outbound: &mut B,
     limiter: Arc<RuleRateLimiter>,
     stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_limiter: Option<Arc<OwnerRateLimiter>>,
+    owner_limiter: Option<Arc<OwnerRateLimitHandle>>,
     owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
 ) -> io::Result<(u64, u64)>
 where
@@ -101,7 +101,7 @@ async fn copy_with_cap<R, W>(
     // every chunk (FR-013). Effective throughput is the lesser of
     // (owner_rate, rule_rate). Owner-direction throttle wall-clock
     // accumulates into `owner_stats`; rule-direction into `stats`.
-    owner_limiter: Option<&OwnerRateLimiter>,
+    owner_limiter: Option<&OwnerRateLimitHandle>,
     owner_stats: Option<&RateLimitStatsAccumulator>,
 ) -> io::Result<u64>
 where
@@ -130,8 +130,8 @@ where
         if let Some(o) = owner_limiter {
             loop {
                 match o.acquire_bandwidth(direction, n as u64) {
-                    BandwidthAcquire::Granted => break,
-                    BandwidthAcquire::Throttled { deficit } => {
+                    Some(BandwidthAcquire::Granted) | None => break,
+                    Some(BandwidthAcquire::Throttled { deficit }) => {
                         if let Some(s) = owner_stats {
                             let micros = u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
                             s.record_throttle(direction, micros);
@@ -169,6 +169,15 @@ mod tests {
 
     fn limiter_for(rl: RateLimit) -> Arc<RuleRateLimiter> {
         Arc::new(RuleRateLimiter::from_envelope(&rl))
+    }
+
+    fn owner_handle_for(
+        rl: RateLimit,
+    ) -> Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle> {
+        let mgr = Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
+        let owner = crate::forwarder::rate_limit::scope::OwnerId::new("owner");
+        mgr.install(&owner, Some(&rl));
+        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(owner, mgr))
     }
 
     /// 011-rate-limiting-qos T010: TCP bandwidth-in cap shapes
@@ -408,7 +417,6 @@ mod tests {
     /// here first.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn t025_per_owner_ceiling_binds_before_per_rule_cap() {
-        use crate::forwarder::rate_limit::scope::OwnerRateLimiter;
         // 10 MB/s per-rule, 5 MB/s per-owner. The owner is the
         // binding ceiling. Push 5 MiB and assert the elapsed time
         // matches the owner rate within ±10%.
@@ -417,10 +425,10 @@ mod tests {
             ..Default::default()
         });
         let rule_acc = Arc::new(RateLimitStatsAccumulator::new());
-        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+        let owner_limiter = owner_handle_for(RateLimit {
             bandwidth_in_bps: Some(5 * 1024 * 1024),
             ..Default::default()
-        }));
+        });
         let owner_acc = Arc::new(RateLimitStatsAccumulator::new());
 
         let (mut peer, mut inbound) = duplex(256 * 1024);
@@ -502,7 +510,6 @@ mod tests {
     /// rule accumulator stays at zero.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn t030_owner_bandwidth_cap_throttles_independently() {
-        use crate::forwarder::rate_limit::scope::OwnerRateLimiter;
         // Rule allows 1 MiB/s — generous; owner allows 100 KiB/s — the
         // binding ceiling. Effective throughput must converge near the
         // owner rate, with throttle micros recorded against the owner
@@ -512,10 +519,10 @@ mod tests {
             ..Default::default()
         });
         let rule_acc = Arc::new(RateLimitStatsAccumulator::new());
-        let owner_limiter = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+        let owner_limiter = owner_handle_for(RateLimit {
             bandwidth_in_bps: Some(100 * 1024),
             ..Default::default()
-        }));
+        });
         let owner_acc = Arc::new(RateLimitStatsAccumulator::new());
 
         let (mut peer, mut inbound) = duplex(64 * 1024);
@@ -580,6 +587,91 @@ mod tests {
         );
     }
 
+    /// Owner cap may arrive after the rule is already active. The
+    /// dynamic owner handle must pick up the later install without a
+    /// rule re-push.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn t030_owner_cap_installed_after_activation_throttles_existing_rule() {
+        let rule_limiter = limiter_for(RateLimit::default());
+        let rule_acc = Arc::new(RateLimitStatsAccumulator::new());
+        let owner_mgr =
+            Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
+        let owner_id = crate::forwarder::rate_limit::scope::OwnerId::new("alice");
+        let owner_handle = Arc::new(
+            crate::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(
+                owner_id.clone(),
+                Arc::clone(&owner_mgr),
+            ),
+        );
+        let owner_acc = Arc::new(RateLimitStatsAccumulator::new());
+
+        let (mut peer, mut inbound) = duplex(64 * 1024);
+        let (mut outbound, mut target) = duplex(64 * 1024);
+
+        let task_rule = Arc::clone(&rule_limiter);
+        let task_rule_stats = Arc::clone(&rule_acc);
+        let task_owner = Arc::clone(&owner_handle);
+        let task_owner_stats = Arc::clone(&owner_acc);
+        let proxy = tokio::spawn(async move {
+            copy_bidirectional_with_rate_limit(
+                &mut inbound,
+                &mut outbound,
+                task_rule,
+                Some(task_rule_stats),
+                Some(task_owner),
+                Some(task_owner_stats),
+            )
+            .await
+        });
+
+        owner_mgr.update(
+            &owner_id,
+            Some(&RateLimit {
+                bandwidth_in_bps: Some(100 * 1024),
+                ..Default::default()
+            }),
+        );
+
+        let payload = vec![0xDD_u8; 1024 * 1024];
+        let writer = tokio::spawn(async move {
+            peer.write_all(&payload).await.unwrap();
+            peer.shutdown().await.unwrap();
+        });
+        let read = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024 * 1024];
+            let mut total = 0;
+            loop {
+                let n = target.read(&mut buf[total..]).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+            total
+        });
+
+        let started = Instant::now();
+        writer.await.unwrap();
+        let total = read.await.unwrap();
+        proxy.await.unwrap().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(total, 1024 * 1024);
+        assert!(
+            elapsed >= Duration::from_secs(5),
+            "late owner cap of 100 KiB/s must throttle 1 MiB to >=5 s, took {elapsed:?}"
+        );
+        assert!(
+            owner_acc.throttle_micros(BandwidthDirection::In) > 0,
+            "owner throttle micros must be non-zero after late install"
+        );
+        assert_eq!(
+            rule_acc.throttle_micros(BandwidthDirection::In),
+            0,
+            "rule accumulator must stay at zero when late owner cap binds"
+        );
+    }
+
     /// 011-rate-limiting-qos T026: tenant isolation — a throttled
     /// owner does not affect another owner's flows. Each owner has
     /// its own `Arc<OwnerRateLimiter>` keyed in the registry, so a
@@ -591,17 +683,15 @@ mod tests {
     #[allow(clippy::similar_names)]
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn t026_owner_throttle_does_not_affect_uncapped_owner_flow() {
-        use crate::forwarder::rate_limit::scope::OwnerRateLimiter;
-
         // Owner A: 1 MiB/s aggregate ingress cap.
-        let owner_a = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+        let owner_a = owner_handle_for(RateLimit {
             bandwidth_in_bps: Some(1024 * 1024),
             ..Default::default()
-        }));
+        });
         let owner_a_acc = Arc::new(RateLimitStatsAccumulator::new());
 
         // Owner B: no cap whatsoever (uncapped envelope).
-        let owner_b = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit::default()));
+        let owner_b = owner_handle_for(RateLimit::default());
         let owner_b_stats_acc = Arc::new(RateLimitStatsAccumulator::new());
 
         // Shared per-rule limiter — generous so it never binds and

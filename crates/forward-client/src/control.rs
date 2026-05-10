@@ -401,7 +401,7 @@ fn handle_server_message(
     rules: &mut HashMap<RuleId, RuleSlot>,
     port_groups: &mut PortGroupManager,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
-    owner_rate_limit_scope: &crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+    owner_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
     owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
@@ -651,33 +651,32 @@ fn handle_server_message(
                 }
                 None => (None, None),
             };
-            // 011-rate-limiting-qos T031: resolve this rule's per-owner
-            // limiter from the process-lifetime registry. The server
-            // emits Rule.owner_id on the wire only when there's a v0.11
-            // cap signal in play (so legacy rules keep an empty
-            // owner_id and skip the lookup, preserving the v0.10
-            // forwarding path byte-for-byte).
+            // 011-rate-limiting-qos T031: build this rule's dynamic
+            // per-owner limiter handle. The handle snapshots the
+            // current owner limiter from the process-lifetime registry
+            // on each admission / bandwidth acquire, so later
+            // OwnerRateLimitUpdate pushes affect already-activated
+            // rules without requiring a rule re-push.
             let owner_id_str = rule.owner_id.as_ref().filter(|s| !s.is_empty()).cloned();
-            let owner_rate_limit = owner_id_str.as_ref().and_then(|owner_id| {
-                owner_rate_limit_scope.get(&crate::forwarder::rate_limit::scope::OwnerId::new(
-                    owner_id.clone(),
-                ))
+            let owner_rate_limit = owner_id_str.as_ref().map(|owner_id| {
+                Arc::new(
+                    crate::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(
+                        crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                        Arc::clone(owner_rate_limit_scope),
+                    ),
+                )
             });
             // 011-rate-limiting-qos T032: per-owner stats are looked
             // up from the shared registry so multiple rules sharing
-            // the same owner aggregate into one accumulator. Lookup
-            // is gated on `owner_rate_limit.is_some()` — installing
-            // an entry only when the owner has an active limiter
-            // keeps the registry from accumulating stale entries for
-            // owners whose caps were removed.
-            let rule_owner_rate_limit_stats = owner_rate_limit
-                .as_ref()
-                .zip(owner_id_str.as_ref())
-                .map(|(_, owner_id)| {
-                    owner_rate_limit_stats.get_or_create(
-                        &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
-                    )
-                });
+            // the same owner aggregate into one accumulator. We create
+            // the accumulator whenever `owner_id` is present so later
+            // owner-cap installs have somewhere to record throttle /
+            // reject events without rebuilding the rule.
+            let rule_owner_rate_limit_stats = owner_id_str.as_ref().map(|owner_id| {
+                owner_rate_limit_stats.get_or_create(
+                    &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                )
+            });
             // Hold a clone of the rate-limit handles for the RuleSlot
             // (the periodic stats reporter and SNI/legacy paths both
             // need to keep observing them after `client_rule` moves
