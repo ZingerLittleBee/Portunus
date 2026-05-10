@@ -270,6 +270,7 @@ pub async fn run<R: Resolve + 'static>(
         in_flight,
     );
 
+    cancel.cancelled().await;
     drain(in_flight, proxy_cancel, drain_timeout).await;
 
     info!(
@@ -961,6 +962,98 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(evt, RuleStatusEvent::Removed { rule_id } if rule_id == RuleId(7)));
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_keeps_forwarding_past_drain_timeout_until_cancel() {
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let task = tokio::spawn(async move {
+            run(
+                single_rule(17, port, echo),
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_millis(100),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(17)));
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        client.write_all(b"still-live").await.unwrap();
+        let mut buf = [0u8; 10];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"still-live");
+        drop(client);
+
+        cancel.cancel();
+        let evt = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Removed { rule_id } if rule_id == RuleId(17)));
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn multi_target_run_keeps_forwarding_past_drain_timeout_until_cancel() {
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let task = tokio::spawn(async move {
+            run(
+                multi_target_rule(18, port, echo),
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_millis(100),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(18)));
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        client.write_all(b"still-multi").await.unwrap();
+        let mut buf = [0u8; 11];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"still-multi");
+        drop(client);
+
+        cancel.cancel();
+        let evt = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Removed { rule_id } if rule_id == RuleId(18)));
         task.await.unwrap();
     }
 

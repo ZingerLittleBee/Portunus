@@ -185,6 +185,7 @@ pub async fn run_tcp<R: Resolve + 'static>(
         });
     }
 
+    cancel.cancelled().await;
     drain(in_flight, proxy_cancel, drain_timeout).await;
     if let Some(h) = probe_handle {
         h.abort();

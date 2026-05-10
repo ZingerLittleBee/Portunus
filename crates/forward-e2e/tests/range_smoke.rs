@@ -99,15 +99,15 @@ fn spawn_echo_farm(n: u16) -> (String, u16) {
 /// Pick a contiguous `n`-port window for the *listen* side (where
 /// `forward-client` will bind). Returns `(start, end)` inclusive.
 fn pick_listen_range(n: u16) -> (u16, u16) {
-    for _ in 0..50 {
-        let probe = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("probe");
-        let base = probe.local_addr().unwrap().port();
-        if u32::from(base) + u32::from(n) > 65_536 {
-            continue;
-        }
-        let mut probes = vec![probe];
+    // Avoid the OS ephemeral source-port pool. The e2e harness drops
+    // these probes before issuing the HTTP push, and when we choose
+    // from the high ephemeral range the subsequent control-plane TCP
+    // connection can steal one of the just-probed ports, making the
+    // client report a bogus `activation_failed: port_in_use`.
+    for base in 30_000..=45_000u16.saturating_sub(n) {
+        let mut probes = Vec::with_capacity(n as usize);
         let mut ok = true;
-        for offset in 1..n {
+        for offset in 0..n {
             if let Ok(l) = TcpListener::bind((Ipv4Addr::UNSPECIFIED, base + offset)) {
                 probes.push(l);
             } else {
