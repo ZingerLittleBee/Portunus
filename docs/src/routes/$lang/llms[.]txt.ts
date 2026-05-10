@@ -2,11 +2,11 @@ import { source } from '@/lib/source';
 import { createFileRoute } from '@tanstack/react-router';
 import { llms } from 'fumadocs-core/source';
 
-export const Route = createFileRoute('/llms.txt')({
+export const Route = createFileRoute('/$lang/llms.txt')({
   server: {
     handlers: {
-      GET() {
-        return new Response(llms(source).index());
+      GET({ params }) {
+        return new Response(llms(source, { language: params.lang }).index());
       },
     },
   },

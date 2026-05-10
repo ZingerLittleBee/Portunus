@@ -2,11 +2,13 @@ import { loader } from 'fumadocs-core/source';
 import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
 import { docs } from 'collections/server';
 import { docsRoute } from './shared';
+import { i18n } from './i18n';
 
 export const source = loader({
   source: docs.toFumadocsSource(),
   baseUrl: docsRoute,
   plugins: [lucideIconsPlugin()],
+  i18n,
 });
 
 export function markdownPathToSlugs(segs: string[]) {
@@ -18,7 +20,7 @@ export function markdownPathToSlugs(segs: string[]) {
   return out;
 }
 
-export function slugsToMarkdownPath(slugs: string[]) {
+export function slugsToMarkdownPath(slugs: string[], lang?: string) {
   const segments = [...slugs];
   if (segments.length === 0) {
     segments.push('index.md');
@@ -26,24 +28,15 @@ export function slugsToMarkdownPath(slugs: string[]) {
     segments[segments.length - 1] += '.md';
   }
 
+  const prefix = lang ? `/${lang}${docsRoute}` : docsRoute;
   return {
     segments,
-    url: `${docsRoute}/${segments.join('/')}`,
+    url: `${prefix}/${segments.join('/')}`,
   };
 }
 
-export function getPageMarkdownUrl(slugs: string[]) {
-  const segments = [...slugs];
-  if (segments.length === 0) {
-    segments.push('index.md');
-  } else {
-    segments[segments.length - 1] += '.md';
-  }
-
-  return {
-    segments,
-    url: `${docsRoute}/${segments.join('/')}`,
-  };
+export function getPageMarkdownUrl(slugs: string[], lang?: string) {
+  return slugsToMarkdownPath(slugs, lang);
 }
 
 export async function getLLMText(page: (typeof source)['$inferPage']) {

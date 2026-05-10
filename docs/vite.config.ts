@@ -22,18 +22,16 @@ export default defineConfig({
       },
 
       pages: [
-        {
-          path: '/docs',
-        },
-        {
-          path: '/api/search',
-        },
-        {
-          path: 'llms-full.txt',
-        },
-        {
-          path: 'llms.txt',
-        },
+        { path: '/' },
+        { path: '/en' },
+        { path: '/zh' },
+        { path: '/en/docs' },
+        { path: '/zh/docs' },
+        { path: '/api/search' },
+        { path: '/en/llms-full.txt' },
+        { path: '/zh/llms-full.txt' },
+        { path: '/en/llms.txt' },
+        { path: '/zh/llms.txt' },
       ],
     }),
     react(),

@@ -18,11 +18,11 @@ import { useFumadocsLoader } from 'fumadocs-core/source/client';
 import { Suspense } from 'react';
 import { useMDXComponents } from '@/components/mdx';
 
-export const Route = createFileRoute('/docs/$')({
+export const Route = createFileRoute('/$lang/docs/$')({
   component: Page,
   loader: async ({ params }) => {
     const slugs = params._splat?.split('/') ?? [];
-    const data = await loader({ data: slugs });
+    const data = await loader({ data: { slugs, lang: params.lang } });
     await clientLoader.preload(data.path);
     return data;
   },
@@ -31,23 +31,23 @@ export const Route = createFileRoute('/docs/$')({
 const loader = createServerFn({
   method: 'GET',
 })
-  .inputValidator((slugs: string[]) => slugs)
+  .inputValidator((input: { slugs: string[]; lang: string }) => input)
   .middleware([staticFunctionMiddleware])
-  .handler(async ({ data: slugs }) => {
-    const page = source.getPage(slugs);
+  .handler(async ({ data: { slugs, lang } }) => {
+    const page = source.getPage(slugs, lang);
     if (!page) throw notFound();
 
     return {
       path: page.path,
-      markdownUrl: slugsToMarkdownPath(page.slugs).url,
-      pageTree: await source.serializePageTree(source.getPageTree()),
+      lang,
+      markdownUrl: slugsToMarkdownPath(page.slugs, lang).url,
+      pageTree: await source.serializePageTree(source.getPageTree(lang)),
     };
   });
 
 const clientLoader = browserCollections.docs.createClientLoader({
   component(
     { toc, frontmatter, default: MDX },
-    // you can define props for the component
     {
       markdownUrl,
       path,
@@ -76,10 +76,11 @@ const clientLoader = browserCollections.docs.createClientLoader({
 });
 
 function Page() {
-  const { pageTree, path, markdownUrl } = useFumadocsLoader(Route.useLoaderData());
+  const data = useFumadocsLoader(Route.useLoaderData());
+  const { pageTree, path, markdownUrl, lang } = data;
 
   return (
-    <DocsLayout {...baseOptions()} tree={pageTree}>
+    <DocsLayout {...baseOptions(lang)} tree={pageTree}>
       <Link to={markdownUrl} hidden />
       <Suspense>{clientLoader.useContent(path, { markdownUrl, path })}</Suspense>
     </DocsLayout>
