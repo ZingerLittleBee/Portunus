@@ -1,39 +1,112 @@
 ---
 title: 用 Docker 部署
-description: 多阶段 rust:1.88 → distroless/cc:nonroot 镜像，附带仅供本地试用的 docker-compose。
+description: 拉取已发布的 GHCR 镜像，挂载配置和状态目录，并用容器运行 Portunus。
 icon: Container
 ---
 
-仓库在 `deploy/docker/` 下提供两份 Dockerfile，皆采用多阶段 `rust:1.88`
-构建器，最终产出最小化的 `distroless/cc:nonroot` 运行镜像。
-
-## 构建
+Docker 是大多数安装场景的推荐部署方式。release pipeline 会把多架构 Linux
+镜像推送到 GitHub Container Registry：
 
 ```sh
-# Server
-docker build -t portunus-server:latest \
-  -f deploy/docker/Dockerfile.server .
-
-# Client
-docker build -t portunus-client:latest \
-  -f deploy/docker/Dockerfile.client .
+docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
+docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
 ```
+
+生产环境建议固定 `:1.0.0`。`:latest` 指向最新稳定版：
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:latest
+docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+```
+
+## Server
+
+先创建宿主目录：
+
+```sh
+mkdir -p ./portunus-config ./portunus-state
+```
+
+启动 server：
+
+```sh
+docker run -d --name portunus-server \
+  -p 7443:7443 \
+  -v "$(pwd)/portunus-config:/etc/portunus" \
+  -v "$(pwd)/portunus-state:/var/lib/portunus" \
+  ghcr.io/zingerlittlebee/portunus-server:1.0.0
+```
+
+镜像入口是 `portunus-server`，默认命令是：
+
+```sh
+--config-dir /var/lib/portunus --config /etc/portunus/server.toml serve
+```
+
+如果 `/etc/portunus/server.toml` 不存在，Portunus 仍会使用 CLI / 编译期默认值
+启动，并把生成的 TLS 材料和 SQLite 状态写到 `/var/lib/portunus`。
+
+## 操作员命令
+
+运行时镜像是 distroless，没有 shell。一次性操作员命令可以继续使用同一个镜像，
+并加入 server 容器的网络和卷：
+
+```sh
+docker run --rm \
+  --network container:portunus-server \
+  --volumes-from portunus-server \
+  ghcr.io/zingerlittlebee/portunus-server:1.0.0 \
+  --config-dir /var/lib/portunus \
+  --config /etc/portunus/server.toml \
+  bootstrap-superadmin --name ops
+```
+
+保存打印出来的 token，后续命令通过环境变量传入：
+
+```sh
+docker run --rm \
+  --network container:portunus-server \
+  --volumes-from portunus-server \
+  -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
+  ghcr.io/zingerlittlebee/portunus-server:1.0.0 \
+  --config-dir /var/lib/portunus \
+  --config /etc/portunus/server.toml \
+  list-clients
+```
+
+## Client
+
+把 provision 出来的 client bundle 挂载到默认路径：
+
+```sh
+docker run -d --name portunus-client \
+  --network host \
+  -v "$(pwd)/edge-01.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  ghcr.io/zingerlittlebee/portunus-client:1.0.0
+```
+
+`portunus-client` 用 host networking 最省心：operator 推送的规则会在 edge
+宿主机上绑定 listener，而 Docker 事先不知道这些端口。如果不用 host networking，
+需要为每个转发监听端口显式加 `-p`。
 
 ## 本地试用：docker-compose
 
 ```sh
 cd deploy/docker
-docker compose up
+docker compose up -d server
 ```
 
-compose 文件 **仅供本地** —— 是为快速试玩准备的，不是生产编排。它用 loopback
-路径把一个 server + 一个 client 接起来，你可以立即：
+compose 文件 **仅供本地** —— 是为快速试玩准备的，不是生产编排。它把一个
+server + 可选 client 接到 loopback 路径上，并使用 runtime-only Dockerfile，
+所以本地 build 仍需要先把二进制放到 `docker-bin/<arch>/`：
 
 ```sh
-docker compose exec server portunus-server bootstrap-superadmin --name ops
+cargo build --release -p portunus-server -p portunus-client
+arch="$(docker version --format '{{.Server.Arch}}')"
+mkdir -p "docker-bin/${arch}"
+cp target/release/portunus-server target/release/portunus-client "docker-bin/${arch}/"
+docker compose -f deploy/docker/docker-compose.yml build
 ```
-
-…并从 server 容器内部直接 push-rule。
 
 ## 卷与路径
 
@@ -43,18 +116,6 @@ docker compose exec server portunus-server bootstrap-superadmin --name ops
 | --- | --- | --- |
 | `./portunus-config/` | `/etc/portunus/` | TLS 材料、可选 `server.toml`、Client bundle |
 | `./portunus-state/` | `/var/lib/portunus/` | `state.db` 与边车文件 |
-
-挂载：
-
-```sh
-docker run -d --name portunus-server \
-  -p 7443:7443 \
-  -p 127.0.0.1:7080:7080 \
-  -p 127.0.0.1:7081:7081 \
-  -v $(pwd)/portunus-config:/etc/portunus \
-  -v $(pwd)/portunus-state:/var/lib/portunus \
-  portunus-server:latest
-```
 
 ## 注意事项
 

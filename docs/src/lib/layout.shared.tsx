@@ -13,7 +13,7 @@ export const i18nUI = defineI18nUI(i18n, {
       search: "搜索文档",
       previousPage: "上一页",
       nextPage: "下一页",
-      tableOfContents: "目录",
+      toc: "目录",
       lastUpdate: "最后更新",
       chooseLanguage: "选择语言",
       chooseTheme: "主题",

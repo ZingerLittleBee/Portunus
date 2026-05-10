@@ -360,7 +360,7 @@ sudo apt-get install -y build-essential curl git iperf3 protobuf-compiler
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-git clone <repo-url> Portunus
+git clone https://github.com/ZingerLittleBee/Portunus.git
 cd Portunus
 PORTUNUS_SKIP_WEBUI=1 cargo build --release -p portunus-server -p portunus-client
 scripts/perf_loopback.py --seconds 30 --omit-seconds 5 --json-out perf-vps-loopback.json

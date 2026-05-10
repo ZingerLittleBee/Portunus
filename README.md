@@ -12,15 +12,15 @@ metrics flow back to the server every 5 seconds and are surfaced both
 via `rule-stats` (operator CLI / HTTP) and Prometheus (`/metrics`,
 loopback-only).
 
-This repository is the v0.4.0 release. v0.4.0 adds UDP forwarding on
-top of v0.3.0's DNS-target support and v0.2.0's port-range rules; the
-TCP hot path is byte-identical to v0.3.0 (Constitution Principle II).
+This repository is the v1.0.0 release. v1.0.0 is the first stable
+Portunus release, preserving the wire / REST / SQLite-schema surfaces
+from v0.11 and publishing release binaries plus GHCR Docker images.
 The release notes and performance baseline are in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
 
-- Initial release (v0.1.0) — see [CHANGELOG](CHANGELOG.md).
+- Stable release (v1.0.0) — see [CHANGELOG](CHANGELOG.md).
 - Rust 1.88, edition 2024, workspace of six crates (`portunus-proto`,
   `portunus-core`, `portunus-auth`, `portunus-server`, `portunus-client`,
   `portunus-e2e`).
@@ -29,7 +29,18 @@ The release notes and performance baseline are in
 
 ## Install
 
-Prerequisites: Rust 1.88+ stable. `protoc` is vendored via `prost-build`.
+Docker is the recommended install path:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
+docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
+```
+
+Release binaries are published at
+[`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0).
+
+Source builds require Rust 1.88+ stable. `protoc` is vendored via
+`prost-build`.
 
 ```sh
 cargo build --release -p portunus-server -p portunus-client

@@ -1,6 +1,6 @@
 ---
 title: 安装
-description: 60 秒完成 Portunus 安装。从源码编译、拉取 Docker 镜像，或将二进制部署到 systemd。
+description: 60 秒完成 Portunus 安装。推荐使用 Docker，也可使用 release 二进制或 systemd。
 icon: Download
 ---
 
@@ -9,12 +9,75 @@ icon: Download
 
 ## 前置条件
 
-- **Rust 1.88+ 稳定版**（仅在从源码编译时需要）。`protoc` 已通过
+- 推荐路径需要 **Docker / Podman**。
+- **Rust 1.88+ 稳定版** 仅在从源码编译时需要。`protoc` 已通过
   `prost-build` 内联，无需额外安装。
 - 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
 - **Linux 或 macOS**。Linux 是生产支持目标。
 
-## 方式 1 — 从源码编译（推荐）
+## 方式 1 — Docker（推荐）
+
+已发布镜像在 GitHub Container Registry：
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
+docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
+```
+
+生产环境建议固定版本 tag。`latest` 指向最新稳定版：
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:latest
+docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+```
+
+卷、网络与容器内操作员命令见 [Docker 部署](/zh/docs/deployment/docker)。
+
+## 方式 2 — Release 二进制
+
+按主机平台下载对应归档：
+
+| 平台 | 归档 |
+| --- | --- |
+| Linux x86_64 | [`portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz) |
+| Linux arm64 | [`portunus-1.0.0-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-aarch64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [`portunus-1.0.0-aarch64-apple-darwin.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-aarch64-apple-darwin.tar.gz) |
+| macOS Intel | [`portunus-1.0.0-x86_64-apple-darwin.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-x86_64-apple-darwin.tar.gz) |
+
+校验和随 release 一起发布：
+
+```sh
+curl -LO https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-checksums.txt
+```
+
+解压并把两个二进制放到 `PATH`：
+
+```sh
+tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-server /usr/local/bin/
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /usr/local/bin/
+```
+
+完整 release 页面：
+[`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0)。
+
+## 方式 3 — systemd
+
+```sh
+cd deploy/systemd
+sudo ./install.sh
+# 创建：
+#   /etc/portunus/        管理员可编辑的配置 + TLS 证书
+#   /var/lib/portunus/    守护进程持有的 state.db
+#   portunus 系统用户
+```
+
+unit 安装器假设 `portunus-server` 与 `portunus-client` 已经在宿主机上，
+通常来自上面的 release 归档。
+
+详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
+
+## 方式 4 — 从源码编译
 
 ```sh
 git clone https://github.com/ZingerLittleBee/Portunus.git
@@ -29,44 +92,7 @@ target/release/portunus-server
 target/release/portunus-client
 ```
 
-将其拷贝到 `/usr/local/bin/`（或任意 `PATH` 路径）即可。
-
-<Callout type="info">
-  Release 配置使用 `lto = "thin"`、`codegen-units = 1`、`strip = "symbols"`。
-  在现代笔记本上一次干净编译大约耗时 3-5 分钟。
-</Callout>
-
-## 方式 2 — Docker
-
-仓库提供两份多阶段 Dockerfile，最终产物是
-`distroless/cc:nonroot` 运行镜像。
-
-```sh
-# Server
-docker build -t portunus-server:latest -f deploy/docker/Dockerfile.server .
-
-# Client
-docker build -t portunus-client:latest -f deploy/docker/Dockerfile.client .
-```
-
-`deploy/docker/docker-compose.yml` 是仅供本地试用的 compose 编排。
-
-## 方式 3 — systemd（生产环境）
-
-仓库的 `deploy/systemd/` 目录提供加固后的 systemd unit，预设了
-`User=`、`ProtectSystem=`、`CapabilityBoundingSet=` 等保护项，并附带
-`install.sh` 自动创建系统用户和 FHS 目录。
-
-```sh
-cd deploy/systemd
-sudo ./install.sh
-# 创建：
-#   /etc/portunus/        管理员可编辑的配置 + TLS 证书
-#   /var/lib/portunus/    守护进程持有的 state.db
-#   portunus 系统用户
-```
-
-详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
+源码编译主要用于开发或自定义打包。
 
 ## 验证安装
 
@@ -81,6 +107,6 @@ portunus-client --version
 
 - **想立刻看到效果？** → [快速开始](/zh/docs/getting-started/quickstart)
   会带你从 fresh checkout 到 "100 MB 数据通过转发规则" ——全程不到五分钟。
-- **准备上生产？** → [systemd 部署](/zh/docs/deployment/systemd) 或
-  [Docker 部署](/zh/docs/deployment/docker)。
+- **准备上生产？** → [Docker 部署](/zh/docs/deployment/docker) 或
+  [systemd 部署](/zh/docs/deployment/systemd)。
 - **想先了解整体设计？** → [架构](/zh/docs/getting-started/architecture)。

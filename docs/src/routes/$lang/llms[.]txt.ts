@@ -6,7 +6,7 @@ export const Route = createFileRoute('/$lang/llms.txt')({
   server: {
     handlers: {
       GET({ params }) {
-        return new Response(llms(source, { language: params.lang }).index());
+        return new Response(llms(source).index(params.lang));
       },
     },
   },

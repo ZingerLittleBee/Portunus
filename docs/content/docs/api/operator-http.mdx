@@ -22,7 +22,7 @@ Responses on missing / invalid bearer:
 | --- | --- | --- |
 | `401 unauthenticated` | `{"error":"unauthenticated"}` | Header missing or token invalid |
 | `403 not_owner` | `{"error":"not_owner"}` | Authenticated, but caller does not own the resource |
-| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/docs/features/rbac)) |
+| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/en/docs/features/rbac)) |
 | `503 bootstrap_required` | Server has no superadmin yet — run `bootstrap-superadmin` |
 
 ## Endpoints by area

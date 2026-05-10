@@ -5,6 +5,10 @@ import { createFromSource } from 'fumadocs-core/search/server';
 const server = createFromSource(source, {
   // https://docs.orama.com/docs/orama-js/supported-languages
   language: 'english',
+  localeMap: {
+    en: 'english',
+    zh: 'english',
+  },
 });
 
 export const Route = createFileRoute('/api/search')({

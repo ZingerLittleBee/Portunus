@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install Portunus in 60 seconds. Build from source, pull a Docker image, or drop the binary into systemd.
+description: Install Portunus in 60 seconds with Docker, release binaries, or hardened systemd units.
 icon: Download
 ---
 
@@ -9,13 +9,79 @@ and `portunus-client` (edge). Pick the option that matches your environment.
 
 ## Prerequisites
 
-- **Rust 1.88+ stable** (only when building from source). `protoc` is
-  vendored via `prost-build` — no system install required.
+- **Docker / Podman** for the recommended install path.
+- **Rust 1.88+ stable** only when building from source. `protoc` is
+  vendored via `prost-build`; no system install is required.
 - **Two reachable hosts** for a real deployment. For local trials,
   one host with two terminals is enough.
 - **Linux or macOS**. Linux is the supported production target.
 
-## Option 1 — Build from source (recommended)
+## Option 1 — Docker (recommended)
+
+Published images are available from GitHub Container Registry:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
+docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
+```
+
+Use the version tag for production. `latest` tracks the newest published
+stable release:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:latest
+docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+```
+
+See [Deploy with Docker](/en/docs/deployment/docker) for volumes, networking,
+and container-specific operator commands.
+
+## Option 2 — Release binaries
+
+Download the archive that matches your host:
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 | [`portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz) |
+| Linux arm64 | [`portunus-1.0.0-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-aarch64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [`portunus-1.0.0-aarch64-apple-darwin.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-aarch64-apple-darwin.tar.gz) |
+| macOS Intel | [`portunus-1.0.0-x86_64-apple-darwin.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-x86_64-apple-darwin.tar.gz) |
+
+Checksums are published alongside the archives:
+
+```sh
+curl -LO https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-checksums.txt
+```
+
+Extract the archive and copy both binaries into your `PATH`:
+
+```sh
+tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-server /usr/local/bin/
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /usr/local/bin/
+```
+
+All release assets live at
+[`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0).
+
+## Option 3 — systemd
+
+```sh
+cd deploy/systemd
+sudo ./install.sh
+# Creates:
+#   /etc/portunus/        admin-edited config + TLS material
+#   /var/lib/portunus/    daemon-managed state.db
+#   portunus system user
+```
+
+The unit installer expects `portunus-server` and `portunus-client` to already
+be on the host, usually copied from the release archive above.
+
+See [Deploying with systemd](/en/docs/deployment/systemd) for the full unit
+breakdown and hardening notes.
+
+## Option 4 — Build from source
 
 ```sh
 git clone https://github.com/ZingerLittleBee/Portunus.git
@@ -30,46 +96,7 @@ target/release/portunus-server
 target/release/portunus-client
 ```
 
-Copy them to `/usr/local/bin/` (or anywhere on `PATH`) and you are done.
-
-<Callout type="info">
-  The release profile uses `lto = "thin"`, `codegen-units = 1`, and
-  `strip = "symbols"`. A clean build takes ~3-5 minutes on a modern laptop.
-</Callout>
-
-## Option 2 — Docker
-
-The repo ships multi-stage Dockerfiles that produce
-`distroless/cc:nonroot` images.
-
-```sh
-# Server
-docker build -t portunus-server:latest -f deploy/docker/Dockerfile.server .
-
-# Client
-docker build -t portunus-client:latest -f deploy/docker/Dockerfile.client .
-```
-
-A local-only `docker-compose.yml` lives at `deploy/docker/docker-compose.yml`
-for kicking the tires.
-
-## Option 3 — systemd (production)
-
-The repo ships hardened systemd units under `deploy/systemd/` with
-`User=`, `ProtectSystem=`, `CapabilityBoundingSet=`, and an `install.sh`
-that creates the service users and lays out the FHS directories.
-
-```sh
-cd deploy/systemd
-sudo ./install.sh
-# Creates:
-#   /etc/portunus/        admin-edited config + TLS material
-#   /var/lib/portunus/    daemon-managed state.db
-#   portunus system user
-```
-
-See [Deploying with systemd](/docs/deployment/systemd) for the full unit
-breakdown and hardening notes.
+Source builds are mainly for development or custom packaging.
 
 ## Verify the install
 
@@ -82,9 +109,9 @@ They should print `portunus-server <version>` and `portunus-client <version>`.
 
 ## Next steps
 
-- **Just want to see it work?** → [Quickstart](/docs/getting-started/quickstart)
+- **Just want to see it work?** → [Quickstart](/en/docs/getting-started/quickstart)
   walks you from a fresh checkout to "100 MB streamed through a rule" in
   under five minutes.
-- **Going to production?** → [Deploy with systemd](/docs/deployment/systemd)
-  or [Deploy with Docker](/docs/deployment/docker).
-- **Want the big picture first?** → [Architecture](/docs/getting-started/architecture).
+- **Going to production?** → [Deploy with Docker](/en/docs/deployment/docker)
+  or [Deploy with systemd](/en/docs/deployment/systemd).
+- **Want the big picture first?** → [Architecture](/en/docs/getting-started/architecture).
