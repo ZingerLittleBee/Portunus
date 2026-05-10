@@ -36,15 +36,13 @@ const meterSegments = [
 
 const copy = {
   en: {
-    eyebrow: "TCP & UDP port forwarding with one control plane",
     title: "forward-rs",
     headlineLead: "Forward ports,",
     headlineAccent: "without giving up control.",
     hero: "Run lightweight clients on the hosts that own your public ports. Push TCP and UDP forwarding rules from one server. Get permissions, rate limits, metrics, and audit out of the box, without reading, modifying, or decrypting the bytes that flow through.",
     primary: "Read the docs",
     secondary: "Performance report",
-    language: "中文",
-    proof: "Linux · Rust · no kernel modules required",
+    proof: "Linux · Rust · single binary deploy",
     mockTitle: "forward-rs / dashboard",
     mockBadge: "real-time",
     rulesHeading: "rules",
@@ -129,15 +127,13 @@ const copy = {
     finalCta: "Open documentation",
   },
   zh: {
-    eyebrow: "用一个控制面管理所有 TCP / UDP 端口转发",
     title: "forward-rs",
     headlineLead: "转发端口——",
     headlineAccent: "但不放弃控制。",
     hero: "在拥有公网端口的主机上运行轻量 Client，从一个 Server 下发 TCP / UDP 转发规则。权限、限速、指标、审计开箱即用——业务流量不被读、不被改、不被解密。",
     primary: "阅读文档",
     secondary: "性能报告",
-    language: "English",
-    proof: "Linux · Rust · 不需要内核模块",
+    proof: "Linux · Rust · 单二进制部署",
     mockTitle: "forward-rs / 仪表盘",
     mockBadge: "实时",
     rulesHeading: "规则",
@@ -218,11 +214,10 @@ const copy = {
 
 export function LandingPage({ locale }: { locale: Locale }) {
   const t = copy[locale];
-  const otherLocale = locale === "zh" ? "en" : "zh";
 
   return (
     <HomeLayout {...baseOptions(locale)}>
-      <main className="fr-landing min-h-screen overflow-hidden bg-black text-white antialiased">
+      <main className="fr-landing min-h-screen overflow-hidden antialiased">
         {/* ──────────────────────────  HERO  ────────────────────────── */}
         <section className="fr-hero relative isolate border-b border-white/10">
           {/* dot-grid + radial glow background */}
@@ -238,17 +233,6 @@ export function LandingPage({ locale }: { locale: Locale }) {
                 "radial-gradient(60% 50% at 50% 0%, rgba(200,243,111,0.18), transparent 60%), radial-gradient(40% 40% at 80% 20%, rgba(0,210,255,0.10), transparent 60%)",
             }}
           />
-
-          <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-6 py-5 text-sm lg:px-10">
-            <p className="text-white/60">{t.eyebrow}</p>
-            <Link
-              to="/$lang"
-              params={{ lang: otherLocale }}
-              className="rounded-full border border-white/15 px-3 py-1 text-white/70 transition hover:border-white/40 hover:text-white"
-            >
-              {t.language}
-            </Link>
-          </div>
 
           <div className="mx-auto grid max-w-7xl gap-16 px-6 pb-24 pt-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:px-10 lg:pb-32 lg:pt-20">
             <div className="fr-hero-copy">
@@ -362,7 +346,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
                 {t.topologyIntro}
               </p>
             </div>
-            <div className="mt-16 overflow-hidden rounded-xl border border-white/10 bg-black/60 p-8 backdrop-blur md:p-12">
+            <div className="fr-topology-panel mt-16 overflow-hidden rounded-xl border border-white/10 bg-black/60 p-8 backdrop-blur md:p-12">
               <Topology t={t} />
             </div>
           </div>

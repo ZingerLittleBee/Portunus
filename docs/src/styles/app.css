@@ -29,15 +29,92 @@ html > body[data-scroll-locked] {
 /* ─────────────────────────  Landing page chrome  ───────────────────────── */
 
 .fr-landing {
+  --fr-bg: #000000;
+  --fr-bg-soft: #050505;
+  --fr-surface: rgba(10, 10, 10, 0.8);
+  --fr-surface-solid: #000000;
+  --fr-soft-fill: rgba(255, 255, 255, 0.05);
+  --fr-hover-fill: #0a0a0a;
+  --fr-border: rgba(255, 255, 255, 0.1);
+  --fr-border-strong: rgba(255, 255, 255, 0.18);
+  --fr-text: #ffffff;
+  --fr-muted: rgba(255, 255, 255, 0.62);
+  --fr-faint: rgba(255, 255, 255, 0.4);
+  --fr-grid-dot: rgba(255, 255, 255, 0.07);
+  --fr-cta-primary-bg: #ffffff;
+  --fr-cta-primary-bg-hover: #ededed;
+  --fr-cta-primary-text: #000000;
+  --fr-cta-secondary-bg-hover: rgba(255, 255, 255, 0.04);
+  background: var(--fr-bg);
+  color: var(--fr-text);
   font-feature-settings: "ss01", "cv11";
+}
+
+body:has(.fr-landing) {
+  --color-fd-background: #000000;
+  --color-fd-foreground: #ffffff;
+  --color-fd-muted: #050505;
+  --color-fd-muted-foreground: rgba(255, 255, 255, 0.62);
+  --color-fd-popover: #09090b;
+  --color-fd-popover-foreground: #ffffff;
+  --color-fd-card: #09090b;
+  --color-fd-card-foreground: #ffffff;
+  --color-fd-border: rgba(255, 255, 255, 0.12);
+  --color-fd-primary: #ffffff;
+  --color-fd-primary-foreground: #000000;
+  --color-fd-secondary: #111113;
+  --color-fd-secondary-foreground: #ffffff;
+  --color-fd-accent: rgba(255, 255, 255, 0.08);
+  --color-fd-accent-foreground: #ffffff;
+  background: #000000;
+  color: #ffffff;
+}
+
+body:has(.fr-landing) button[aria-label="Toggle Theme"] {
+  display: none;
+}
+
+.fr-landing .bg-black,
+.fr-landing [class*="bg-[#050505]"] {
+  background-color: var(--fr-bg);
+}
+
+.fr-landing [class*="bg-[#0a0a0a]"],
+.fr-landing [class*="bg-black/"] {
+  background-color: var(--fr-surface);
+}
+
+.fr-landing [class*="bg-white/"] {
+  background-color: var(--fr-soft-fill);
+}
+
+.fr-landing .text-white {
+  color: var(--fr-text);
+}
+
+.fr-landing [class*="text-white/"] {
+  color: var(--fr-muted);
+}
+
+.fr-landing [class*="border-white/"] {
+  border-color: var(--fr-border);
+}
+
+.fr-landing [class*="hover:border-white/"]:hover {
+  border-color: var(--fr-border-strong);
+}
+
+.fr-landing [class*="hover:text-white"]:hover {
+  color: var(--fr-text);
+}
+
+.fr-landing [class*="hover:bg-[#0a0a0a]"]:hover {
+  background-color: var(--fr-hover-fill);
 }
 
 /* Subtle dot-grid background — Vercel-style hero pattern. */
 .fr-dotgrid {
-  background-image: radial-gradient(
-    rgba(255, 255, 255, 0.07) 1px,
-    transparent 1px
-  );
+  background-image: radial-gradient(var(--fr-grid-dot) 1px, transparent 1px);
   background-size: 24px 24px;
   background-position: -1px -1px;
   mask-image: radial-gradient(
@@ -67,12 +144,12 @@ html > body[data-scroll-locked] {
   align-items: center;
   gap: 0.5rem;
   border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--fr-border);
+  background: var(--fr-soft-fill);
   padding: 0.4rem 0.85rem;
   font-size: 0.75rem;
   letter-spacing: 0.01em;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--fr-muted);
   backdrop-filter: blur(6px);
 }
 
@@ -85,8 +162,8 @@ html > body[data-scroll-locked] {
   gap: 0.5rem;
   padding: 0 1.1rem;
   border-radius: 0.5rem;
-  background: #fff;
-  color: #000;
+  background: var(--fr-cta-primary-bg);
+  color: var(--fr-cta-primary-text);
   font-size: 0.875rem;
   font-weight: 600;
   letter-spacing: -0.005em;
@@ -98,7 +175,7 @@ html > body[data-scroll-locked] {
 }
 
 .fr-cta-primary:hover {
-  background: #ededed;
+  background: var(--fr-cta-primary-bg-hover);
   transform: translateY(-1px);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.2) inset,
@@ -114,8 +191,8 @@ html > body[data-scroll-locked] {
   gap: 0.5rem;
   padding: 0 1.1rem;
   border-radius: 0.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--fr-border-strong);
+  color: var(--fr-text);
   font-size: 0.875rem;
   font-weight: 600;
   letter-spacing: -0.005em;
@@ -126,8 +203,8 @@ html > body[data-scroll-locked] {
 }
 
 .fr-cta-secondary:hover {
-  border-color: rgba(255, 255, 255, 0.45);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--fr-border-strong);
+  background: var(--fr-cta-secondary-bg-hover);
   transform: translateY(-1px);
 }
 

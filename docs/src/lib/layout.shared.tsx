@@ -23,8 +23,18 @@ export const i18nUI = defineI18nUI(i18n, {
 });
 
 export function baseOptions(locale?: string): BaseLayoutProps {
+  const lang = locale === "zh" ? "zh" : "en";
+
   return {
     i18n,
+    links: [
+      {
+        type: "main",
+        text: lang === "zh" ? "文档" : "Docs",
+        url: `/${lang}/docs`,
+        active: "nested-url",
+      },
+    ],
     nav: {
       title: (
         <span className="fr-brand-mark">
