@@ -21,9 +21,56 @@ icon: Download
 - 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
 - **Linux 或 macOS**。Linux 是生产支持目标。
 
+## 快速安装 Docker
+
+在一台全新的 Linux 主机上，可以直接使用 Docker 官方的 convenience script：
+
+```sh
+sudo curl -fsSL https://get.docker.com | sh
+```
+
 ## 安装 Server
 
-Server 推荐使用 Docker Compose 安装。在 Server 主机上创建 `compose.yaml`：
+Server 推荐使用 Docker Compose 安装。
+
+### 在 Server 主机上直接复制执行
+
+1. 创建并进入工作目录：
+
+```sh
+mkdir -p ~/portunus-server && cd ~/portunus-server
+```
+
+2. 写入 `docker-compose.yml`：
+
+```sh
+cat > docker-compose.yml <<'EOF'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-data:
+    name: portunus-data
+EOF
+```
+
+3. 启动服务并验证：
+
+```sh
+docker compose up -d && docker compose logs -f -t
+```
+
+这已经足够完成默认 Server 安装。自动生成的 TLS 材料和 SQLite 状态都放在
+`portunus-data` 卷里。
+
+### Compose 文件参考
 
 ```yaml
 services:
@@ -40,15 +87,8 @@ volumes:
   portunus-data:
     name: portunus-data
 ```
-
-启动：
-
-```sh
-docker compose up -d server
-```
-
-自动生成的 TLS 材料和 SQLite 状态放在 `portunus-data` 卷里。示例默认使用
-`:latest`；如果需要完全可复现的生产部署，请固定到具体版本 tag，例如 `:1.0.0`。
+示例默认使用 `:latest`；如果需要完全可复现的生产部署，请固定到具体版本 tag，
+例如 `:1.0.0`。
 
 如果需要非默认监听地址或其他覆写，再把可选 `server.toml` 放到
 `<data-dir>/server.toml`，例如 `./server.toml:/var/lib/portunus/server.toml:ro`。
@@ -81,8 +121,42 @@ portunus-server --version
 
 ## 安装 Client
 
-Client 也推荐使用 Docker Compose 安装。Server 配发 Client bundle 后，在边缘主机上
-创建 `compose.client.yaml`：
+Client 也推荐使用 Docker Compose 安装。
+
+### 在边缘主机上直接复制执行
+
+先通过 Server 侧 operator 流程生成 client bundle，并把 bundle 文件拷贝到边缘
+主机。下面假设 bundle 文件名是 `edge-01.bundle.json`。
+
+1. 创建并进入工作目录：
+
+```sh
+mkdir -p ~/portunus-client && cd ~/portunus-client
+```
+
+2. 把 `edge-01.bundle.json` 放到这个目录中，然后写入
+   `docker-compose.yml`：
+
+```sh
+cat > docker-compose.yml <<'EOF'
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    volumes:
+      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+    restart: unless-stopped
+EOF
+```
+
+3. 启动 Client 并验证：
+
+```sh
+docker compose up -d && docker compose logs -f -t
+```
+
+### Compose 文件参考
 
 ```yaml
 services:
@@ -93,12 +167,6 @@ services:
     volumes:
       - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
     restart: unless-stopped
-```
-
-启动：
-
-```sh
-docker compose -f compose.client.yaml up -d
 ```
 
 Client 推荐使用 `--network host`，因为转发监听端口是在后续 operator 推送规则时

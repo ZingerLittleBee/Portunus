@@ -23,10 +23,56 @@ usually means one server host and one or more client hosts.
   one host with two terminals is enough.
 - **Linux or macOS**. Linux is the supported production target.
 
+## Quick Docker install
+
+On a fresh Linux host, use Docker's official convenience script:
+
+```sh
+sudo curl -fsSL https://get.docker.com | sh
+```
+
 ## Server install
 
-Docker Compose is the recommended server install path. Create
-`compose.yaml` on the server host:
+Docker Compose is the recommended server install path.
+
+### Copy-paste install on the server host
+
+1. Create and enter the working directory:
+
+```sh
+mkdir -p ~/portunus-server && cd ~/portunus-server
+```
+
+2. Write `docker-compose.yml`:
+
+```sh
+cat > docker-compose.yml <<'EOF'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-data:
+    name: portunus-data
+EOF
+```
+
+3. Start the server and verify it:
+
+```sh
+docker compose up -d && docker compose logs -f -t
+```
+
+That is enough for a default server install. Generated TLS material and SQLite
+state live in the `portunus-data` volume.
+
+### Compose file reference
 
 ```yaml
 services:
@@ -43,14 +89,6 @@ volumes:
   portunus-data:
     name: portunus-data
 ```
-
-Start it:
-
-```sh
-docker compose up -d server
-```
-
-Generated TLS material and SQLite state live in the `portunus-data` volume.
 The examples use `:latest` by default; pin a version tag such as `:1.0.0`
 when you need a fully repeatable production deploy.
 
@@ -86,8 +124,43 @@ portunus-server --version
 
 ## Client install
 
-Docker Compose is also the recommended client install path. After the server
-provisions a client bundle, create `compose.client.yaml` on the edge host:
+Docker Compose is also the recommended client install path.
+
+### Copy-paste install on the edge host
+
+First, use the server-side operator flow to provision a client bundle and copy
+that bundle file to the edge host. The example below assumes the bundle file is
+named `edge-01.bundle.json`.
+
+1. Create and enter the working directory:
+
+```sh
+mkdir -p ~/portunus-client && cd ~/portunus-client
+```
+
+2. Place `edge-01.bundle.json` in this directory, then write
+   `docker-compose.yml`:
+
+```sh
+cat > docker-compose.yml <<'EOF'
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    volumes:
+      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+    restart: unless-stopped
+EOF
+```
+
+3. Start the client and verify it:
+
+```sh
+docker compose up -d && docker compose logs -f -t
+```
+
+### Compose file reference
 
 ```yaml
 services:
@@ -98,12 +171,6 @@ services:
     volumes:
       - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
     restart: unless-stopped
-```
-
-Start it:
-
-```sh
-docker compose -f compose.client.yaml up -d
 ```
 
 `--network host` is recommended for the client because forwarded listen ports
