@@ -31,7 +31,7 @@
 #   container:portunus-server-1 curlimages/curl -s 127.0.0.1:7081/metrics`.
 # - This compose is for local exploration only. For production use the
 #   systemd units in deploy/systemd/ or roll the images into your
-#   orchestrator with a real config + secret management story.
+#   orchestrator with a real secret management story.
 
 services:
   server:
@@ -44,7 +44,6 @@ services:
       - "7443:7443"
     volumes:
       - server-data:/var/lib/portunus
-      - server-config:/etc/portunus
       - shared-bundles:/shared
     restart: unless-stopped
 
@@ -56,11 +55,10 @@ services:
     image: portunus/server:dev
     volumes:
       - server-data:/var/lib/portunus
-      - server-config:/etc/portunus
       - shared-bundles:/shared
     network_mode: "service:server"
     entrypoint: ["/usr/local/bin/portunus-server"]
-    command: ["--config-dir", "/var/lib/portunus", "--config", "/etc/portunus/server.toml", "list-clients"]
+    command: ["--data-dir", "/var/lib/portunus", "list-clients"]
 
   client:
     profiles: ["client"]
@@ -87,5 +85,4 @@ services:
 
 volumes:
   server-data:
-  server-config:
   shared-bundles:

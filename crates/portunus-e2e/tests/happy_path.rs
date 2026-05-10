@@ -102,7 +102,7 @@ fn test_user_story_1_acceptance() {
     );
 
     // ---- Scenario 2: bad token (provisioned client, mutated token) ----
-    let bad_bundle_path = server.config_dir.path().join("bad.bundle.json");
+    let bad_bundle_path = server.data_dir.path().join("bad.bundle.json");
     let mut bad: Value = serde_json::from_str(&std::fs::read_to_string(&bundle).unwrap()).unwrap();
     // Replace the token with garbage that has the same length shape.
     bad["client_name"] = Value::String("bogus".into());
@@ -155,7 +155,7 @@ fn test_user_story_1_acceptance() {
     );
 
     // ---- Scenario 4: pin mismatch ----
-    let pin_mismatch_path = server.config_dir.path().join("pin-mismatch.bundle.json");
+    let pin_mismatch_path = server.data_dir.path().join("pin-mismatch.bundle.json");
     let mut tampered: Value =
         serde_json::from_str(&std::fs::read_to_string(&bundle).unwrap()).unwrap();
     // Flip one byte of the fingerprint hex to force the bundle's pin check

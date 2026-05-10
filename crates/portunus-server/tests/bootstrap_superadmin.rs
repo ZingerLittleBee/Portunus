@@ -11,11 +11,8 @@ fn server_bin() -> &'static str {
 
 #[test]
 fn bootstrap_superadmin_writes_identity_and_prints_token_once() {
-    let cfg = TempDir::new().expect("config tempdir");
     let data = TempDir::new().expect("data tempdir");
     let out = Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(cfg.path())
         .arg("--data-dir")
         .arg(data.path())
         .arg("bootstrap-superadmin")
@@ -46,12 +43,9 @@ fn bootstrap_superadmin_writes_identity_and_prints_token_once() {
 
 #[test]
 fn bootstrap_superadmin_second_run_returns_already_bootstrapped() {
-    let cfg = TempDir::new().expect("config tempdir");
     let data = TempDir::new().expect("data tempdir");
     // First run.
     let first = Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(cfg.path())
         .arg("--data-dir")
         .arg(data.path())
         .arg("bootstrap-superadmin")
@@ -61,8 +55,6 @@ fn bootstrap_superadmin_second_run_returns_already_bootstrapped() {
 
     // Second run.
     let second = Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(cfg.path())
         .arg("--data-dir")
         .arg(data.path())
         .arg("bootstrap-superadmin")

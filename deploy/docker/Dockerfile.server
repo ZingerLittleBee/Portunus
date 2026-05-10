@@ -8,11 +8,10 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 ARG TARGETARCH
 COPY docker-bin/${TARGETARCH}/portunus-server /usr/local/bin/portunus-server
 
-# /var/lib/portunus holds tls cert/key (mode 0600) + tokens.json (mode 0600).
-# /etc/portunus holds server.toml (read-only).
-# Both must be mounted by the operator (volumes or bind mounts).
+# /var/lib/portunus holds SQLite state, generated TLS material, and the
+# optional server.toml override file.
 USER nonroot:nonroot
 EXPOSE 7443
 
 ENTRYPOINT ["/usr/local/bin/portunus-server"]
-CMD ["--config-dir", "/var/lib/portunus", "--config", "/etc/portunus/server.toml", "serve"]
+CMD ["--data-dir", "/var/lib/portunus", "serve"]

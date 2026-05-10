@@ -1,6 +1,6 @@
-# Portunus server configuration (v0.7.0).
-# Used by `portunus-server --config /etc/portunus/server.toml serve`.
-# Defaults match the deploy/systemd/portunus-server.service layout.
+# Optional Portunus server configuration overrides.
+# Place at `<data-dir>/server.toml`, for example `/var/lib/portunus/server.toml`.
+# Without this file, the server runs on built-in defaults.
 # Schema: see crates/portunus-core/src/config.rs (ServerConfig).
 
 # gRPC control-plane listener — clients dial this address.
@@ -31,17 +31,6 @@ metrics_listen = "127.0.0.1:7081"
 # server.key MUST be mode 0600 (the loader rejects looser perms).
 tls_cert_path = "/var/lib/portunus/server.crt"
 tls_key_path = "/var/lib/portunus/server.key"
-
-# Bearer-token store. Created on first `provision-client`. Mode 0600.
-# Tokens are 256-bit random secrets; keep this file backed up.
-token_store_path = "/var/lib/portunus/tokens.json"
-
-# Operator-side identity store (005-multi-user-rbac, v0.5.0+). Holds
-# users / credentials / grants for the operator HTTP API. Created on
-# first `bootstrap-superadmin` (or first start with `operator_token`
-# set below). Mode 0600. Atomic-write JSON; safe to rsync across
-# hosts for HA setups. Keep backed up alongside `token_store_path`.
-# operator_store_path = "/var/lib/portunus/identity.json"
 
 # One-shot bootstrap shortcut for the operator superadmin (FR-006).
 # When set AND the identity store has NO superadmin yet, the server

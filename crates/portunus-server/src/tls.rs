@@ -107,7 +107,7 @@ fn generate_self_signed() -> Result<ServerTlsMaterial, PortunusError> {
     // SANs: webpki refuses certs with no SAN, so we ship a minimal set covering
     // the hostname and loopback addresses (devs and tests dial `127.0.0.1`).
     // Operators with a routable hostname can override the cert in
-    // `<config_dir>/server.crt`.
+    // `<data_dir>/server.crt`.
     params.subject_alt_names = vec![
         SanType::DnsName(
             hostname

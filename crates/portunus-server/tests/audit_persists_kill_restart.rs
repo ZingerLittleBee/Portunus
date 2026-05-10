@@ -67,28 +67,18 @@ fn wait_listening(
     None
 }
 
-fn write_server_toml(config_dir: &Path) {
+fn write_server_toml(data_dir: &Path) {
     let body = format!(
         "control_listen = \"127.0.0.1:0\"\n\
          operator_http_listen = \"127.0.0.1:0\"\n\
          metrics_listen = \"127.0.0.1:0\"\n\
-         tls_cert_path = {cert_path:?}\n\
-         tls_key_path = {key_path:?}\n\
-         token_store_path = {token_path:?}\n\
-         operator_store_path = {identity_path:?}\n\
          operator_token = \"{TOKEN}\"\n",
-        cert_path = config_dir.join("server.crt").to_string_lossy(),
-        key_path = config_dir.join("server.key").to_string_lossy(),
-        token_path = config_dir.join("tokens.json").to_string_lossy(),
-        identity_path = config_dir.join("identity.json").to_string_lossy(),
     );
-    std::fs::write(config_dir.join("server.toml"), body).expect("write server.toml");
+    std::fs::write(data_dir.join("server.toml"), body).expect("write server.toml");
 }
 
-fn spawn(config_dir: &Path, data_dir: &Path) -> Child {
+fn spawn(data_dir: &Path) -> Child {
     Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(config_dir)
         .arg("--data-dir")
         .arg(data_dir)
         .arg("serve")
@@ -122,12 +112,11 @@ fn drive_calls(http: &str, n: usize) {
 
 #[test]
 fn audit_rows_survive_sigkill() {
-    let config_dir = TempDir::new().unwrap();
     let data_dir = TempDir::new().unwrap();
-    write_server_toml(config_dir.path());
+    write_server_toml(data_dir.path());
 
     // Round 1 — populate audit table.
-    let mut child = spawn(config_dir.path(), data_dir.path());
+    let mut child = spawn(data_dir.path());
     let lines = capture_stderr(&mut child);
     let http = wait_listening(&lines, Duration::from_secs(15)).expect("listening");
     drive_calls(&http, 8);
@@ -149,7 +138,7 @@ fn audit_rows_survive_sigkill() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Round 2 — restart against the same data-dir, verify rows survived.
-    let mut child2 = spawn(config_dir.path(), data_dir.path());
+    let mut child2 = spawn(data_dir.path());
     let lines2 = capture_stderr(&mut child2);
     let http2 = wait_listening(&lines2, Duration::from_secs(15)).expect("respawn listening");
 

@@ -61,30 +61,20 @@ impl ServerProc {
     }
 }
 
-fn write_server_toml(config_dir: &Path, control_port: u16, http_port: u16, metrics_port: u16) {
+fn write_server_toml(data_dir: &Path, control_port: u16, http_port: u16, metrics_port: u16) {
     let body = format!(
         "control_listen = \"127.0.0.1:{control_port}\"\n\
          operator_http_listen = \"127.0.0.1:{http_port}\"\n\
          metrics_listen = \"127.0.0.1:{metrics_port}\"\n\
-         tls_cert_path = {:?}\n\
-         tls_key_path = {:?}\n\
-         token_store_path = {:?}\n\
-         operator_store_path = {:?}\n\
          operator_token = \"{}\"\n",
-        config_dir.join("server.crt").to_string_lossy(),
-        config_dir.join("server.key").to_string_lossy(),
-        config_dir.join("tokens.json").to_string_lossy(),
-        config_dir.join("identity.json").to_string_lossy(),
         common::TEST_OPERATOR_TOKEN,
     );
-    std::fs::write(config_dir.join("server.toml"), body).unwrap();
+    std::fs::write(data_dir.join("server.toml"), body).unwrap();
 }
 
-fn spawn_server(config_dir: &Path, data_dir: &Path) -> ServerProc {
+fn spawn_server(data_dir: &Path) -> ServerProc {
     let mut cmd = Command::new(common::workspace_bin("portunus-server"));
-    cmd.arg("--config-dir")
-        .arg(config_dir)
-        .arg("--data-dir")
+    cmd.arg("--data-dir")
         .arg(data_dir)
         .arg("serve")
         .stdout(Stdio::piped())
@@ -135,14 +125,13 @@ fn wait_rule_active(http: &str, client_name: &str, listen_port: u16) -> serde_js
 
 #[test]
 fn proxy_protocol_rule_persists_across_server_restart_and_replays() {
-    let config_dir = TempDir::new().unwrap();
     let data_dir = TempDir::new().unwrap();
     let control_port = pick_free_port();
     let http_port = pick_free_port();
     let metrics_port = pick_free_port();
-    write_server_toml(config_dir.path(), control_port, http_port, metrics_port);
+    write_server_toml(data_dir.path(), control_port, http_port, metrics_port);
 
-    let server = spawn_server(config_dir.path(), data_dir.path());
+    let server = spawn_server(data_dir.path());
     let (_grpc, http) = server.wait_listening();
 
     let bundle = common::provision_client_http(&http, "edge-proxy-persist");
@@ -202,7 +191,7 @@ fn proxy_protocol_rule_persists_across_server_restart_and_replays() {
 
     drop(server);
 
-    let server = spawn_server(config_dir.path(), data_dir.path());
+    let server = spawn_server(data_dir.path());
     let (_grpc, http) = server.wait_listening();
     assert!(
         common::wait_for(Duration::from_secs(10), || {

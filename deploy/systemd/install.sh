@@ -35,14 +35,13 @@ install_server() {
   id portunus-server >/dev/null 2>&1 || \
     useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
   install -d -o portunus-server -g portunus-server -m 0750 /var/lib/portunus
-  install -d -o root -g portunus-server -m 0750 /etc/portunus
-  if [[ ! -f /etc/portunus/server.toml ]]; then
+  if [[ ! -f /var/lib/portunus/server.toml ]]; then
     if [[ -f "$UNIT_DIR/../server.toml.example" ]]; then
       install -o root -g portunus-server -m 0640 \
-        "$UNIT_DIR/../server.toml.example" /etc/portunus/server.toml
-      echo "→ wrote /etc/portunus/server.toml from server.toml.example (review before starting)"
+        "$UNIT_DIR/../server.toml.example" /var/lib/portunus/server.toml
+      echo "→ wrote optional /var/lib/portunus/server.toml from server.toml.example"
     else
-      echo "WARNING: /etc/portunus/server.toml not present and no example found." >&2
+      echo "WARNING: no server.toml.example found; server will use built-in defaults." >&2
     fi
   fi
 
@@ -61,7 +60,7 @@ install_client() {
   install -d -o root -g portunus-client -m 0750 /etc/portunus
   if [[ ! -f /etc/portunus/client.bundle.json ]]; then
     echo "→ /etc/portunus/client.bundle.json not present yet. Provision one on the server:"
-    echo "    portunus-server --config-dir /var/lib/portunus provision-client <name> --out client.bundle.json"
+    echo "    portunus-server --data-dir /var/lib/portunus provision-client <name> --out client.bundle.json"
     echo "  scp it here, then: install -o root -g portunus-client -m 0640 client.bundle.json /etc/portunus/"
   fi
 

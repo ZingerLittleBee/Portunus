@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=exec
 User=portunus-server
 Group=portunus-server
-ExecStart=/usr/local/bin/portunus-server --config-dir /var/lib/portunus --config /etc/portunus/server.toml serve
+ExecStart=/usr/local/bin/portunus-server --data-dir /var/lib/portunus serve
 Restart=on-failure
 RestartSec=5
 
@@ -42,7 +42,7 @@ RestrictAddressFamilies=AF_INET AF_INET6
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
-# Writable: cert/key (auto-generated on first run), tokens.json, rules.json.
+# Writable: SQLite state, generated TLS material, optional server.toml.
 ReadWritePaths=/var/lib/portunus
 
 [Install]

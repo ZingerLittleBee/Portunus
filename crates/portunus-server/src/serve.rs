@@ -1,15 +1,14 @@
 //! Wires every subsystem behind the `serve` subcommand.
 //!
 //! Layout:
-//! 1. Resolve config (file → defaults rooted at `--config-dir`).
-//! 2. Open `FileTokenStore` and load/generate TLS material.
+//! 1. Resolve optional `<data-dir>/server.toml` overrides.
+//! 2. Open SQLite and load/generate TLS material.
 //! 3. Determine the externally-advertised endpoint (used in bundles).
 //! 4. Start the Tonic gRPC listener with the bearer-token interceptor.
 //! 5. Start the loopback operator HTTP listener.
 //! 6. Reserve the metrics listener bind point (US3 wires the real handler).
 //! 7. Await SIGINT/SIGTERM; trigger drain.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,11 +41,9 @@ use portunus_proto::v1::control_server::ControlServer;
 
 #[derive(Debug, Clone)]
 pub struct ServeOptions {
-    pub config_dir: PathBuf,
-    /// 008-sqlite-storage T019 / FR-019 — directory holding `state.db`
-    /// and SQLite-managed sidecars. Independent from `config_dir`.
+    /// Directory holding `state.db`, SQLite-managed sidecars, generated
+    /// TLS material, and optional `server.toml` overrides.
     pub data_dir: PathBuf,
-    pub config_file: Option<PathBuf>,
     /// Override the host:port advertised in newly-issued bundles.
     pub advertised_endpoint: Option<String>,
 }
@@ -57,7 +54,6 @@ pub struct ServeOptions {
 #[allow(clippy::too_many_lines)]
 pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
     let cfg = load_config(&opts)?;
-    std::fs::create_dir_all(&opts.config_dir)?;
     std::fs::create_dir_all(&opts.data_dir)?;
 
     // 008-sqlite-storage T021 boot order step (1)+(2): probe the
@@ -74,10 +70,10 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
     }
 
     // 008-sqlite-storage T020 boot order step (3): warn-and-ignore
-    // any pre-v0.8 JSON persistence files left in --config-dir. The
+    // any pre-v0.8 JSON persistence files left in --data-dir. The
     // server does not read these files; they are listed so an
     // operator does not get a silent surprise.
-    warn_legacy_json_files(&opts.config_dir);
+    warn_legacy_json_files(&opts.data_dir);
 
     // 008-sqlite-storage T021 boot order step (4)+(5): open the store
     // and run pending forward migrations.
@@ -103,7 +99,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
     let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
     info!(
         event = "operator.store_loaded",
-        path = %cfg.operator_store_path.display(),
+        path = %store.db_path().display(),
         users = operator_store.list_users().len(),
         grants = operator_store.list_grants(None).len(),
         superadmin_present = operator_store.has_any_superadmin(),
@@ -325,48 +321,26 @@ async fn render_metrics(State(state): State<MetricsState>) -> impl IntoResponse 
 }
 
 fn load_config(opts: &ServeOptions) -> Result<ServerConfig, PortunusError> {
-    let resolved = opts
-        .config_file
-        .clone()
-        .unwrap_or_else(|| opts.config_dir.join("server.toml"));
+    let resolved = opts.data_dir.join("server.toml");
     if resolved.exists() {
-        ServerConfig::from_toml_path(&resolved)
+        ServerConfig::from_toml_path_with_data_dir(&resolved, &opts.data_dir)
     } else {
-        Ok(default_config(&opts.config_dir))
-    }
-}
-
-fn default_config(config_dir: &std::path::Path) -> ServerConfig {
-    use portunus_core::config::LogFormat;
-    ServerConfig {
-        control_listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        operator_http_listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        metrics_listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        tls_cert_path: config_dir.join("server.crt"),
-        tls_key_path: config_dir.join("server.key"),
-        token_store_path: config_dir.join("tokens.json"),
-        shutdown_drain_timeout_secs: 30,
-        log_format: LogFormat::Json,
-        range_rule_max_ports: 1024,
-        udp_flow_idle_secs: None,
-        udp_max_flows_per_rule: None,
-        operator_store_path: config_dir.join("identity.json"),
-        operator_token: None,
+        Ok(ServerConfig::default_for_data_dir(&opts.data_dir))
     }
 }
 
 /// 008-sqlite-storage T020 — legacy JSON warn-and-ignore.
 ///
 /// The pre-v0.8 persistence layer wrote `tokens.json` / `identity.json`
-/// / `rules.json` under `--config-dir`. v0.8 retired all three; the
-/// store at `--data-dir/state.db` is the only source of truth.
+/// / `rules.json` under the data directory. v0.8 retired all three; the
+/// store at `<data-dir>/state.db` is the only source of truth.
 /// Operators upgrading from a v0.7 install in dev environments may
 /// have stale files lying around; rather than silently ignore them
 /// (operator-hostile) or refuse to start (operator-hostile), we log
 /// one structured warning per file pointing at `portunus-server reset`.
-fn warn_legacy_json_files(config_dir: &std::path::Path) {
+fn warn_legacy_json_files(data_dir: &std::path::Path) {
     for name in ["tokens.json", "identity.json", "rules.json"] {
-        let path = config_dir.join(name);
+        let path = data_dir.join(name);
         if path.exists() {
             tracing::warn!(
                 event = "startup.legacy_persistence_file_ignored",

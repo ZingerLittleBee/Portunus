@@ -1,12 +1,11 @@
 //! 008-sqlite-storage T028 — full server↔client smoke covering audit
 //! retention across a server restart.
 //!
-//! 1. Spawn the server (fresh `--config-dir` + `--data-dir`).
+//! 1. Spawn the server (fresh `--data-dir`).
 //! 2. Drive a few authenticated operator HTTP calls — each generates
 //!    an audit row via the `auth_layer` middleware.
 //! 3. Snapshot `GET /v1/audit?limit=100`.
-//! 4. SIGTERM the server; respawn with the SAME `--config-dir` +
-//!    `--data-dir`.
+//! 4. SIGTERM the server; respawn with the SAME `--data-dir`.
 //! 5. Re-snapshot `GET /v1/audit?limit=100` and assert the pre-restart
 //!    rows are still there (durable WAL recovery).
 
@@ -35,13 +34,11 @@ fn list_clients(http: &str) -> Value {
     common::list_clients_http(http)
 }
 
-/// Spawn `portunus-server serve` against an existing config + data dir
+/// Spawn `portunus-server serve` against an existing data dir
 /// (used to restart while reusing v0.8 SQLite state).
-fn respawn_server(config_dir: &Path, data_dir: &Path) -> std::process::Child {
+fn respawn_server(data_dir: &Path) -> std::process::Child {
     let bin = common::workspace_bin("portunus-server");
     Command::new(&bin)
-        .arg("--config-dir")
-        .arg(config_dir)
         .arg("--data-dir")
         .arg(data_dir)
         .arg("serve")
@@ -78,7 +75,6 @@ fn audit_rows_survive_server_restart() {
     // Kill the running child but keep `server` alive — its TempDirs
     // back the data we want the second server to read.
     let mut server = server;
-    let config_dir = server.config_dir.path().to_path_buf();
     let data_dir = server.data_dir.path().to_path_buf();
     let _ = server.child.kill();
     let _ = server.child.wait();
@@ -86,7 +82,7 @@ fn audit_rows_survive_server_restart() {
     // Brief pause for filesystem flush + lockfile release.
     std::thread::sleep(Duration::from_millis(200));
 
-    let mut child2 = respawn_server(&config_dir, &data_dir);
+    let mut child2 = respawn_server(&data_dir);
     // Re-attach a stderr capture so we can wait for `server.listening`.
     let stderr = child2.stderr.take().expect("stderr piped");
     let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));

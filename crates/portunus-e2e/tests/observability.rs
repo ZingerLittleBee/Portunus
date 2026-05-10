@@ -161,7 +161,7 @@ fn test_prometheus_endpoint() {
 
     // Trigger an auth failure so `portunus_auth_failures_total` materialises
     // with a label. The bogus client connects with a mutated token.
-    let bogus_path = server.config_dir.path().join("bogus.bundle.json");
+    let bogus_path = server.data_dir.path().join("bogus.bundle.json");
     let mut bogus: Value =
         serde_json::from_str(&std::fs::read_to_string(&bundle).unwrap()).unwrap();
     bogus["client_name"] = Value::String("bogus".into());

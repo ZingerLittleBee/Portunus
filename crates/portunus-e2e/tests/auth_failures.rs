@@ -33,7 +33,7 @@ fn test_missing_token_rejected() {
     // Empty token → interceptor on server side sees `Bearer ` and treats as
     // malformed/missing.
     tampered["token"] = Value::String(String::new());
-    let bad_path = server.config_dir.path().join("empty.bundle.json");
+    let bad_path = server.data_dir.path().join("empty.bundle.json");
     std::fs::write(&bad_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
     let _client = common::spawn_client(&bad_path, &[]);
 
@@ -102,7 +102,7 @@ fn test_pin_mismatch_rejected() {
     let mut chars: Vec<char> = original.chars().collect();
     chars[0] = if chars[0] == '0' { 'f' } else { '0' };
     tampered["server_cert_sha256"] = Value::String(chars.into_iter().collect());
-    let bad_path = server.config_dir.path().join("pin.bundle.json");
+    let bad_path = server.data_dir.path().join("pin.bundle.json");
     std::fs::write(&bad_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
 
     let mut client = common::spawn_client(&bad_path, &[]);

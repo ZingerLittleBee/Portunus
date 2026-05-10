@@ -20,21 +20,14 @@ use portunus_server::tls::ServerTlsMaterial;
 #[derive(Parser, Debug)]
 #[command(name = "portunus-server", version, about = "Portunus control plane")]
 struct Cli {
-    /// Override the configuration directory (admin-edited config + TLS material).
-    #[arg(long, global = true)]
-    config_dir: Option<PathBuf>,
-
     /// Override the data directory (daemon-managed `state.db` and SQLite
-    /// sidecars). Independent from `--config-dir`. When omitted, resolved
+    /// sidecars). Also holds generated TLS material and optional `server.toml`.
+    /// When omitted, resolved
     /// in order: $STATE_DIRECTORY → $XDG_STATE_HOME/portunus →
     /// $HOME/.local/state/portunus → ./portunus.state. See
     /// specs/008-sqlite-storage/ FR-019.
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
-
-    /// Override the path to `server.toml`.
-    #[arg(long, global = true)]
-    config: Option<PathBuf>,
 
     /// Override the host:port advertised in newly-issued credential bundles.
     #[arg(long, global = true)]
@@ -417,15 +410,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), u8> {
-    let config_dir = resolve_config_dir(cli.config_dir.clone());
     let data_dir = portunus_server::data_dir::resolve(cli.data_dir.clone());
 
     match cli.cmd {
         Cmd::Serve => {
             let opts = serve::ServeOptions {
-                config_dir,
                 data_dir: data_dir.clone(),
-                config_file: cli.config.clone(),
                 advertised_endpoint: cli.advertised_endpoint.clone(),
             };
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -440,8 +430,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             })
         }
         Cmd::ProvisionClient { name, out } => {
-            let state =
-                build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
             match cli::provision_client(&state, &name, out) {
                 Ok((path, _)) => {
                     println!("{}", path.display());
@@ -455,8 +444,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             }
         }
         Cmd::Revoke { name } => {
-            let state =
-                build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -469,8 +457,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 })
         }
         Cmd::ListClients { format } => {
-            let state =
-                build_offline_state(&config_dir, &data_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -545,10 +532,6 @@ fn run(cli: Cli) -> Result<(), u8> {
             http_endpoint,
         } => rule_cli::stats(&http_endpoint, rule_id, format, per_port, per_target),
         Cmd::BootstrapSuperadmin { name } => {
-            std::fs::create_dir_all(&config_dir).map_err(|e| {
-                eprintln!("config dir: {e}");
-                1u8
-            })?;
             std::fs::create_dir_all(&data_dir).map_err(|e| {
                 eprintln!("data dir: {e}");
                 1u8
@@ -762,44 +745,24 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 }
 
-fn resolve_config_dir(override_: Option<PathBuf>) -> PathBuf {
-    if let Some(p) = override_ {
-        return p;
-    }
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("portunus");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config/portunus");
-    }
-    PathBuf::from("./portunus.config")
-}
-
 /// Build a state suitable for *offline* operator commands (provision-client,
 /// revoke, list-clients). Loads (or generates) TLS material so that newly
 /// issued bundles carry the correct fingerprint.
 fn build_offline_state(
-    config_dir: &std::path::Path,
     data_dir: &std::path::Path,
     advertised_endpoint: Option<String>,
 ) -> Result<AppState, u8> {
-    std::fs::create_dir_all(config_dir).map_err(|e| {
-        eprintln!("config dir: {e}");
-        1u8
-    })?;
     std::fs::create_dir_all(data_dir).map_err(|e| {
         eprintln!("data dir: {e}");
         1u8
     })?;
-    let paths = cli::default_paths(config_dir);
+    let paths = cli::default_paths(data_dir);
     let tls = ServerTlsMaterial::load_or_generate(&paths.cert, &paths.key).map_err(|e| {
         eprintln!("tls: {e}");
         1u8
     })?;
     // 008-sqlite-storage T052 — offline path opens SQLite first, then
-    // wraps it with both Authenticator surfaces. The legacy file paths
-    // (`paths.tokens`, `identity.json`) are no longer touched.
-    let _ = paths.tokens; // silence "unused" if the field is unread now
+    // wraps it with both Authenticator surfaces.
     let store = Arc::new(portunus_server::store::Store::open(data_dir).map_err(|e| {
         eprintln!("store: {e}");
         1u8

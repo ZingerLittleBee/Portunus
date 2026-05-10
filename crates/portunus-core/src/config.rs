@@ -52,8 +52,8 @@ pub struct ServerConfig {
     pub udp_max_flows_per_rule: Option<u32>,
 
     /// Path to the operator-side identity store (`identity.json`,
-    /// 005-multi-user-rbac, FR-004). Defaults to
-    /// `<config_dir>/identity.json` when absent.
+    /// 005-multi-user-rbac, FR-004). The loader defaults this to
+    /// `<data_dir>/identity.json` when absent.
     #[serde(default = "default_operator_store_path")]
     pub operator_store_path: PathBuf,
 
@@ -66,6 +66,24 @@ pub struct ServerConfig {
     /// string at load time; rejected otherwise.
     #[serde(default)]
     pub operator_token: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServerConfigToml {
+    control_listen: Option<SocketAddr>,
+    operator_http_listen: Option<SocketAddr>,
+    metrics_listen: Option<SocketAddr>,
+    tls_cert_path: Option<PathBuf>,
+    tls_key_path: Option<PathBuf>,
+    token_store_path: Option<PathBuf>,
+    shutdown_drain_timeout_secs: Option<u64>,
+    log_format: Option<LogFormat>,
+    range_rule_max_ports: Option<u32>,
+    udp_flow_idle_secs: Option<u32>,
+    udp_max_flows_per_rule: Option<u32>,
+    operator_store_path: Option<PathBuf>,
+    operator_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -118,9 +136,9 @@ fn default_stats_report_interval_secs() -> u64 {
 /// instantiate a `ServerConfig`.
 #[must_use]
 fn default_operator_store_path() -> PathBuf {
-    // The TOML loader replaces this when relative paths are resolved
-    // against the config_dir; the bare default below is only hit when a
-    // ServerConfig is constructed in code (tests, default_config in serve.rs).
+    // `from_toml_path_with_data_dir` installs the real
+    // `<data_dir>/identity.json` default. The bare relative fallback is
+    // only used by direct deserializations of `ServerConfig`.
     PathBuf::from("identity.json")
 }
 
@@ -144,30 +162,104 @@ pub fn default_udp_max_flows_per_rule() -> u32 {
 }
 
 impl ServerConfig {
+    #[must_use]
+    pub fn default_for_data_dir(data_dir: &Path) -> Self {
+        Self {
+            control_listen: default_control_listen(),
+            operator_http_listen: default_operator_http_listen(),
+            metrics_listen: default_metrics_listen(),
+            tls_cert_path: data_dir.join("server.crt"),
+            tls_key_path: data_dir.join("server.key"),
+            token_store_path: data_dir.join("tokens.json"),
+            shutdown_drain_timeout_secs: default_drain_secs(),
+            log_format: LogFormat::Json,
+            range_rule_max_ports: default_range_rule_max_ports(),
+            udp_flow_idle_secs: None,
+            udp_max_flows_per_rule: None,
+            operator_store_path: data_dir.join("identity.json"),
+            operator_token: None,
+        }
+    }
+
     pub fn from_toml_path(path: &Path) -> Result<Self, PortunusError> {
+        let data_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        Self::from_toml_path_with_data_dir(path, data_dir)
+    }
+
+    pub fn from_toml_path_with_data_dir(
+        path: &Path,
+        data_dir: &Path,
+    ) -> Result<Self, PortunusError> {
         let raw = std::fs::read_to_string(path)?;
-        let cfg: Self =
+        let overrides: ServerConfigToml =
             toml::from_str(&raw).map_err(|e| PortunusError::ConfigInvalid(e.to_string()))?;
-        if cfg.range_rule_max_ports == 0 {
+        let mut cfg = Self::default_for_data_dir(data_dir);
+
+        if let Some(v) = overrides.control_listen {
+            cfg.control_listen = v;
+        }
+        if let Some(v) = overrides.operator_http_listen {
+            cfg.operator_http_listen = v;
+        }
+        if let Some(v) = overrides.metrics_listen {
+            cfg.metrics_listen = v;
+        }
+        if let Some(v) = overrides.tls_cert_path {
+            cfg.tls_cert_path = v;
+        }
+        if let Some(v) = overrides.tls_key_path {
+            cfg.tls_key_path = v;
+        }
+        if let Some(v) = overrides.token_store_path {
+            cfg.token_store_path = v;
+        }
+        if let Some(v) = overrides.shutdown_drain_timeout_secs {
+            cfg.shutdown_drain_timeout_secs = v;
+        }
+        if let Some(v) = overrides.log_format {
+            cfg.log_format = v;
+        }
+        if let Some(v) = overrides.range_rule_max_ports {
+            cfg.range_rule_max_ports = v;
+        }
+        if let Some(v) = overrides.udp_flow_idle_secs {
+            cfg.udp_flow_idle_secs = Some(v);
+        }
+        if let Some(v) = overrides.udp_max_flows_per_rule {
+            cfg.udp_max_flows_per_rule = Some(v);
+        }
+        if let Some(v) = overrides.operator_store_path {
+            cfg.operator_store_path = v;
+        }
+        if let Some(v) = overrides.operator_token {
+            cfg.operator_token = Some(v);
+        }
+
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<(), PortunusError> {
+        if self.range_rule_max_ports == 0 {
             return Err(PortunusError::ConfigInvalid(
                 "range_rule_max_ports must be >= 1 (a cap of 0 rejects every range push, almost certainly a misconfiguration)".into(),
             ));
         }
-        if let Some(v) = cfg.udp_flow_idle_secs
+        if let Some(v) = self.udp_flow_idle_secs
             && !(30..=300).contains(&v)
         {
             return Err(PortunusError::ConfigInvalid(format!(
                 "udp_flow_idle_secs out of range (got {v}, expected 30..=300)"
             )));
         }
-        if let Some(v) = cfg.udp_max_flows_per_rule
+        if let Some(v) = self.udp_max_flows_per_rule
             && !(1..=65535).contains(&v)
         {
             return Err(PortunusError::ConfigInvalid(format!(
                 "udp_max_flows_per_rule out of range (got {v}, expected 1..=65535)"
             )));
         }
-        Ok(cfg)
+        Ok(())
     }
 
     /// Resolved UDP idle-flow window in seconds (default-applied).
@@ -206,11 +298,7 @@ mod tests {
 
     #[test]
     fn server_config_minimal_loads() {
-        let toml = r#"
-            tls_cert_path = "/etc/portunus/server.crt"
-            tls_key_path = "/etc/portunus/server.key"
-            token_store_path = "/etc/portunus/tokens.json"
-        "#;
+        let toml = "";
         let dir = write_tmp("server.toml", toml);
         let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
         assert_eq!(cfg.control_listen.port(), 7443);
@@ -220,6 +308,24 @@ mod tests {
         assert_eq!(cfg.log_format, LogFormat::Json);
         // T011: default cap is 1024.
         assert_eq!(cfg.range_rule_max_ports, 1024);
+        assert_eq!(cfg.tls_cert_path, dir.path().join("server.crt"));
+        assert_eq!(cfg.tls_key_path, dir.path().join("server.key"));
+        assert_eq!(cfg.token_store_path, dir.path().join("tokens.json"));
+        assert_eq!(cfg.operator_store_path, dir.path().join("identity.json"));
+    }
+
+    #[test]
+    fn server_config_partial_file_overrides_defaults() {
+        let toml = r#"
+            control_listen = "127.0.0.1:9443"
+        "#;
+        let dir = write_tmp("server.toml", toml);
+        let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+        assert_eq!(cfg.control_listen.port(), 9443);
+        assert_eq!(cfg.operator_http_listen.port(), 7080);
+        assert_eq!(cfg.metrics_listen.port(), 7081);
+        assert_eq!(cfg.tls_cert_path, dir.path().join("server.crt"));
+        assert_eq!(cfg.tls_key_path, dir.path().join("server.key"));
     }
 
     #[test]

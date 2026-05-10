@@ -1350,14 +1350,12 @@ pub fn render_rules_text(rules: &[Rule]) -> String {
     s
 }
 
-/// Used by the CLI when no config file exists — synthesises a `ServerConfig`
-/// with sensible defaults rooted at `<config_dir>`.
+/// Default generated-material paths rooted at the server data directory.
 #[must_use]
-pub fn default_paths(config_dir: &Path) -> DefaultPaths {
+pub fn default_paths(data_dir: &Path) -> DefaultPaths {
     DefaultPaths {
-        cert: config_dir.join("server.crt"),
-        key: config_dir.join("server.key"),
-        tokens: config_dir.join("tokens.json"),
+        cert: data_dir.join("server.crt"),
+        key: data_dir.join("server.key"),
     }
 }
 
@@ -1365,7 +1363,6 @@ pub fn default_paths(config_dir: &Path) -> DefaultPaths {
 pub struct DefaultPaths {
     pub cert: PathBuf,
     pub key: PathBuf,
-    pub tokens: PathBuf,
 }
 
 #[cfg(test)]

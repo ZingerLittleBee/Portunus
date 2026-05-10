@@ -17,10 +17,8 @@ fn server_bin() -> &'static str {
     env!("CARGO_BIN_EXE_portunus-server")
 }
 
-fn bootstrap(data: &TempDir, cfg: &TempDir) {
+fn bootstrap(data: &TempDir) {
     let out = Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(cfg.path())
         .arg("--data-dir")
         .arg(data.path())
         .arg("bootstrap-superadmin")
@@ -90,9 +88,8 @@ fn count_audit_rows(data: &TempDir) -> i64 {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dry_run_does_not_mutate() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     let now = chrono::Utc::now();
     seed_rows(&data, now, 5).await;
     let before_count = count_audit_rows(&data);
@@ -116,9 +113,8 @@ async fn dry_run_does_not_mutate() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn apply_deletes_only_matching_rows() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     let now = chrono::Utc::now();
     // 5 old rows (ts < now - 10s) and 3 fresh rows (ts ≥ now - 10s).
     seed_rows(&data, now - chrono::Duration::seconds(20), 5).await;
@@ -152,9 +148,8 @@ async fn apply_deletes_only_matching_rows() {
 
 #[test]
 fn invalid_rfc3339_rejected() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     let out = run_prune(&data, "not-a-timestamp", false);
     assert!(!out.status.success(), "expected non-zero exit");
     let stderr = String::from_utf8_lossy(&out.stderr);

@@ -1,7 +1,7 @@
 //! Common helpers shared across e2e test files.
 //!
 //! - [`spawn_server`] launches the `portunus-server` binary against a fresh
-//!   temp config dir.
+//!   temp data dir.
 //! - [`spawn_client`] launches the `portunus-client` binary against a bundle
 //!   path produced via `provision-client`.
 //!
@@ -76,7 +76,6 @@ fn cmd_for(name: &str) -> Command {
 
 pub struct ServerHandle {
     pub child: Child,
-    pub config_dir: TempDir,
     pub data_dir: TempDir,
     pub stderr_lines: Arc<Mutex<Vec<String>>>,
 }
@@ -172,7 +171,7 @@ fn auth_header() -> (&'static str, &'static str) {
     ("Authorization", "Bearer test-operator-token-005")
 }
 
-/// Launch `portunus-server serve` against a fresh temp config dir.
+/// Launch `portunus-server serve` against a fresh temp data dir.
 /// Caller is responsible for waiting for readiness (e.g., by polling the
 /// operator HTTP listener).
 pub fn spawn_server(extra_args: &[&str]) -> ServerHandle {
@@ -180,45 +179,30 @@ pub fn spawn_server(extra_args: &[&str]) -> ServerHandle {
 }
 
 /// 004-udp-forward T058/T059 helper: write a fully-formed `server.toml`
-/// (mirroring the binary's `default_config` listener shape — LOCALHOST:0
+/// (mirroring the binary's default listener shape — LOCALHOST:0
 /// for all three sockets so e2e tests don't collide on shared ports)
-/// with the supplied extra TOML lines spliced in. Callers pass UDP-tuning
-/// overrides like `udp_max_flows_per_rule = 2`; the helper takes care of
-/// the required TLS / token-store paths so the server self-generates the
-/// missing files exactly as it does without a server.toml.
+/// with the supplied extra TOML lines spliced in.
 pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> ServerHandle {
-    let config_dir = fresh_tempdir("server config");
+    // 008-sqlite-storage T034 — every spawned server gets its own
+    // isolated SQLite data dir so parallel test runners don't fight
+    // over the state.db lockfile.
+    let data_dir = fresh_tempdir("server data");
     // 005-multi-user-rbac T025: every test now needs a server.toml so we can
     // inject `operator_token = "..."`, which auto-bootstraps a `_legacy`
     // superadmin on first start. Without this, every operator HTTP call
     // would 503 with `bootstrap_required`.
-    let cd = config_dir.path();
+    let data = data_dir.path();
     let extra = extra_toml.unwrap_or("");
     let body = format!(
         "control_listen = \"127.0.0.1:0\"\n\
          operator_http_listen = \"127.0.0.1:0\"\n\
          metrics_listen = \"127.0.0.1:0\"\n\
-         tls_cert_path = {cert_path:?}\n\
-         tls_key_path = {key_path:?}\n\
-         token_store_path = {token_path:?}\n\
-         operator_store_path = {identity_path:?}\n\
-         operator_token = \"{token}\"\n\
+         operator_token = \"{TEST_OPERATOR_TOKEN}\"\n\
          {extra}\n",
-        cert_path = cd.join("server.crt").to_string_lossy(),
-        key_path = cd.join("server.key").to_string_lossy(),
-        token_path = cd.join("tokens.json").to_string_lossy(),
-        identity_path = cd.join("identity.json").to_string_lossy(),
-        token = TEST_OPERATOR_TOKEN,
     );
-    std::fs::write(cd.join("server.toml"), body).expect("write server.toml");
-    // 008-sqlite-storage T034 — every spawned server gets its own
-    // isolated SQLite data dir so parallel test runners don't fight
-    // over the state.db lockfile.
-    let data_dir = fresh_tempdir("server data");
+    std::fs::write(data.join("server.toml"), body).expect("write server.toml");
     let mut cmd = cmd_for("portunus-server");
-    cmd.arg("--config-dir")
-        .arg(config_dir.path())
-        .arg("--data-dir")
+    cmd.arg("--data-dir")
         .arg(data_dir.path())
         .arg("serve")
         .args(extra_args)
@@ -230,7 +214,6 @@ pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> 
     let stderr_lines = capture_stderr(stderr);
     ServerHandle {
         child,
-        config_dir,
         data_dir,
         stderr_lines,
     }
@@ -256,22 +239,22 @@ pub fn spawn_client(bundle_path: &Path, extra_args: &[&str]) -> ClientHandle {
 
 /// Run `portunus-server provision-client <name>` synchronously; return the
 /// path to the generated bundle file.
-pub fn provision_client(config_dir: &Path, name: &str) -> PathBuf {
-    provision_client_with_endpoint(config_dir, name, None)
+pub fn provision_client(data_dir: &Path, name: &str) -> PathBuf {
+    provision_client_with_endpoint(data_dir, name, None)
 }
 
 /// Same as [`provision_client`] but lets the caller override the endpoint
 /// that gets baked into the bundle (needed because the running server binds
 /// to an OS-assigned port).
 pub fn provision_client_with_endpoint(
-    config_dir: &Path,
+    data_dir: &Path,
     name: &str,
     advertised: Option<&str>,
 ) -> PathBuf {
     let out = fresh_tempdir("bundle out").keep();
     let bundle = out.join(format!("{name}.bundle.json"));
     let mut cmd = cmd_for("portunus-server");
-    cmd.arg("--config-dir").arg(config_dir);
+    cmd.arg("--data-dir").arg(data_dir);
     if let Some(ep) = advertised {
         cmd.arg("--advertised-endpoint").arg(ep);
     }
@@ -646,10 +629,10 @@ pub fn fetch_metrics_text(metrics_addr: &str) -> String {
 }
 
 /// Run `portunus-server revoke <name>`. Returns the exit status.
-pub fn revoke(config_dir: &Path, name: &str) -> std::process::ExitStatus {
+pub fn revoke(data_dir: &Path, name: &str) -> std::process::ExitStatus {
     cmd_for("portunus-server")
-        .arg("--config-dir")
-        .arg(config_dir)
+        .arg("--data-dir")
+        .arg(data_dir)
         .arg("revoke")
         .arg(name)
         .status()

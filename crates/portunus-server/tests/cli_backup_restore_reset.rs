@@ -8,10 +8,8 @@ fn server_bin() -> &'static str {
     env!("CARGO_BIN_EXE_portunus-server")
 }
 
-fn bootstrap(data: &TempDir, cfg: &TempDir) {
+fn bootstrap(data: &TempDir) {
     let out = Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(cfg.path())
         .arg("--data-dir")
         .arg(data.path())
         .arg("bootstrap-superadmin")
@@ -28,9 +26,8 @@ fn bootstrap(data: &TempDir, cfg: &TempDir) {
 
 #[test]
 fn backup_then_restore_roundtrip() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
 
     // backup → file
     let snap_dir = TempDir::new().unwrap();
@@ -51,11 +48,8 @@ fn backup_then_restore_roundtrip() {
     assert!(snap_file.exists());
 
     // Restore into a fresh data dir.
-    let cfg2 = TempDir::new().unwrap();
     let data2 = TempDir::new().unwrap();
     let out = Command::new(server_bin())
-        .arg("--config-dir")
-        .arg(cfg2.path())
         .arg("--data-dir")
         .arg(data2.path())
         .arg("restore")
@@ -73,9 +67,8 @@ fn backup_then_restore_roundtrip() {
 
 #[test]
 fn backup_refuses_overwrite_without_replace() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     let snap_dir = TempDir::new().unwrap();
     let snap_file = snap_dir.path().join("snap.db");
     std::fs::write(&snap_file, b"placeholder").unwrap();
@@ -93,9 +86,8 @@ fn backup_refuses_overwrite_without_replace() {
 
 #[test]
 fn restore_refuses_non_empty_data_dir_without_force() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     let snap_dir = TempDir::new().unwrap();
     let snap_file = snap_dir.path().join("snap.db");
     Command::new(server_bin())
@@ -154,9 +146,8 @@ fn restore_rejects_garbage_file() {
 
 #[test]
 fn reset_dry_run_prints_path_and_keeps_db() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     let out = Command::new(server_bin())
         .arg("--data-dir")
         .arg(data.path())
@@ -174,9 +165,8 @@ fn reset_dry_run_prints_path_and_keeps_db() {
 
 #[test]
 fn reset_confirmed_removes_db() {
-    let cfg = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
-    bootstrap(&data, &cfg);
+    bootstrap(&data);
     assert!(data.path().join("state.db").exists());
     let out = Command::new(server_bin())
         .arg("--data-dir")
