@@ -1975,7 +1975,6 @@ mod tests {
 
     #[tokio::test]
     async fn t019_concurrent_cap_rsts_surplus_accepts() {
-        use crate::forwarder::rate_limit::scope::RuleRateLimiter;
         use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         let _guard = port_pool_lock().lock().await;
         let echo = spawn_echo().await;
@@ -1988,11 +1987,11 @@ mod tests {
             concurrent_connections: Some(2),
             ..Default::default()
         };
-        let limiter = Arc::new(RuleRateLimiter::from_envelope(&envelope));
+        let limiter = rule_handle_for(RuleId(101), envelope.clone());
         let stats_acc = Arc::new(RateLimitStatsAccumulator::new());
 
         let mut rule = single_rule(101, port, echo);
-        rule.rate_limit = Some(rule_handle_for(RuleId(101), envelope.clone()));
+        rule.rate_limit = Some(Arc::clone(&limiter));
         rule.rate_limit_stats = Some(Arc::clone(&stats_acc));
 
         let task = tokio::spawn(async move {
@@ -2116,7 +2115,7 @@ mod tests {
     #[tokio::test]
     async fn t030_owner_cap_binds_before_rule_cap_on_tcp_accept() {
         use crate::forwarder::rate_limit::scope::{
-            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager, RuleRateLimiter,
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
         };
         use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         let _guard = port_pool_lock().lock().await;
@@ -2129,10 +2128,13 @@ mod tests {
         // Rule cap = 5, owner cap = 1 — the owner is the binding
         // ceiling. The first accept must succeed; the second must
         // reject under `OwnerConcurrent`.
-        let rule_limiter = Arc::new(RuleRateLimiter::from_envelope(&portunus_core::RateLimit {
-            concurrent_connections: Some(5),
-            ..Default::default()
-        }));
+        let rule_limiter = rule_handle_for(
+            RuleId(202),
+            portunus_core::RateLimit {
+                concurrent_connections: Some(5),
+                ..Default::default()
+            },
+        );
         let rule_stats = Arc::new(RateLimitStatsAccumulator::new());
         let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
         let owner_id = OwnerId::new("alice");
@@ -2147,13 +2149,7 @@ mod tests {
         let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
 
         let mut rule = single_rule(202, port, echo);
-        rule.rate_limit = Some(rule_handle_for(
-            RuleId(202),
-            portunus_core::RateLimit {
-                concurrent_connections: Some(5),
-                ..Default::default()
-            },
-        ));
+        rule.rate_limit = Some(Arc::clone(&rule_limiter));
         rule.rate_limit_stats = Some(Arc::clone(&rule_stats));
         rule.owner_rate_limit = Some(Arc::clone(&owner_limiter));
         rule.owner_rate_limit_stats = Some(Arc::clone(&owner_stats));
