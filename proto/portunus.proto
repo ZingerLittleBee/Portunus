@@ -1,0 +1,527 @@
+// Portunus control-plane wire protocol — v1 (MVP).
+//
+// This is the canonical contract. Any change to this file is a wire-protocol
+// change subject to Constitution Principle III (contract tests) and the
+// versioning rules in Technology & Operational Constraints. Backward-
+// incompatible changes require a `portunus.v2` package; non-breaking
+// additions (new optional fields, new enum variants with reasonable defaults,
+// new messages) may stay in v1.
+//
+// Transport: gRPC over TLS (server cert pinned by client; per-client bearer
+// token in request metadata as `authorization: Bearer <token>`).
+//
+// Note: this spec ships the .proto as the contract. The actual file lives at
+// proto/portunus.proto in the repo root and is consumed by `portunus-proto`'s
+// build.rs via `tonic-build`.
+
+syntax = "proto3";
+
+package portunus.v1;
+
+// ============================================================================
+// ControlService — server-facing service the client calls into.
+// ============================================================================
+service Control {
+  // Long-lived bidirectional stream that carries the entire client/server
+  // conversation after auth:
+  //   - server pushes RuleUpdate (push/remove rules)
+  //   - client reports RuleStatus (activation results) and StatsReport
+  //
+  // The stream MUST be opened with the bearer token in metadata. The server
+  // closes the stream on auth failure with status UNAUTHENTICATED before any
+  // application message is exchanged.
+  rpc Channel(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// ============================================================================
+// Top-level envelope messages (wrapping a oneof allows future variants
+// without breaking).
+// ============================================================================
+
+message ClientMessage {
+  oneof payload {
+    Hello hello = 1;            // first message, optional in v1 — server can
+                                // also infer identity from auth metadata
+    RuleStatus rule_status = 2;
+    StatsReport stats_report = 3;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    Welcome welcome = 1;        // sent by server right after successful auth
+    RuleUpdate rule_update = 2;
+    // Additive in v1.7 (spec 011-rate-limiting-qos). One push per
+    // operator API call to PUT/DELETE
+    // /v1/clients/{id}/owners/{owner_id}/rate-limit. Carries SET (with
+    // rate_limit body) or REMOVE. v0.10 clients (no awareness of this
+    // variant) ignore it; the v0.11 capability gate refuses to emit it
+    // toward pre-0.11 clients (HTTP 422 rate_limit_unsupported_by_client).
+    OwnerRateLimitUpdate owner_rate_limit_update = 3;
+  }
+}
+
+// ============================================================================
+// Handshake messages
+// ============================================================================
+
+message Hello {
+  string protocol_version = 1;  // semantic version of the protocol the client
+                                // claims to speak, e.g. "1.0.0"
+  string client_version = 2;    // portunus-client binary version, informational
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Forwarding protocols this client can activate. v0.3.0 clients
+  // never send this field; the server treats an empty list as
+  // {TCP} (the v0.3.0-implicit capability) for backwards compat.
+  // v0.4.0 clients MUST send {TCP, UDP}. Future protocols (e.g. QUIC,
+  // SCTP) extend this list without requiring a new wire field.
+  repeated Protocol supported_protocols = 3;
+}
+
+message Welcome {
+  string server_version = 1;
+  uint64 server_time_unix_ms = 2;
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // UDP runtime tunables sourced from server config. Both fields use 0
+  // to mean "client uses compile-time default":
+  //   udp_flow_idle_secs       = 0 → client uses 60 s
+  //   udp_max_flows_per_rule   = 0 → client uses 1024
+  // A v0.3.0 server (which sends neither) is therefore
+  // backwards-compatible with a v0.4.0 client.
+  uint32 udp_flow_idle_secs     = 3;  // 30..=300
+  uint32 udp_max_flows_per_rule = 4;  // 1..=65535
+}
+
+// ============================================================================
+// Rule lifecycle
+// ============================================================================
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  TCP = 1;
+  // Additive in v1.3 (spec 004-udp-forward). Adding values to a proto3
+  // enum is non-breaking. v0.3.0 readers decoding `2` see the integer
+  // value; an exhaustive Rust match hits the default arm and triggers
+  // RuleStatus.failed with reason "unsupported_protocol". The server's
+  // proactive guard in push-rule (using Hello.supported_protocols)
+  // surfaces the same condition as HTTP 422 / exit 3.
+  UDP = 2;
+}
+
+// 009-tls-sni-routing field-number reservation (Phase 1 / T001):
+//   - field 11 is reserved for `optional string sni_pattern` (T015 in
+//     Phase 2 fills it in).
+//   - fields 1..=10 are unchanged from v0.7 (multi-target failover).
+message Rule {
+  uint64 rule_id = 1;
+  uint32 listen_port = 2;       // 1-65535; for ranges this is the start (inclusive)
+  string target_host = 3;
+  uint32 target_port = 4;       // for ranges this is the start (inclusive)
+  Protocol protocol = 5;
+
+  // Additive in v1.1 (spec 002-port-range-forward).
+  // Absent (== 0 on the wire) → single-port rule (v1.0 shape).
+  // Present → range from listen_port..=listen_port_end.
+  // Server enforces:
+  //   listen_port_end >= listen_port,
+  //   target_port_end >= target_port,
+  //   (listen_port_end - listen_port) == (target_port_end - target_port),
+  //   range size <= server config range_rule_max_ports (default 1024).
+  // Each listen port `p` forwards to target_port + (p - listen_port).
+  uint32 listen_port_end = 6;
+  uint32 target_port_end = 7;
+
+  // Additive in v1.2 (spec 003-domain-name-forward).
+  // Address-family preference for DNS-target rules. Absent (proto3
+  // `optional`, treated as None on the client) → default IPv4-first.
+  // `true` → prefer AAAA records when both A and AAAA are returned.
+  // For IP-literal targets the field is silently ignored. Wire field
+  // number 8 is the next free slot after v1.1.
+  optional bool prefer_ipv6 = 8;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  //
+  // Encoding contract (back-compat):
+  //   - Single-target rule: `targets` is empty; `target_host` /
+  //     `target_port` carry the upstream. Wire bytes identical to
+  //     v0.6.0.
+  //   - Multi-target rule (length >= 2): `targets` carries every
+  //     upstream including index 0; `target_host` is "" and
+  //     `target_port` is 0. Readers detect "multi-target" by
+  //     `!targets.is_empty()`.
+  //
+  // A v0.6.0 reader (no awareness of field 9) drops `targets` on
+  // decode and sees a rule with empty target_host / 0 target_port —
+  // which is invalid by v0.6.0 validation. The server-side guard
+  // (R-007 in research.md) refuses to push a multi-target rule down
+  // a channel whose Hello.client_version is < 0.7.0, returning HTTP
+  // 422 `multi_target_unsupported_by_client` instead.
+  //
+  // Server enforces: targets.len() in 1..=8 (for the new shape).
+  repeated Target targets = 9;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  // Active TCP-connect probe interval. 0 (proto3 default) means
+  // "passive only — do not schedule any probe task" (FR-015).
+  // Server enforces: 1..=3600 when nonzero.
+  uint32 health_check_interval_secs = 10;
+
+  // Additive in v1.5 (spec 009-tls-sni-routing). Wire field number 11.
+  // Absent → plain TCP forward / TLS-only fallback (depending on listener
+  // mode). Present → host or `*.suffix` pattern; ASCII, lowercased,
+  // ≤ 253 chars. Validated server-side per
+  // `specs/009-tls-sni-routing/data-model.md` §V-3.
+  //
+  // v0.8 readers (no awareness of field 11) drop it on decode and see a
+  // plain-TCP rule. The v0.9 portunus-server's capability gate (HTTP 422
+  // `sni_unsupported_by_client`) prevents a server from ever sending
+  // such a rule down a v0.8 channel — see
+  // `crates/portunus-server/src/operator/http.rs::push_rule`.
+  optional string sni_pattern = 11;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). Wire field number 12.
+  // Absent → uncapped on every dimension (legacy v0.10 behaviour, byte-
+  // identical wire). Present → optional caps for bandwidth (in/out),
+  // new-connection rate (TCP conn/s or UDP flow/s), concurrent
+  // connection / flow count, plus optional burst overrides.
+  //
+  // v0.10 readers (no awareness of field 12) drop it on decode and see
+  // an uncapped rule. The v0.11 portunus-server's capability gate
+  // (HTTP 422 `rate_limit_unsupported_by_client`) prevents a server
+  // from ever sending such a rule down a pre-0.11 channel —
+  // see crates/portunus-server/src/operator/http.rs::push_rule.
+  optional RateLimit rate_limit = 12;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). Wire field number 13.
+  // The v0.5 RBAC owner_user_id of this rule, threaded so the
+  // portunus-client can look up the rule's per-owner limiter in the
+  // process-lifetime OwnerRateLimitScopeManager (FR-013: per-owner
+  // ceiling binds before per-rule cap).
+  //
+  // Byte-stability: emitted only when the server has any v0.11
+  // rate-limit signal in play for this rule (per-rule cap set OR a
+  // matching owner cap exists). For pure v0.10-shaped rules with no
+  // caps anywhere, the server omits it and the wire stays
+  // byte-identical with v0.10 (validated by the wire-compat suite in
+  // portunus-proto/tests/rate_limit_wire_compat.rs).
+  //
+  // v0.10 readers drop it on decode and see a rule with no owner;
+  // since v0.10 has no owner-cap concept, this is a no-op for them.
+  // The capability gate prevents a v0.11-server from sending caps
+  // down a pre-0.11 channel.
+  optional string owner_id = 13;
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos).
+// Bundle of four optional caps. Used both as `Rule.rate_limit` and as
+// the value side of the per-owner cap envelope. Each cap is
+// independently optional; absent (== proto3 default-zero on the wire)
+// means "uncapped on this dimension".
+//
+// Burst defaults to one second of `rate` when the companion
+// `*_burst` field is absent. When supplied, server validation clamps
+// to `rate / 100 ≤ burst ≤ rate * 60`. The
+// `concurrent_connections_burst` slot is reserved for future use;
+// current server validation rejects any non-zero value (concurrent is
+// a hard ceiling, not a token bucket).
+message RateLimit {
+  optional uint64 bandwidth_in_bps          = 1;  // bytes/sec ingress
+  optional uint64 bandwidth_out_bps         = 2;  // bytes/sec egress
+  optional uint32 new_connections_per_sec   = 3;  // TCP conn/s or UDP flow/s
+  optional uint32 concurrent_connections    = 4;  // concurrent TCP conn or UDP NAT bindings
+  optional uint64 bandwidth_in_burst        = 5;  // override default burst (bytes)
+  optional uint64 bandwidth_out_burst       = 6;  // override default burst (bytes)
+  optional uint32 new_connections_burst     = 7;  // override default burst (count)
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos). Server-push variant carried
+// in `ServerMessage.payload` (tag 3). Pushed to the target client on
+// every PUT/DELETE of an owner-cap envelope.
+message OwnerRateLimitUpdate {
+  string client_name = 1;
+  string owner_id    = 2;
+  // Body. Required when action == SET; ignored when action == REMOVE.
+  optional RateLimit rate_limit = 3;
+  OwnerRateLimitAction action   = 4;
+}
+
+enum OwnerRateLimitAction {
+  OWNER_RATE_LIMIT_ACTION_UNSPECIFIED = 0;
+  OWNER_RATE_LIMIT_ACTION_SET    = 1;
+  OWNER_RATE_LIMIT_ACTION_REMOVE = 2;
+}
+
+// New in v1.4 (spec 007-multi-target-failover).
+// One upstream within a Rule. Inline-on-rule, not addressable on its
+// own. The client maintains a Healthy/Failed state machine per Target
+// (see specs/007-multi-target-failover/data-model.md §3).
+message Target {
+  string host     = 1;  // IP literal or DNS name (resolver applies
+                        // per-target, same TTL clamp as v0.3.0).
+  uint32 port     = 2;  // 1..=65535
+  uint32 priority = 3;  // lower = higher priority. Two targets MAY
+                        // share a value; row order breaks ties.
+  // Additive in v1.6 (spec 010-proxy-protocol-and-peek-histogram).
+  // Absent means legacy raw upstream forwarding. Present opts this
+  // target into one PROXY protocol prelude before any forwarded bytes.
+  // Server-side validation rejects it on UDP rules; the capability
+  // gate prevents pre-v1.0 clients from seeing the field.
+  optional ProxyProtocolVersion proxy_protocol = 4;
+}
+
+enum ProxyProtocolVersion {
+  PROXY_PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROXY_PROTOCOL_VERSION_V1 = 1;
+  PROXY_PROTOCOL_VERSION_V2 = 2;
+}
+
+enum RuleAction {
+  RULE_ACTION_UNSPECIFIED = 0;
+  PUSH = 1;
+  REMOVE = 2;
+}
+
+message RuleUpdate {
+  string request_id = 1;        // ULID, threaded for log correlation
+  RuleAction action = 2;
+  Rule rule = 3;                // PUSH: full rule; REMOVE: only rule_id is read
+}
+
+enum ActivationOutcome {
+  ACTIVATION_OUTCOME_UNSPECIFIED = 0;
+  ACTIVATED = 1;
+  FAILED = 2;
+  REMOVED = 3;
+}
+
+message RuleStatus {
+  string request_id = 1;
+  uint64 rule_id = 2;
+  ActivationOutcome outcome = 3;
+  // For FAILED: machine-readable reason such as "port_in_use",
+  // "permission_denied", "target_resolution_failed".
+  // Empty for ACTIVATED / REMOVED.
+  string reason = 4;
+}
+
+// ============================================================================
+// Stats reporting
+// ============================================================================
+
+// 009-tls-sni-routing field-number reservation (Phase 1 / T001):
+//   - fields 13/14/15 are reserved for `sni_route_exact_total /
+//     sni_route_wildcard_total / sni_route_fallback_total` (T016 in
+//     Phase 2 fills them in).
+//   - fields 11 and 12 belong to v0.7 (`target_failovers_total`,
+//     `per_target`) and MUST NOT be touched by 009.
+message RuleStats {
+  uint64 rule_id = 1;
+  uint64 bytes_in = 2;          // cumulative, aggregate across all ports
+  uint64 bytes_out = 3;         // cumulative, aggregate across all ports
+  uint32 active_connections = 4;// aggregate across all ports
+
+  // Additive in v1.1 (spec 002-port-range-forward).
+  // Per-port detail for range rules. Empty for single-port rules.
+  // Consumed only when an operator requests `--per-port`; never re-
+  // exported as Prometheus time series (cardinality budget — SC-002).
+  repeated PerPortStats per_port = 5;
+
+  // Additive in v1.2 (spec 003-domain-name-forward).
+  // Cumulative count of end-user connections that failed because of
+  // DNS resolution. Always 0 for IP-target rules. Carried on the
+  // existing 5 s StatsReport tick; the server feeds the new
+  // `portunus_rule_dns_failures_total{client,rule}` collector.
+  // v1.1 servers/clients reading an unknown field 6 follow proto3
+  // semantics (drop on emit, decode as 0 on read).
+  uint64 dns_failures = 6;
+
+  // Additive in v1.3 (spec 004-udp-forward). All four UDP fields are
+  // proto3 default-zero scalars so a TCP-only sender emits byte-
+  // identical wire to v0.3.0. v0.3.0 readers drop these on decode.
+
+  // Cumulative count of UDP datagrams the rule's listener received
+  // from end-users (across all ports for range rules). Always 0 for
+  // TCP rules.
+  uint64 datagrams_in = 7;
+
+  // Cumulative count of UDP datagrams the rule sent back to end-users
+  // (replies received on per-flow upstream sockets and forwarded to
+  // the original source). Always 0 for TCP rules.
+  uint64 datagrams_out = 8;
+
+  // Current live UDP flows aggregated across all ports. Replaces the
+  // `active_connections` semantic for UDP rules — operator surfaces
+  // present this as `active_flows`. Always 0 for TCP rules.
+  uint32 active_flows = 9;
+
+  // Cumulative count of new-flow first-datagrams dropped because the
+  // per-rule flow table was at `udp_max_flows_per_rule`. Always 0 for
+  // TCP rules.
+  uint64 flows_dropped_overflow = 10;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  //
+  // Cumulative count of Healthy <-> Failed transitions across all
+  // targets of this rule. Feeds the
+  // `portunus_rule_target_failovers_total{client,rule}` Prometheus
+  // counter (FR-018). Always 0 for single-target rules (no target
+  // health state allocated).
+  uint64 target_failovers_total = 11;
+
+  // Additive in v1.4 (spec 007-multi-target-failover).
+  //
+  // Per-target detail. Empty for single-target rules. For multi-
+  // target rules, the client populates this on every 5 s
+  // StatsReport tick. Mirrors the per-port pattern from v1.1: present
+  // in StatsReport so the server can answer `--per-target` CLI / Web
+  // UI queries from the same in-memory snapshot, never re-exported as
+  // Prometheus series (cardinality budget — SC-006).
+  repeated PerTargetStats per_target = 12;
+
+  // Additive in v1.5 (spec 009-tls-sni-routing). Field numbers 13/14/15
+  // continue after v0.7 (fields 11 and 12). All three are monotonic;
+  // proto3 default-zero on the wire. Reset on rule replace / client
+  // restart, matching the v0.7 convention for runtime counters.
+  //
+  // The v0.9 portunus-server `/metrics` endpoint folds these into one
+  // labelled collector
+  // `portunus_tls_sni_route_total{client,rule,owner,result=exact|wildcard|fallback}`
+  // (see `specs/009-tls-sni-routing/contracts/operator-api.md` §4).
+  uint64 sni_route_exact_total    = 13;
+  uint64 sni_route_wildcard_total = 14;
+  uint64 sni_route_fallback_total = 15;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). Field number 16
+  // continues after v0.9 (fields 13/14/15). Absent for rules with no
+  // cap fields set (uncapped path produces no rate-limit telemetry).
+  //
+  // The v0.11 portunus-server `/metrics` endpoint folds this entry into
+  // `portunus_rate_limit_reject_total{client,rule,owner,reason}`,
+  // `portunus_rate_limit_throttle_seconds_total{client,rule,owner,direction}`,
+  // and `portunus_rate_limit_active_connections{client,rule,owner}`.
+  // The `owner` label is empty for per-rule reasons (owner attribution
+  // belongs to the per-owner counterpart on `StatsReport.owner_rate_limit_stats`).
+  optional RateLimitStats rate_limit = 16;
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos). Per-scope rate-limit stats
+// payload. Used as `RuleStats.rate_limit` (per-rule scope) and as the
+// `stats` field of `OwnerRateLimitStats` (per-owner scope).
+message RateLimitStats {
+  // Cumulative reject totals by reason. Sparse — only reasons that
+  // ever fired are present. Reasons map 1:1 to RateLimitRejectReason.
+  repeated RateLimitRejectCount reject_total = 1;
+  // Cumulative wall-clock time the bandwidth cap blocked the read /
+  // write half-loop, in microseconds. Always 0 if no bandwidth cap is
+  // set on this scope.
+  uint64 throttle_micros_in  = 2;
+  uint64 throttle_micros_out = 3;
+  // Live count of connections (TCP) or NAT-bound flows (UDP) under
+  // this scope. Mirrors the limiter's `active_connections` atomic.
+  uint32 active_connections  = 4;
+}
+
+message RateLimitRejectCount {
+  RateLimitRejectReason reason = 1;
+  uint64 total                 = 2;
+}
+
+enum RateLimitRejectReason {
+  RATE_LIMIT_REJECT_REASON_UNSPECIFIED = 0;
+  RATE_LIMIT_REJECT_REASON_CONN_CONCURRENT     = 1;
+  RATE_LIMIT_REJECT_REASON_CONN_RATE           = 2;
+  RATE_LIMIT_REJECT_REASON_UDP_FLOW_RATE       = 3;
+  RATE_LIMIT_REJECT_REASON_OWNER_CONCURRENT    = 4;
+  RATE_LIMIT_REJECT_REASON_OWNER_CONN_RATE     = 5;
+  RATE_LIMIT_REJECT_REASON_OWNER_UDP_FLOW_RATE = 6;
+}
+
+// New in v1.7 (spec 011-rate-limiting-qos). One per owner with a cap
+// envelope active on this client. Carried alongside RuleStats in
+// StatsReport so the server can attribute owner-level reject /
+// throttle counts to the owner's RBAC ID without per-rule join-back.
+message OwnerRateLimitStats {
+  string owner_id = 1;
+  RateLimitStats stats = 2;
+}
+
+// New in v1.4 (spec 007-multi-target-failover).
+// One per Rule.targets entry, in priority order. Indexes are stable
+// for the rule's lifetime — clients of this message can pair `index`
+// with `Rule.targets[index]`.
+message PerTargetStats {
+  uint32 index    = 1;     // row index in Rule.targets
+  string host     = 2;     // mirror of Target.host
+  uint32 port     = 3;     // mirror of Target.port
+  uint32 priority = 4;     // mirror of Target.priority
+
+  // Health state. 0 = Healthy (default), 1 = Failed. Encoded as a
+  // uint32 instead of an enum so future states (Degraded, etc.)
+  // extend the values without bumping the wire schema.
+  uint32 health = 5;       // 0 = Healthy, 1 = Failed
+
+  uint32 consecutive_failures = 6;
+  // SystemTime since UNIX epoch in ms. 0 → never observed.
+  uint64 last_failure_at_unix_ms = 7;
+  uint64 last_success_at_unix_ms = 8;
+
+  // Per-target lifetime byte counters (rule-lifetime, reset on
+  // rule replace / client restart).
+  uint64 bytes_in              = 9;
+  uint64 bytes_out             = 10;
+  uint64 connections_accepted  = 11;  // TCP connections OR UDP flows
+}
+
+// New in v1.1 (spec 002-port-range-forward).
+message PerPortStats {
+  uint32 listen_port = 1;
+  uint64 bytes_in = 2;
+  uint64 bytes_out = 3;
+  uint32 active_connections = 4;  // TCP only — UDP per-port emits 0
+
+  // Additive in v1.3 (spec 004-udp-forward). Always 0 for TCP rules.
+  // Field 4 was already taken by v0.2.0 active_connections, so UDP
+  // datagram counters start at 5.
+  uint64 datagrams_in = 5;
+  uint64 datagrams_out = 6;
+}
+
+// New in v1.5 (spec 009-tls-sni-routing). One per active SNI listener
+// on the client. Carried alongside RuleStats in StatsReport, because
+// miss and parse-failure events have no rule_id attribution — they
+// happen before rule selection.
+message SniListenerStats {
+  uint32 listen_port                       = 1;
+  uint64 sni_route_miss_total              = 2;
+  uint64 client_hello_parse_failures_total = 3;
+  // Additive in v1.6 (spec 010-proxy-protocol-and-peek-histogram).
+  // One cumulative counter per fixed bucket in
+  // `portunus_core::PEEK_HISTOGRAM_BUCKETS_SECS`, in bucket order.
+  repeated uint64 client_hello_peek_bucket_counts = 4;
+  // Cumulative sum of observed peek durations, in microseconds.
+  uint64 client_hello_peek_sum_micros = 5;
+  // Cumulative count of observed peeks (success, timeout, parse failure).
+  uint64 client_hello_peek_count = 6;
+}
+
+message StatsReport {
+  uint64 sent_at_unix_ms = 1;
+  repeated RuleStats stats = 2; // one entry per Active rule on this client
+
+  // Additive in v1.5 (spec 009-tls-sni-routing). Empty for clients with
+  // no SNI listener active. The server folds each entry into
+  // `portunus_tls_sni_listener_miss_total{client,port}` and
+  // `portunus_tls_client_hello_parse_failures_total{client,port}` in
+  // the existing StatsReport handler.
+  repeated SniListenerStats sni_listener_stats = 3;
+
+  // Additive in v1.7 (spec 011-rate-limiting-qos). One entry per owner
+  // with at least one active rule under a per-owner cap envelope on
+  // this client. Empty for clients with no per-owner caps. Folded into
+  // `portunus_rate_limit_owner_active_connections{client,owner}` and
+  // the per-owner reject / throttle counters with reason ∈
+  // {OWNER_CONCURRENT, OWNER_CONN_RATE, OWNER_UDP_FLOW_RATE}.
+  repeated OwnerRateLimitStats owner_rate_limit_stats = 4;
+}

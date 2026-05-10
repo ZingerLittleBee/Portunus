@@ -1,10 +1,10 @@
 ---
 title: Client 配置
-description: forward-client 如何拾取下发包，以及哪些环境变量会影响行为。
+description: portunus-client 如何拾取下发包，以及哪些环境变量会影响行为。
 icon: Cog
 ---
 
-`forward-client` 几乎所有配置都来自 Server 通过 `provision-client` 签出的
+`portunus-client` 几乎所有配置都来自 Server 通过 `provision-client` 签出的
 **下发包**。没有 `client.toml`。
 
 ## 下发包
@@ -22,7 +22,7 @@ icon: Cog
 由 Server 签出：
 
 ```sh
-forward-server provision-client edge-01 --out ./edge-01.bundle.json
+portunus-server provision-client edge-01 --out ./edge-01.bundle.json
 ```
 
 文件 mode 是 `0600`。请通过可信通道（scp / rsync / 密钥管理）传到边缘
@@ -38,14 +38,14 @@ forward-server provision-client edge-01 --out ./edge-01.bundle.json
 ### 显式 `--bundle`
 
 ```sh
-forward-client --bundle ./edge-01.bundle.json
+portunus-client --bundle ./edge-01.bundle.json
 ```
 
 ### Bundle 自动解析（v0.8 起）
 
 省略 `--bundle` 时按以下顺序查找：
 
-1. `$FORWARD_CLIENT_BUNDLE`
+1. `$PORTUNUS_CLIENT_BUNDLE`
 2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
 3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
@@ -56,7 +56,7 @@ forward-client --bundle ./edge-01.bundle.json
 # 把 bundle 放进 XDG config，直接跑二进制
 mkdir -p ~/.config/portunus
 mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
-forward-client
+portunus-client
 ```
 
 ## 标志
@@ -66,13 +66,13 @@ forward-client
 | `--bundle <PATH>` | 显式 bundle 路径（覆盖解析链） |
 | `--shutdown-drain-timeout-secs <N>` | SIGTERM 时已转发连接 drain 的上限秒数（默认 30） |
 
-`forward-client --help` 给出当前权威的标志一览。
+`portunus-client --help` 给出当前权威的标志一览。
 
 ## 环境变量
 
 | 变量 | 作用 |
 | --- | --- |
-| `FORWARD_CLIENT_BUNDLE` | bundle 路径（解析链中优先级最高） |
+| `PORTUNUS_CLIENT_BUNDLE` | bundle 路径（解析链中优先级最高） |
 | `RUST_LOG` | 标准 `tracing-subscriber` env-filter |
 
 ## TLS 指纹固定
@@ -95,7 +95,7 @@ IP / DNS 被劫持，错误的证书会在任何 Token 出门前被拒绝。
 UDP 重负载或大跨度端口范围部署，请提高 `LimitNOFILE`：
 
 ```ini
-# /etc/systemd/system/forward-client.service
+# /etc/systemd/system/portunus-client.service
 [Service]
 LimitNOFILE=65535
 ```

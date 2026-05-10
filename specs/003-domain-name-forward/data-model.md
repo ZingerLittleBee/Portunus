@@ -4,13 +4,13 @@ Adds three concepts on top of the v0.2.0 model: a richer **Target**
 shape (IP-or-hostname classification), a **per-rule preference flag**
 for address family, and a **client-local resolution cache**. Field
 numbers / on-disk shapes are documented in
-`contracts/forward.proto` and `contracts/persistence.md` — this file
+`contracts/portunus.proto` and `contracts/persistence.md` — this file
 captures the in-memory entities, their invariants, and how they
 relate to the v0.2.0 entities.
 
 ---
 
-## Entity: `Hostname` (new, in `forward-core`)
+## Entity: `Hostname` (new, in `portunus-core`)
 
 Validated wrapper around an RFC 1123 strict hostname.
 
@@ -38,7 +38,7 @@ Validated wrapper around an RFC 1123 strict hostname.
 
 ---
 
-## Entity: `Target` (new, in `forward-core`)
+## Entity: `Target` (new, in `portunus-core`)
 
 Discriminated classification of a rule's target host string.
 
@@ -90,7 +90,7 @@ v0.2.0 fields (unchanged): `rule_id`, `listen_port`, `target_host`,
 
 ---
 
-## Entity: `ResolutionCacheEntry` (new, in `forward-client/src/resolver/cache.rs`)
+## Entity: `ResolutionCacheEntry` (new, in `portunus-client/src/resolver/cache.rs`)
 
 Per-hostname state inside the process-wide resolver cache (R-002).
 
@@ -142,14 +142,14 @@ released across awaits):
 - `Failed::retry_after` is bounded (3 s suggested) so a flapping
   resolver does not cause a hot-loop of NXDOMAIN-then-retry queries.
 
-**Lifetime**: the cache lives as long as the `forward-client`
+**Lifetime**: the cache lives as long as the `portunus-client`
 process. No cross-process sharing, no on-disk persistence — caches
 are deliberately discarded across client restarts so a new process
 re-validates DNS state on first traffic.
 
 ---
 
-## Entity: `ResolverConfig` (new, in `forward-client/src/resolver/mod.rs`)
+## Entity: `ResolverConfig` (new, in `portunus-client/src/resolver/mod.rs`)
 
 Process-wide resolver constants for v0.3.0. All fields are
 spec-fixed defaults — no CLI/config wire-up in this feature; the
@@ -166,14 +166,14 @@ values without changing call sites.
 | `max_concurrent_resolves`   | `usize`          | `64`    | Cap on `Pending` entries to bound resolver-side load if many unique names go bad simultaneously. |
 
 **Future-work seam (NOT built in v0.3.0)**: a later spec can deliver
-floor/ceiling overrides via `forward-server`-issued client config so
+floor/ceiling overrides via `portunus-server`-issued client config so
 operators tune cache budgets per fleet without redeploying clients.
 For v0.3.0 the defaults above are baked at compile time; any "operator
 tunability" language in earlier drafts of this doc is deferred.
 
 ---
 
-## Entity: `DnsFailureCounter` (new, in `forward-client/src/forwarder/stats.rs`)
+## Entity: `DnsFailureCounter` (new, in `portunus-client/src/forwarder/stats.rs`)
 
 Per-rule monotonic count of end-user connections that failed because
 of DNS resolution. Lives alongside the v0.2.0 counters
@@ -182,7 +182,7 @@ of DNS resolution. Lives alongside the v0.2.0 counters
 | Field          | Type        | Notes                                                                                              |
 |----------------|-------------|----------------------------------------------------------------------------------------------------|
 | `value`        | `AtomicU64` | Bumped exactly once per end-user connection that failed because of `dns_resolution_failed` (FR-008). |
-| `wire`         | `RuleStats.dns_failures = 6` (uint64) | Carried to the server on the existing 5 s `StatsReport` tick (R-008 / contracts/forward.proto). |
+| `wire`         | `RuleStats.dns_failures = 6` (uint64) | Carried to the server on the existing 5 s `StatsReport` tick (R-008 / contracts/portunus.proto). |
 | `Prometheus`   | `IntCounterVec({"client", "rule"})` | Server-side collector fed by the StatsReport accumulation; one row per rule on the metrics endpoint (SC-006). |
 
 **Increment rule**: bumped *only* by the resolver layer on a

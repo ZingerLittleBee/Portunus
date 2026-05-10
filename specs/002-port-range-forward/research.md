@@ -29,7 +29,7 @@ task; share one `CancellationToken` for fast shutdown and one
   buy nothing and would complicate the all-or-nothing rollback.
 - One `JoinSet` per rule (instead of one per listener) preserves the
   existing 1-rule-1-task ownership model from
-  `forward-client/src/forwarder/mod.rs`. The lifecycle (`Activated`
+  `portunus-client/src/forwarder/mod.rs`. The lifecycle (`Activated`
   once, `Removed` once) is unchanged from a control-plane observer's
   perspective.
 - Sharing one `CancellationToken` per rule keeps the "stop accept within
@@ -81,7 +81,7 @@ candidate.start)`) is reported in the error.
 
 **Decision**: The client extends `RuleStats` with an optional repeated
 field `per_port` (vector of `(port, bytes_in, bytes_out, active_conns)`)
-in `forward.v1.RuleStats`. The client populates it always for range
+in `portunus.v1.RuleStats`. The client populates it always for range
 rules and leaves it empty for single-port rules. The server caches the
 last received per-port snapshot keyed by `RuleId` in
 `AppState::per_port_stats`. The HTTP API exposes
@@ -177,7 +177,7 @@ shape, zero migration). Honored at three layers:
 suffix on both listen and target ports:
 
 ```
-forward-server push-rule <client> <listen_port>[-<listen_end>] \
+portunus-server push-rule <client> <listen_port>[-<listen_end>] \
   <target_host>:<target_port>[-<target_end>] [--protocol tcp]
 ```
 
@@ -188,7 +188,7 @@ Examples:
 
 Adds `--per-port` to `rule-stats`:
 ```
-forward-server rule-stats <rule_id> [--per-port] [--format text|json]
+portunus-server rule-stats <rule_id> [--per-port] [--format text|json]
 ```
 
 **Rationale**:
@@ -197,7 +197,7 @@ forward-server rule-stats <rule_id> [--per-port] [--format text|json]
   (lsof, iptables, semantic) and parses with one `split('-')` per
   side.
 - Validation rules (start ≤ end, length match between sides) live in
-  `forward-core::PortRange` so the CLI, HTTP API, and gRPC server share
+  `portunus-core::PortRange` so the CLI, HTTP API, and gRPC server share
   one validator.
 
 **Alternatives considered**:

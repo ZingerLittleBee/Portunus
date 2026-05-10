@@ -23,7 +23,7 @@
 
 ## R-003 — Per-rule flow cap and overflow policy
 
-**Decision**: Default `udp_max_flows_per_rule = 1024`, operator-tunable. Overflow policy: **drop the new flow's first datagram** and increment `forward_rule_flows_dropped_overflow_total{client,rule}`. Existing flows are unaffected.
+**Decision**: Default `udp_max_flows_per_rule = 1024`, operator-tunable. Overflow policy: **drop the new flow's first datagram** and increment `portunus_rule_flows_dropped_overflow_total{client,rule}`. Existing flows are unaffected.
 
 **Rationale**: 1024 mirrors the v0.2.0 `range_rule_max_ports` default — same magnitude as the documented per-rule fd budget, so an operator who set `LimitNOFILE` for v0.2.0 already has headroom. Drop-new (rather than reap-oldest-idle on insert) gives deterministic backpressure: the same source key always either succeeds or always fails until traffic drops below the cap, which is easier to diagnose than churning evictions. A future spec can add an `overflow_policy = drop_new | reap_oldest` config knob if a real workload demands it.
 
@@ -70,8 +70,8 @@ surface. The existing `RuleStats.active_connections` (proto field 4)
 remains TCP-only — UDP rules emit zero on it. A new
 `RuleStats.active_flows` (proto field 9) carries the live UDP flow
 count — TCP rules emit zero on it. Prometheus ships two distinct
-collector names (`forward_rule_active_connections` and
-`forward_rule_active_flows`), each with the same `{client, rule}`
+collector names (`portunus_rule_active_connections` and
+`portunus_rule_active_flows`), each with the same `{client, rule}`
 label set. Operator text surfaces (`rule-stats` text, JSON) select
 the field based on `rule.protocol`.
 
@@ -99,7 +99,7 @@ budget.
 - Reuse `active_connections` field for both protocols (the
   initially-recorded R-007 decision): silently overloads a stable
   v0.3.0 field's semantics. Rejected as a wire-contract violation.
-- One collector `forward_rule_active_sessions{client,rule,protocol}`:
+- One collector `portunus_rule_active_sessions{client,rule,protocol}`:
   adds a label, breaks the v0.3.0 cardinality contract for dashboards
   that key by the existing collector name.
 - Rename `active_connections` to `active_sessions` on the wire: not
@@ -107,7 +107,7 @@ budget.
 
 ## R-008 — Prometheus metric cardinality (SC-004)
 
-**Decision**: Four new collectors, each with the `{client, rule}` label set, materialised lazily on first non-zero increment (Prometheus default for `IntCounterVec` / `GaugeVec`). On `remove-rule`, all four labels (matching the dropped rule_id) are removed via `IntCounterVec::remove_label_values` — same idiom v0.3.0 introduced for `forward_rule_dns_failures_total`.
+**Decision**: Four new collectors, each with the `{client, rule}` label set, materialised lazily on first non-zero increment (Prometheus default for `IntCounterVec` / `GaugeVec`). On `remove-rule`, all four labels (matching the dropped rule_id) are removed via `IntCounterVec::remove_label_values` — same idiom v0.3.0 introduced for `portunus_rule_dns_failures_total`.
 
 **Rationale**: One row per rule per collector. A 1024-port UDP range rule appears as a single row in each of the four collectors. The per-port detail (relevant for range rules under `--per-port`) lives in the existing `PerPortStats` repeated field on `RuleStats`, NOT in a new Prometheus row — same separation v0.2.0 established. SC-004 holds by construction.
 
@@ -122,7 +122,7 @@ budget.
 - A v0.3.0 reader receiving a v0.4.0 message with non-zero UDP fields drops the unknown fields per proto3 semantics. The TCP-relevant fields are unchanged.
 - A v0.4.0 reader reading a v0.3.0 message sees default-zero for all four UDP fields, which is correct (a TCP-only ruleset has no UDP datagrams).
 
-`Protocol::UDP = 2` joins the existing enum. Adding a value to a proto3 enum is non-breaking; v0.3.0 readers receiving `protocol = 2` decode it as the integer 2 and any switch over the enum hits the default arm — which is where FR-011's `unsupported_protocol` error code surfaces. The `forward-proto/tests/udp_wire_compat.rs` test pins both directions of the round-trip.
+`Protocol::UDP = 2` joins the existing enum. Adding a value to a proto3 enum is non-breaking; v0.3.0 readers receiving `protocol = 2` decode it as the integer 2 and any switch over the enum hits the default arm — which is where FR-011's `unsupported_protocol` error code surfaces. The `portunus-proto/tests/udp_wire_compat.rs` test pins both directions of the round-trip.
 
 **Rationale**: Standard proto3 additive evolution. No new versioning required.
 
@@ -150,7 +150,7 @@ budget.
 
 ## R-012 — Graceful drain on shutdown / rule remove
 
-**Decision**: On SIGINT/SIGTERM, the existing `forward-client` shutdown coordinator cancels the per-rule UDP listener tasks, which in turn cancel all per-flow reply-reader tasks via their `CancellationToken`. The drain timeout (`shutdown_drain_timeout_secs`) is shared with TCP — but UDP has no in-flight notion to wait for, so cancellation completes immediately and TCP gets the full timeout. On `remove-rule`, the same per-rule cancellation cascade fires.
+**Decision**: On SIGINT/SIGTERM, the existing `portunus-client` shutdown coordinator cancels the per-rule UDP listener tasks, which in turn cancel all per-flow reply-reader tasks via their `CancellationToken`. The drain timeout (`shutdown_drain_timeout_secs`) is shared with TCP — but UDP has no in-flight notion to wait for, so cancellation completes immediately and TCP gets the full timeout. On `remove-rule`, the same per-rule cancellation cascade fires.
 
 **Rationale**: UDP is connectionless. There's nothing to "drain" in the TCP sense. Closing the listener stops accepting new datagrams; closing per-flow upstream sockets stops the reply path. End-users see datagrams silently dropped — same as if the upstream went away. This is the correct UDP behaviour; pretending otherwise would invent semantics that aren't there.
 
@@ -161,10 +161,10 @@ budget.
 
 **Decision**: Two new criterion benches, harness=false (matching `data_plane.rs`/`range_install.rs`/`dns_resolver.rs`):
 
-- `forward-client/benches/udp_data_plane.rs::single_flow_throughput` — open one flow, send 60 s of 512-byte datagrams, measure dgrams/s. Asserts ≥ 50 000/s (SC-002).
-- `forward-client/benches/udp_data_plane.rs::single_flow_rtt` — single 512-byte datagram round-trip, measure median latency. Used to track regression but no hard threshold for v0.4.0 (SC-002 is throughput-driven).
+- `portunus-client/benches/udp_data_plane.rs::single_flow_throughput` — open one flow, send 60 s of 512-byte datagrams, measure dgrams/s. Asserts ≥ 50 000/s (SC-002).
+- `portunus-client/benches/udp_data_plane.rs::single_flow_rtt` — single 512-byte datagram round-trip, measure median latency. Used to track regression but no hard threshold for v0.4.0 (SC-002 is throughput-driven).
 
-The existing `data_plane.rs` baseline (`v0.1.0` JSON in `crates/forward-client/benches/baselines/`) is the **TCP regression gate** — re-run on every PR touching `forwarder/`. Threshold: ±5% per Constitution II. CI's `bench_regression_gate.py` already enforces this.
+The existing `data_plane.rs` baseline (`v0.1.0` JSON in `crates/portunus-client/benches/baselines/`) is the **TCP regression gate** — re-run on every PR touching `forwarder/`. Threshold: ±5% per Constitution II. CI's `bench_regression_gate.py` already enforces this.
 
 **Rationale**: Two complementary metrics — sustained throughput catches scheduler/syscall overhead drift, single RTT catches per-flow setup/teardown bugs. Constitution II's "must ship reproducible bench" rule is satisfied by both.
 

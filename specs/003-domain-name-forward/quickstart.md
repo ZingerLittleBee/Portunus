@@ -11,7 +11,7 @@ pair.
 - Two hosts (server + client), or one host loopback for the demo. The
   recipe below uses a single Linux host with everything on loopback —
   topology is not load-bearing for this feature.
-- `forward-server` and `forward-client` v0.3.0 binaries on `$PATH`.
+- `portunus-server` and `portunus-client` v0.3.0 binaries on `$PATH`.
 - A way to control DNS for one test name. The recipe uses `/etc/hosts`
   for a hermetic demo; in production this is your normal DNS provider.
 
@@ -38,10 +38,10 @@ In one terminal:
 ncat -lk 41000 -c 'cat'        # listens on :41000, echoes inbound bytes
 ```
 
-### 3. Provision and start the forward-server + client (one-host)
+### 3. Provision and start the portunus-server + client (one-host)
 
 ```sh
-forward-server serve --config-dir /tmp/srv &
+portunus-server serve --config-dir /tmp/srv &
 SERVER_PID=$!
 
 # Wait for server.listening
@@ -53,7 +53,7 @@ curl -sS -X POST -H 'content-type: application/json' \
     http://127.0.0.1:7080/v1/clients \
     > /tmp/edge-01.bundle.json
 
-forward-client --bundle /tmp/edge-01.bundle.json &
+portunus-client --bundle /tmp/edge-01.bundle.json &
 CLIENT_PID=$!
 
 # Wait for the client to connect
@@ -63,7 +63,7 @@ sleep 1
 ### 4. Push a DNS-target rule (the new bit)
 
 ```sh
-forward-server push-rule edge-01 8080 echo.test:41000
+portunus-server push-rule edge-01 8080 echo.test:41000
 # → exit 0, prints rule_id (e.g. 0)
 ```
 
@@ -94,7 +94,7 @@ restarting the client), fresh connections start failing fast — but
 the **rule stays Active**:
 
 ```sh
-forward-server list-rules
+portunus-server list-rules
 # → rule 0   client edge-01   listen 127.0.0.1:8080   target echo.test:41000   status Active
 
 echo 'hello' | timeout 5 ncat 127.0.0.1 8080
@@ -105,7 +105,7 @@ The DNS-failure counter has bumped:
 
 ```sh
 curl -sS http://127.0.0.1:7081/metrics | grep dns_failures
-# → forward_rule_dns_failures_total{client="edge-01",rule="0"} 1
+# → portunus_rule_dns_failures_total{client="edge-01",rule="0"} 1
 ```
 
 This is **US2 + US4 verified** — the rule absorbed the DNS outage,
@@ -142,11 +142,11 @@ EOF
 Push two rules to the same name, one default, one IPv6-preferred:
 
 ```sh
-forward-server push-rule edge-01 9080 dual.test:41000
-forward-server push-rule edge-01 9081 dual.test:41000 --prefer-ipv6
+portunus-server push-rule edge-01 9080 dual.test:41000
+portunus-server push-rule edge-01 9081 dual.test:41000 --prefer-ipv6
 ```
 
-Drive each through `ncat` and inspect `forward-client` logs for the
+Drive each through `ncat` and inspect `portunus-client` logs for the
 `rule.dns_resolved.chosen_addr` fields — the first will show
 `127.0.0.1`, the second `::1`. Same DNS name, two rules, two address
 families — observably different (US3 acceptance scenarios 1 & 2).
@@ -167,9 +167,9 @@ The same recipe collapsed onto a stopwatch:
 
 | Step                                                | Wall-clock budget |
 |-----------------------------------------------------|-------------------|
-| `forward-server serve` → `server.listening`         | < 0.5 s           |
+| `portunus-server serve` → `server.listening`         | < 0.5 s           |
 | `POST /v1/clients` → bundle issued                  | < 0.5 s           |
-| `forward-client --bundle …` → control stream up     | < 1.0 s           |
+| `portunus-client --bundle …` → control stream up     | < 1.0 s           |
 | `push-rule edge-01 8080 echo.test:41000`            | < 0.1 s           |
 | First byte through proxy (DNS resolved + connected) | < 1.0 s           |
 | **Total**                                           | **< 3 s**         |
@@ -183,7 +183,7 @@ several-second resolver round-trip on first connect" regressions.
 ```sh
 # Push rule pointing at name → IP_v1
 echo "127.0.0.1   moving.test" | sudo tee -a /etc/hosts
-forward-server push-rule edge-01 8888 moving.test:41000
+portunus-server push-rule edge-01 8888 moving.test:41000
 echo 'hello' | ncat 127.0.0.1 8888           # primes the cache, IP_v1
 
 # Switch the name to IP_v2 (still loopback, but a different listener)
@@ -206,7 +206,7 @@ After driving any number of failures through any number of rules:
 
 ```sh
 curl -sS http://127.0.0.1:7081/metrics \
-    | grep '^forward_rule_dns_failures_total' \
+    | grep '^portunus_rule_dns_failures_total' \
     | wc -l
 # → exactly one row per rule that has ever attempted DNS resolution
 ```

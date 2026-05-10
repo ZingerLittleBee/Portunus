@@ -78,7 +78,7 @@ Standard `ApiError` body shape per `operator-api.md`:
 
 ## Test plan
 
-`crates/forward-server/tests/audit_contract.rs` (new) covers:
+`crates/portunus-server/tests/audit_contract.rs` (new) covers:
 
 1. Empty buffer returns `[]`.
 2. Buffer with N entries returns at most `limit` newest-first.

@@ -13,7 +13,7 @@ project guarantee data-plane stability across releases.
 
 ```
               ┌──────────────────────────────────────┐
-              │            forward-server            │
+              │            portunus-server            │
               │                                      │
    Operator ──┤  • CLI subcommands                   │
    (CLI/HTTP) │  • Operator HTTP API + bearer auth   │
@@ -25,7 +25,7 @@ project guarantee data-plane stability across releases.
                              │ gRPC / TLS-pinned
                              │ (bidirectional stream)
               ┌──────────────▼───────────────────────┐
-              │            forward-client            │
+              │            portunus-client            │
               │                                      │
    End-user ──▶ TCP accept loop / UDP recv_from loop │
    traffic     │                                      │

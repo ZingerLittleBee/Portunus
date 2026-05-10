@@ -18,14 +18,14 @@ v0.4.0 起支持。UDP 规则可以与 TCP 规则共用同一个监听端口 —
 ## 推送 UDP 规则
 
 ```sh
-forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
 ```
 
 UDP 与 TCP 规则可以共用同一个监听端口：
 
 ```sh
-forward-server push-rule edge-01 6000 upstream.local:9999                # TCP
-forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
+portunus-server push-rule edge-01 6000 upstream.local:9999                # TCP
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
 ```
 
 ## 可调参数
@@ -43,7 +43,7 @@ udp_max_flows_per_rule = 1024
 ```
 
 当大量不同源端口造成持续抖动时，超出上限的流会让
-`forward_rule_flows_dropped_overflow_total` 累加。**已存在的流不会被驱逐
+`portunus_rule_flows_dropped_overflow_total` 累加。**已存在的流不会被驱逐
 腾位**——稳态收缩由空闲回收来完成。
 
 <Callout type="info">
@@ -60,10 +60,10 @@ listener task 与流表）和 [DNS 域名目标](/zh/docs/features/dns-targets)
 ## 指标
 
 ```
-forward_rule_udp_datagrams_in_total{client,rule,owner}
-forward_rule_udp_datagrams_out_total{client,rule,owner}
-forward_rule_active_flows{client,rule,owner}
-forward_rule_flows_dropped_overflow_total{client,rule,owner}
+portunus_rule_udp_datagrams_in_total{client,rule,owner}
+portunus_rule_udp_datagrams_out_total{client,rule,owner}
+portunus_rule_active_flows{client,rule,owner}
+portunus_rule_flows_dropped_overflow_total{client,rule,owner}
 ```
 
 `rule-stats` 会增加一个 `protocol` 字段以及上述 UDP 计数器。

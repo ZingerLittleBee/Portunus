@@ -1,0 +1,95 @@
+// Portunus control-plane wire protocol — v1.1 additive overlay for
+// 002-port-range-forward.
+//
+// This file expresses the **delta** from spec 001's
+// `contracts/portunus.proto`. Every change is additive and stays inside
+// `package portunus.v1`; v1 clients that don't know about the new fields
+// continue to deserialize range rules into the legacy single-port shape
+// (with `listen_port_end == 0` and `target_port_end == 0` per proto3
+// defaults). Operationally, range rules MUST only be pushed to clients
+// that understand them — see quickstart.md for the operator constraint.
+
+syntax = "proto3";
+
+package portunus.v1;
+
+// ============================================================================
+// Rule (EXTENDED) — additive optional range fields. Single-port rules
+// continue to omit them (proto3 default = 0).
+// ============================================================================
+message Rule {
+  uint64 rule_id = 1;
+  uint32 listen_port = 2;       // start of the listen range (inclusive)
+  string target_host = 3;
+  uint32 target_port = 4;       // start of the target range (inclusive)
+  Protocol protocol = 5;
+
+  // NEW for v1.1 — optional range extents.
+  // Absent (== 0 on the wire) → single-port rule with the same shape as v1.0.
+  // Present → range from `listen_port` through `listen_port_end` inclusive.
+  // Invariants enforced server-side BEFORE push:
+  //   - listen_port_end >= listen_port
+  //   - target_port_end >= target_port
+  //   - (listen_port_end - listen_port) == (target_port_end - target_port)
+  //   - the resulting range size <= server config `range_rule_max_ports`
+  //     (default 1024).
+  // Each listen port `p` forwards to target port
+  //   target_port + (p - listen_port).
+  // The client reports a single `RuleStatus` for the whole range and a
+  // single `RuleStats` per range (with optional per-port detail in
+  // `RuleStats.per_port`).
+  uint32 listen_port_end = 6;
+  uint32 target_port_end = 7;
+}
+
+// ============================================================================
+// RuleStats (EXTENDED) — adds optional per-port detail.
+// ============================================================================
+message RuleStats {
+  uint64 rule_id = 1;
+  uint64 bytes_in = 2;          // cumulative, aggregate across all ports
+  uint64 bytes_out = 3;         // cumulative, aggregate across all ports
+  uint32 active_connections = 4;// aggregate across all ports
+
+  // NEW for v1.1 — per-port breakdown for range rules. Empty for
+  // single-port rules. Server consumes this only when an operator
+  // explicitly requests `--per-port`; it is never re-exported as
+  // Prometheus time series (cardinality budget — see SC-002).
+  repeated PerPortStats per_port = 5;
+}
+
+// NEW message in v1.1.
+message PerPortStats {
+  uint32 listen_port = 1;       // the per-port slot inside the rule's range
+  uint64 bytes_in = 2;
+  uint64 bytes_out = 3;
+  uint32 active_connections = 4;
+}
+
+// ============================================================================
+// Unchanged from v1.0 — listed here for context only:
+//   service Control { rpc Channel(stream ClientMessage) returns (stream ServerMessage); }
+//   ClientMessage / ServerMessage envelopes
+//   Hello / Welcome
+//   enum Protocol { TCP = 1; ... }
+//   enum RuleAction { PUSH = 1; REMOVE = 2; }
+//   message RuleUpdate { string request_id = 1; RuleAction action = 2; Rule rule = 3; }
+//   enum ActivationOutcome { ACTIVATED = 1; FAILED = 2; REMOVED = 3; }
+//   message RuleStatus { string request_id = 1; uint64 rule_id = 2; ActivationOutcome outcome = 3; string reason = 4; }
+//   message StatsReport { uint64 sent_at_unix_ms = 1; repeated RuleStats stats = 2; }
+//
+// The canonical .proto in the repo (`proto/portunus.proto`) is updated
+// in-place by the implementer; this overlay file is the spec contract.
+// ============================================================================
+
+// ============================================================================
+// Failure-reason vocabulary (informative; reason strings on RuleStatus
+// remain `string` for forward compatibility — adding new reasons is
+// non-breaking).
+//
+// Range-specific reasons:
+//   - "port_in_use:<port>"          — bind failed; <port> is the offending listen port
+//   - "permission_denied:<port>"    — bind failed; <port> needed CAP_NET_BIND_SERVICE
+//   - "range_invalid"               — server-side validation rejected; should not reach client
+//   - "exceeds_cap:<requested>/<cap>" — server-side validation rejected; should not reach client
+// ============================================================================

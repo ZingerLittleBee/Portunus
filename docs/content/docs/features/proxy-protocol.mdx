@@ -20,13 +20,13 @@ Per-target opt-in means a single rule can mix PROXY-aware and
 PROXY-unaware backends:
 
 ```sh
-forward-server push-rule edge-01 443 \
+portunus-server push-rule edge-01 443 \
   --target backend-a.local:8080@1 --target-proxy-protocol a:v2 \
   --target backend-b.local:8080@2
 # backend-a sees the v2 binary header; backend-b sees the legacy byte stream
 ```
 
-(Exact CLI flag syntax may vary — check `forward-server push-rule --help`.)
+(Exact CLI flag syntax may vary — check `portunus-server push-rule --help`.)
 
 ## Modes
 
@@ -45,9 +45,9 @@ When a listener runs in [SNI dispatch mode](/docs/features/tls-sni-routing),
 Portunus records how long the ClientHello peek+parse takes:
 
 ```
-forward_tls_client_hello_peek_duration_seconds_bucket{...}
-forward_tls_client_hello_peek_duration_seconds_sum
-forward_tls_client_hello_peek_duration_seconds_count
+portunus_tls_client_hello_peek_duration_seconds_bucket{...}
+portunus_tls_client_hello_peek_duration_seconds_sum
+portunus_tls_client_hello_peek_duration_seconds_count
 ```
 
 Buckets follow Prometheus convention with finite boundaries up to

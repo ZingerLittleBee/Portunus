@@ -1,7 +1,7 @@
 # Quickstart: 006-management-web-ui
 
 End-to-end walkthrough demonstrating every spec acceptance scenario
-through a freshly-built `forward-server` binary plus the embedded UI.
+through a freshly-built `portunus-server` binary plus the embedded UI.
 Mirrors the structure of `specs/005-multi-user-rbac/quickstart.md`.
 
 ## 0. Prerequisites
@@ -22,20 +22,20 @@ pnpm build           # vite build && size-limit (fails if > 500 KB gz)
 
 # Back to the repo root, build the server binary with embedded assets.
 cd ..
-cargo build --release -p forward-server
+cargo build --release -p portunus-server
 ```
 
 Verify the binary contains the assets:
 
 ```sh
-strings target/release/forward-server | grep -m1 'index.html'
+strings target/release/portunus-server | grep -m1 'index.html'
 # Expected: a path/marker hint that rust-embed sees index.html
 ```
 
 Skip the SPA build during backend-only iteration:
 
 ```sh
-FORWARD_SKIP_WEBUI=1 cargo build -p forward-server
+PORTUNUS_SKIP_WEBUI=1 cargo build -p portunus-server
 # Compiles a UI-less binary; release pipelines never set this env var.
 ```
 
@@ -56,7 +56,7 @@ operator_store_path   = "/tmp/forward-006/identity.json"
 operator_token        = "T006-quickstart-token"
 TOML
 
-target/release/forward-server --config-dir /tmp/forward-006 serve &
+target/release/portunus-server --config-dir /tmp/forward-006 serve &
 SERVER_PID=$!
 sleep 0.5
 ```
@@ -74,8 +74,8 @@ Expected:
 - The dashboard cards show **0 connected clients** and **0 active rules**.
 
 Open the browser dev-tools and verify:
-- `sessionStorage.forward.token` is set (string, ≥ 32 chars).
-- `localStorage.forward.token` is **not** set.
+- `sessionStorage.portunus.token` is set (string, ≥ 32 chars).
+- `localStorage.portunus.token` is **not** set.
 - The token does NOT appear in the URL or in `document.body.innerText`.
 - Network tab: every `/v1/*` request carries
   `Authorization: Bearer T006-...`.
@@ -107,9 +107,9 @@ SC-001 from spec 005).
 1. Spin up a forwarding client (existing v0.5 path, in another shell):
 
    ```sh
-   target/release/forward-server provision-client client-a \
+   target/release/portunus-server provision-client client-a \
        --out /tmp/forward-006/client-a.bundle.json
-   target/release/forward-client \
+   target/release/portunus-client \
        --bundle /tmp/forward-006/client-a.bundle.json &
    CLIENT_PID=$!
    ```
@@ -181,10 +181,10 @@ Switch back to the superadmin tab.
 
 Before logging out, run this checklist in the dev-tools:
 
-- **Application → Session Storage**: `forward.token` is the only key,
+- **Application → Session Storage**: `portunus.token` is the only key,
   contains the bearer.
-- **Application → Local Storage**: only `forward.theme` and
-  `forward.lang`. No token.
+- **Application → Local Storage**: only `portunus.theme` and
+  `portunus.lang`. No token.
 - **Application → Cookies**: empty (we don't use cookies).
 - **Network**: every request to `/v1/*` has a single `Authorization`
   header carrying the bearer. The bearer does NOT appear in any
@@ -208,7 +208,7 @@ Before logging out, run this checklist in the dev-tools:
 ```sh
 kill $SERVER_PID
 wait $SERVER_PID 2>/dev/null
-target/release/forward-server --config-dir /tmp/forward-006 serve &
+target/release/portunus-server --config-dir /tmp/forward-006 serve &
 SERVER_PID=$!
 sleep 0.5
 ```
@@ -237,6 +237,6 @@ rm -rf /tmp/forward-006
 | SC-002 (100% read coverage) | navigation through every list page |
 | SC-003 (RBAC isolation) | § 7 (alice cannot see admin pages or other users' data) |
 | SC-004 (≤ 6 s live stats lag) | § 5 step 5 |
-| SC-005 (≤ 3 MB binary growth, ≤ 500 KB JS) | size-limit gate at build (§ 1) + `ls -lh target/release/forward-server` diff against v0.5.0 |
+| SC-005 (≤ 3 MB binary growth, ≤ 500 KB JS) | size-limit gate at build (§ 1) + `ls -lh target/release/portunus-server` diff against v0.5.0 |
 | SC-006 (zero token leak) | § 9 checklist |
 | SC-007 (en + zh-CN i18n) | § 10 |

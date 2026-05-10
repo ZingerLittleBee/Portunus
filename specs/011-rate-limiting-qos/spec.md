@@ -12,7 +12,7 @@
 > packet/connection rate (new TCP connections per second, new UDP flows per
 > second), and (c) concurrent connection / flow count. Caps are configurable
 > through the existing operator API and Web UI, persisted in SQLite alongside
-> rules, and enforced in the data plane on forward-client. When a cap is hit,
+> rules, and enforced in the data plane on portunus-client. When a cap is hit,
 > new connections are rejected (TCP RST or UDP drop) and bandwidth caps shape
 > via in-flight throttling. Surface counters in `/metrics` and per-rule stats
 > so operators can see throttle/reject events. Must preserve byte-stable
@@ -25,7 +25,7 @@
 
 ### Session 2026-05-09
 
-- Q: What is the tenant boundary for "per-client" caps? → A: Per-owner within a forward-client — cap envelope keyed `(client, owner)`, aggregating that owner's rules on that client. Node-level (per-client-aggregate) caps are explicitly out of scope for v0.11.
+- Q: What is the tenant boundary for "per-client" caps? → A: Per-owner within a portunus-client — cap envelope keyed `(client, owner)`, aggregating that owner's rules on that client. Node-level (per-client-aggregate) caps are explicitly out of scope for v0.11.
 - Q: How is token-bucket burst configured? → A: Hidden default of `burst = 1 × rate` (1 second of rate) for every cap, with an optional per-cap `burst_*` field operators can submit to override. Common-case UI shows only `rate`.
 - Q: How is a TCP connection rejected when concurrent / new-connection caps are exceeded? → A: Accept-then-RST — the listener always accepts the socket and closes it with RST before any bytes flow to the upstream. Listener-pause was rejected because v0.7 multi-target and v0.9 SNI dispatch share a listener across rules, so pausing would penalise innocent rules.
 - Q: When a hot-reload lowers a concurrent-connection cap below the live count, what happens to the excess connections? → A: Graceful drain — existing connections run to natural completion; only new connections are rejected against the lowered cap. Active count is permitted to remain temporarily above the new cap until enough connections close.
@@ -38,7 +38,7 @@
 An operator owns a rule that exposes a backend service through Portunus.
 Without caps, a noisy or runaway client can saturate the upstream link or
 exhaust the backend's connection budget, which is invisible to other rules
-sharing the same forward-client. The operator wants to attach explicit
+sharing the same portunus-client. The operator wants to attach explicit
 **bandwidth** (bytes/second, both directions), **new-connection rate** (TCP
 conn/s or UDP flow/s), and **concurrent connection** caps to a single rule
 through the operator API or Web UI. When a cap is exceeded, new connections
@@ -54,13 +54,13 @@ addresses the most common operational pain (one rule starving the host or the
 backend). Per-client / per-owner caps and Web UI polish are additive on top
 of this slice.
 
-**Independent Test**: A two-host setup — one forward-client with a single TCP
+**Independent Test**: A two-host setup — one portunus-client with a single TCP
 rule capped at 1 MB/s ingress and 100 concurrent connections — sustained
 load from `iperf3` and `hey` against that rule. Assert that (a) measured
 throughput converges within ±10% of the cap over a 30s window, (b) the 101st
 concurrent connection attempt receives a TCP RST and increments the
 `rate_limit_reject_total{reason="conn_concurrent"}` counter, (c) other
-unrelated rules on the same forward-client see no throughput regression.
+unrelated rules on the same portunus-client see no throughput regression.
 
 **Acceptance Scenarios**:
 
@@ -71,7 +71,7 @@ unrelated rules on the same forward-client see no throughput regression.
    monotonically.
 2. **Given** a TCP rule with `concurrent_connections = 100` and 100 active
    connections, **When** the 101st `connect()` attempt is accepted by the
-   listener, **Then** forward-client closes it with a RST before any bytes
+   listener, **Then** portunus-client closes it with a RST before any bytes
    are forwarded upstream and `rate_limit_reject_total{rule, reason="conn_concurrent"}`
    increments by exactly 1.
 3. **Given** a TCP rule with `new_connections_per_second = 50`, **When** a
@@ -83,18 +83,18 @@ unrelated rules on the same forward-client see no throughput regression.
    bindings are created per second and surplus first-packets are dropped
    silently and counted under `reason="udp_flow_rate"`.
 5. **Given** a rule with no rate-limit fields set, **When** v0.11
-   forward-client services it, **Then** the data path is byte-equivalent to
+   portunus-client services it, **Then** the data path is byte-equivalent to
    v0.10 (no token-bucket overhead is observable in the bench harness).
 
 ---
 
 ### User Story 2 — Per-owner caps prevent cross-tenant starvation (Priority: P2)
 
-A single forward-client agent typically hosts rules from several operators
+A single portunus-client agent typically hosts rules from several operators
 (distinct RBAC owners). Without an owner-level cap, one operator can attach
 many high-traffic rules and consume the host's NIC, CPU, or socket budget,
 silently degrading every other operator's rules on the same node. The
-operator administrator wants to attach **per-owner caps** on a forward-client
+operator administrator wants to attach **per-owner caps** on a portunus-client
 that aggregate across all that owner's rules and bound the slice each
 operator can consume. Per-rule caps still apply individually below the
 owner-level ceiling.
@@ -103,7 +103,7 @@ owner-level ceiling.
 operational property but is meaningful only once per-rule caps exist. Many
 small deployments run a single owner per client and don't need this layer.
 
-**Independent Test**: A forward-client with two owners, each with three
+**Independent Test**: A portunus-client with two owners, each with three
 rules. Owner A is capped at 10 MB/s aggregate; owner B has no aggregate cap.
 Drive owner A's rules to a combined 50 MB/s offered load and owner B's rules
 to 20 MB/s. Assert owner A's combined throughput converges to 10 MB/s ± 10%
@@ -144,7 +144,7 @@ connections, operators won't trust it.
 **Independent Test**: A single rule with 10 MB/s cap and a steady iperf3
 flow. The operator pushes a rule update lowering the cap to 1 MB/s. Assert
 the existing connection's measured throughput drops to ≤ 1 MB/s within 2
-seconds of the push, the connection is **not** closed by forward-client, and
+seconds of the push, the connection is **not** closed by portunus-client, and
 no error appears in the operator audit ring.
 
 **Acceptance Scenarios**:
@@ -219,7 +219,7 @@ rules table column shows a "throttling" badge.
   tick is in flight MUST NOT cause a token-count discontinuity that
   artificially boosts or starves a connection; the new cap takes effect on
   the next refill tick.
-- **Per-owner cap on a forward-client whose owner has been deleted**:
+- **Per-owner cap on a portunus-client whose owner has been deleted**:
   Per-owner caps are anchored to the owner's stable RBAC ID; cap is
   retained until the owner's last rule on that client is removed, then GC'd.
 - **Multi-target rules** (v0.7): Caps are applied at the rule level
@@ -254,11 +254,11 @@ rules table column shows a "throttling" badge.
 **Wire compatibility**
 
 - **FR-005**: Cap fields on `Rule` MUST be additive proto fields with
-  numeric tags ≥ 16 (next free range after v0.10) so v0.10 forward-clients
+  numeric tags ≥ 16 (next free range after v0.10) so v0.10 portunus-clients
   receiving a v0.11-encoded `Rule` decode without error and ignore unknown
   fields.
 - **FR-006**: A v0.11 server pushing a rule with any cap field set to a
-  forward-client whose self-reported version is < 0.11 MUST refuse the
+  portunus-client whose self-reported version is < 0.11 MUST refuse the
   push with a structured error (capability gate analogous to v0.10's
   `proxy_protocol_unsupported_by_client` and v0.9's
   `sni_unsupported_by_client`); the rule MUST NOT activate anywhere.
@@ -299,7 +299,7 @@ rules table column shows a "throttling" badge.
 
 **Observability**
 
-- **FR-015**: The forward-client `/metrics` endpoint MUST expose:
+- **FR-015**: The portunus-client `/metrics` endpoint MUST expose:
   - `rate_limit_reject_total{client, rule, owner, reason}` counter,
     where `reason ∈ {conn_concurrent, conn_rate, udp_flow_rate, owner_concurrent, owner_conn_rate, owner_udp_flow_rate}`.
   - `rate_limit_throttle_seconds_total{client, rule, owner, direction}`
@@ -338,7 +338,7 @@ rules table column shows a "throttling" badge.
   `{bandwidth_in, bandwidth_out, new_connections_per_second, concurrent_connections}`.
   Attached to a `Rule` (per-rule envelope) or to a `(client, owner)`
   pair (per-owner envelope). Each cap is null = unlimited.
-- **Token bucket**: Per-cap state living on forward-client; tracks current
+- **Token bucket**: Per-cap state living on portunus-client; tracks current
   tokens, last refill time, and configured `{rate, burst}`. One bucket
   per cap per scope (rule × direction, owner × direction).
 - **Reject reason**: Enumerated label distinguishing why a new
@@ -360,7 +360,7 @@ rules table column shows a "throttling" badge.
 - **SC-003**: A rule capped at R new connections per second MUST accept
   R ± 10% and reject the surplus, sustained over a 60-second window,
   for R ∈ {10, 100, 1000} (P1).
-- **SC-004**: A forward-client with **no** rule using rate-limit fields
+- **SC-004**: A portunus-client with **no** rule using rate-limit fields
   MUST show ≤ 2% throughput regression and ≤ 5% per-connection setup
   latency regression vs. v0.10 on the existing data-plane bench harness
   (regression gate analogous to v0.9 vs v0.7).
@@ -371,16 +371,16 @@ rules table column shows a "throttling" badge.
 - **SC-006**: Per-owner caps MUST limit owner A's combined throughput
   while owner B's rules remain unaffected, with cross-talk ≤ 5% measured
   over 30 seconds (P2).
-- **SC-007**: A v0.10 forward-client MUST refuse to register / accept
+- **SC-007**: A v0.10 portunus-client MUST refuse to register / accept
   rules carrying any cap field, with a clear capability error returned
   to the operator within 100 ms of the push.
 
 ## Assumptions
 
 - **Tenant identity**: "Per-client" in the user input is interpreted as
-  **per-RBAC-owner within a forward-client** because that is the
+  **per-RBAC-owner within a portunus-client** because that is the
   tenant boundary the user explicitly named ("one operator's rules
-  from starving another's"). The forward-client agent itself is a
+  from starving another's"). The portunus-client agent itself is a
   shared host and does not get its own aggregate cap in v0.11; node-
   level caps can be added later if needed.
 - **Bucket model**: Token-bucket with `{rate, burst}` is the
@@ -408,10 +408,10 @@ rules table column shows a "throttling" badge.
   - L7-aware caps (per-Host or per-path) — out of scope until / unless
     L7 mode is added.
   - Per-source-IP caps (DDoS-style fairness) — explicitly deferred.
-  - Cluster-wide caps that require coordination across forward-clients.
+  - Cluster-wide caps that require coordination across portunus-clients.
 - **Constitution** (v2.0.1): TLS + bearer token auth seam unchanged. No
   new workspace dependencies (token-bucket is hand-rolled in
-  forward-client using existing `tokio` primitives).
+  portunus-client using existing `tokio` primitives).
 - **SQLite schema**: Existing `rules` table gains optional cap columns
   (NULL = unlimited). Per-owner envelopes live in a new
   `rate_limit_owner` table keyed by `(client_id, owner_id)`. Schema

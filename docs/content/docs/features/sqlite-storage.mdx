@@ -16,7 +16,7 @@ audit ring buffer into one embedded SQLite database at
   libsqlite3 dependency.
 - **Crash-safe** — WAL mode + `BEGIN IMMEDIATE` write transactions.
 - **Migrations** — managed by `refinery`; schema lives at
-  `crates/forward-server/migrations/`.
+  `crates/portunus-server/migrations/`.
 
 ## Tables
 
@@ -55,7 +55,7 @@ The server refuses to start with `event=startup.unsupported_filesystem`
 if `--data-dir` points at NFS, tmpfs, or ramfs. Move the data-dir to a
 **local writable filesystem**.
 
-It also refuses two `forward-server serve` processes against the same
+It also refuses two `portunus-server serve` processes against the same
 data-dir (`event=startup.store_in_use`, exit 75) — clustering is out of
 scope.
 
@@ -65,7 +65,7 @@ Online backup via `rusqlite::backup::Backup` — WAL-aware, no quiescing
 needed:
 
 ```sh
-forward-server backup --out ~/forward-backup-$(date +%F).db
+portunus-server backup --out ~/portunus-backup-$(date +%F).db
 ```
 
 Refuses to overwrite an existing destination.
@@ -73,9 +73,9 @@ Refuses to overwrite an existing destination.
 ## Restore
 
 ```sh
-forward-server reset --confirm     # wipe local state first
-forward-server restore --in ~/forward-backup-2026-05-08.db
-forward-server serve               # forward migrations run automatically
+portunus-server reset --confirm     # wipe local state first
+portunus-server restore --in ~/portunus-backup-2026-05-08.db
+portunus-server serve               # schema migrations run automatically
 ```
 
 `restore` validates the SQLite header magic and refuses to clobber a
@@ -87,7 +87,7 @@ version, or upgrade.
 ## Reset
 
 ```sh
-forward-server reset --confirm
+portunus-server reset --confirm
 # wipes state.db + state.db-wal + state.db-shm
 # refuses any path whose first 16 bytes don't match the SQLite header
 ```
@@ -101,10 +101,10 @@ prune CLI:
 
 ```sh
 # Dry run — count without deleting
-forward-server audit prune --before 2026-05-01T00:00:00Z --dry-run
+portunus-server audit prune --before 2026-05-01T00:00:00Z --dry-run
 
 # Real prune
-forward-server audit prune --before 2026-05-01T00:00:00Z
+portunus-server audit prune --before 2026-05-01T00:00:00Z
 # Deletes under BEGIN IMMEDIATE then runs PRAGMA incremental_vacuum.
 ```
 
@@ -117,11 +117,11 @@ root, enabling cursor-based historic scroll-back.
 v0.7 callers (no `since` / `until` / `cursor`) keep getting the array
 root unchanged — byte-stable.
 
-## `forward-client --bundle` resolution
+## `portunus-client --bundle` resolution
 
 When `--bundle` is omitted the client searches in order:
 
-1. `$FORWARD_CLIENT_BUNDLE`
+1. `$PORTUNUS_CLIENT_BUNDLE`
 2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
 3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`

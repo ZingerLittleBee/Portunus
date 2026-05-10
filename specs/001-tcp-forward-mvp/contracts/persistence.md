@@ -20,7 +20,7 @@ layout so future versions of Portunus can reason about migration.
 
 `<config_dir>` defaults to:
 - `$XDG_CONFIG_HOME/portunus` if set, else `$HOME/.config/portunus` on Linux/macOS
-- overridable via `--config-dir <path>` flag on `forward-server`.
+- overridable via `--config-dir <path>` flag on `portunus-server`.
 
 The directory is created on first launch with mode `0700`.
 
@@ -96,7 +96,7 @@ they will need re-provisioning (or the operator can update the bundle's
 ## server.toml
 
 Operator-managed; not written by Portunus except by an explicit
-`forward-server init` command (out of MVP scope, but the file may be
+`portunus-server init` command (out of MVP scope, but the file may be
 hand-written). See `data-model.md` `ServerConfig` for the field set.
 
 ---

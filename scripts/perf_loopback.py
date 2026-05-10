@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a reproducible local Portunus performance smoke benchmark.
 
-The harness starts a real `forward-server`, a real `forward-client`, and
+The harness starts a real `portunus-server`, a real `portunus-client`, and
 `iperf3` on loopback. It measures:
 
 1. Direct iperf3 throughput to the target.
@@ -62,7 +62,7 @@ def wait_for_metrics(port: int, deadline_seconds: float = 10.0) -> None:
         except Exception as exc:  # noqa: BLE001 - preserve useful startup context.
             last_error = exc
             time.sleep(0.1)
-    raise RuntimeError(f"forward-server did not expose {url}: {last_error}")
+    raise RuntimeError(f"portunus-server did not expose {url}: {last_error}")
 
 
 def tail_text(path: pathlib.Path, max_chars: int = 4000) -> str:
@@ -222,9 +222,9 @@ def build_release(server_bin: pathlib.Path, client_bin: pathlib.Path) -> None:
     if server_bin.exists() and client_bin.exists():
         return
     env = os.environ.copy()
-    env.setdefault("FORWARD_SKIP_WEBUI", "1")
+    env.setdefault("PORTUNUS_SKIP_WEBUI", "1")
     subprocess.check_call(
-        ["cargo", "build", "--release", "-p", "forward-server", "-p", "forward-client"],
+        ["cargo", "build", "--release", "-p", "portunus-server", "-p", "portunus-client"],
         cwd=ROOT,
         env=env,
     )
@@ -270,12 +270,12 @@ def main() -> int:
     parser.add_argument(
         "--server-bin",
         type=pathlib.Path,
-        default=ROOT / "target/release/forward-server",
+        default=ROOT / "target/release/portunus-server",
     )
     parser.add_argument(
         "--client-bin",
         type=pathlib.Path,
-        default=ROOT / "target/release/forward-client",
+        default=ROOT / "target/release/portunus-client",
     )
     args = parser.parse_args()
     offered_mbps = parse_offered_mbps(args.offered_mbps)
@@ -319,7 +319,7 @@ def main() -> int:
             write_config(config_dir, ports, token)
 
             env = os.environ.copy()
-            env["FORWARD_OPERATOR_TOKEN"] = token
+            env["PORTUNUS_OPERATOR_TOKEN"] = token
             env.setdefault("RUST_LOG", "warn")
 
             bundle = tmpdir / "edge-01.bundle.json"
@@ -351,7 +351,7 @@ def main() -> int:
                     f"127.0.0.1:{ports.control}",
                     "serve",
                 ],
-                stdout=(tmpdir / "forward-server.log").open("wb"),
+                stdout=(tmpdir / "portunus-server.log").open("wb"),
                 stderr=subprocess.STDOUT,
                 env=env,
             )
@@ -360,9 +360,9 @@ def main() -> int:
                 wait_for_metrics(ports.metrics)
             except RuntimeError as exc:
                 if server.poll() is not None:
-                    log_tail = tail_text(tmpdir / "forward-server.log")
+                    log_tail = tail_text(tmpdir / "portunus-server.log")
                     raise RuntimeError(
-                        f"{exc}\nforward-server exited with {server.returncode}; log tail:\n{log_tail}"
+                        f"{exc}\nportunus-server exited with {server.returncode}; log tail:\n{log_tail}"
                     ) from exc
                 raise
 
@@ -374,7 +374,7 @@ def main() -> int:
                     "--stats-report-interval-secs",
                     "1",
                 ],
-                stdout=(tmpdir / "forward-client.log").open("wb"),
+                stdout=(tmpdir / "portunus-client.log").open("wb"),
                 stderr=subprocess.STDOUT,
                 env=env,
             )
@@ -454,7 +454,7 @@ def main() -> int:
                         args.omit_seconds,
                         offered,
                     )
-                    forward_limited = run_with_iperf_server(
+                    proxied_limited = run_with_iperf_server(
                         args.iperf3,
                         ports.iperf_target,
                         ports.uncapped_listen,
@@ -474,14 +474,14 @@ def main() -> int:
                         {
                             "offered_mbps": offered,
                             "direct": direct_limited,
-                            "portunus_uncapped": forward_limited,
+                            "portunus_uncapped": proxied_limited,
                             "iptables_redirect": iptables_limited,
                             "portunus_vs_direct_pct": pct(
-                                forward_limited["mbps"],
+                                proxied_limited["mbps"],
                                 direct_limited["mbps"],
                             ),
                             "portunus_vs_iptables_pct": pct(
-                                forward_limited["mbps"],
+                                proxied_limited["mbps"],
                                 iptables_limited["mbps"],
                             ),
                             "iptables_vs_direct_pct": pct(

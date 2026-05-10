@@ -26,8 +26,8 @@ Two paths — pick one:
 ### Path A — interactive single-shot (recommended)
 
 ```sh
-forward-server --config-dir ./srv bootstrap-superadmin --name ops
-# → superadmin user_id=_superadmin token=<paste-into-FORWARD_OPERATOR_TOKEN>
+portunus-server --config-dir ./srv bootstrap-superadmin --name ops
+# → superadmin user_id=_superadmin token=<paste-into-PORTUNUS_OPERATOR_TOKEN>
 ```
 
 The bearer prints **exactly once**. Idempotent — refuses to bootstrap
@@ -46,18 +46,18 @@ the line in across restarts.
 Generate a token out-of-band:
 
 ```sh
-forward-server gen-token
+portunus-server gen-token
 # → 43-char URL-safe-base64
 ```
 
 ## Add a constrained tenant
 
 ```sh
-forward-server user-add alice --display-name Alice
-forward-server credential-issue alice --label laptop
+portunus-server user-add alice --display-name Alice
+portunus-server credential-issue alice --label laptop
 # → bearer token printed once, store securely
 
-forward-server grant-add --user-id alice --client edge-01 \
+portunus-server grant-add --user-id alice --client edge-01 \
   --listen-port-start 30000 --listen-port-end 30050 \
   --protocols tcp,udp
 ```
@@ -83,8 +83,8 @@ A `--client *` grant matches any client. A grant whose
 A user can rotate their own credential without superadmin help:
 
 ```sh
-FORWARD_OPERATOR_TOKEN=<alice's old token> \
-  forward-server credential-rotate alice <credential_id>
+PORTUNUS_OPERATOR_TOKEN=<alice's old token> \
+  portunus-server credential-rotate alice <credential_id>
 # → new bearer printed once; old bearer 401s on next request
 ```
 
@@ -111,7 +111,7 @@ emitter takes only the post-verify `OperatorIdentity`.
 | `credential-issue` / `credential-list` / `credential-revoke` / `credential-rotate` | Manage credentials |
 | `grant-add` / `grant-list` / `grant-revoke` | Manage grants |
 
-All take the operator token from `FORWARD_OPERATOR_TOKEN`
+All take the operator token from `PORTUNUS_OPERATOR_TOKEN`
 (exit 4 if missing).
 
 ## SIGHUP reload

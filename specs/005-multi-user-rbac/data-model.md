@@ -5,11 +5,11 @@
 **Date**: 2026-05-07
 
 This document defines the entities introduced by feature 005, their
-in-memory representation in `forward-auth`, their on-disk shape in
+in-memory representation in `portunus-auth`, their on-disk shape in
 `identity.json` (see `contracts/persistence.md` for the wire-level
 JSON schema), and the state transitions an operator can drive.
 
-The data model intentionally mirrors `forward-auth::file_store`'s
+The data model intentionally mirrors `portunus-auth::file_store`'s
 existing `TokenRecord` shape so the new code feels like a sibling, not
 a rewrite.
 
@@ -90,7 +90,7 @@ pub enum CredentialStatus {
 
 **Wire format of the raw token**: 256-bit `OsRng` random,
 URL-safe base64, no padding, 43 ASCII chars. **Identical** to the
-existing client-token format from `forward-auth::token`. The same
+existing client-token format from `portunus-auth::token`. The same
 `generate_token` / `hash_token` functions are reused — no new
 cryptographic primitive.
 
@@ -197,7 +197,7 @@ This is the closed-set semantic from R-004: the entire range
 
 ### Rule (extension of v0.4.0 entity)
 
-The existing `Rule` struct in `crates/forward-server/src/rules.rs`
+The existing `Rule` struct in `crates/portunus-server/src/rules.rs`
 gains one field:
 
 ```rust,ignore
@@ -277,7 +277,7 @@ old shape, transforms in-memory, writes back at the new version. The
 loader refuses unknown versions with `unsupported_schema_version`
 (forward-compat default). v0.5.0 ships at version 1.
 
-**Atomic-write protocol** (verbatim from `forward-auth::file_store`):
+**Atomic-write protocol** (verbatim from `portunus-auth::file_store`):
 
 1. Serialize the in-memory snapshot to bytes.
 2. Open `identity.json.tmp` with `O_CREAT | O_TRUNC | O_WRONLY` in
@@ -296,14 +296,14 @@ on ext4 + data=writeback).
 
 | New type | Reuses |
 |---|---|
-| `UserId` | newtype `String` — same shape as `forward_core::ClientName` |
-| `Credential.token_hash` | `forward_auth::token::hash_token` |
-| `Credential` raw token | `forward_auth::token::generate_token` |
-| `Grant.client` | `forward_core::ClientName` (when `Named`) |
-| `Grant.listen_ports` | `forward_core::PortRange` (existing) |
+| `UserId` | newtype `String` — same shape as `portunus_core::ClientName` |
+| `Credential.token_hash` | `portunus_auth::token::hash_token` |
+| `Credential` raw token | `portunus_auth::token::generate_token` |
+| `Grant.client` | `portunus_core::ClientName` (when `Named`) |
+| `Grant.listen_ports` | `portunus_core::PortRange` (existing) |
 | `OperatorRole` enum | new — no equivalent in v0.4 |
 | `Rule.owner_user_id` | new field on existing struct |
-| `FileOperatorStore` write protocol | mirrors `forward_auth::file_store::FileTokenStore` |
+| `FileOperatorStore` write protocol | mirrors `portunus_auth::file_store::FileTokenStore` |
 
 The existing `FileTokenStore` (client→server tokens) remains
 **untouched**. The new `FileOperatorStore` (operator→server tokens

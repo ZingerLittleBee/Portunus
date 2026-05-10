@@ -8,7 +8,7 @@ records the *deltas*.
 
 ---
 
-## PortRange (NEW newtype, `forward-core`)
+## PortRange (NEW newtype, `portunus-core`)
 
 `PortRange { start: u16, end: u16 }` — a contiguous, inclusive port
 range. Single-port rules use `start == end`.
@@ -65,7 +65,7 @@ Added to `ServerConfig` as a new field with `#[serde(default = "default_range_ca
 
 ## Rule (EXTENDED, server in-memory)
 
-The existing `Rule` struct in `crates/forward-server/src/rules.rs`
+The existing `Rule` struct in `crates/portunus-server/src/rules.rs`
 gains two optional fields. Wire / persistence shape is identical
 (serde defaults handle the absence on disk).
 
@@ -196,15 +196,15 @@ holding only the latest snapshot per rule (overwritten each report).
 | `target_range` | `PortRange` | **NEW** — symmetric to `listen_range` |
 
 `ClientRule::is_range()`, `len()`, `target_for(listen_port)` mirror the
-helpers on `forward-server`'s `Rule` (no shared crate needed —
-`PortRange` lives in `forward-core`).
+helpers on `portunus-server`'s `Rule` (no shared crate needed —
+`PortRange` lives in `portunus-core`).
 
 ---
 
 ## RuleUpdate (proto, EXTENDED)
 
 The wire envelope is unchanged. The `Rule` message (see
-`contracts/forward.proto`) gains optional `listen_port_end` and
+`contracts/portunus.proto`) gains optional `listen_port_end` and
 `target_port_end` fields. Existing v0.1.0 clients reading a v0.2.0
 rule see them as their default (0) and continue to work — but
 operationally a v0.1.0 client should not be talking to a v0.2.0 server

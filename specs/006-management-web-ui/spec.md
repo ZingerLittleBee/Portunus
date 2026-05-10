@@ -238,7 +238,7 @@ reload, verify theme is remembered.
   audit rows, named `audit-<timestamp>.ndjson`. This is the **only** built-in
   data-export affordance in v1; export from Users / Grants / Rules / Clients
   is deferred to a later release because operators already have the
-  `forward-server <subcmd> --format json` CLI equivalent.
+  `portunus-server <subcmd> --format json` CLI equivalent.
 - **FR-011**: The Metrics page MUST display the raw `/metrics` text dump in a
   monospaced, scrollable, read-only view, plus a small dashboard card on the
   main page showing the count of connected clients and total active rules.
@@ -291,7 +291,7 @@ reload, verify theme is remembered.
 
 #### Distribution
 
-- **FR-024**: The compiled UI MUST be embedded into the `forward-server`
+- **FR-024**: The compiled UI MUST be embedded into the `portunus-server`
   binary so that single-binary distribution is preserved. No separate
   frontend service, no Node runtime requirement at deployment time.
 - **FR-025**: The compiled UI MUST be served on the same loopback HTTP
@@ -357,7 +357,7 @@ reload, verify theme is remembered.
   **6 seconds** of the change becoming visible on the equivalent CLI
   `rule-stats` invocation, and the streaming connection survives a transient
   network blip (≤ 30 s outage) without the operator needing to refresh.
-- **SC-005**: The compiled UI ships entirely inside the `forward-server`
+- **SC-005**: The compiled UI ships entirely inside the `portunus-server`
   binary; the binary's size grows by **≤ 3 MB** compared to the v0.5.0 baseline
   and the gzipped JS bundle stays **≤ 500 KB**.
 - **SC-006**: A token leak audit on the running UI (browser dev-tools session
@@ -414,7 +414,7 @@ reload, verify theme is remembered.
 ## Verified
 
 Measurements taken 2026-05-08 against commit on branch `006-management-web-ui`,
-release build (`cargo build --release -p forward-server`), macOS x86_64.
+release build (`cargo build --release -p portunus-server`), macOS x86_64.
 
 - **SC-005 (gzipped JS bundle ≤ 500 KB)**: PASS.
   `pnpm build` reports `Size: 101.06 kB gzipped` for the main entry chunk;
@@ -424,18 +424,18 @@ release build (`cargo build --release -p forward-server`), macOS x86_64.
   raw → 5 KB gzip.
 
 - **SC-004 (binary size delta acceptable)**: 161 KB delta vs UI-less build.
-  - `FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server`
+  - `PORTUNUS_SKIP_WEBUI=1 cargo build --release -p portunus-server`
     → 9,088,752 bytes (8.66 MB).
-  - `cargo build --release -p forward-server` (with embedded SPA, sourcemaps
+  - `cargo build --release -p portunus-server` (with embedded SPA, sourcemaps
     + stats.html excluded via rust-embed `include-exclude`)
     → 9,254,048 bytes (8.83 MB).
   - Single-binary distribution preserved; no separate Node runtime required.
 
 - **SC-006 (token-leak audit)**: PASS via
   `webui/tests/e2e/token-leak-audit.spec.ts` (T066), executed against a
-  release-built `forward-server` binary in headless chromium 130.
+  release-built `portunus-server` binary in headless chromium 130.
   Asserts: sessionStorage holds the bearer; localStorage limited to
-  `forward.theme` + `forward.lang`; bearer never appears in DOM text or
+  `portunus.theme` + `portunus.lang`; bearer never appears in DOM text or
   URL; every captured `/v1/*` and `/metrics` request carries the bearer
   ONLY in the `Authorization` header (no cookies, no query string).
 
@@ -453,7 +453,7 @@ release build (`cargo build --release -p forward-server`), macOS x86_64.
   - `pnpm lint` — 0 errors, 5 informational `react-refresh` warnings.
   - `pnpm build` — green; size-limit gate passes (101 KB ≤ 500 KB).
   - `pnpm exec playwright test` — **12/12 e2e suites pass** in headless
-    chromium 130 against a release-built `forward-server` (T023, T041,
+    chromium 130 against a release-built `portunus-server` (T023, T041,
     T048, T057, T065, T066).
 
 ### Server-side follow-ups landed during e2e gate-up

@@ -1,0 +1,30 @@
+{
+  "version": "0.1.0",
+  "captured_at": "2026-05-09",
+  "platform": "GitHub Actions macos-latest / aws-lc-rs / loopback",
+  "notes": "baseline reference for portunus-client data-plane proxy primitive (T065). Captured from CI macos-latest output so the regression gate compares runner-to-runner numbers.",
+  "benchmarks": {
+    "data_plane.throughput.64KiB_echo": {
+      "unit": "ns_per_iter",
+      "mean": 275343.6,
+      "median": 275343.6,
+      "std_dev": 2711.11346022174,
+      "payload_bytes": 65536,
+      "throughput_GiBps": 0.221669057316
+    },
+    "data_plane.throughput.1024KiB_echo": {
+      "unit": "ns_per_iter",
+      "mean": 1066907.4,
+      "median": 1066907.4,
+      "std_dev": 13708.214761155748,
+      "payload_bytes": 1048576,
+      "throughput_GiBps": 0.915320767294
+    },
+    "data_plane.rtt_1byte_through_proxy": {
+      "unit": "ns_per_rtt",
+      "mean": 72167.4,
+      "median": 72167.4,
+      "std_dev": 380.91833316502385
+    }
+  }
+}

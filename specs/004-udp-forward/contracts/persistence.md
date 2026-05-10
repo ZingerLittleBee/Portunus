@@ -58,7 +58,7 @@ typed error.
 
 Operator workflow for downgrade:
 
-1. Identify UDP rules: `forward-server list-rules | grep udp`.
+1. Identify UDP rules: `portunus-server list-rules | grep udp`.
 2. Either remove them (`remove-rule <id>`) or rewrite them as a TCP
    rule against an alternate upstream that fronts UDP for you.
 3. Save `rules.json`. Then downgrade.
@@ -77,7 +77,7 @@ gRPC stream as TCP rules.
 
 Two new keys (both optional; both ignored by v0.3.0 servers, both
 provided to clients via the `Welcome` message at connect time — see
-`contracts/forward.proto`):
+`contracts/portunus.proto`):
 
 ```toml
 # Per-flow idle window for UDP rules (FR-006). After this many seconds
@@ -87,7 +87,7 @@ provided to clients via the `Welcome` message at connect time — see
 
 # Maximum concurrent live UDP flows per rule (FR-007). When the table
 # is at this cap, new-flow first-datagrams are dropped and counted in
-# `forward_rule_flows_dropped_overflow_total`. Default: 1024. Each
+# `portunus_rule_flows_dropped_overflow_total`. Default: 1024. Each
 # flow consumes one upstream socket fd on the client; raise only after
 # raising LimitNOFILE in the systemd unit accordingly. Range: 1..=65535.
 # udp_max_flows_per_rule = 1024

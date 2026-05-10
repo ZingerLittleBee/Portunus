@@ -23,10 +23,10 @@ v0.3.0 起支持。`push-rule` 中的目标 host 可以是域名（例如
 
 ```sh
 # IPv4 优先（默认）
-forward-server push-rule edge-01 8443 api.example.com:443
+portunus-server push-rule edge-01 8443 api.example.com:443
 
 # AAAA 优先；无 AAAA 时回退到 A
-forward-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+portunus-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
 ```
 
 ## 热路径
@@ -46,12 +46,12 @@ DNS 失败有两种暴露途径：
 
 ```sh
 # 规则字段
-forward-server rule-stats <id>
+portunus-server rule-stats <id>
 # rule_id=… dns_failures=3 …
 
 # Prometheus
 curl -s 127.0.0.1:7081/metrics | grep dns_failures
-# forward_rule_dns_failures_total{client="edge-01",rule="2"} 3
+# portunus_rule_dns_failures_total{client="edge-01",rule="2"} 3
 ```
 
 该 collector 是每条规则一行（不是每次失败一行），保持基数预算。在

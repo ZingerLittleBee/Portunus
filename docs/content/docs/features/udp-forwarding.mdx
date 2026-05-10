@@ -20,14 +20,14 @@ proxy never has to track return-paths in userspace.
 ## Push a UDP rule
 
 ```sh
-forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
 ```
 
 UDP and TCP rules can share the same listen port:
 
 ```sh
-forward-server push-rule edge-01 6000 upstream.local:9999                # TCP
-forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
+portunus-server push-rule edge-01 6000 upstream.local:9999                # TCP
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
 ```
 
 ## Tunables
@@ -46,7 +46,7 @@ udp_max_flows_per_rule = 1024
 ```
 
 When sustained churn from many distinct source ports exceeds the cap,
-overflow drops increment `forward_rule_flows_dropped_overflow_total`.
+overflow drops increment `portunus_rule_flows_dropped_overflow_total`.
 Existing flows are **never** evicted to make room — idle eviction
 handles steady-state shrinkage.
 
@@ -65,10 +65,10 @@ single-flight semantics carry over verbatim).
 ## Metrics
 
 ```
-forward_rule_udp_datagrams_in_total{client,rule,owner}
-forward_rule_udp_datagrams_out_total{client,rule,owner}
-forward_rule_active_flows{client,rule,owner}
-forward_rule_flows_dropped_overflow_total{client,rule,owner}
+portunus_rule_udp_datagrams_in_total{client,rule,owner}
+portunus_rule_udp_datagrams_out_total{client,rule,owner}
+portunus_rule_active_flows{client,rule,owner}
+portunus_rule_flows_dropped_overflow_total{client,rule,owner}
 ```
 
 `rule-stats` adds a `protocol` field plus the UDP-specific counters.

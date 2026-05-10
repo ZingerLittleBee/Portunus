@@ -18,13 +18,13 @@ v0.10.0 起支持。两项内容：
 逐目标开启意味着同一条规则里可以混合 PROXY-aware 与不感知后端：
 
 ```sh
-forward-server push-rule edge-01 443 \
+portunus-server push-rule edge-01 443 \
   --target backend-a.local:8080@1 --target-proxy-protocol a:v2 \
   --target backend-b.local:8080@2
 # backend-a 看到 v2 二进制头部；backend-b 看到旧的字节流
 ```
 
-（具体 CLI 标记拼写可能略有差异 —— 请以 `forward-server push-rule --help`
+（具体 CLI 标记拼写可能略有差异 —— 请以 `portunus-server push-rule --help`
 为准。）
 
 ## 模式
@@ -43,9 +43,9 @@ forward-server push-rule edge-01 443 \
 Portunus 会记录 ClientHello peek + 解析所耗时间：
 
 ```
-forward_tls_client_hello_peek_duration_seconds_bucket{...}
-forward_tls_client_hello_peek_duration_seconds_sum
-forward_tls_client_hello_peek_duration_seconds_count
+portunus_tls_client_hello_peek_duration_seconds_bucket{...}
+portunus_tls_client_hello_peek_duration_seconds_sum
+portunus_tls_client_hello_peek_duration_seconds_count
 ```
 
 桶按 Prometheus 惯例划分，最大有限边界为 **3 秒**；超过 3 秒的观测值会让

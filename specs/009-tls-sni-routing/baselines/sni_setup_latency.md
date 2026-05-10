@@ -2,8 +2,8 @@
 
 Captured: 2026-05-09
 Hardware: macOS (Darwin 25.4.0), Apple Silicon (criterion `--quick` mode)
-Bench file: `crates/forward-client/benches/sni_route.rs`
-Run: `cargo bench -p forward-client --bench sni_route -- --quick sni_setup_latency`
+Bench file: `crates/portunus-client/benches/sni_route.rs`
+Run: `cargo bench -p portunus-client --bench sni_route -- --quick sni_setup_latency`
 
 ## Scope
 
@@ -62,9 +62,9 @@ it's structurally negligible.
 ## Caveats
 
 - The bench reproduces the parser and lookup table inline because
-  `forward-client` is a binary crate with no lib target (same
+  `portunus-client` is a binary crate with no lib target (same
   pattern as T087). If
-  `crates/forward-client/src/forwarder/sni/{client_hello.rs,route_table.rs}`
+  `crates/portunus-client/src/forwarder/sni/{client_hello.rs,route_table.rs}`
   diverges from the inline shape here, this bench loses fidelity
   — review them together when changing either.
 - Real wall-clock setup latency (loopback or LAN) is not measured.
@@ -82,8 +82,8 @@ it's structurally negligible.
 ## Re-baselining
 
 Re-run after any change to:
-- `crates/forward-client/src/forwarder/sni/client_hello.rs::parse`
-- `crates/forward-client/src/forwarder/sni/route_table.rs`
+- `crates/portunus-client/src/forwarder/sni/client_hello.rs::parse`
+- `crates/portunus-client/src/forwarder/sni/route_table.rs`
 - The bench file itself
 - The Rust toolchain pinned in `rust-toolchain.toml` /
   `Cargo.toml::workspace.package.rust-version`

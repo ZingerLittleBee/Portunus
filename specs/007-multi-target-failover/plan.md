@@ -7,14 +7,14 @@
 
 A forwarding rule today carries a single `(target_host, target_port)`. v0.7 extends that to an ordered list of targets with priority-ordered failover and per-target health tracking, all client-side. The control plane only carries the list — selection happens inside the forwarder. The data-plane hot path for single-target rules stays byte-identical to v0.6.0.
 
-The technical approach: add `repeated Target targets = 9` (an additive proto field) plus new optional health-check tunables on `Rule`; add per-target fields to `RuleStats`; introduce a small per-target health-state machine in `forward-client/src/forwarder` that runs only when `targets.len() > 1`. The 005 RBAC envelope is unchanged (targets are not part of the grant). The 006 Web UI gains a "targets" rendering on the rule push form and rule detail page.
+The technical approach: add `repeated Target targets = 9` (an additive proto field) plus new optional health-check tunables on `Rule`; add per-target fields to `RuleStats`; introduce a small per-target health-state machine in `portunus-client/src/forwarder` that runs only when `targets.len() > 1`. The 005 RBAC envelope is unchanged (targets are not part of the grant). The 006 Web UI gains a "targets" rendering on the rule push form and rule detail page.
 
 ## Technical Context
 
 **Language/Version**: Rust 1.88 (workspace MSRV, driven by tonic).
 **Primary Dependencies**: same as v0.6.0 — tokio (async runtime), tonic (gRPC), axum (HTTP), rust-embed (SPA embed), prometheus (metrics), tracing + tracing-subscriber (structured logs). No new crate adds.
 **Storage**: server-side `rules.json` (atomic-write, mode 0600) gains a `targets[]` per rule. Back-compat: any v0.6.0 rule (single `target_host`/`target_port`) is read as a one-element targets list at load time. Per-target health state is in-memory only on the client (FR-016 says it survives queries, not restarts).
-**Testing**: `cargo test --workspace --tests`, criterion benchmark gate (`cargo bench -p forward-client --bench data_plane`), Vitest + Playwright in `webui/`. Existing `forward-e2e` + `forward-server/tests/*` patterns extend.
+**Testing**: `cargo test --workspace --tests`, criterion benchmark gate (`cargo bench -p portunus-client --bench data_plane`), Vitest + Playwright in `webui/`. Existing `portunus-e2e` + `portunus-server/tests/*` patterns extend.
 **Target Platform**: Linux (primary), macOS (development). Single-static-binary deploy preserved.
 **Project Type**: workspace of 6 Rust crates + 1 Vite/React frontend. Identical to v0.6.0.
 **Performance Goals**: SC-003 — single-target hot path ≤ 1% regression on the existing TCP forwarder data-plane benchmark vs the v0.6.0 baseline. SC-002 — primary recovery picked up on the next new connection (no extra latency on the in-flight connection).
@@ -34,7 +34,7 @@ The technical approach: add `repeated Target targets = 9` (an additive proto fie
 | I. Security by Default | ✅ pass | No new auth surface. Targets list flows through the existing TLS+bearer seam on both `Channel` (gRPC) and `POST /v1/rules` (operator HTTP). Active probes are plain TCP-connect to operator-supplied targets — no new credential, no new trust anchor. |
 | II. Performance Is a Feature | ✅ pass (with bench gate) | Single-target hot path stays byte-identical via `targets.len() == 1` branch at rule activation. SC-003 codifies ≤ 1% bench regression as a release gate; the existing CI bench-regression workflow (`.github/workflows/bench.yml`) already enforces 25% gates and will catch any drift. |
 | III. Test-First Discipline | ✅ pass | Phase 1 contracts include: `targets-wire-compat.rs` (proto round-trip), `rules_multi_target_contract.rs` (HTTP body validation), `failover_state_contract.rs` (health-state transitions). These ship before the implementation per the project pattern. |
-| IV. Observability & Operability | ✅ pass | New Prometheus counter `forward_rule_target_failovers_total{client, rule}` (rule-level, not per-target — keeps cardinality bounded; FR-018). Per-target counters surface only on demand via `rule-stats --per-target` (FR-017) and the Web UI rule detail page (FR-019). All health-state transitions emit a structured `event = "rule.target.health_changed"` log line for ops correlation. Graceful drain unchanged. |
+| IV. Observability & Operability | ✅ pass | New Prometheus counter `portunus_rule_target_failovers_total{client, rule}` (rule-level, not per-target — keeps cardinality bounded; FR-018). Per-target counters surface only on demand via `rule-stats --per-target` (FR-017) and the Web UI rule detail page (FR-019). All health-state transitions emit a structured `event = "rule.target.health_changed"` log line for ops correlation. Graceful drain unchanged. |
 | V. Multi-Tenant Isolation | ✅ pass | RBAC envelope unchanged (FR-021). Existing `enforce_grant` path doesn't inspect targets; `enforce_read` and `enforce_write` continue to gate on `(client, listen-port range, protocol)` only. The new targets field is part of the rule body the owner controls — peers see it via the existing rule-projection that already filters by ownership. |
 
 **Post-Phase-1 re-check**: still passes. The data-model + contract design preserves all five principles. No items in Complexity Tracking.
@@ -61,17 +61,17 @@ specs/007-multi-target-failover/
 
 ```text
 crates/
-├── forward-proto/
-│   ├── proto/forward.proto         # +Target message, +repeated Target targets, +RuleStats per-target fields, +Rule.health_check_interval_secs
+├── portunus-proto/
+│   ├── proto/portunus.proto         # +Target message, +repeated Target targets, +RuleStats per-target fields, +Rule.health_check_interval_secs
 │   └── tests/targets_wire_compat.rs # NEW — round-trip + back-compat assertions for v0.6.0 Rule shape
-├── forward-core/src/
+├── portunus-core/src/
 │   ├── target.rs                   # NEW — Target struct, validation (host, port, priority)
 │   └── rules.rs                    # extend Rule with `targets: Vec<Target>` (Default::default keeps single-target back-compat)
-├── forward-server/src/
+├── portunus-server/src/
 │   ├── operator/http.rs            # POST /v1/rules accepts BOTH legacy + new shape; GET response carries targets[] + per-target health
 │   ├── operator/rule_cli.rs        # CLI push-rule gains repeatable --target / --targets-json
 │   └── persistence.rs              # rules.json read path tolerates v0.6.0 single-target rules; write path emits targets[]
-└── forward-client/src/
+└── portunus-client/src/
     ├── forwarder/
     │   ├── mod.rs                  # branch on targets.len() — single-target fast path unchanged; multi-target enters failover module
     │   ├── failover.rs             # NEW — per-target health state machine, target selection, passive failure tracking
@@ -88,7 +88,7 @@ specs/007-multi-target-failover/
 └── ...
 ```
 
-**Structure Decision**: extend the existing 6-crate workspace + `webui/` SPA. No new crate; no new top-level directory. The `failover.rs` and `probe.rs` modules live inside `forward-client/src/forwarder/` so the single-target hot path doesn't even pull them into compilation linkage decisions (they're behind a `match` arm).
+**Structure Decision**: extend the existing 6-crate workspace + `webui/` SPA. No new crate; no new top-level directory. The `failover.rs` and `probe.rs` modules live inside `portunus-client/src/forwarder/` so the single-target hot path doesn't even pull them into compilation linkage decisions (they're behind a `match` arm).
 
 ## Complexity Tracking
 

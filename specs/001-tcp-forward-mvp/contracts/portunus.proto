@@ -1,0 +1,133 @@
+// Portunus control-plane wire protocol — v1 (MVP).
+//
+// This is the canonical contract. Any change to this file is a wire-protocol
+// change subject to Constitution Principle III (contract tests) and the
+// versioning rules in Technology & Operational Constraints. Backward-
+// incompatible changes require a `portunus.v2` package; non-breaking
+// additions (new optional fields, new enum variants with reasonable defaults,
+// new messages) may stay in v1.
+//
+// Transport: gRPC over TLS (server cert pinned by client; per-client bearer
+// token in request metadata as `authorization: Bearer <token>`).
+//
+// Note: this spec ships the .proto as the contract. The actual file lives at
+// proto/portunus.proto in the repo root and is consumed by `portunus-proto`'s
+// build.rs via `tonic-build`.
+
+syntax = "proto3";
+
+package portunus.v1;
+
+// ============================================================================
+// ControlService — server-facing service the client calls into.
+// ============================================================================
+service Control {
+  // Long-lived bidirectional stream that carries the entire client/server
+  // conversation after auth:
+  //   - server pushes RuleUpdate (push/remove rules)
+  //   - client reports RuleStatus (activation results) and StatsReport
+  //
+  // The stream MUST be opened with the bearer token in metadata. The server
+  // closes the stream on auth failure with status UNAUTHENTICATED before any
+  // application message is exchanged.
+  rpc Channel(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// ============================================================================
+// Top-level envelope messages (wrapping a oneof allows future variants
+// without breaking).
+// ============================================================================
+
+message ClientMessage {
+  oneof payload {
+    Hello hello = 1;            // first message, optional in v1 — server can
+                                // also infer identity from auth metadata
+    RuleStatus rule_status = 2;
+    StatsReport stats_report = 3;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    Welcome welcome = 1;        // sent by server right after successful auth
+    RuleUpdate rule_update = 2;
+  }
+}
+
+// ============================================================================
+// Handshake messages
+// ============================================================================
+
+message Hello {
+  string protocol_version = 1;  // semantic version of the protocol the client
+                                // claims to speak, e.g. "1.0.0"
+  string client_version = 2;    // portunus-client binary version, informational
+}
+
+message Welcome {
+  string server_version = 1;
+  uint64 server_time_unix_ms = 2;
+}
+
+// ============================================================================
+// Rule lifecycle
+// ============================================================================
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  TCP = 1;
+  // Future: UDP, etc. Adding values to a proto3 enum is non-breaking.
+}
+
+message Rule {
+  uint64 rule_id = 1;
+  uint32 listen_port = 2;       // 1-65535 range enforced by server before push
+  string target_host = 3;
+  uint32 target_port = 4;
+  Protocol protocol = 5;
+}
+
+enum RuleAction {
+  RULE_ACTION_UNSPECIFIED = 0;
+  PUSH = 1;
+  REMOVE = 2;
+}
+
+message RuleUpdate {
+  string request_id = 1;        // ULID, threaded for log correlation
+  RuleAction action = 2;
+  Rule rule = 3;                // PUSH: full rule; REMOVE: only rule_id is read
+}
+
+enum ActivationOutcome {
+  ACTIVATION_OUTCOME_UNSPECIFIED = 0;
+  ACTIVATED = 1;
+  FAILED = 2;
+  REMOVED = 3;
+}
+
+message RuleStatus {
+  string request_id = 1;
+  uint64 rule_id = 2;
+  ActivationOutcome outcome = 3;
+  // For FAILED: machine-readable reason such as "port_in_use",
+  // "permission_denied", "target_resolution_failed".
+  // Empty for ACTIVATED / REMOVED.
+  string reason = 4;
+}
+
+// ============================================================================
+// Stats reporting
+// ============================================================================
+
+message RuleStats {
+  uint64 rule_id = 1;
+  uint64 bytes_in = 2;          // cumulative
+  uint64 bytes_out = 3;         // cumulative
+  uint32 active_connections = 4;
+}
+
+message StatsReport {
+  uint64 sent_at_unix_ms = 1;
+  repeated RuleStats stats = 2; // one entry per Active rule on this client
+}

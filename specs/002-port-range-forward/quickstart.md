@@ -11,26 +11,26 @@ v0.2.0 to use range rules.
 
 ```sh
 # (one time) upgrade the binaries — no data migration, no config changes
-sudo install -m 0755 target/release/forward-server /usr/local/bin/forward-server
-sudo install -m 0755 target/release/forward-client /usr/local/bin/forward-client
-sudo systemctl restart forward-server forward-client
+sudo install -m 0755 target/release/portunus-server /usr/local/bin/portunus-server
+sudo install -m 0755 target/release/portunus-client /usr/local/bin/portunus-client
+sudo systemctl restart portunus-server portunus-client
 
 # push a 51-port range, same offset
-forward-server push-rule edge-01 30000-30050 10.0.0.5:30000-30050
+portunus-server push-rule edge-01 30000-30050 10.0.0.5:30000-30050
 # → prints rule_id, e.g. 8
 
 # verify
-forward-server list-rules
+portunus-server list-rules
 # → one row showing PORT=30000-30050 SIZE=51 STATE=active
 
 # observe (aggregate, default)
-forward-server rule-stats 8
+portunus-server rule-stats 8
 
 # diagnose a specific port (on-demand, no Prometheus impact)
-forward-server rule-stats 8 --per-port
+portunus-server rule-stats 8 --per-port
 
 # remove
-forward-server remove-rule 8
+portunus-server remove-rule 8
 ```
 
 ---
@@ -38,8 +38,8 @@ forward-server remove-rule 8
 ## Prerequisites
 
 - A working v0.1.0 install. Specifically:
-  - `forward-server` running on the operator host.
-  - `forward-client` running on the edge host with a valid
+  - `portunus-server` running on the operator host.
+  - `portunus-client` running on the edge host with a valid
     `client.bundle.json`.
   - Loopback HTTP API reachable on `127.0.0.1:7080` (or whatever
     `operator_http_listen` is set to).
@@ -61,12 +61,12 @@ forward-server remove-rule 8
 ### Push a range rule
 
 ```sh
-forward-server push-rule edge-01 30000-30050 10.0.0.5:30000-30050
+portunus-server push-rule edge-01 30000-30050 10.0.0.5:30000-30050
 ```
 
 Expected:
 - Stdout: a single integer rule_id.
-- Server log (journalctl -u forward-server): one
+- Server log (journalctl -u portunus-server): one
   `event=audit.rule_push` line with
   `range_size=51 listen_port_end=30050`.
 - Client log: one `event=rule.activated` line with
@@ -87,27 +87,27 @@ all of which forward to the corresponding upstream port.
 ### Observe aggregate stats
 
 ```sh
-forward-server rule-stats <rule_id>
+portunus-server rule-stats <rule_id>
 # → one row, bytes_in/bytes_out summed across all 51 ports
 ```
 
 ### Diagnose per-port (on-demand)
 
 ```sh
-forward-server rule-stats <rule_id> --per-port
+portunus-server rule-stats <rule_id> --per-port
 # → aggregate row + one row per port (51 rows)
 ```
 
 This is a CLI-only feature. Prometheus `/metrics` is unaffected: it
 still exposes one series per per-rule collector per rule, regardless
 of range size (verify via `curl http://127.0.0.1:7081/metrics | grep
-forward_rule_bytes_in_total | wc -l` → unchanged after pushing the
+portunus_rule_bytes_in_total | wc -l` → unchanged after pushing the
 range).
 
 ### Remove and verify port release
 
 ```sh
-forward-server remove-rule <rule_id>
+portunus-server remove-rule <rule_id>
 # wait the configured drain (default 30 s)
 
 # on the edge host, verify any port in the range is now free:
@@ -127,7 +127,7 @@ In `server.toml`:
 range_rule_max_ports = 4096   # raise; only meaningful if LimitNOFILE is also raised
 ```
 
-Restart the server (`systemctl restart forward-server`) for the new
+Restart the server (`systemctl restart portunus-server`) for the new
 value to apply. Existing rules are unaffected; the cap is checked at
 push time only.
 
@@ -138,7 +138,7 @@ A push that overlaps any port already bound by another `Active` /
 (`port_in_use`) with a message naming the offending port:
 
 ```sh
-$ forward-server push-rule edge-01 30005-30015 10.0.0.5:40005-40015
+$ portunus-server push-rule edge-01 30005-30015 10.0.0.5:40005-40015
 error: port_in_use (port 30005 already in use by rule 8 on edge-01)
 $ echo $?
 5
@@ -159,7 +159,7 @@ Safe **iff** no range rules have been pushed since the upgrade. If
 you're unsure, before downgrade run:
 
 ```sh
-forward-server list-rules --format json | jq '.[] | select(.range_size > 1)'
+portunus-server list-rules --format json | jq '.[] | select(.range_size > 1)'
 ```
 
 If empty, downgrade is safe. Otherwise remove the range rules first.
@@ -176,16 +176,16 @@ This is the planned acceptance test, mirroring spec 001's SC-001
 
 ```sh
 # 1. provision client on the server
-forward-server provision-client edge-01 --out edge-01.bundle.json
+portunus-server provision-client edge-01 --out edge-01.bundle.json
 
 # 2. SCP the bundle to the edge host
-scp edge-01.bundle.json edge-host:/etc/forward/client.bundle.json
+scp edge-01.bundle.json edge-host:/etc/portunus/client.bundle.json
 
 # 3. start the client
-ssh edge-host 'systemctl start forward-client'
+ssh edge-host 'systemctl start portunus-client'
 
 # 4. push a 100-port range
-time forward-server push-rule edge-01 30000-30099 10.0.0.5:30000-30099
+time portunus-server push-rule edge-01 30000-30099 10.0.0.5:30000-30099
 # → real time should be sub-second on a healthy stream
 
 # 5. drive a connection through any port in the range
@@ -205,4 +205,4 @@ on a fresh host pair (matching SC-001 from spec 001).
 | `exit 3: exceeds_cap (101 > 100)` | range size > `range_rule_max_ports` | Raise the cap (with corresponding `LimitNOFILE` raise) or split the rule |
 | `exit 5: port_in_use (port 30025 already in use by rule 7)` | overlap with an existing rule | Remove the overlapping rule first, or pick a non-overlapping range |
 | Range rule activates but some ports show 0 bytes in `--per-port` | normal — ports without traffic show zeros | Drive traffic; the per-port snapshot updates every `stats_report_interval_secs` |
-| `rule.failed reason=permission_denied:30025` | ports < 1024 need `CAP_NET_BIND_SERVICE` | The systemd unit already grants this for forward-client; verify with `systemctl show forward-client \| grep AmbientCap` |
+| `rule.failed reason=permission_denied:30025` | ports < 1024 need `CAP_NET_BIND_SERVICE` | The systemd unit already grants this for portunus-client; verify with `systemctl show portunus-client \| grep AmbientCap` |

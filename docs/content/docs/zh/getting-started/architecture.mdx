@@ -12,7 +12,7 @@ icon: Network
 
 ```
               ┌──────────────────────────────────────┐
-              │            forward-server            │
+              │            portunus-server            │
               │                                      │
    操作员 ────┤  • CLI 子命令                        │
    (CLI/HTTP) │  • 操作员 HTTP API + Bearer 认证    │
@@ -24,7 +24,7 @@ icon: Network
                              │ gRPC / TLS-pinned
                              │ （双向流）
               ┌──────────────▼───────────────────────┐
-              │            forward-client            │
+              │            portunus-client            │
               │                                      │
    终端用户 ──▶ TCP accept 循环 / UDP recv_from 循环 │
    流量        │                                      │

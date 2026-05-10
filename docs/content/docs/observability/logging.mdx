@@ -34,12 +34,12 @@ A typical line:
 Use the standard `tracing-subscriber` env-filter:
 
 ```sh
-RUST_LOG=info forward-server serve
-RUST_LOG=forward_server=debug,forward_client=info forward-server serve
+RUST_LOG=info portunus-server serve
+RUST_LOG=portunus_server=debug,portunus_client=info portunus-server serve
 
 # Per-target filtering
-RUST_LOG=tls_sni=trace forward-client
-RUST_LOG=forward_client::forwarder::udp=debug forward-client
+RUST_LOG=tls_sni=trace portunus-client
+RUST_LOG=portunus_client::forwarder::udp=debug portunus-client
 ```
 
 ## request_id propagation
@@ -80,7 +80,7 @@ implementation bug cannot leak a token through structured logging.
 
 ```sh
 # Compact, tagged-by-target format for tailing
-RUST_LOG=info forward-server --log-format compact serve
+RUST_LOG=info portunus-server --log-format compact serve
 
 # Or via TOML:
 log_format = "compact"

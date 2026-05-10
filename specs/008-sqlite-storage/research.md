@@ -33,7 +33,7 @@ No `NEEDS CLARIFICATION` markers remain after this phase.
 - `backup` feature exposes `Backup::run`, the safe wrapper around
   SQLite's online backup API (R-007).
 - `chrono` feature gives `DateTime<Utc>` ↔ TEXT mapping out of the box,
-  matching the existing wire types (`crates/forward-auth/src/file_store.rs`
+  matching the existing wire types (`crates/portunus-auth/src/file_store.rs`
   already uses `chrono::DateTime<Utc>`).
 - `r2d2` is the de-facto sync pool for `rusqlite` and is the same crate
   Diesel / Rocket use — well-trod path.
@@ -145,7 +145,7 @@ writer gets one dedicated connection checked out for its whole lifetime
 
 **Decision**: `refinery` (`refinery_macros = "0.8"`,
 `refinery = { features = ["rusqlite"] }`) with embedded SQL migrations
-under `crates/forward-server/src/store/migrations/` named
+under `crates/portunus-server/src/store/migrations/` named
 `V001__initial_schema.sql`, `V002__...`, etc. Forward-only.
 
 **Rationale**:
@@ -178,7 +178,7 @@ capacity 1024 between the `auth_layer` emit sites and a single
 durable-writer task. On `try_send` returning `Full`, the producer
 drops the oldest enqueued entry (via a paired `Notify` + a
 `tokio::sync::Mutex<VecDeque>` adapter) and increments
-`forward_audit_buffer_drops_total`.
+`portunus_audit_buffer_drops_total`.
 
 The durable writer batches up to 256 entries or 100 ms (whichever
 comes first) per `INSERT` transaction.
@@ -200,7 +200,7 @@ comes first) per `INSERT` transaction.
 - `crossbeam::ArrayQueue` (lock-free SPSC) — single-producer; we have
   many emit sites in axum handlers. MPSC is the right fit.
 - New Prometheus counter for hand-off overflow — rejected in favour
-  of reusing `forward_audit_buffer_drops_total` (operators already
+  of reusing `portunus_audit_buffer_drops_total` (operators already
   alert on it; semantic identical).
 
 ---
@@ -280,7 +280,7 @@ unit tests can fake the result.
 **Decision**: Warn-and-ignore. On startup the server checks
 `<config-dir>` for `tokens.json`, `identity.json`, `rules.json` and
 emits a one-line `warn!` per file pointing operators at
-`forward-server reset` (or manual rm). The server does not read these
+`portunus-server reset` (or manual rm). The server does not read these
 files, regardless of contents.
 
 **Rationale**:
@@ -302,7 +302,7 @@ files, regardless of contents.
 
 ## R-010 — Bootstrap superadmin on empty store
 
-**Decision**: The existing `forward-server bootstrap-superadmin` CLI
+**Decision**: The existing `portunus-server bootstrap-superadmin` CLI
 (v0.5) is preserved at the user-facing level; its body is rewritten to
 write through the new `Store`'s identity transaction. Bootstrap is
 atomic: the user row, the credential row, and the initial
@@ -327,7 +327,7 @@ atomic: the user row, the credential row, and the initial
 ## R-011 — Reset CLI surface
 
 **Decision**: New top-level subcommand
-`forward-server reset --confirm`. The command:
+`portunus-server reset --confirm`. The command:
 
 1. Opens the store at the resolved `--data-dir` to verify we're
    pointing at a real SQLite file (refuse to "reset" an arbitrary
@@ -352,7 +352,7 @@ expected to be scripted.
   (every other destructive subcommand follows the same pattern).
 
 **Alternatives considered**:
-- `forward-server data wipe` — verbose; existing destructive
+- `portunus-server data wipe` — verbose; existing destructive
   subcommands use single-word verbs (`provision-client`, `revoke`,
   `remove-rule`).
 - Interactive Y/N prompt — breaks scripted runs (Ansible, CI).
@@ -440,31 +440,31 @@ default deferred mode.
 ## R-015 — `rusqlite::Error` mapping
 
 **Decision**: Map at the `Store` boundary into existing
-`ForwardError` variants:
+`PortunusError` variants:
 
 - `SqliteFailure(code, _) where code == SQLITE_BUSY | SQLITE_LOCKED` →
-  `ForwardError::Transient` (caller may retry; rare in practice
+  `PortunusError::Transient` (caller may retry; rare in practice
   thanks to `BEGIN IMMEDIATE` + busy_timeout).
 - `SqliteFailure(code, _) where code is a constraint violation
-  (UNIQUE, CHECK, FOREIGN KEY, NOT NULL)` → `ForwardError::Conflict`
+  (UNIQUE, CHECK, FOREIGN KEY, NOT NULL)` → `PortunusError::Conflict`
   with a structured detail field.
 - `SqliteFailure(code, _) where code is corruption-class
   (SQLITE_CORRUPT, SQLITE_NOTADB, SQLITE_IOERR_*)` → fail-fast at
   boot with a recovery hint pointing at backup/restore.
-- All others → `ForwardError::Internal` with the underlying message
+- All others → `PortunusError::Internal` with the underlying message
   preserved in `tracing` only (never leaked to operator API
   responses; only an opaque `request_id` is surfaced).
 
 **Rationale**:
-- Reuses the existing `ForwardError` taxonomy → no breaking changes
-  in `forward-server::operator::http` error mapping.
+- Reuses the existing `PortunusError` taxonomy → no breaking changes
+  in `portunus-server::operator::http` error mapping.
 - Constraint violations stay actionable for operators (e.g.,
   duplicate user_id surfaces as a 409 with a clear reason); internal
   details stay internal.
 
 **Alternatives considered**:
-- A new `ForwardError::Storage(rusqlite::Error)` variant — leaks the
-  driver type out of `forward-auth` / `forward-server` into the
+- A new `PortunusError::Storage(rusqlite::Error)` variant — leaks the
+  driver type out of `portunus-auth` / `portunus-server` into the
   public API surface; reject on encapsulation grounds.
 - Retry on every `SQLITE_BUSY` inside the store — pushes retries into
   a place where the caller cannot control timeout; the existing

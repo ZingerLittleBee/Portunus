@@ -1,10 +1,10 @@
 ---
 title: Client Configuration
-description: How forward-client picks up its bundle, and what env vars influence behaviour.
+description: How portunus-client picks up its bundle, and what env vars influence behaviour.
 icon: Cog
 ---
 
-`forward-client` is configured almost entirely from the **bundle** that
+`portunus-client` is configured almost entirely from the **bundle** that
 the server emits via `provision-client`. There is no `client.toml`.
 
 ## The bundle
@@ -22,7 +22,7 @@ the server emits via `provision-client`. There is no `client.toml`.
 Generated on the server:
 
 ```sh
-forward-server provision-client edge-01 --out ./edge-01.bundle.json
+portunus-server provision-client edge-01 --out ./edge-01.bundle.json
 ```
 
 File mode is `0600`. Transfer it to the edge host over a trusted
@@ -39,14 +39,14 @@ channel (`scp`, `rsync`, secrets manager, etc.).
 ### Explicit `--bundle`
 
 ```sh
-forward-client --bundle ./edge-01.bundle.json
+portunus-client --bundle ./edge-01.bundle.json
 ```
 
 ### Bundle resolution (since v0.8)
 
 When `--bundle` is omitted, the client searches in this order:
 
-1. `$FORWARD_CLIENT_BUNDLE`
+1. `$PORTUNUS_CLIENT_BUNDLE`
 2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
 3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
@@ -57,7 +57,7 @@ If none resolve the client exits `1` listing every attempted path.
 # Drop the bundle in XDG config and just run the binary
 mkdir -p ~/.config/portunus
 mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
-forward-client
+portunus-client
 ```
 
 ## Flags
@@ -67,13 +67,13 @@ forward-client
 | `--bundle <PATH>` | Explicit bundle path (overrides resolution chain) |
 | `--shutdown-drain-timeout-secs <N>` | How long in-flight forwarded connections drain on SIGTERM (default 30) |
 
-Run `forward-client --help` for the current full surface.
+Run `portunus-client --help` for the current full surface.
 
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
-| `FORWARD_CLIENT_BUNDLE` | Bundle path lookup (highest precedence in resolution chain) |
+| `PORTUNUS_CLIENT_BUNDLE` | Bundle path lookup (highest precedence in resolution chain) |
 | `RUST_LOG` | Standard `tracing-subscriber` env-filter |
 
 ## TLS pinning
@@ -97,7 +97,7 @@ TLS handshake never completed.
 For UDP-heavy or wide port-range deployments, raise `LimitNOFILE`:
 
 ```ini
-# /etc/systemd/system/forward-client.service
+# /etc/systemd/system/portunus-client.service
 [Service]
 LimitNOFILE=65535
 ```

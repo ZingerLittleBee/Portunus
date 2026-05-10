@@ -9,7 +9,7 @@ Ship the long-deferred `TODO(WEB_UI)` from the constitution: a single-page
 browser app that lets operators run the v0.5 RBAC + forwarding stack
 without dropping into the CLI. The SPA is built with **React + TypeScript +
 Vite + shadcn/ui + TanStack Query + React Router**, embedded into the
-`forward-server` binary at compile time via the `rust-embed` crate and served
+`portunus-server` binary at compile time via the `rust-embed` crate and served
 on the existing operator HTTP listener at `/`. Two new server endpoints are
 added (additive, ownership-checked):
 
@@ -48,7 +48,7 @@ login. i18n covers English + 简体中文; theme follows
 **Testing**:
 - Server: existing `cargo test --workspace --tests` suite + 2 new contract
   tests (`tests/audit_contract.rs`, `tests/rule_stats_stream_contract.rs`).
-- UI: Vitest (unit), Playwright (e2e against a real `forward-server`
+- UI: Vitest (unit), Playwright (e2e against a real `portunus-server`
   spawned by a pre-test fixture). Initial Playwright suite covers the
   three P1/P2 user stories from spec.md.
 
@@ -62,7 +62,7 @@ login. i18n covers English + 简体中文; theme follows
   crates (core / proto / auth / e2e).
 - New: a separate `webui/` Vite project at the repo root. Its build
   artefact (`webui/dist/`) is consumed at compile time by
-  `forward-server` via `rust-embed`. Decision below in **Project Structure**.
+  `portunus-server` via `rust-embed`. Decision below in **Project Structure**.
 
 **Performance Goals**:
 - Initial page load (LCP) ≤ **2 s** on a developer-class laptop with
@@ -129,10 +129,10 @@ specs/006-management-web-ui/
 
 ```text
 crates/                          # existing workspace, mostly unchanged
-├── forward-core/                # unchanged
-├── forward-proto/               # unchanged
-├── forward-auth/                # unchanged
-├── forward-server/
+├── portunus-core/                # unchanged
+├── portunus-proto/               # unchanged
+├── portunus-auth/                # unchanged
+├── portunus-server/
 │   ├── build.rs                 # NEW — fails build if webui/dist/ stale
 │   ├── Cargo.toml               # NEW dep: rust-embed = "8"
 │   └── src/
@@ -144,9 +144,9 @@ crates/                          # existing workspace, mostly unchanged
 │       │   ├── auth_layer.rs    # MOD — push entries into the ring buffer
 │       │   ├── webui.rs         # NEW — `rust-embed` static asset router
 │       │   └── http.rs          # MOD — mount /v1/audit + /v1/rules/{id}/stats/stream + webui fallback
-│       └── metrics.rs           # MOD — add forward_audit_buffer_drops_total counter
-├── forward-client/              # unchanged
-└── forward-e2e/                 # MOD — webui-aware fixtures (loopback HTTP smoke test, not playwright)
+│       └── metrics.rs           # MOD — add portunus_audit_buffer_drops_total counter
+├── portunus-client/              # unchanged
+└── portunus-e2e/                 # MOD — webui-aware fixtures (loopback HTTP smoke test, not playwright)
 
 webui/                           # NEW top-level frontend project
 ├── package.json
@@ -204,14 +204,14 @@ webui/                           # NEW top-level frontend project
 │       └── permissions.ts       # role gates (used by AuthGate + nav)
 ├── tests/
 │   ├── unit/                    # Vitest
-│   └── e2e/                     # Playwright; spawns real forward-server
+│   └── e2e/                     # Playwright; spawns real portunus-server
 └── README.md                    # build instructions, embed notes
 
 # Build glue (server-side):
-# `cargo build -p forward-server` runs `forward-server/build.rs`,
+# `cargo build -p portunus-server` runs `portunus-server/build.rs`,
 # which `panic!`s if `webui/dist/index.html` is missing AND env var
-# `FORWARD_SKIP_WEBUI=1` is unset. Local devs without Node can set
-# `FORWARD_SKIP_WEBUI=1` to compile a UI-less binary; release builds
+# `PORTUNUS_SKIP_WEBUI=1` is unset. Local devs without Node can set
+# `PORTUNUS_SKIP_WEBUI=1` to compile a UI-less binary; release builds
 # never set it (CI assertion in .github/workflows/release.yml).
 ```
 
@@ -219,13 +219,13 @@ webui/                           # NEW top-level frontend project
 - A separate top-level `webui/` Vite project (parallel to `crates/`),
   not a Rust crate. Reason: Cargo and Vite are independent build
   systems; merging them produces awkward `cargo build`-triggers-`pnpm`
-  failure modes. Instead, `cargo build -p forward-server` checks for
+  failure modes. Instead, `cargo build -p portunus-server` checks for
   `webui/dist/` and embeds it via `rust-embed`. `webui/` has its own
   package.json + lockfile + tsconfig.
 - The build.rs gate keeps single-binary distribution honest: a
   release build cannot succeed without a fresh `webui/dist/`.
   Local dev workflows that don't touch the UI use
-  `FORWARD_SKIP_WEBUI=1` to skip.
+  `PORTUNUS_SKIP_WEBUI=1` to skip.
 
 ## Complexity Tracking
 
@@ -234,5 +234,5 @@ webui/                           # NEW top-level frontend project
 No violations. The plan introduces a new top-level directory (`webui/`)
 but stays within the constitution's "single-binary distribution" rule
 because the directory's compiled output is statically embedded into
-`forward-server`. No new runtime dependency on the host beyond what v0.5
+`portunus-server`. No new runtime dependency on the host beyond what v0.5
 already requires.

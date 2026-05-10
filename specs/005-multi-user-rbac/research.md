@@ -13,7 +13,7 @@ otherwise have to relitigate during `/speckit-tasks` or
 
 **Question**: Should v0.5.0 introduce SQLite/Postgres for operator
 identity, or stick with the JSON-file + atomic-write pattern proven by
-`forward-auth::file_store::FileTokenStore`?
+`portunus-auth::file_store::FileTokenStore`?
 
 **Decision**: **Stick with JSON file**, single document
 `identity.json`, same atomic-write protocol as `FileTokenStore`
@@ -69,7 +69,7 @@ explicit paths to obtain the first superadmin token:
    persisted to `identity.json`); rotating it requires the regular
    credential-rotate flow.
 2. **One-shot CLI** (recommended for existing v0.4 deployments
-   upgrading in place): `forward-server bootstrap-superadmin
+   upgrading in place): `portunus-server bootstrap-superadmin
    --name <human-name>`. Generates a fresh token, writes the user +
    credential to `identity.json`, prints the token to stdout
    exactly once. Refuses to run (exit code `2`,
@@ -112,7 +112,7 @@ survive (or not) operations like restart and grant revocation?
 
 **Decision**: `Rule` gains a non-optional `owner_user_id: UserId`
 field. The field is **in-memory only** (rules are not persisted —
-verified by reading `crates/forward-server/src/rules.rs` doc comment).
+verified by reading `crates/portunus-server/src/rules.rs` doc comment).
 On a server restart, both rules and their owner stamps are gone;
 operators re-push rules under their own identity, and the new push
 re-stamps owner.
@@ -191,9 +191,9 @@ label `owner` simply joins `{client, rule}` to make
 combinations*. Because owner is functionally determined by rule (one
 owner per rule), the observed combinations are still one per rule.
 
-**Validation**: `forward-server/tests/rbac_metric_cardinality.rs` (a
+**Validation**: `portunus-server/tests/rbac_metric_cardinality.rs` (a
 tasks-phase artifact) will assert the row count of
-`forward_rule_bytes_in_total` after pushing N rules from M users
+`portunus_rule_bytes_in_total` after pushing N rules from M users
 equals N (not N×M).
 
 ## R-006 — Grant-revoke and user-remove side effects on active rules
@@ -248,8 +248,8 @@ unauthenticated today" — is that strictly true? What is the actual
 v0.4.0 baseline?
 
 **Decision**: After grepping the v0.4.0 source
-(`crates/forward-server/src/operator/{http.rs,cli.rs}` and
-`crates/forward-server/src/serve.rs`), the answer is **yes,
+(`crates/portunus-server/src/operator/{http.rs,cli.rs}` and
+`crates/portunus-server/src/serve.rs`), the answer is **yes,
 unauthenticated**. The router has no `tower::Layer` for auth; the
 listener binds to whatever address `server.toml` says (loopback by
 default per the v0.4 example config).
@@ -263,7 +263,7 @@ header, which is the unavoidable new requirement of the feature. This
 is an additive HTTP header, not a wire-shape change. The v0.4 quickstart
 walkthrough will be updated to include the `bootstrap-superadmin` step
 + `--token` plumbing; existing v0.4 e2e fixtures get a
-`bootstrap_then_token()` helper added in `forward-e2e/tests/common/mod.rs`.
+`bootstrap_then_token()` helper added in `portunus-e2e/tests/common/mod.rs`.
 
 This is captured in the SC-004 wording in the spec ("byte-identical
 request/response wire shapes") which does NOT promise that no header
@@ -300,7 +300,7 @@ captured stream, generates a fresh credential, runs a credential-issue
 + rotate flow, and asserts the literal token string never appears in
 any captured log record. Implementation invariant: the audit emitter
 takes `&OperatorIdentity` and `&str` action labels — never a raw
-credential. Tokens are produced by `forward-auth::token::generate_token`
+credential. Tokens are produced by `portunus-auth::token::generate_token`
 and returned to the HTTP response body only; they never traverse the
 audit code path.
 
@@ -326,7 +326,7 @@ re-evaluation). New requests after the swap see the new state.
   `identity.json` are NOT a supported workflow (and we add a doc note
   in `runbook.md` saying so).
 - Multi-process file-watch coordination: there is exactly one
-  forward-server process per host (Constitution Tech Constraints).
+  portunus-server process per host (Constitution Tech Constraints).
 
 **Rationale**: Constitution IV's "graceful reload" intent is honored
 at minimum cost. The full cascade-on-reload story would require
@@ -395,11 +395,11 @@ issue per-test users. Does this multiply test runtime?
 
 **Decision**: **Negligible**. `bootstrap-superadmin` + `user-add`
 + `credential-issue` + `grant-add` together touch `identity.json` 4
-times. At 10 ms per write, 40 ms per test. The full `forward-e2e`
+times. At 10 ms per write, 40 ms per test. The full `portunus-e2e`
 suite has ~30 tests today; +1.2 s total wall-clock is acceptable.
 
 A shared fixture (`spawn_server_with_bootstrapped_superadmin()`) in
-`forward-e2e/tests/common/mod.rs` amortizes this for any test that
+`portunus-e2e/tests/common/mod.rs` amortizes this for any test that
 just needs "be a superadmin"; tests that exercise non-superadmin
 behavior pay the per-user-add cost individually (each adds at most
 one extra write).

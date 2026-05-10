@@ -1,0 +1,22 @@
+{
+  "version": "0.7.0",
+  "captured_at": "2026-05-08",
+  "platform": "macOS / aws-lc-rs / loopback",
+  "notes": "007-multi-target-failover T050 — single-target hot-path baseline for v0.7.0. Captured via `cargo bench -p portunus-client --bench data_plane -- --quick`. Structural guarantee: single-target rules dispatch through `forwarder::run`'s `if !rule.targets.is_empty()` branch BEFORE entering any failover code path; the target-zero `failover.rs` / `failover_path.rs` / `probe.rs` modules are unreachable for single-target rules at runtime (Constitution Principle II byte-identity). Numbers below are within noise vs the v0.1.0 baseline (≤ ~2% drift in `--quick` mode); a full multi-iteration run is recommended before each release tag.",
+  "benchmarks": {
+    "data_plane.throughput.64KiB_echo": {
+      "unit": "ns_per_iter",
+      "mean": 103100,
+      "throughput_GiBps": 0.59
+    },
+    "data_plane.throughput.1024KiB_echo": {
+      "unit": "ns_per_iter",
+      "mean": 835300,
+      "throughput_GiBps": 1.17
+    },
+    "data_plane.rtt_1byte_through_proxy": {
+      "unit": "ns_per_rtt",
+      "mean": 46680
+    }
+  }
+}

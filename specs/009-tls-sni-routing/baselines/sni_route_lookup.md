@@ -2,8 +2,8 @@
 
 Captured: 2026-05-09
 Hardware: macOS (Darwin 25.4.0), Apple Silicon (criterion `--quick` mode)
-Bench file: `crates/forward-client/benches/sni_route.rs`
-Run: `cargo bench -p forward-client --bench sni_route -- --quick`
+Bench file: `crates/portunus-client/benches/sni_route.rs`
+Run: `cargo bench -p portunus-client --bench sni_route -- --quick`
 
 Each criterion sample drives **3 lookups**; figures below are the
 reported `time` (mean of inner closure), so per-lookup numbers are
@@ -52,7 +52,7 @@ comfortably below 100 µs. **SC-006 met.**
 ## Re-baselining
 
 Re-run after any change to:
-- `crates/forward-client/src/forwarder/sni/route_table.rs`
+- `crates/portunus-client/src/forwarder/sni/route_table.rs`
 - The bench file itself
 - The Rust toolchain pinned in `rust-toolchain.toml` /
   `Cargo.toml::workspace.package.rust-version`

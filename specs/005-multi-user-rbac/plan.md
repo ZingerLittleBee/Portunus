@@ -19,7 +19,7 @@ Two reuse anchors keep the change additive:
    not modified. The data plane neither knows nor cares which operator
    pushed a rule. Owner is stamped at rule-creation time and read back
    only by the operator surface (responses, metrics labels).
-2. **The existing `forward-auth` crate is the template.** Its
+2. **The existing `portunus-auth` crate is the template.** Its
    `Authenticator` trait + `FileTokenStore` already encodes the exact
    pattern we need (atomic-write JSON file, blake3-hashed tokens, single
    verification seam) — for the *client→server* gRPC channel. We add a
@@ -44,7 +44,7 @@ The wire / persistence / CLI surfaces evolve as follows:
   `credential-{issue,rotate,revoke,list}`, `grant-{add,list,revoke}`,
   and a one-shot `bootstrap-superadmin` for environments without an
   `operator_token` in `server.toml`. Existing rule subcommands learn
-  to pick up the bearer token from env (`FORWARD_OPERATOR_TOKEN`) or
+  to pick up the bearer token from env (`PORTUNUS_OPERATOR_TOKEN`) or
   `--token <value>`.
 - **Persistence (NEW)**: `operator_store_path` in `server.toml`, by
   default `<config_dir>/identity.json`. Same atomic-write protocol as
@@ -73,15 +73,15 @@ use). See R-002 for the trade-off.
 **Primary Dependencies**: existing — `tokio`, `axum`, `tonic`, `prost`,
                           `rustls`, `prometheus`, `tracing`,
                           `serde_json`, `chrono`, `blake3` (via
-                          `forward-core::fingerprint`), `base64` (via
-                          `forward-auth`). **One new external
+                          `portunus-core::fingerprint`), `base64` (via
+                          `portunus-auth`). **One new external
                           dependency**: `tower` already in the tree
                           (transitive via `axum`); we use its `Layer`
                           API directly for the new auth middleware.
                           No new top-level deps in `Cargo.toml`.
 **Storage**: New JSON file `identity.json` (path configurable via
              `operator_store_path` in `server.toml`). Atomic-write
-             protocol mirrors `forward-auth::file_store` verbatim
+             protocol mirrors `portunus-auth::file_store` verbatim
              (write tmp → fsync → rename → fsync(parent)). Rationale
              for sticking to JSON-file storage rather than introducing
              SQLite/Postgres: data shape is small and bounded
@@ -93,9 +93,9 @@ use). See R-002 for the trade-off.
              feature where data shape forces it (e.g., persistent
              audit log retention).
 **Testing**: `cargo test` per crate (unit + integration);
-             `forward-server` tests use real HTTP via `reqwest`
+             `portunus-server` tests use real HTTP via `reqwest`
              against an in-process `axum` router (existing pattern
-             from v0.4.0); `forward-e2e` adds an `rbac_smoke.rs`
+             from v0.4.0); `portunus-e2e` adds an `rbac_smoke.rs`
              integration covering US1 + US2 acceptance scenarios
              with real tokens, real HTTP, real client+server. Auth
              middleware tests use real `axum::Router` with a real
@@ -106,11 +106,11 @@ use). See R-002 for the trade-off.
                      weaker than Linux — the existing
                      `FileTokenStore` already accepts that; the new
                      `FileOperatorStore` follows the same convention.
-**Project Type**: Multi-crate Cargo workspace (unchanged): `forward-core`,
-                  `forward-proto`, `forward-auth`, `forward-server`,
-                  `forward-client`, `forward-e2e`. The new code lives
-                  in `forward-auth` (data structures + store) and
-                  `forward-server` (axum middleware, HTTP handlers,
+**Project Type**: Multi-crate Cargo workspace (unchanged): `portunus-core`,
+                  `portunus-proto`, `portunus-auth`, `portunus-server`,
+                  `portunus-client`, `portunus-e2e`. The new code lives
+                  in `portunus-auth` (data structures + store) and
+                  `portunus-server` (axum middleware, HTTP handlers,
                   CLI, RBAC enforcement).
 **Performance Goals**:
   - **Operator-path latency budget**: authentication + authorization
@@ -163,7 +163,7 @@ use). See R-002 for the trade-off.
   - **`identity.json` writes are serialized** by an `RwLock<HashMap>`
     in `FileOperatorStore` — same pattern as `FileTokenStore`. No
     cross-process coordination is needed because only one
-    `forward-server` process touches the file at a time
+    `portunus-server` process touches the file at a time
     (single-binary deployment, Constitution Tech Constraint).
   - **Owner stamp on Rules is in-memory only** (R-006): rules are
     not persisted across server restart per the existing
@@ -184,10 +184,10 @@ use). See R-002 for the trade-off.
 
 | Principle | Pass? | Notes |
 |---|---|---|
-| I. Security by Default (TLS + bearer token, no plaintext) | ✅ (with second-reviewer flag per Dev Workflow) | Adds a NEW credential type (operator bearer token) with the SAME shape as the existing client token: 256-bit `OsRng` random, blake3-hashed at rest (`token::generate_token` / `token::hash_token` reused verbatim from `forward-auth`), never logged, returned to the operator exactly once at issuance. The new `OperatorAuthenticator` trait satisfies Principle I's "single seam" requirement: every operator request flows through one `axum::middleware::from_fn_with_state` that calls `OperatorAuthenticator::verify`. Swapping the scheme later (e.g., OIDC) means writing one new impl, not editing every handler. Bootstrap subcommand prevents silent superadmin minting (refuses if any superadmin exists). The operator HTTP listener still binds loopback by default (existing `serve.rs` policy); auth is now defense-in-depth rather than the only barrier. **Triggers the Dev Workflow "second reviewer with security context" rule** because this PR touches credential / token handling. |
-| II. Performance Is a Feature | ✅ | The forwarding hot path (`forwarder/proxy.rs`, `forwarder/udp/`) is **not modified**. The two existing data-plane criterion benches (`data_plane.rs`, `udp_data_plane.rs`) continue as the regression gate; expected delta is **0%**. The auth check on the operator HTTP path adds one blake3 hash + one `HashMap` lookup per request (sub-microsecond); operator throughput is interactive (operators issue dozens of requests per minute, not tens of thousands per second), so a microbench is overkill. We will assert SC-002 (≤ +5 ms median push-rule latency) via the existing `forward-server/tests/cli_push_rule.rs`-style integration test that already measures wall-clock against a real router. |
-| III. Test-First Discipline | ✅ | (a) Contract tests for the new HTTP endpoints land first in `forward-server/tests/http_users_contract.rs`, `http_grants_contract.rs`, `http_credentials_contract.rs` — each asserts the request/response shape from `contracts/operator-api.md` against a real `axum::Router` with a real `FileOperatorStore` over a tmp dir. (b) RBAC enforcement tests (`tests/rbac_push_rule.rs`) assert each rejection reason from FR-008 with real HTTP + real store. (c) Bootstrap test (`tests/bootstrap_superadmin.rs`) asserts the one-shot semantics. (d) End-to-end (`forward-e2e/tests/rbac_smoke.rs`) wires real `forward-server` + real `forward-client` + real operator CLI to validate US1 + US2 acceptance scenarios. (e) Backward-compat test (`tests/legacy_no_auth_rejected.rs`) asserts that a request without `Authorization` header now gets `unauthenticated`, NOT 200 (this is the one operator-visible breaking change; the test pins the reason code so future reverts are caught). **No socket mocks, no auth mocks** — auth tests use a real store over a real temp dir. |
-| IV. Observability & Operability | ✅ | Audit-log seam: the auth middleware emits one structured log line per request via the existing `tracing` + `tracing_subscriber::fmt::json()` pipeline. INFO on allow (`event = "operator.allow"`, includes `actor`, `action`, `resource`); WARN on deny (`event = "operator.deny"`, additionally includes `reason`). Existing per-rule Prometheus collectors gain an `owner` label; cardinality unchanged (one row per rule). New collector `forward_operator_requests_total{outcome, reason}` tracks aggregate auth outcomes for dashboards. **Graceful reload** (Constitution IV): the operator store is reloaded from disk on SIGHUP if the file mtime changed; in-flight requests complete against the snapshot they entered with. **Logs MUST NOT include raw credentials** — verified by a unit test that scans WARN/INFO records for the literal token string and fails if found. |
+| I. Security by Default (TLS + bearer token, no plaintext) | ✅ (with second-reviewer flag per Dev Workflow) | Adds a NEW credential type (operator bearer token) with the SAME shape as the existing client token: 256-bit `OsRng` random, blake3-hashed at rest (`token::generate_token` / `token::hash_token` reused verbatim from `portunus-auth`), never logged, returned to the operator exactly once at issuance. The new `OperatorAuthenticator` trait satisfies Principle I's "single seam" requirement: every operator request flows through one `axum::middleware::from_fn_with_state` that calls `OperatorAuthenticator::verify`. Swapping the scheme later (e.g., OIDC) means writing one new impl, not editing every handler. Bootstrap subcommand prevents silent superadmin minting (refuses if any superadmin exists). The operator HTTP listener still binds loopback by default (existing `serve.rs` policy); auth is now defense-in-depth rather than the only barrier. **Triggers the Dev Workflow "second reviewer with security context" rule** because this PR touches credential / token handling. |
+| II. Performance Is a Feature | ✅ | The forwarding hot path (`forwarder/proxy.rs`, `forwarder/udp/`) is **not modified**. The two existing data-plane criterion benches (`data_plane.rs`, `udp_data_plane.rs`) continue as the regression gate; expected delta is **0%**. The auth check on the operator HTTP path adds one blake3 hash + one `HashMap` lookup per request (sub-microsecond); operator throughput is interactive (operators issue dozens of requests per minute, not tens of thousands per second), so a microbench is overkill. We will assert SC-002 (≤ +5 ms median push-rule latency) via the existing `portunus-server/tests/cli_push_rule.rs`-style integration test that already measures wall-clock against a real router. |
+| III. Test-First Discipline | ✅ | (a) Contract tests for the new HTTP endpoints land first in `portunus-server/tests/http_users_contract.rs`, `http_grants_contract.rs`, `http_credentials_contract.rs` — each asserts the request/response shape from `contracts/operator-api.md` against a real `axum::Router` with a real `FileOperatorStore` over a tmp dir. (b) RBAC enforcement tests (`tests/rbac_push_rule.rs`) assert each rejection reason from FR-008 with real HTTP + real store. (c) Bootstrap test (`tests/bootstrap_superadmin.rs`) asserts the one-shot semantics. (d) End-to-end (`portunus-e2e/tests/rbac_smoke.rs`) wires real `portunus-server` + real `portunus-client` + real operator CLI to validate US1 + US2 acceptance scenarios. (e) Backward-compat test (`tests/legacy_no_auth_rejected.rs`) asserts that a request without `Authorization` header now gets `unauthenticated`, NOT 200 (this is the one operator-visible breaking change; the test pins the reason code so future reverts are caught). **No socket mocks, no auth mocks** — auth tests use a real store over a real temp dir. |
+| IV. Observability & Operability | ✅ | Audit-log seam: the auth middleware emits one structured log line per request via the existing `tracing` + `tracing_subscriber::fmt::json()` pipeline. INFO on allow (`event = "operator.allow"`, includes `actor`, `action`, `resource`); WARN on deny (`event = "operator.deny"`, additionally includes `reason`). Existing per-rule Prometheus collectors gain an `owner` label; cardinality unchanged (one row per rule). New collector `portunus_operator_requests_total{outcome, reason}` tracks aggregate auth outcomes for dashboards. **Graceful reload** (Constitution IV): the operator store is reloaded from disk on SIGHUP if the file mtime changed; in-flight requests complete against the snapshot they entered with. **Logs MUST NOT include raw credentials** — verified by a unit test that scans WARN/INFO records for the literal token string and fails if found. |
 | V. Multi-Tenant Isolation | ✅ | This **is** the feature. Every authorization check is expressed in terms of `(actor_user_id, resource)` pairs, never globally. A tenant's allowed `(client, port_range, protocols)` are policy inputs to the rules service, not client-trusted hints. The rule store gains a per-rule `owner_user_id`; non-superadmin reads are filtered server-side before any response is built. Error messages on cross-tenant access return `not_owner` with no leakage of whether the rule exists for another tenant (uniform "not found / not owner" timing — we will validate by inspecting the handler's branch structure, not by side-channel benchmarking, which is overkill at this stage). |
 
 **Gate result**: PASS, with the Dev-Workflow "second reviewer for credential / token handling" requirement noted. Nothing to track in the Complexity Tracking table.
@@ -195,7 +195,7 @@ use). See R-002 for the trade-off.
 **Post-Phase-1 re-check**: Re-evaluated after `data-model.md`,
 `contracts/operator-api.md`, `contracts/persistence.md`, and
 `quickstart.md` landed. The `OperatorAuthenticator` trait sits next to
-the existing `Authenticator` in `forward-auth/src/lib.rs` (single seam
+the existing `Authenticator` in `portunus-auth/src/lib.rs` (single seam
 preserved, R-007). `identity.json` reuses the v0.1 atomic-write
 protocol verbatim (R-001). Owner label adds zero cardinality (R-008).
 The bootstrap subcommand is one-shot and refuses re-runs (R-002).
@@ -223,7 +223,7 @@ specs/005-multi-user-rbac/
 
 ```text
 crates/
-├── forward-auth/src/                       # NEW peer types live here, next to Authenticator
+├── portunus-auth/src/                       # NEW peer types live here, next to Authenticator
 │   ├── lib.rs                              # MOD: add OperatorIdentity { user_id, role },
 │   │                                          #   OperatorAuthenticator trait, OperatorRole enum,
 │   │                                          #   Grant struct, RbacError enum
@@ -234,7 +234,7 @@ crates/
 │   ├── token.rs                            # UNCHANGED — generate_token / hash_token reused
 │   └── file_store.rs                       # UNCHANGED — client→server token store stays as-is
 │
-├── forward-server/src/
+├── portunus-server/src/
 │   ├── operator/
 │   │   ├── auth_layer.rs                   # NEW: tower::Layer that calls
 │   │   │                                          #   OperatorAuthenticator::verify on every
@@ -253,7 +253,7 @@ crates/
 │   │   │                                          #   post_rules / get_rules / etc.;
 │   │   │                                          #   include `owner` field in rule responses
 │   │   ├── cli.rs                          # MOD: parse user/grant/credential subcommands;
-│   │   │                                          #   read FORWARD_OPERATOR_TOKEN env / --token flag
+│   │   │                                          #   read PORTUNUS_OPERATOR_TOKEN env / --token flag
 │   │   ├── rule_cli.rs                     # MOD: filter list/stats by owner unless superadmin
 │   │   └── mod.rs                          # MOD: re-export new modules
 │   ├── rules.rs                            # MOD: Rule gains `owner_user_id: UserId`;
@@ -262,7 +262,7 @@ crates/
 │   │                                          #   on grant revoke / user remove, scan and
 │   │                                          #   remove orphaned rules
 │   ├── metrics.rs                          # MOD: add `owner` label to per-rule collectors;
-│   │                                          #   add forward_operator_requests_total
+│   │                                          #   add portunus_operator_requests_total
 │   │                                          #   {outcome, reason}
 │   ├── state.rs                            # MOD: add Arc<dyn OperatorAuthenticator> +
 │   │                                          #   Arc<dyn OperatorAuthorizer> to AppState
@@ -276,7 +276,7 @@ crates/
 │   ├── main.rs                             # MOD: route bootstrap-superadmin subcommand
 │   └── shutdown.rs                         # UNCHANGED
 │
-├── forward-server/tests/
+├── portunus-server/tests/
 │   ├── http_users_contract.rs              # NEW: contract test against /v1/users
 │   ├── http_grants_contract.rs             # NEW: contract test against /v1/grants
 │   ├── http_credentials_contract.rs        # NEW: contract test against credential endpoints
@@ -286,9 +286,9 @@ crates/
 │   ├── legacy_no_auth_rejected.rs          # NEW: pin the breaking change behavior
 │   ├── audit_log_redaction.rs              # NEW: unit test that no log line contains a token
 │   ├── identity_persistence.rs             # NEW: restart roundtrip preserves users/grants
-│   └── cli_push_rule.rs                    # MOD: existing tests learn to set FORWARD_OPERATOR_TOKEN
+│   └── cli_push_rule.rs                    # MOD: existing tests learn to set PORTUNUS_OPERATOR_TOKEN
 │
-├── forward-e2e/tests/
+├── portunus-e2e/tests/
 │   ├── common/mod.rs                       # MOD: helper to bootstrap superadmin + issue
 │   │                                          #   per-test user; default token plumbed into
 │   │                                          #   spawn_server fixtures; existing v0.4 e2e
@@ -304,9 +304,9 @@ crates/
 ```
 
 **Structure Decision**: same multi-crate workspace as v0.1.0 → v0.4.0.
-The new code distributes across two existing crates: `forward-auth`
+The new code distributes across two existing crates: `portunus-auth`
 gains the data structures + store (mirroring `Authenticator` /
-`FileTokenStore`) so the auth seam stays in one crate; `forward-server`
+`FileTokenStore`) so the auth seam stays in one crate; `portunus-server`
 gains the axum middleware, HTTP/CLI handlers, and the rbac functions.
 **No new crate** — the volume is small and would create gratuitous
 cross-crate boundaries. **No proto changes** — operator identity is a

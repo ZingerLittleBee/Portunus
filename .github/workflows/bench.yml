@@ -6,7 +6,7 @@ name: bench
 #  - manual `workflow_dispatch` from the Actions UI
 #
 # Note: bench numbers are CI-runner-dependent. The baseline in
-# `crates/forward-client/benches/baselines/v0.1.0.json` was captured on
+# `crates/portunus-client/benches/baselines/v0.1.0.json` was captured on
 # the maintainer's macOS dev box; we run the gate on macos-latest to
 # keep noise *roughly* comparable, but GH-Actions runners are slower
 # and noisier than dev hardware — particularly on the 1-byte RTT
@@ -21,9 +21,9 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "crates/forward-client/src/forwarder/**"
-      - "crates/forward-client/benches/**"
-      - "crates/forward-client/Cargo.toml"
+      - "crates/portunus-client/src/forwarder/**"
+      - "crates/portunus-client/benches/**"
+      - "crates/portunus-client/Cargo.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "scripts/bench_regression_gate.py"
@@ -54,7 +54,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo bench
-        run: cargo bench -p forward-client --bench data_plane
+        run: cargo bench -p portunus-client --bench data_plane
 
       - name: regression gate
         run: python3 scripts/bench_regression_gate.py --max-regression-pct 50

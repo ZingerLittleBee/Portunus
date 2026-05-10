@@ -4,7 +4,7 @@ description: 暴露在 operator_http_listen 上的 /v1 API。默认 loopback、B
 icon: Code
 ---
 
-`forward-server` 把操作员侧 API 暴露为 `operator_http_listen` 上的 HTTP API
+`portunus-server` 把操作员侧 API 暴露为 `operator_http_listen` 上的 HTTP API
 （默认 loopback）。每条 `/v1/*` 请求都需要 `Authorization: Bearer <token>`。
 
 ## 认证
@@ -124,7 +124,7 @@ Bearer 缺失或非法时的响应：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:7080/v1/rules \
-  -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+  -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "client": "edge-01",

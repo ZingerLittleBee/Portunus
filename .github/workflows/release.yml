@@ -161,7 +161,7 @@ jobs:
 
       - name: cargo build --release
         shell: bash
-        run: cargo build --release -p forward-server -p forward-client --target "${{ matrix.target }}"
+        run: cargo build --release -p portunus-server -p portunus-client --target "${{ matrix.target }}"
 
       - name: Package binaries
         shell: bash
@@ -173,8 +173,8 @@ jobs:
           staging="dist/${archive_base}"
 
           mkdir -p "${staging}"
-          cp "target/${target}/release/forward-server" "${staging}/"
-          cp "target/${target}/release/forward-client" "${staging}/"
+          cp "target/${target}/release/portunus-server" "${staging}/"
+          cp "target/${target}/release/portunus-client" "${staging}/"
           cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
@@ -214,9 +214,9 @@ jobs:
 
             tar -xzf "${archive}" -C "${extracted}"
             mkdir -p "docker-bin/${arch}"
-            cp "${extracted}/portunus-${version}-${target}/forward-server" "docker-bin/${arch}/"
-            cp "${extracted}/portunus-${version}-${target}/forward-client" "docker-bin/${arch}/"
-            chmod 0755 "docker-bin/${arch}/forward-server" "docker-bin/${arch}/forward-client"
+            cp "${extracted}/portunus-${version}-${target}/portunus-server" "docker-bin/${arch}/"
+            cp "${extracted}/portunus-${version}-${target}/portunus-client" "docker-bin/${arch}/"
+            chmod 0755 "docker-bin/${arch}/portunus-server" "docker-bin/${arch}/portunus-client"
           done <<'EOF'
           x86_64-unknown-linux-gnu amd64
           aarch64-unknown-linux-gnu arm64

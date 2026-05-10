@@ -29,9 +29,9 @@ The repo therefore uses three layers:
 
 | Layer | Command | Purpose |
 | --- | --- | --- |
-| Criterion TCP data plane | `cargo bench -p forward-client --bench data_plane -- --quick` | Stable loopback proxy primitive regression signal. |
-| Criterion UDP data plane | `cargo bench -p forward-client --bench udp_data_plane -- --quick` | UDP steady-state and RTT regression signal. |
-| Real process smoke | `scripts/perf_loopback.py` | Real `forward-server` + `forward-client` + `push-rule` + `iperf3`. |
+| Criterion TCP data plane | `cargo bench -p portunus-client --bench data_plane -- --quick` | Stable loopback proxy primitive regression signal. |
+| Criterion UDP data plane | `cargo bench -p portunus-client --bench udp_data_plane -- --quick` | UDP steady-state and RTT regression signal. |
+| Real process smoke | `scripts/perf_loopback.py` | Real `portunus-server` + `portunus-client` + `push-rule` + `iperf3`. |
 
 ## Current Local Results
 
@@ -48,7 +48,7 @@ iperf 3.20
 Command:
 
 ```sh
-cargo bench -p forward-client --bench data_plane -- --quick
+cargo bench -p portunus-client --bench data_plane -- --quick
 python3 scripts/bench_regression_gate.py --max-regression-pct 50
 ```
 
@@ -76,7 +76,7 @@ is unchanged within noise; bulk throughput improves materially.
 Command:
 
 ```sh
-cargo bench -p forward-client --bench udp_data_plane -- --quick
+cargo bench -p portunus-client --bench udp_data_plane -- --quick
 ```
 
 | Benchmark | Median | Throughput |
@@ -93,7 +93,7 @@ before release claims, not proof of a production regression by itself.
 Command:
 
 ```sh
-cargo bench -p forward-server --bench operator_api -- --quick
+cargo bench -p portunus-server --bench operator_api -- --quick
 ```
 
 | Benchmark | Median |
@@ -163,7 +163,7 @@ TMPDIR=/root scripts/perf_loopback.py --seconds 10 --omit-seconds 2 \
 ```
 
 `TMPDIR=/root` was required on this host because `/tmp` is `tmpfs`, and
-`forward-server` intentionally refuses tmpfs-backed TLS / persistence state.
+`portunus-server` intentionally refuses tmpfs-backed TLS / persistence state.
 The iptables rule was cleaned up after the run; `iptables -t nat -S OUTPUT`
 returned only the default `-P OUTPUT ACCEPT` policy.
 
@@ -243,9 +243,9 @@ falls back to v0.10 behaviour when its toggle is unset.
 
 | Change | File | Effect |
 | --- | --- | --- |
-| Uncapped TCP copy buffer 8 KiB → 64 KiB | `crates/forward-client/src/forwarder/proxy.rs` | `tokio::io::copy_bidirectional` → `copy_bidirectional_with_sizes(64 KiB, 64 KiB)`. Cuts read/write syscall count on bulk transfers; resident cost rises from 16 KiB to 128 KiB per hot connection. |
-| Centralised `dial()` with `SO_SNDBUF` / `SO_RCVBUF` | `crates/forward-client/src/resolver/mod.rs` | Outbound TCP dials go through one helper that creates a `TcpSocket` of the right family, sets `dial_send_buffer_bytes` / `dial_recv_buffer_bytes` (default 1 MiB each), then `connect`s. Loopback shows little gain; high-BDP WAN paths benefit. Best-effort — kernel may clamp. |
-| Throttling copy chunk: fixed 16 KiB → dynamic | `crates/forward-client/src/forwarder/rate_limit/copy.rs` | Per-iteration chunk = `clamp(tightest_cap_bps × 100 ms, 8 KiB, 64 KiB)`. High caps amortise like the uncapped fast path; low caps stay smooth (no large read followed by long sleep). The 10 % bandwidth-shaping accuracy gate (`t010_bandwidth_cap_shapes_to_target_rate_within_10pct`) still passes. |
+| Uncapped TCP copy buffer 8 KiB → 64 KiB | `crates/portunus-client/src/forwarder/proxy.rs` | `tokio::io::copy_bidirectional` → `copy_bidirectional_with_sizes(64 KiB, 64 KiB)`. Cuts read/write syscall count on bulk transfers; resident cost rises from 16 KiB to 128 KiB per hot connection. |
+| Centralised `dial()` with `SO_SNDBUF` / `SO_RCVBUF` | `crates/portunus-client/src/resolver/mod.rs` | Outbound TCP dials go through one helper that creates a `TcpSocket` of the right family, sets `dial_send_buffer_bytes` / `dial_recv_buffer_bytes` (default 1 MiB each), then `connect`s. Loopback shows little gain; high-BDP WAN paths benefit. Best-effort — kernel may clamp. |
+| Throttling copy chunk: fixed 16 KiB → dynamic | `crates/portunus-client/src/forwarder/rate_limit/copy.rs` | Per-iteration chunk = `clamp(tightest_cap_bps × 100 ms, 8 KiB, 64 KiB)`. High caps amortise like the uncapped fast path; low caps stay smooth (no large read followed by long sleep). The 10 % bandwidth-shaping accuracy gate (`t010_bandwidth_cap_shapes_to_target_rate_within_10pct`) still passes. |
 
 What changed in the measurements:
 
@@ -305,7 +305,7 @@ brew install iperf3
 sudo apt-get update
 sudo apt-get install -y iperf3
 
-FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+PORTUNUS_SKIP_WEBUI=1 cargo build --release -p portunus-server -p portunus-client
 scripts/perf_loopback.py --seconds 10 --omit-seconds 2 --json-out /tmp/portunus-perf.json
 
 # Linux-only, requires root or passwordless sudo for iptables.
@@ -342,11 +342,11 @@ With `--with-iptables` on Linux, the JSON also includes:
 ### Criterion Regression
 
 ```sh
-cargo bench -p forward-client --bench data_plane
+cargo bench -p portunus-client --bench data_plane
 python3 scripts/bench_regression_gate.py --max-regression-pct 50
 
-cargo bench -p forward-client --bench udp_data_plane -- --quick
-cargo bench -p forward-server --bench operator_api -- --quick
+cargo bench -p portunus-client --bench udp_data_plane -- --quick
+cargo bench -p portunus-server --bench operator_api -- --quick
 ```
 
 ### VPS Flow
@@ -362,12 +362,12 @@ source "$HOME/.cargo/env"
 
 git clone <repo-url> Portunus
 cd Portunus
-FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+PORTUNUS_SKIP_WEBUI=1 cargo build --release -p portunus-server -p portunus-client
 scripts/perf_loopback.py --seconds 30 --omit-seconds 5 --json-out perf-vps-loopback.json
 ```
 
-For a two-host test, run `forward-server` on the control host, run
-`forward-client` and `iperf3 -s` on the edge/target host, then drive
+For a two-host test, run `portunus-server` on the control host, run
+`portunus-client` and `iperf3 -s` on the edge/target host, then drive
 `iperf3 -c <edge-listen-ip> -p <listen_port> -t 30 -O 5 -J` from a
 third host or from the control host. Keep direct `iperf3` to the target
 as the baseline.

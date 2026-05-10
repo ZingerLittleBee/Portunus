@@ -3,21 +3,21 @@
 **Feature**: 009-tls-sni-routing
 **Phase**: 1 (Design & Contracts)
 
-This contract defines the operator-facing `forward-server` CLI changes
+This contract defines the operator-facing `portunus-server` CLI changes
 introduced by v0.9. The CLI is a thin wrapper over the operator HTTP
 API (see [`./operator-api.md`](./operator-api.md)); validation rules
 match exactly.
 
 ---
 
-## 1. `forward-server push-rule` (extended)
+## 1. `portunus-server push-rule` (extended)
 
 A new optional flag `--sni <PATTERN>` is added.
 
 ### 1.1 Synopsis
 
 ```text
-forward-server push-rule \
+portunus-server push-rule \
     --client <NAME> \
     --protocol tcp \
     --listen-port <PORT> \
@@ -53,27 +53,27 @@ server's `error.detail`.
 
 ```bash
 # Two SNI rules on :443 → two upstreams
-forward-server push-rule --client edge-01 --protocol tcp --listen-port 443 \
+portunus-server push-rule --client edge-01 --protocol tcp --listen-port 443 \
     --target 10.0.1.5:8443 --sni api.example.com
 
-forward-server push-rule --client edge-01 --protocol tcp --listen-port 443 \
+portunus-server push-rule --client edge-01 --protocol tcp --listen-port 443 \
     --target 10.0.1.6:8443 --sni '*.web.example.com'
 
 # Optional fallback (catch-all for valid TLS without matching SNI)
-forward-server push-rule --client edge-01 --protocol tcp --listen-port 443 \
+portunus-server push-rule --client edge-01 --protocol tcp --listen-port 443 \
     --target 10.0.1.7:8443
 ```
 
 ---
 
-## 2. `forward-server list-rules --json` (extended)
+## 2. `portunus-server list-rules --json` (extended)
 
 Output JSON gains an optional `sni_pattern` per rule (omitted when
 absent), matching the HTTP API. Human-readable output adds an `SNI`
 column to the table; `—` is rendered when absent.
 
 ```bash
-$ forward-server list-rules
+$ portunus-server list-rules
 ID  CLIENT   PROTO PORT  SNI                  TARGETS         STATE
 42  edge-01  tcp   443   api.example.com      10.0.1.5:8443   Active
 43  edge-01  tcp   443   *.web.example.com    10.0.1.6:8443   Active
@@ -82,7 +82,7 @@ ID  CLIENT   PROTO PORT  SNI                  TARGETS         STATE
 
 ---
 
-## 3. `forward-server rule-stats` — UNCHANGED in shape
+## 3. `portunus-server rule-stats` — UNCHANGED in shape
 
 The v0.7 stats CLI is unchanged in v0.9. Operators read SNI counters
 through `/metrics` (see `operator-api.md` §4). A future minor release
@@ -92,7 +92,7 @@ MAY thread the new counters into the CLI; out of scope for v0.9.
 
 ## 4. Help text
 
-`forward-server push-rule --help` includes a new section:
+`portunus-server push-rule --help` includes a new section:
 
 ```text
 SNI routing (v0.9+):
@@ -113,7 +113,7 @@ SNI routing (v0.9+):
 
 ## 5. Contract test plan
 
-Tests live in `crates/forward-server/tests/cli/`.
+Tests live in `crates/portunus-server/tests/cli/`.
 
 | File | Asserts |
 |---|---|

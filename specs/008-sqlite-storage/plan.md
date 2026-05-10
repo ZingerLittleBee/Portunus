@@ -18,14 +18,14 @@ for v0.7 callers; only additive query parameters land on `GET /v1/audit`.
 A new `--data-dir` flag splits daemon-managed state from
 `--config-dir`-rooted admin material (`server.toml`, `server.{crt,key}`),
 aligning with FHS / XDG conventions used by Grafana, step-ca, Authelia,
-Vaultwarden, syncthing, mosquitto, and Tailscale. The `forward-client`
+Vaultwarden, syncthing, mosquitto, and Tailscale. The `portunus-client`
 binary picks up one ergonomic change: `--bundle` becomes optional with a
 documented search order; the client itself remains stateless to disk.
 
 The audit hot path is decoupled from the durable writer via a small
 bounded async hand-off queue: typical-case durability ≤100 ms, sustained
 burst ≤1 s; queue overflow drops oldest pending entries (incrementing
-the existing `forward_audit_buffer_drops_total` counter) rather than
+the existing `portunus_audit_buffer_drops_total` counter) rather than
 back-pressuring `auth_layer`.
 
 ## Technical Context
@@ -34,15 +34,15 @@ back-pressuring `auth_layer`.
 **Primary Dependencies**:
 - New: `rusqlite` (bundled SQLite, see R-001) + `r2d2`/`r2d2_sqlite` for connection pooling + `refinery` for embedded forward-only schema migrations (see R-005)
 - Retained: `tokio`, `tokio-rustls`, `tonic 0.14`, `axum` (operator HTTP), `clap`, `serde`/`serde_json`, `chrono`, `tracing`
-- Retired: the JSON-file persistence layer (`forward_auth::file_store::FileTokenStore`, `forward_auth::operator_store::FileOperatorStore`, `forward_server::rules::*` JSON read/write) — replaced behind the same trait seams (`Authenticator`, `OperatorAuthenticator`, rules CRUD)
+- Retired: the JSON-file persistence layer (`portunus_auth::file_store::FileTokenStore`, `portunus_auth::operator_store::FileOperatorStore`, `portunus_server::rules::*` JSON read/write) — replaced behind the same trait seams (`Authenticator`, `OperatorAuthenticator`, rules CRUD)
 **Storage**: SQLite, journal_mode=WAL, synchronous=NORMAL, foreign_keys=ON, busy_timeout configured (see R-002, R-003). Single file at `<data-dir>/state.db` with sidecars (`*-wal`, `*-shm`) auto-managed by SQLite.
 **Testing**: `cargo test` workspace-wide; tiered as today —
 - Unit: per-module Rust tests (e.g., schema migration round-trips, query plan stability)
 - Contract: independent tests against the new CLI subcommands (backup/restore/reset) and the additive `/v1/audit` query parameters; v0.7-shape regression tests pin existing endpoints
-- Integration: real-socket end-to-end tests in `crates/forward-e2e` (audit-survives-restart smoke, multi-entity atomic mutation under fault injection)
+- Integration: real-socket end-to-end tests in `crates/portunus-e2e` (audit-survives-restart smoke, multi-entity atomic mutation under fault injection)
 - Bench: criterion benches for the operator API hot path + the forwarding hot path (hold v0.7 baseline within the spec's SC envelopes)
 **Target Platform**: Linux x86_64 + aarch64 (primary); macOS for development. Windows out of scope.
-**Project Type**: Cargo workspace, six crates (`forward-server`, `forward-client`, `forward-auth`, `forward-core`, `forward-proto`, `forward-e2e`). v0.8 changes are concentrated in `forward-server` + `forward-auth`; `forward-client` gets only the bundle search-path tweak.
+**Project Type**: Cargo workspace, six crates (`portunus-server`, `portunus-client`, `portunus-auth`, `portunus-core`, `portunus-proto`, `portunus-e2e`). v0.8 changes are concentrated in `portunus-server` + `portunus-auth`; `portunus-client` gets only the bundle search-path tweak.
 **Performance Goals**:
 - Operator API p50 / p99 within 10 % of the v0.7 baseline (SC-004)
 - `/v1/audit` page load < 2 s for a store of 100 000 entries with time-range filter (SC-005)
@@ -55,7 +55,7 @@ back-pressuring `auth_layer`.
 - `--data-dir` MUST refuse NFS / tmpfs at startup (FR-019, edge case)
 **Scale/Scope**:
 - Up to 100 connected clients (carry-over from v0.1.0 SC-004a); RBAC scale: ≤ 1 000 users, ≤ 10 000 credentials, ≤ 10 000 grants (no current production pressure pushing these)
-- Audit table grows unbounded by default; `forward-server audit prune --before <ts>` provides the operator-managed retention path
+- Audit table grows unbounded by default; `portunus-server audit prune --before <ts>` provides the operator-managed retention path
 
 ## Constitution Check
 
@@ -65,10 +65,10 @@ Constitution version: `2.0.1` (TLS + bearer token; data-plane userspace; SQLite 
 
 | Principle | Status | Justification |
 |-----------|--------|---------------|
-| **I. Security by Default** | ✅ | Auth seam unchanged (FR-009): the new `Authenticator` / `OperatorAuthenticator` impls sit behind the same `auth_middleware` and trait boundary — no read or write path bypasses it. Bearer tokens still stored only as blake3 hashes (FR-001 carries the `tokens` table, hashing logic is unchanged from `forward_auth::token`). Audit emit sites unchanged. Data file mode bits restrict to daemon user (FR-019). No new wire protocol fields touch crypto. |
-| **II. Performance Is a Feature** | ✅ (with bench gate) | Forwarding hot path (`forwarder/`) is not touched (FR-010 + SC-007). Operator-API path is allowed up to 10 % regression by SC-004; we will gate this with a criterion bench in `crates/forward-server/benches/operator_api.rs` (new) plus the existing `crates/forward-client/benches/data_plane.rs` to verify the data plane is byte-identical. Audit writes are async-decoupled (FR-006), so the auth path acquires no DB handle. |
-| **III. Test-First Discipline** | ✅ | TDD applies: contract tests for backup/restore/reset CLI and `/v1/audit` query-param expansion are authored before implementation. Schema-migration round-trip tests pin v0.8 → v0.9-style upgrade behaviour (forward-only, FR-014). Integration tests in `forward-e2e` cover audit-survives-restart, multi-entity atomic mutation under SIGKILL fault injection. Mocks are not used for the SQLite seam — real on-disk DBs in `tempfile::tempdir()`. |
-| **IV. Observability & Operability** | ✅ | Structured logs retained (no fewer emit sites than v0.7). New Prometheus series: `forward_audit_durable_writer_lag_seconds` (gauge, hand-off queue depth + last-flush age) — _additive only, no rename of existing series_. The existing `forward_audit_buffer_drops_total` is reused for hand-off queue overflow (semantically identical: "we lost an audit entry due to backpressure"). Graceful reload preserved: store handle is `Arc<Pool>` shared with the operator stack; rule push/remove work without restart. Shutdown drain extended by one final audit-flush + WAL checkpoint before listeners stop. |
+| **I. Security by Default** | ✅ | Auth seam unchanged (FR-009): the new `Authenticator` / `OperatorAuthenticator` impls sit behind the same `auth_middleware` and trait boundary — no read or write path bypasses it. Bearer tokens still stored only as blake3 hashes (FR-001 carries the `tokens` table, hashing logic is unchanged from `portunus_auth::token`). Audit emit sites unchanged. Data file mode bits restrict to daemon user (FR-019). No new wire protocol fields touch crypto. |
+| **II. Performance Is a Feature** | ✅ (with bench gate) | Forwarding hot path (`forwarder/`) is not touched (FR-010 + SC-007). Operator-API path is allowed up to 10 % regression by SC-004; we will gate this with a criterion bench in `crates/portunus-server/benches/operator_api.rs` (new) plus the existing `crates/portunus-client/benches/data_plane.rs` to verify the data plane is byte-identical. Audit writes are async-decoupled (FR-006), so the auth path acquires no DB handle. |
+| **III. Test-First Discipline** | ✅ | TDD applies: contract tests for backup/restore/reset CLI and `/v1/audit` query-param expansion are authored before implementation. Schema-migration round-trip tests pin v0.8 → v0.9-style upgrade behaviour (forward-only, FR-014). Integration tests in `portunus-e2e` cover audit-survives-restart, multi-entity atomic mutation under SIGKILL fault injection. Mocks are not used for the SQLite seam — real on-disk DBs in `tempfile::tempdir()`. |
+| **IV. Observability & Operability** | ✅ | Structured logs retained (no fewer emit sites than v0.7). New Prometheus series: `portunus_audit_durable_writer_lag_seconds` (gauge, hand-off queue depth + last-flush age) — _additive only, no rename of existing series_. The existing `portunus_audit_buffer_drops_total` is reused for hand-off queue overflow (semantically identical: "we lost an audit entry due to backpressure"). Graceful reload preserved: store handle is `Arc<Pool>` shared with the operator stack; rule push/remove work without restart. Shutdown drain extended by one final audit-flush + WAL checkpoint before listeners stop. |
 | **V. Multi-Tenant Isolation** | ✅ | Authorisation checks remain `(user, resource)` keyed in `auth_layer`. The new SQL queries express the same join shape (`grants` × `rules`) — no global table is exposed. Error messages and timing characteristics for grant lookups stay consistent across users (deterministic prepared statement; we will add an integration test that verifies query latency is independent of user-id presence vs absence). |
 
 **Constitution gate (initial): PASS.** No Complexity Tracking entries yet. The bench-gate cell above is the only conditional commitment; it is enforced by tasks T-XX in the next phase.
@@ -76,10 +76,10 @@ Constitution version: `2.0.1` (TLS + bearer token; data-plane userspace; SQLite 
 **Constitution gate (post-Phase 1, after `research.md`, `data-model.md`, `contracts/*`, `quickstart.md` written): PASS.** No new violations surfaced from the Phase 1 design:
 
 - Principle I: `contracts/operator-api.md` confirms the auth envelope is unchanged; the new `/v1/audit` query params live behind the existing `auth_middleware` and a contract test pins this. `data-model.md` keeps token storage as blake3 hex hashes (`client_tokens.token_hash`) — same shape as v0.7.
-- Principle II: data-plane benches retained; the forwarding hot path is not touched (no DB handle anywhere in `crates/forward-client/src/forwarder/` per the structure decision). Operator-API bench gate is enforced before merge per `cli.md` test plan.
+- Principle II: data-plane benches retained; the forwarding hot path is not touched (no DB handle anywhere in `crates/portunus-client/src/forwarder/` per the structure decision). Operator-API bench gate is enforced before merge per `cli.md` test plan.
 - Principle III: every new endpoint and CLI subcommand has a contract test enumerated in `contracts/operator-api.md` §"Quick contract test plan" and `contracts/cli.md`.
 - Principle IV: `contracts/operator-api.md` lists the additive Prometheus series; existing series are reused without rename.
-- Principle V: `data-model.md` `grants` table shape is the v0.5 RBAC envelope; the SQL queries for grants × rules are written so query latency is independent of user-id presence (verified by an integration test enumerated in `forward-auth/tests/multi_entity_atomic.rs`).
+- Principle V: `data-model.md` `grants` table shape is the v0.5 RBAC envelope; the SQL queries for grants × rules are written so query latency is independent of user-id presence (verified by an integration test enumerated in `portunus-auth/tests/multi_entity_atomic.rs`).
 
 ## Project Structure
 
@@ -105,7 +105,7 @@ specs/008-sqlite-storage/
 
 ```text
 crates/
-├── forward-auth/
+├── portunus-auth/
 │   ├── src/
 │   │   ├── lib.rs                           # public traits unchanged: Authenticator / OperatorAuthenticator
 │   │   ├── token.rs                         # blake3 hashing — unchanged
@@ -116,7 +116,7 @@ crates/
 │       ├── sqlite_store_contract.rs         # NEW — contract tests for the trait impls
 │       └── multi_entity_atomic.rs           # NEW — fault-injection integration test
 │
-├── forward-server/
+├── portunus-server/
 │   ├── src/
 │   │   ├── main.rs                          # `--data-dir` resolution + new subcommands wired
 │   │   ├── data_dir.rs                      # NEW — data-dir resolution + filesystem-class probe
@@ -140,30 +140,30 @@ crates/
 │       ├── backup_restore_roundtrip.rs       # NEW — SC-002 integration
 │       └── data_dir_unsupported_fs.rs        # NEW — NFS / tmpfs refusal smoke
 │
-├── forward-client/
+├── portunus-client/
 │   ├── src/
 │   │   ├── main.rs                          # bundle search order added; `--bundle` becomes optional
 │   │   └── bundle.rs                        # search-path resolver
 │   └── tests/
 │       └── bundle_search_path.rs            # NEW — contract test for FR-020
 │
-├── forward-core/                            # unchanged
-├── forward-proto/                           # unchanged (FR-011 wire protocol untouched)
-└── forward-e2e/
+├── portunus-core/                            # unchanged
+├── portunus-proto/                           # unchanged (FR-011 wire protocol untouched)
+└── portunus-e2e/
     └── tests/
         ├── audit_persists_e2e.rs             # NEW — full server↔client smoke including audit retention
         └── multi_target_unchanged.rs         # NEW — confirms v0.7 multi-target behaviour byte-identical
 ```
 
 **Structure Decision**: Cargo workspace, in-place evolution. New code lives
-in `crates/forward-server/src/store/`, `crates/forward-auth/src/sqlite_*`,
-and `crates/forward-server/src/data_dir.rs`. The retired modules
-(`forward_auth::file_store::FileTokenStore`, `forward_auth::operator_store::FileOperatorStore`,
-the JSON read/write halves of `forward_server::rules`) are deleted in
+in `crates/portunus-server/src/store/`, `crates/portunus-auth/src/sqlite_*`,
+and `crates/portunus-server/src/data_dir.rs`. The retired modules
+(`portunus_auth::file_store::FileTokenStore`, `portunus_auth::operator_store::FileOperatorStore`,
+the JSON read/write halves of `portunus_server::rules`) are deleted in
 the same release per the Assumptions section of `spec.md` ("no
 migration"). The `Authenticator` and `OperatorAuthenticator` trait
-seams stay byte-identical so call sites in `forward_server::auth_layer`
-and `forward_server::serve` change only in their constructor wiring.
+seams stay byte-identical so call sites in `portunus_server::auth_layer`
+and `portunus_server::serve` change only in their constructor wiring.
 
 ## Complexity Tracking
 
@@ -193,16 +193,16 @@ Resolved 15 decisions (R-001..R-015):
 - R-003: `synchronous=NORMAL` (paired with WAL — durability ≥ FR-005 budget; FULL would oversubscribe operator-API latency).
 - R-004: Connection model — **`r2d2_sqlite` pool**, write-serialised via SQLite's own internal lock; size = `min(cpu_count, 8)`. The audit writer takes one dedicated connection.
 - R-005: Schema migration tooling — **`refinery` with embedded SQL migrations** (`V001__initial_schema.sql`, etc.); forward-only.
-- R-006: Audit hand-off queue — **bounded `tokio::sync::mpsc` (capacity 1024) + drop-oldest policy**, mirroring the existing ring buffer's drop semantic. Counter reused: `forward_audit_buffer_drops_total`.
+- R-006: Audit hand-off queue — **bounded `tokio::sync::mpsc` (capacity 1024) + drop-oldest policy**, mirroring the existing ring buffer's drop semantic. Counter reused: `portunus_audit_buffer_drops_total`.
 - R-007: Backup mechanism — **SQLite Online Backup API** (`sqlite3_backup_*` via `rusqlite::backup`); produces a clean single-file artefact regardless of WAL state. Restore = file-replace + open + run pending migrations.
 - R-008: Filesystem class probe — **`statfs(2)` `f_type` check** on Linux (reject `NFS_SUPER_MAGIC`, `TMPFS_MAGIC`, `RAMFS_MAGIC`); macOS uses `statfs::f_fstypename` string match. CI matrix already covers both.
-- R-009: Pre-v0.8 JSON cleanup — **warn-and-ignore**; the server emits a one-line tracing warning per legacy file found in `<config-dir>` and proceeds with the SQLite store. No automatic delete (avoid accidental data loss in dev environments). Operators are pointed at `forward-server reset` for clean-slate.
-- R-010: Bootstrap superadmin on empty store — **same CLI subcommand as v0.5** (`forward-server bootstrap-superadmin`); the path now writes through the store transactionally rather than to JSON.
-- R-011: Reset CLI — **new `forward-server reset --confirm` subcommand** that closes the store, deletes `state.db` + `state.db-wal` + `state.db-shm` atomically (rename-to-temp then unlink, or unlink with retry on Windows-emulating filesystems), and exits.
+- R-009: Pre-v0.8 JSON cleanup — **warn-and-ignore**; the server emits a one-line tracing warning per legacy file found in `<config-dir>` and proceeds with the SQLite store. No automatic delete (avoid accidental data loss in dev environments). Operators are pointed at `portunus-server reset` for clean-slate.
+- R-010: Bootstrap superadmin on empty store — **same CLI subcommand as v0.5** (`portunus-server bootstrap-superadmin`); the path now writes through the store transactionally rather than to JSON.
+- R-011: Reset CLI — **new `portunus-server reset --confirm` subcommand** that closes the store, deletes `state.db` + `state.db-wal` + `state.db-shm` atomically (rename-to-temp then unlink, or unlink with retry on Windows-emulating filesystems), and exits.
 - R-012: Audit table indexes — composite `(ts DESC)`, `(outcome, ts DESC)`, `(user_id, ts DESC)`. Time-range queries use the first; outcome filter the second; per-user reports the third.
 - R-013: Connection sharing — `AppState` holds `Arc<Pool>`; per-request handler checks out a connection from the pool. The audit writer holds a long-lived dedicated connection for batched writes.
 - R-014: Write serialisation — implicit via SQLite's writer lock + the connection pool. `BEGIN IMMEDIATE` for any multi-table mutation to avoid SQLITE_BUSY mid-transaction.
-- R-015: Error mapping — `rusqlite::Error::SqliteFailure(SQLITE_BUSY, ...)` → existing `ForwardError::Transient`; constraint violations → `ForwardError::Conflict`; corruption → fail-fast at boot, do not run.
+- R-015: Error mapping — `rusqlite::Error::SqliteFailure(SQLITE_BUSY, ...)` → existing `PortunusError::Transient`; constraint violations → `PortunusError::Conflict`; corruption → fail-fast at boot, do not run.
 
 Full prose, alternatives considered, and rejected options live in `research.md` (Phase 0 artefact).
 

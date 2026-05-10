@@ -20,9 +20,9 @@ A single upstream within a rule. **Inline-on-rule** — not a first-class top-le
 
 ### Validation rules
 
-- **V-T1**: `host` MUST be non-empty and match the resolver's accepted-host-syntax check (reuses `forward-core::parse_host`).
+- **V-T1**: `host` MUST be non-empty and match the resolver's accepted-host-syntax check (reuses `portunus-core::parse_host`).
 - **V-T2**: `port` MUST be in `1..=65535`.
-- **V-T3**: Within a rule, no two targets MAY share the same `(host, port)` pair (FR-005). Validator runs at push time on `forward-server`; client trusts server-validated rules.
+- **V-T3**: Within a rule, no two targets MAY share the same `(host, port)` pair (FR-005). Validator runs at push time on `portunus-server`; client trusts server-validated rules.
 - **V-T4** *(implicit)*: maximum targets per rule is **8**. Operationally a rule with > 8 targets is almost certainly a misuse (priority order beyond rank ~3 has no sensible semantics with the strict-priority policy). Cap is enforced at the HTTP / CLI / proto-validation layer; future weighted policy can lift it.
 
 ### Relationships
@@ -62,7 +62,7 @@ This encoding rule (R-002 in `research.md`) keeps the single-target hot path's s
 
 ### Persistence
 
-- `forward-server/persistence.rs` writes the `Rule` shape verbatim into `rules.json` (atomic write, mode 0600).
+- `portunus-server/persistence.rs` writes the `Rule` shape verbatim into `rules.json` (atomic write, mode 0600).
 - **Read tolerance**: any v0.6.0-shaped rule (single-target only) loaded from disk is promoted to a one-element `targets` list at read time. No schema-version bump.
 - Per-target health state is **NOT persisted** — see `HealthState` lifecycle below.
 
@@ -70,7 +70,7 @@ This encoding rule (R-002 in `research.md`) keeps the single-target hot path's s
 
 ## 3. Entity: `HealthState` (per-target, in-memory only)
 
-Lives inside `forward-client/src/forwarder/failover.rs`. One instance per `(rule_id, target_index)` pair. Exists only when `targets.len() >= 2` — single-target rules don't allocate any health state.
+Lives inside `portunus-client/src/forwarder/failover.rs`. One instance per `(rule_id, target_index)` pair. Exists only when `targets.len() >= 2` — single-target rules don't allocate any health state.
 
 ### Fields
 
@@ -176,7 +176,7 @@ Existing rule-level fields unchanged. Two additive fields:
 
 ### Cardinality discipline (FR-018, R-009)
 
-- **Default `/metrics`**: only `forward_rule_target_failovers_total{client, rule}` is added per rule. Per-target counters are NOT exported as default series.
+- **Default `/metrics`**: only `portunus_rule_target_failovers_total{client, rule}` is added per rule. Per-target counters are NOT exported as default series.
 - **Per-target stats**: surfaced behind `--per-target` on the CLI (`rule-stats`) and on the Web UI rule detail page (`/rules/{id}`). Both fetch `RuleStats` with `per_target` populated; default callers get `per_target = vec![]` to keep payloads small.
 
 ---

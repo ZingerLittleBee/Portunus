@@ -49,11 +49,11 @@ There is **no upgrade path** from a v0.7 deployment that wrote JSON
 files. The expectation is a fresh `--data-dir`:
 
 ```sh
-sudo systemctl stop forward-server
-sudo rm /var/lib/forward/tokens.json /var/lib/forward/identity.json
-forward-server reset --confirm
-forward-server bootstrap-superadmin --name 'Initial admin'
-sudo systemctl start forward-server
+sudo systemctl stop portunus-server
+sudo rm /var/lib/portunus/tokens.json /var/lib/portunus/identity.json
+portunus-server reset --confirm
+portunus-server bootstrap-superadmin --name 'Initial admin'
+sudo systemctl start portunus-server
 ```
 
 Existing client bundles (TLS-pinned) survive — only the operator-side
@@ -65,7 +65,7 @@ The operator API gained `Authorization: Bearer <token>` requirement.
 Existing CLI scripts need either:
 
 ```sh
-export FORWARD_OPERATOR_TOKEN=<token>
+export PORTUNUS_OPERATOR_TOKEN=<token>
 ```
 
 …or the bootstrap shortcut in `server.toml`:

@@ -1,0 +1,187 @@
+// Additive overlay for v0.4.0 UDP forwarding (spec 004-udp-forward).
+// This file is NOT the canonical proto — `proto/portunus.proto` is.
+// Treat this as the diff that goes on top of v0.3.0.
+//
+// Wire-compatibility contract: a v0.3.0 reader receiving a v0.4.0
+// message drops unknown fields per proto3 semantics; a v0.4.0 reader
+// receiving a v0.3.0 message sees default-zero for every field below.
+// `portunus-proto/tests/udp_wire_compat.rs` pins both directions.
+
+// ============================================================================
+// Protocol enum — adds UDP
+// ============================================================================
+//
+// v0.3.0 shape:
+//   enum Protocol {
+//     PROTOCOL_UNSPECIFIED = 0;
+//     TCP = 1;
+//     // Future: UDP, etc.
+//   }
+//
+// v0.4.0 shape:
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  TCP = 1;
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Adding a value to a proto3 enum is non-breaking. v0.3.0 readers
+  // decoding `2` see the integer value; an exhaustive Rust match
+  // hits the default arm and triggers RuleStatus.failed with reason
+  // "unsupported_protocol" — see Hello.supported_protocols below for
+  // the proactive (push-time) variant.
+  UDP = 2;
+}
+
+// ============================================================================
+// Hello — client capability declaration (extended)
+// ============================================================================
+//
+// v0.3.0 shape:
+//   message Hello {
+//     string protocol_version = 1;  // "1.0.0", "1.2.0", etc.
+//     string client_version   = 2;  // portunus-client binary version
+//   }
+//
+// The wire-protocol version string is too coarse for per-feature gating
+// (a v0.3.0 client and a v0.4.0 client both speak "wire v1"). v0.4.0
+// adds an explicit capability list so the server can refuse a UDP
+// rule push BEFORE it touches the wire — surfaced to the operator as
+// `unsupported_protocol` (HTTP 422 / exit 3) instead of a delayed
+// RuleStatus.failed.
+
+message Hello {
+  string protocol_version = 1;
+  string client_version   = 2;
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Forwarding protocols this client can activate. v0.3.0 clients
+  // never send this field; the server treats an empty list as
+  // {TCP} (the v0.3.0-implicit capability) for backwards compat.
+  // v0.4.0 clients MUST send {TCP, UDP}.
+  // Future protocols (e.g. QUIC, SCTP) extend this list without
+  // requiring a new wire field.
+  repeated Protocol supported_protocols = 3;
+}
+
+// Server-side: at gRPC `Control` stream open, the server MUST consume
+// the first ClientMessage payload. If it is a Hello, the declared
+// `supported_protocols` MUST be stored on `ConnectedClient` (a
+// `HashSet<Protocol>` field) and used by `push-rule` validation. If
+// the first message is NOT a Hello (Hello is documented as optional
+// in v1), `supported_protocols` defaults to {TCP} for backwards compat.
+//
+// Receiving Hello before sending Welcome means Welcome can no longer
+// be the first server message in v0.4.0 — the order becomes:
+//   client → Hello (with supported_protocols)
+//   server → Welcome (with udp_flow_idle_secs / udp_max_flows_per_rule)
+// A v0.3.0 client that doesn't send Hello at all still works: the
+// server falls back to the v0.3.0 path (sends Welcome immediately
+// with default tunables and a TCP-only capability set on the
+// ConnectedClient).
+
+// ============================================================================
+// Welcome — server-pushed UDP runtime tunables
+// ============================================================================
+//
+// Sent by the server after consuming the client's optional Hello
+// (see above). Both fields use 0 to mean "use client default":
+//   - udp_flow_idle_secs    = 0  → client uses 60 s
+//   - udp_max_flows_per_rule = 0  → client uses 1024
+// This makes a v0.3.0 server (which sends neither) backwards-compatible:
+// the v0.4.0 client falls back to the same compile-time defaults.
+
+message Welcome {
+  string server_version       = 1;
+  uint64 server_time_unix_ms  = 2;
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  uint32 udp_flow_idle_secs     = 3;  // 30..=300; 0 = use client default (60)
+  uint32 udp_max_flows_per_rule = 4;  // 1..=65535; 0 = use client default (1024)
+}
+
+// ============================================================================
+// RuleStats — UDP-specific counters
+// ============================================================================
+//
+// v0.3.0 shape:
+//   message RuleStats {
+//     uint64 rule_id              = 1;
+//     uint64 bytes_in             = 2;
+//     uint64 bytes_out            = 3;
+//     uint32 active_connections   = 4;
+//     repeated PerPortStats per_port = 5;
+//     uint64 dns_failures         = 6;
+//   }
+//
+// v0.4.0 adds four fields (7-10), all proto3 default-zero scalars so
+// a TCP-only sender emits byte-identical wire to v0.3.0:
+
+message RuleStats {
+  uint64 rule_id              = 1;
+  uint64 bytes_in             = 2;  // protocol-agnostic (TCP+UDP)
+  uint64 bytes_out            = 3;  // protocol-agnostic
+  uint32 active_connections   = 4;  // TCP only — UDP rules emit 0
+  repeated PerPortStats per_port = 5;
+  uint64 dns_failures         = 6;  // protocol-agnostic — UDP path increments same counter
+
+  // Additive in v1.3 (spec 004-udp-forward).
+  // Cumulative count of UDP datagrams the rule's listener received
+  // from end-users (across all ports for range rules). Always 0 for
+  // TCP rules.
+  uint64 datagrams_in         = 7;
+
+  // Cumulative count of UDP datagrams the rule sent back to end-users
+  // (replies received on per-flow upstream sockets and forwarded to
+  // the original source). Always 0 for TCP rules.
+  uint64 datagrams_out        = 8;
+
+  // Current live UDP flows aggregated across all ports. Replaces the
+  // `active_connections` semantic for UDP rules — operator surfaces
+  // present this as `active_flows`. Always 0 for TCP rules.
+  uint32 active_flows         = 9;
+
+  // Cumulative count of new-flow first-datagrams dropped because the
+  // per-rule flow table was at `udp_max_flows_per_rule`. Always 0 for
+  // TCP rules.
+  uint64 flows_dropped_overflow = 10;
+}
+
+// ============================================================================
+// PerPortStats — UDP per-port detail (range rules with --per-port)
+// ============================================================================
+//
+// v0.2.0/v0.3.0 shape:
+//   message PerPortStats {
+//     uint32 listen_port        = 1;
+//     uint64 bytes_in           = 2;
+//     uint64 bytes_out          = 3;
+//     uint32 active_connections = 4;
+//   }
+
+message PerPortStats {
+  uint32 listen_port        = 1;
+  uint64 bytes_in           = 2;
+  uint64 bytes_out          = 3;
+  uint32 active_connections = 4;  // TCP only — UDP per-port emits 0
+
+  // Additive in v1.3 (spec 004-udp-forward). Always 0 for TCP rules.
+  // Wire fields 5 and 6 — field 4 is already taken by v0.2.0
+  // active_connections (see corrected v0.2.0/v0.3.0 shape comment above).
+  uint64 datagrams_in  = 5;
+  uint64 datagrams_out = 6;
+}
+
+// ============================================================================
+// Reserved diagnostic counter (NOT surfaced in v0.4.0 Prometheus)
+// ============================================================================
+//
+// One slot is reserved in `RuleStats` for future operator visibility
+// but is NOT exported as a Prometheus row in v0.4.0. It surfaces in
+// DEBUG logs only and may be added to `rule-stats --debug` in a
+// future release without a wire bump.
+//
+// upstream_async_errors_total = 11; // ICMP-derived errors on per-flow upstream sockets
+//
+// (No truncation counter is reserved: the per-listener receive buffer
+// is sized at the UDP payload ceiling 65535, so truncation is
+// impossible at the proxy layer. Tokio's UdpSocket::recv_from does
+// not expose MSG_TRUNC anyway — see plan.md and research.md R-004.)

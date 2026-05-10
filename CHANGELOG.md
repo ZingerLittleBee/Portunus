@@ -34,7 +34,7 @@ new specification round.
 
 ### Fixed
 
-- **`forward-client` shutdown** — `run` futures now await the
+- **`portunus-client` shutdown** — `run` futures now await the
   cancellation token before returning, so `Drop` no longer races the
   drain timeout. Regression tests cover forwarding behaviour past the
   drain deadline.
@@ -79,7 +79,7 @@ workspace deps.
   - Each cap has an optional sibling `*_burst` field; absent →
     `burst = 1 × rate`. Server validation clamps to
     `[rate/100, rate*60]` and rejects negative or zero rates.
-- **Per-owner ceilings** (per-RBAC-owner within a forward-client)
+- **Per-owner ceilings** (per-RBAC-owner within a portunus-client)
   bind **before** per-rule caps; rejects carry distinct
   `owner_*` reasons (`OwnerConnRate`, `OwnerConnConcurrent`,
   `OwnerUdpFlowRate`). REST surface:
@@ -94,12 +94,12 @@ workspace deps.
   burst and a lower doesn't strand the pool. A concurrent cap
   lowered below the live count drains gracefully (no forcible
   close).
-- **CLI** — `forward-server push-rule` accepts the four cap flags
+- **CLI** — `portunus-server push-rule` accepts the four cap flags
   plus their three burst-override siblings
   (`--bandwidth-in-bps`, `--bandwidth-out-bps`,
   `--new-connections-per-sec`, `--concurrent-connections`,
   and matching `--*-burst`); `list-rules` human output gains a
-  compact `CAPS` column. New `forward-server owner-cap
+  compact `CAPS` column. New `portunus-server owner-cap
   {list|get|set|delete}` subcommand family manages per-owner
   ceilings against the operator HTTP API; pre-flight rejects an
   empty `set` envelope with exit 3 +
@@ -110,9 +110,9 @@ workspace deps.
   disclosure); rules table gains a compact `Caps` column; client
   detail page gains an `Owner quotas` tab.
 - **Observability** — three new Prometheus collectors:
-  `forward_rate_limit_reject_total{client,rule,owner,reason}`,
-  `forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}`,
-  `forward_rate_limit_active_connections{client,rule,owner}`.
+  `portunus_rate_limit_reject_total{client,rule,owner,reason}`,
+  `portunus_rate_limit_throttle_seconds_total{client,rule,owner,direction}`,
+  `portunus_rate_limit_active_connections{client,rule,owner}`.
   `owner` label is empty for per-rule rejects, populated for owner-
   scoped rejects. Data-plane reject/throttle events are tracing-only;
   they do NOT enter the SQLite operator audit ring (mirrors v0.9 D13).
@@ -154,9 +154,9 @@ TLS SNI routing release (009). A single TCP listen port (typically
 443) can fan out to different upstream targets based on the TLS
 hostname in the client's ClientHello. Portunus remains a pure L4
 byte-passthrough — never decrypts, terminates, or re-encrypts TLS.
-Implementation lives in the data plane on `forward-client` (peek +
+Implementation lives in the data plane on `portunus-client` (peek +
 parse + route) and in additive control-plane fields on
-`forward-server`. Auth seam, credential hashing, persistence layer,
+`portunus-server`. Auth seam, credential hashing, persistence layer,
 and forwarding hot-path layout are byte-stable for v0.8 callers.
 Zero new workspace deps.
 
@@ -175,7 +175,7 @@ Spec / plan: `specs/009-tls-sni-routing/`.
   that already runs in SNI mode catches valid TLS connections whose
   SNI is missing or unmatched. Without a fallback, unmatched
   connections are dropped without ever reaching a backend (FR-035).
-- **CLI**: `forward-server push-rule --sni <PATTERN>` adds the
+- **CLI**: `portunus-server push-rule --sni <PATTERN>` adds the
   selector. Pre-API rejections (UDP rules, port-range rules,
   malformed grammar) exit 2 with `validation.sni_on_unsupported_rule`
   / `validation.sni_pattern_malformed`. `list-rules` human output
@@ -192,10 +192,10 @@ Spec / plan: `specs/009-tls-sni-routing/`.
   `conflict.legacy_to_sni_unsupported`. Operators must remove the
   existing rule first.
 - **Observability** — four new Prometheus collectors:
-  `forward_tls_sni_route_total{client,rule,owner,result}`,
-  `forward_tls_sni_listener_miss_total{client,port}`,
-  `forward_tls_sni_listener_parse_failures_total{client,port}`,
-  `forward_tls_sni_routes_active`. Five structured tracing events
+  `portunus_tls_sni_route_total{client,rule,owner,result}`,
+  `portunus_tls_sni_listener_miss_total{client,port}`,
+  `portunus_tls_sni_listener_parse_failures_total{client,port}`,
+  `portunus_tls_sni_routes_active`. Five structured tracing events
   with `target = "tls_sni"` cover client_hello timeout, parse
   failure, no-SNI fallback, SNI no-match, and successful routing.
   Data-plane events do NOT enter the SQLite operator audit ring
@@ -241,22 +241,22 @@ UDP fast paths, wire protocol) and the auth seam are untouched.
 - **SQLite store** — bundled `rusqlite` (no system libsqlite3 dependency)
   with WAL mode and `BEGIN IMMEDIATE` write transactions; `r2d2` pool
   fronting every read; refinery-managed migrations. Schema lives under
-  `crates/forward-server/migrations/` and is verified at startup.
+  `crates/portunus-server/migrations/` and is verified at startup.
 - **`--data-dir` flag** — separate from `--config-dir` so operators can
   move state to a dedicated volume. Defaults to
   `$XDG_STATE_HOME/portunus` (or `$HOME/.local/state/portunus`) per
   FHS.
-- **`backup` subcommand** — `forward-server backup --out <PATH>` runs
+- **`backup` subcommand** — `portunus-server backup --out <PATH>` runs
   the SQLite Online Backup API (`rusqlite::backup::Backup`) so snapshots
   are WAL-aware and consistent without quiescing writers. Refuses to
   overwrite an existing destination.
-- **`restore` subcommand** — `forward-server restore --in <PATH>
+- **`restore` subcommand** — `portunus-server restore --in <PATH>
   [--force]` validates the SQLite header magic, refuses to clobber a
   non-empty data dir without `--force`, copies the artefact in, and runs
   the regular schema-version handshake. Backups whose schema is newer
   than the binary's target version exit `78` with event
   `startup.schema_version_too_new` (FR-014).
-- **`reset` subcommand** — `forward-server reset --confirm` removes the
+- **`reset` subcommand** — `portunus-server reset --confirm` removes the
   state DB plus its sidecar `-wal` / `-shm` files. Without `--confirm`
   prints a dry-run summary. Refuses to operate on a path that doesn't
   start with the SQLite header — protects against typo'd `--data-dir`
@@ -267,12 +267,12 @@ UDP fast paths, wire protocol) and the auth seam are untouched.
   scroll-back over the durable audit table. v0.7 callers (no
   `since` / `until` / `cursor`) keep getting the array root unchanged —
   byte-stable per FR-008.
-- **`audit prune` subcommand** — `forward-server audit prune --before
+- **`audit prune` subcommand** — `portunus-server audit prune --before
   <RFC3339> [--dry-run]` deletes audit rows older than the cutoff under
   `BEGIN IMMEDIATE` then runs `PRAGMA incremental_vacuum`; `--dry-run`
   reports the count without mutating.
-- **`forward-client --bundle` is now optional (FR-020)** — when omitted
-  the client searches `$FORWARD_CLIENT_BUNDLE` →
+- **`portunus-client --bundle` is now optional (FR-020)** — when omitted
+  the client searches `$PORTUNUS_CLIENT_BUNDLE` →
   `$XDG_CONFIG_HOME/portunus/client.bundle.json` →
   `$HOME/.config/portunus/client.bundle.json` →
   `./client.bundle.json` and exits `1` listing every attempted path
@@ -298,11 +298,11 @@ UDP fast paths, wire protocol) and the auth seam are untouched.
 
 ### Removed
 
-- `crates/forward-auth/src/file_store.rs` and
-  `crates/forward-auth/src/operator_store.rs` — JSON persistence is
+- `crates/portunus-auth/src/file_store.rs` and
+  `crates/portunus-auth/src/operator_store.rs` — JSON persistence is
   retired. The cross-cutting types (`IdentityStoreError`,
   `UserRemoveSummary`, `ProvisionedClient`) live in
-  `forward-auth::store_types`.
+  `portunus-auth::store_types`.
 - `tokens.json` / `identity.json` / `rules.json` artefacts. Cold start
   on a clean checkout writes only `state.db`.
 
@@ -325,7 +325,7 @@ activation, so existing TCP/UDP throughput is unaffected.
 
 - **Multi-target rules** — `Rule.targets[]` (length 1..=8) with
   per-target `(host, port, priority)`. Lower priority number = higher
-  preference. Operators push via `forward-server push-rule
+  preference. Operators push via `portunus-server push-rule
   --target host:port[@priority]` (repeatable), `--targets-json '[...]'`,
   the new `targets[]` field on `POST /v1/rules`, or the Web UI rule push
   form's "Add another target" button.
@@ -334,7 +334,7 @@ activation, so existing TCP/UDP throughput is unaffected.
   consecutive successes flip it back). Optional active probe per rule
   via `health_check_interval_secs` (1..=3600). All client-side and
   in-memory; ephemeral across client restarts.
-- **`forward_rule_target_failovers_total{client, rule}`** — Prometheus
+- **`portunus_rule_target_failovers_total{client, rule}`** — Prometheus
   counter for Healthy↔Failed transitions per rule. Per-target byte
   counters surface only on demand via `rule-stats --per-target`,
   `GET /v1/rules/{id}/stats?per_target=true`, the SSE stats stream with
@@ -364,7 +364,7 @@ activation, so existing TCP/UDP throughput is unaffected.
 Operator Web UI release. Closes the long-deferred `TODO(WEB_UI)` from
 the constitution. The forwarding data plane (TCP + UDP + DNS resolver +
 port-range rules) is **byte-identical** to v0.5.0; this release adds a
-React + Vite SPA embedded into `forward-server` via `rust-embed`, plus
+React + Vite SPA embedded into `portunus-server` via `rust-embed`, plus
 two additive operator HTTP endpoints (`GET /v1/audit`, `GET
 /v1/rules/{id}/stats/stream`) and a small `GET /v1/users/me`
 projection. RBAC, identity store, audit-log emit sites, and every
@@ -373,7 +373,7 @@ existing CLI subcommand are unchanged.
 ### Added (006-management-web-ui)
 
 - **Operator Web UI** — a single-page React + Vite + TypeScript app
-  embedded into `forward-server` via `rust-embed` and served at the
+  embedded into `portunus-server` via `rust-embed` and served at the
   existing operator HTTP listener's root path `/`. Login by pasting a
   bearer token (kept in `sessionStorage` only). Covers users,
   credentials, grants, rules (with per-rule live stats over SSE),
@@ -392,7 +392,7 @@ existing CLI subcommand are unchanged.
   `tokio::sync::broadcast`. Subscribers cost O(rules) not
   O(rules × subscribers); slow consumers receive `Lagged` and are
   logged once per minute per rule, never blocking fast subscribers.
-- **`forward_audit_buffer_drops_total`** Prometheus counter — bumped
+- **`portunus_audit_buffer_drops_total`** Prometheus counter — bumped
   whenever the audit ring drops an entry on overflow.
 - **`GET /v1/metrics`** (superadmin-only) — same Prometheus payload as
   the standalone `metrics_listen` endpoint, but RBAC-gated so the
@@ -407,9 +407,9 @@ existing CLI subcommand are unchanged.
 
 - New top-level `webui/` Vite project (sibling of `crates/`). Build
   with `pnpm install --frozen-lockfile && pnpm build`; output lands in
-  `webui/dist/` and is consumed by `cargo build -p forward-server`
-  via the new `crates/forward-server/build.rs` gate. Backend-only
-  iteration: `FORWARD_SKIP_WEBUI=1 cargo build -p forward-server`
+  `webui/dist/` and is consumed by `cargo build -p portunus-server`
+  via the new `crates/portunus-server/build.rs` gate. Backend-only
+  iteration: `PORTUNUS_SKIP_WEBUI=1 cargo build -p portunus-server`
   emits a stub UI so `rust-embed` always has something to embed —
   release pipelines never set this env var.
 - Bundle-size budget: gzipped main chunk ≤ 500 KB, enforced by
@@ -486,7 +486,7 @@ release adds an operator-side authorisation layer above it.
   `user-list`, `user-get`, `user-remove`, `credential-issue`,
   `credential-list`, `credential-revoke`, `credential-rotate`,
   `grant-add`, `grant-list`, `grant-revoke`. All take the operator
-  token from `FORWARD_OPERATOR_TOKEN` env (exit 4 if missing) and
+  token from `PORTUNUS_OPERATOR_TOKEN` env (exit 4 if missing) and
   surface `RbacError` codes via the operator-api.md exit table.
 - **Audit logging**. Every operator request emits one structured
   `event = "operator.allow"` (INFO) or `"operator.deny"` (WARN) line
@@ -510,13 +510,13 @@ release adds an operator-side authorisation layer above it.
   mid-cascade leaves a coherent identity state. Last-superadmin
   protection refuses the removal that would orphan the cluster.
 - **Per-rule Prometheus collectors gain an `owner` label**.
-  `forward_rule_bytes_in_total`, `_bytes_out_total`,
+  `portunus_rule_bytes_in_total`, `_bytes_out_total`,
   `_active_connections`, `_dns_failures_total`, `_active_flows`,
   `_udp_datagrams_in_total`, `_udp_datagrams_out_total`,
   `_flows_dropped_overflow_total` all bump from `{client, rule}` to
   `{client, rule, owner}`. Cardinality budget unchanged: still one
   row per live rule (R-005). New
-  `forward_operator_requests_total{outcome, reason}` counter rolls up
+  `portunus_operator_requests_total{outcome, reason}` counter rolls up
   every operator HTTP request — `outcome` ∈ {allow, deny}; `reason`
   is `"ok"` on allow or the static `RbacError::code()` string on deny
   (bounded label set, R-009).
@@ -534,7 +534,7 @@ release adds an operator-side authorisation layer above it.
   over byte-identical; gRPC client tokens are unchanged. To unblock
   the operator path, either run `bootstrap-superadmin` once OR add
   `operator_token` to `server.toml`. Existing v0.4.0 CLI scripts that
-  call `forward-server push-rule` etc. need `FORWARD_OPERATOR_TOKEN`
+  call `portunus-server push-rule` etc. need `PORTUNUS_OPERATOR_TOKEN`
   set in the environment; HTTP integrations need an `Authorization`
   header on every request.
 - **Downgrade v0.5 → v0.4** — `identity.json` becomes inert;
@@ -547,50 +547,50 @@ release adds an operator-side authorisation layer above it.
 ### Verified
 
 - **SC-001 (< 60 s onboarding from fresh deploy)** — covered by
-  `crates/forward-e2e/tests/rbac_smoke.rs::rbac_walkthrough_happy_and_violation_paths`,
+  `crates/portunus-e2e/tests/rbac_smoke.rs::rbac_walkthrough_happy_and_violation_paths`,
   which mirrors `quickstart.md` § 1–7 (bootstrap → user-add →
   credential-issue → grant-add → push-rule → cascade → remove). Full
   walkthrough completes in **< 1 s** on a developer-class macOS host.
 - **SC-003 (100 % violation rejection)** — covered by
-  `forward-server/tests/rbac_push_rule.rs` (6 violation paths) +
-  `forward-server/tests/http_grants_contract.rs` + the §3.1 block of
+  `portunus-server/tests/rbac_push_rule.rs` (6 violation paths) +
+  `portunus-server/tests/http_grants_contract.rs` + the §3.1 block of
   `rbac_smoke.rs` (port_outside_grant / protocol_not_granted /
   client_not_granted each return 403 with the matching code).
 - **SC-004 (legacy operator workflow byte-identical)** — the entire
-  v0.4 e2e suite (`forward-e2e/tests/{happy_path,udp_smoke,dns_smoke,
+  v0.4 e2e suite (`portunus-e2e/tests/{happy_path,udp_smoke,dns_smoke,
   range_smoke,scale,restart_recovery,…}`) passes verbatim under the
   v0.5 router after the test fixture writes `operator_token` to
   `server.toml`. Wire shape: rule responses carry the same fields
   plus `owner`, no removals.
 - **SC-005 (revoke-grant cascade < 5 s)** — covered by
-  `forward-server/tests/http_grants_contract.rs::delete_grant_returns_grant_id_and_no_rules`
+  `portunus-server/tests/http_grants_contract.rs::delete_grant_returns_grant_id_and_no_rules`
   + the rbac_smoke.rs §6 block. The cascade is in-process (one
   `RwLock::write`) — observed wall-clock is sub-millisecond.
 - **SC-006 (restart roundtrip preserves identity)** — covered by
-  `forward-server/tests/identity_persistence.rs::full_round_trip_users_credentials_grants`:
+  `portunus-server/tests/identity_persistence.rs::full_round_trip_users_credentials_grants`:
   write `identity.json`, reopen via `FileOperatorStore::open`, all
   users / credentials / grants survive byte-identical.
 - **SC-007 (operator CLI answers "who pushed X")** — covered by
-  `forward-server/tests/rbac_read_filtering.rs` (4 tests) +
-  `forward-server/tests/http_users_contract.rs`. Every rule response
+  `portunus-server/tests/rbac_read_filtering.rs` (4 tests) +
+  `portunus-server/tests/http_users_contract.rs`. Every rule response
   carries `owner`; `GET /v1/rules?owner=<id>` filters server-side.
 - **R-005 (Prometheus cardinality budget preserved)** —
-  `forward-server/tests/rbac_metric_cardinality.rs` drives 5 rules ×
+  `portunus-server/tests/rbac_metric_cardinality.rs` drives 5 rules ×
   3 owners through `RuleStatsCache::observe` with 3 observations per
   rule and asserts exactly 5 rows per per-rule collector. Owner
   label is verified to thread through end-to-end.
 - **Constitution I (single-seam auth)** — `auth_middleware` in
-  `forward-server/src/operator/auth_layer.rs` is the **only**
+  `portunus-server/src/operator/auth_layer.rs` is the **only**
   call site of `OperatorAuthenticator::verify`; the entire
   `/v1/*` router is mounted behind one `route_layer`. Verified by
-  grep + `forward-server/tests/legacy_no_auth_rejected.rs` (every
+  grep + `portunus-server/tests/legacy_no_auth_rejected.rs` (every
   unauthenticated request 401's).
 - **Constitution II (data-plane untouched)** — `forwarder/proxy.rs`,
   `forwarder/udp/`, and `resolver/` are byte-identical to v0.4.0.
   The full v0.4 criterion suite (`data_plane`, `udp_data_plane`,
   `dns_resolver`) re-runs without modification.
 - **Constitution IV (no raw tokens in logs)** —
-  `forward-server/tests/audit_log_redaction.rs` injects a known
+  `portunus-server/tests/audit_log_redaction.rs` injects a known
   bearer through the auth-layer and asserts the captured tracing
   output never contains the token bytes; only the post-verify
   `actor` / `role` / `outcome` fields appear.
@@ -617,13 +617,13 @@ UDP forwarding (additive on top of v0.3.0).
   `udp_flow_idle_secs` (server.toml, default 60s, range 30..=300);
   per-rule cap `udp_max_flows_per_rule` (default 1024, range
   1..=65535) bounds resource use under sustained churn — overflow drops
-  increment the new `forward_rule_flows_dropped_overflow_total`
+  increment the new `portunus_rule_flows_dropped_overflow_total`
   counter rather than evicting existing flows. Both knobs flow to the
   client over Welcome; v0.3.0 servers (no UDP fields) leave the client
   on the documented compile-time defaults.
-- **Per-rule UDP collectors**: `forward_rule_udp_datagrams_in_total`,
-  `forward_rule_udp_datagrams_out_total`, `forward_rule_active_flows`,
-  `forward_rule_flows_dropped_overflow_total` (one row per rule —
+- **Per-rule UDP collectors**: `portunus_rule_udp_datagrams_in_total`,
+  `portunus_rule_udp_datagrams_out_total`, `portunus_rule_active_flows`,
+  `portunus_rule_flows_dropped_overflow_total` (one row per rule —
   per-port detail stays out of `/metrics` to preserve the cardinality
   budget). `rule-stats` surfaces a `protocol` field plus the
   UDP-specific counters. The `--per-port` view extends to UDP range
@@ -640,14 +640,14 @@ UDP forwarding (additive on top of v0.3.0).
 
 - **SC-002 (UDP datagram throughput)** — criterion bench
   `udp_data_plane.single_flow_throughput` in
-  `crates/forward-client/benches/udp_data_plane.rs` reports a median
+  `crates/portunus-client/benches/udp_data_plane.rs` reports a median
   of **~51 µs** per full datagram round-trip (send + proxy fwd +
   echo + proxy back + recv = 4 datagram hops per iteration). At
   ~19.4k round-trips/s that is **~78k datagrams/s** through the
   proxy — comfortably above the 50,000 dgrams/s SC-002 floor.
 - **SC-003 (per-flow isolation)** —
   `udp_listener_two_sources_isolated_replies` unit test in
-  `crates/forward-client/src/forwarder/udp/mod.rs` and the gated
+  `crates/portunus-client/src/forwarder/udp/mod.rs` and the gated
   1000-source stress test `test_udp_us1_thousand_source_isolation`
   (cargo test --ignored) prove kernel-side per-flow upstream sockets
   give NAT-style isolation with zero misroutes.
@@ -655,9 +655,9 @@ UDP forwarding (additive on top of v0.3.0).
   `metrics::tests::active_flows_cardinality_is_one_row_per_rule`
   (asserts ≤ N rows for each of the 4 UDP collectors after observing
   N rules) and end-to-end test `test_udp_us3_metric_cardinality` in
-  `crates/forward-e2e/tests/udp_smoke.rs`. A 10-port UDP range with
+  `crates/portunus-e2e/tests/udp_smoke.rs`. A 10-port UDP range with
   traffic on 3 ports produces exactly **1** row of
-  `forward_rule_udp_datagrams_in_total{rule=…}` (NOT 10).
+  `portunus_rule_udp_datagrams_in_total{rule=…}` (NOT 10).
 - **SC-001 (push → first byte budget)** — `test_udp_us1_happy_path`
   reports wall-clock **~6.6 s** from server spawn through
   provision-client → push-rule → first datagram round-trip on a
@@ -687,7 +687,7 @@ Domain-name forwarding targets (additive on top of v0.2.0).
   connection. Address-family preference defaults to IPv4-first;
   operators flip per-rule with the new `--prefer-ipv6 / preferIpv6=true`
   flag (CLI + HTTP).
-- **`forward_rule_dns_failures_total{client,rule}`** per-rule
+- **`portunus_rule_dns_failures_total{client,rule}`** per-rule
   monotonic counter on `/metrics` (one row per rule — SC-006
   cardinality budget preserved; the row is removed alongside
   `rule_active_connections` on `remove-rule`). Surfaced in `rule-stats`
@@ -703,7 +703,7 @@ Domain-name forwarding targets (additive on top of v0.2.0).
 
 - **SC-004 (cache-hit hot path)** — criterion bench
   `dns_resolver_cache_hit` in
-  `crates/forward-client/benches/dns_resolver.rs` reports a median of
+  `crates/portunus-client/benches/dns_resolver.rs` reports a median of
   **~75 ns** per warm-cache lookup (one async-mutex acquire +
   HashMap get + Vec clone). Three orders of magnitude under the
   loopback `connect()` budget, so adding a DNS rule does not regress
@@ -716,13 +716,13 @@ Domain-name forwarding targets (additive on top of v0.2.0).
 - **SC-006 (per-rule metric cardinality)** —
   `metrics::tests::dns_failures_cardinality_is_one_row_per_rule` and
   end-to-end test `test_dns_us4_metric_cardinality` in
-  `crates/forward-e2e/tests/dns_smoke.rs`. Driving 6 failed connections
+  `crates/portunus-e2e/tests/dns_smoke.rs`. Driving 6 failed connections
   through 2 rules pointing at `broken.invalid` produces exactly 2 rows
-  of `forward_rule_dns_failures_total`, each with value 3. Removing a
+  of `portunus_rule_dns_failures_total`, each with value 3. Removing a
   rule drops the corresponding row.
 - **Constitution II (hot-path inspection)** — IP-literal targets bypass
   the resolver entirely at
-  `crates/forward-client/src/resolver/mod.rs` (`connect_target`'s
+  `crates/portunus-client/src/resolver/mod.rs` (`connect_target`'s
   `IpAddr::from_str` short-circuit). The data-plane criterion baseline
   (v0.1.0 numbers) is unchanged for IP-only rules; the regression
   gate at `.github/workflows/bench.yml` continues to enforce ±25 %.
@@ -749,7 +749,7 @@ Domain-name forwarding targets (additive on top of v0.2.0).
 - **SC-001 (100-port range, fresh deploy)** — ran the recipe in
   `specs/002-port-range-forward/quickstart.md` § "Verifying SC-001 on
   a fresh host pair" against a Debian 13 (trixie) x86_64 host, glibc
-  2.41, kernel 6.12.74, with both `forward-server` and `forward-client`
+  2.41, kernel 6.12.74, with both `portunus-server` and `portunus-client`
   on the same box talking loopback. Numbers (median of 3 fresh runs):
   - **Total wall clock** (server start → bundle issue → client connect
     → push 100-port range → traffic round-trip on 3 sample ports):
@@ -761,14 +761,14 @@ Domain-name forwarding targets (additive on top of v0.2.0).
   - **`list-rules`** returns one entry for the 100-port range
     (range collapses, FR-006).
   - **SC-002** — `/metrics` exposes exactly **1** row of
-    `forward_rule_bytes_in_total{rule="…"}` for the 100-port rule.
+    `portunus_rule_bytes_in_total{rule="…"}` for the 100-port rule.
     Per-port detail surfaces only via the `?per_port=true` HTTP query,
     which returns a 100-element `per_port` array.
 
 ## [0.1.0] — 2026-05-06
 
 Initial MVP release of the `001-tcp-forward-mvp` feature. Two binaries
-(`forward-server` and `forward-client`) implementing the three user stories
+(`portunus-server` and `portunus-client`) implementing the three user stories
 from the spec end-to-end.
 
 ### Added
@@ -777,7 +777,7 @@ from the spec end-to-end.
   generates a self-signed leaf cert on first run; the client pins it via
   SHA-256 fingerprint baked into the credential bundle. Bearer tokens are
   random 256-bit secrets stored in `tokens.json` (mode 0600). All identity
-  decisions flow through `forward_auth::Authenticator::verify` —
+  decisions flow through `portunus_auth::Authenticator::verify` —
   `ClientIdentity` is the single source of truth used by every server
   handler.
 - **Operator surface** (US1 + US2): CLI subcommands `provision-client`,
@@ -791,11 +791,11 @@ from the spec end-to-end.
 - **Observability** (US3): per-rule byte + active-connection counters
   reported every 5 s via gRPC `StatsReport`; cached server-side and exposed
   through `rule-stats` and Prometheus `/metrics` (loopback-only).
-  Collectors: `forward_clients_connected`,
-  `forward_auth_failures_total{reason}`,
-  `forward_rule_bytes_in_total{client,rule}`,
-  `forward_rule_bytes_out_total{client,rule}`,
-  `forward_rule_active_connections{client,rule}`.
+  Collectors: `portunus_clients_connected`,
+  `portunus_auth_failures_total{reason}`,
+  `portunus_rule_bytes_in_total{client,rule}`,
+  `portunus_rule_bytes_out_total{client,rule}`,
+  `portunus_rule_active_connections{client,rule}`.
 - **Structured logs**: JSON layer enabled by default, `request_id`
   propagated through `RuleUpdate`/`RuleStatus`, redaction layer flags any
   log call referencing field names matching `token|secret|private_key`.
@@ -806,7 +806,7 @@ from the spec end-to-end.
 ### Performance baseline
 
 Baseline captured on macOS via the criterion harness in
-`crates/forward-client/benches/data_plane.rs`. Numbers are loopback,
+`crates/portunus-client/benches/data_plane.rs`. Numbers are loopback,
 single-rule, one bidirectional connection. The next hot-path-touching
 spec is expected to wire CI regression gates against these:
 
@@ -817,11 +817,11 @@ spec is expected to wire CI regression gates against these:
 | 1-byte RTT through proxy (latency)  | ~44.9 µs |             |
 
 Raw measurements live at
-`crates/forward-client/benches/baselines/v0.1.0.json` and the criterion
+`crates/portunus-client/benches/baselines/v0.1.0.json` and the criterion
 working dir at `target/criterion/.../v0.1.0/`. Re-capture with:
 
 ```sh
-cargo bench -p forward-client --bench data_plane -- --save-baseline v0.1.0
+cargo bench -p portunus-client --bench data_plane -- --save-baseline v0.1.0
 ```
 
 ### SC-001 verification
@@ -850,7 +850,7 @@ first byte through a pushed rule (`8080 → example.com:80`) measured
 After driving 5×`curl` through the rule and waiting one StatsReport
 tick: `bytes_in=450, bytes_out=5052` from `rule-stats`, and the same
 numbers materialised on `/metrics` under
-`forward_rule_bytes_{in,out}_total{client="edge-01",rule="0"}`.
+`portunus_rule_bytes_{in,out}_total{client="edge-01",rule="0"}`.
 Both well under the 300 s SC-001 target.
 
 ### Out of scope (deferred)

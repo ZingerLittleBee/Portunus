@@ -12,7 +12,7 @@ strings remain frozen — new behaviors extend the existing verbs.
 
 ## CLI deltas
 
-### `forward-server push-rule <client> <listen> <target> [...]`
+### `portunus-server push-rule <client> <listen> <target> [...]`
 
 **Updated** to accept range syntax on `<listen>` and `<target>`. The
 verb name and exit codes are unchanged from v1.
@@ -25,13 +25,13 @@ verb name and exit codes are unchanged from v1.
 Examples:
 ```
 # Single port (unchanged from v1)
-forward-server push-rule edge-01 18080 10.0.0.5:8080
+portunus-server push-rule edge-01 18080 10.0.0.5:8080
 
 # Range, same offset
-forward-server push-rule edge-01 30000-30050 10.0.0.5:30000-30050
+portunus-server push-rule edge-01 30000-30050 10.0.0.5:30000-30050
 
 # Range, shifted offset
-forward-server push-rule edge-01 30000-30050 10.0.0.5:40000-40050
+portunus-server push-rule edge-01 30000-30050 10.0.0.5:40000-40050
 ```
 
 **Validation** (FR-002):
@@ -56,12 +56,12 @@ binds N listeners and reports one `RuleStatus`). The default
 `--ack-timeout` (2 s) is sufficient for `range_rule_max_ports = 1024`
 on a healthy system; operators on slow hardware may raise it.
 
-### `forward-server remove-rule <rule_id>`
+### `portunus-server remove-rule <rule_id>`
 
 **Unchanged.** Removing a range rule releases every listener under
 that rule via the same drain path as today.
 
-### `forward-server list-rules [--client <name>] [--format text|json]`
+### `portunus-server list-rules [--client <name>] [--format text|json]`
 
 **Updated** output to render ranges:
 
@@ -73,7 +73,7 @@ that rule via the same drain path as today.
   rules) plus a derived `range_size` integer (always present, equals
   1 for single-port).
 
-### `forward-server rule-stats <rule_id> [--per-port] [--format text|json]`
+### `portunus-server rule-stats <rule_id> [--per-port] [--format text|json]`
 
 **Updated** with a new optional `--per-port` flag (FR-011).
 

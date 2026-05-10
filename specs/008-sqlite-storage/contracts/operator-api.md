@@ -86,20 +86,20 @@ JSON equality (modulo timestamp-driven fields).
 
 Reused (semantic-identical):
 
-- `forward_audit_buffer_drops_total{}` — was: ring-buffer overflow.
+- `portunus_audit_buffer_drops_total{}` — was: ring-buffer overflow.
   Now: hand-off-queue overflow. Operators with existing alerts on
   this series keep working.
 
 Added:
 
-- `forward_audit_durable_writer_lag_seconds{}` — gauge; the age of
+- `portunus_audit_durable_writer_lag_seconds{}` — gauge; the age of
   the oldest entry currently sitting in the hand-off queue (0 when
   the queue is empty). Useful for diagnosing burst-overrun before
   drops happen.
-- `forward_store_open_connections{}` — gauge; current pool checkout
+- `portunus_store_open_connections{}` — gauge; current pool checkout
   count. Operators can monitor pool exhaustion.
-- `forward_store_busy_total{}` — counter; cumulative `SQLITE_BUSY`
-  occurrences mapped to `ForwardError::Transient`. Should stay near
+- `portunus_store_busy_total{}` — counter; cumulative `SQLITE_BUSY`
+  occurrences mapped to `PortunusError::Transient`. Should stay near
   zero in a healthy deployment thanks to `BEGIN IMMEDIATE`.
 
 No counter is renamed or removed. No label cardinality is added on
@@ -132,7 +132,7 @@ existing HTTP statuses:
 | `audit_v08_pagination_round_trip` | Following `next_cursor` across N pages reaches every entry exactly once |
 | `audit_v08_invalid_cursor` | Random string cursor → HTTP 400 invalid_cursor |
 | `users_byte_stable` | Snapshot the v0.7 response of `GET /v1/users` → byte-identical on v0.8 (modulo seeded timestamps) |
-| `prom_series_present` | `/metrics` exposes the new series and keeps the old `forward_audit_buffer_drops_total` |
+| `prom_series_present` | `/metrics` exposes the new series and keeps the old `portunus_audit_buffer_drops_total` |
 
 These are authored before implementation per Constitution Principle
 III.

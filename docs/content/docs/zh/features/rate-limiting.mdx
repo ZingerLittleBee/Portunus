@@ -26,7 +26,7 @@ v0.11.0 起支持。每个上限都是 **独立可选** 的，不设置时与 v0
 ## 每条规则的上限
 
 ```sh
-forward-server push-rule edge-01 443 backend.local:8080 \
+portunus-server push-rule edge-01 443 backend.local:8080 \
   --bandwidth-in-bps 1048576 \           # 1 MB/s 入
   --bandwidth-out-bps 524288 \           # 512 KB/s 出
   --new-connections-per-sec 100 \
@@ -47,23 +47,23 @@ forward-server push-rule edge-01 443 backend.local:8080 \
 
 ```sh
 # 设置 Alice 在 edge-01 上的信封
-forward-server owner-cap set edge-01 alice \
+portunus-server owner-cap set edge-01 alice \
   --bandwidth-in-bps 10485760 \         # 10 MB/s 聚合
   --concurrent-connections 5000
 
 # 检视
-forward-server owner-cap get edge-01 alice
-forward-server owner-cap list edge-01
+portunus-server owner-cap get edge-01 alice
+portunus-server owner-cap list edge-01
 
 # 移除
-forward-server owner-cap delete edge-01 alice
+portunus-server owner-cap delete edge-01 alice
 ```
 
 REST 接口：`/v1/clients/{id}/owners/{owner_id}/rate-limit`。
 
 ## 拒绝原因
 
-`forward_rate_limit_reject_total{reason=…}` 上的六个值：
+`portunus_rate_limit_reject_total{reason=…}` 上的六个值：
 
 - `conn_concurrent`
 - `conn_rate`
@@ -98,9 +98,9 @@ accept、设置 `SO_LINGER {l_onoff: 1, l_linger: 0}`、然后 close，从而对
 ## 指标
 
 ```
-forward_rate_limit_reject_total{client,rule,owner,reason}
-forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}
-forward_rate_limit_active_connections{client,rule,owner}
+portunus_rate_limit_reject_total{client,rule,owner,reason}
+portunus_rate_limit_throttle_seconds_total{client,rule,owner,direction}
+portunus_rate_limit_active_connections{client,rule,owner}
 ```
 
 数据面的拒绝 / 限流事件 **仅出现在 tracing**，**不会** 进入 SQLite 操作员

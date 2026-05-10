@@ -4,7 +4,7 @@ description: server.toml 的所有配置项，包含取值范围和默认值。
 icon: ServerCog
 ---
 
-`forward-server` 从 `--config-dir` 指定目录中的 `server.toml` 读取配置。
+`portunus-server` 从 `--config-dir` 指定目录中的 `server.toml` 读取配置。
 仅使用默认值的最小配置也是合法的：下面每一项都可省略。
 
 ## 监听器
@@ -30,8 +30,8 @@ metrics_listen = "127.0.0.1:7081"
 # 默认 SAN 仅含 hostname + "localhost" + 127.0.0.1 ——
 # 路由到外网的部署应该换成由运维管理、SAN 含真实地址的证书。
 # server.key 必须是 mode 0600（loader 拒绝更宽松的权限）。
-tls_cert_path = "/var/lib/forward/server.crt"
-tls_key_path  = "/var/lib/forward/server.key"
+tls_cert_path = "/var/lib/portunus/server.crt"
+tls_key_path  = "/var/lib/portunus/server.key"
 ```
 
 ## 持久化
@@ -40,11 +40,11 @@ tls_key_path  = "/var/lib/forward/server.key"
 # Client 认证用的 Bearer Token 存储。
 # 首次 `provision-client` 时创建。Mode 0600。
 # Token 是 256-bit 随机；务必备份。
-token_store_path = "/var/lib/forward/tokens.json"
+token_store_path = "/var/lib/portunus/tokens.json"
 
 # 操作员侧身份存储（用户 / 凭据 / Grant）。
 # Mode 0600。原子写 JSON；可在多机间 rsync 做 HA。
-operator_store_path = "/var/lib/forward/identity.json"
+operator_store_path = "/var/lib/portunus/identity.json"
 ```
 
 v0.8 起大部分状态搬入 `<data-dir>/state.db`（SQLite）。详见
@@ -60,9 +60,9 @@ v0.8 起大部分状态搬入 `<data-dir>/state.db`（SQLite）。详见
 operator_token = "<43-char URL-safe-base64 token>"
 ```
 
-生成 Token：`forward-server gen-token`。
+生成 Token：`portunus-server gen-token`。
 
-或：`forward-server bootstrap-superadmin --name ops` 一次性打印新 Bearer。
+或：`portunus-server bootstrap-superadmin --name ops` 一次性打印新 Bearer。
 
 ## Drain 与日志
 
@@ -94,7 +94,7 @@ udp_flow_idle_secs = 60
 
 # 每条规则同时存活的 UDP 流上限。
 # 范围 1..=65535。默认 1024。
-# 持续抖动超出后，超额流会让 forward_rule_flows_dropped_overflow_total 累加，
+# 持续抖动超出后，超额流会让 portunus_rule_flows_dropped_overflow_total 累加，
 # 已存在的流不会被驱逐。
 udp_max_flows_per_rule = 1024
 ```
@@ -120,7 +120,7 @@ udp_max_flows_per_rule = 1024
 监听地址也可以从 CLI 覆写：
 
 ```sh
-forward-server --config-dir ./srv \
+portunus-server --config-dir ./srv \
   --control-listen 0.0.0.0:7443 \
   --operator-http-listen 127.0.0.1:7080 \
   --metrics-listen 127.0.0.1:7081 \

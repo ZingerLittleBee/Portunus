@@ -3,8 +3,8 @@
 /// Token is cleared on browser close (sessionStorage semantics) to bound
 /// the theft window to a single browsing session. Spec FR-002 / SC-006.
 
-const TOKEN_KEY = "forward.token";
-const CHANGED_EVENT = "forward:token-changed";
+const TOKEN_KEY = "portunus.token";
+const CHANGED_EVENT = "portunus:token-changed";
 
 export function getToken(): string | null {
   try {

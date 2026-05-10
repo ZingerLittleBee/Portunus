@@ -25,7 +25,7 @@ SPA's audit page has used the new envelope endpoint since then.
 ### Live tail (v0.7-shape, back-compat)
 
 ```sh
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?limit=100&outcome=deny'
 # → JSON array of AuditEntry objects, newest-first
 ```
@@ -36,11 +36,11 @@ This path is byte-stable for v0.7 callers (no `since`/`until`/`cursor`).
 
 ```sh
 # Last 24 hours, paginated
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?since=2026-05-07T15:00:00Z&limit=50'
 # → {"entries":[...], "next_cursor":"abc123"}
 
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?cursor=abc123&limit=50'
 # → next page
 ```
@@ -65,10 +65,10 @@ ring size:
 
 ```sh
 # Dry run
-forward-server audit prune --before 2026-05-01T00:00:00Z --dry-run
+portunus-server audit prune --before 2026-05-01T00:00:00Z --dry-run
 
 # Real prune (BEGIN IMMEDIATE + PRAGMA incremental_vacuum)
-forward-server audit prune --before 2026-05-01T00:00:00Z
+portunus-server audit prune --before 2026-05-01T00:00:00Z
 ```
 
 Run from cron daily / weekly to bound database growth.
@@ -76,7 +76,7 @@ Run from cron daily / weekly to bound database growth.
 ## Buffer overflow signal
 
 When the in-memory buffer (v0.6 path) overflowed, the
-`forward_audit_buffer_drops_total` counter incremented. The metric
+`portunus_audit_buffer_drops_total` counter incremented. The metric
 remains for the v0.6 code path; on v0.8+ durable storage, drops should
 not occur in normal operation.
 

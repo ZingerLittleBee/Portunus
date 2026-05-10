@@ -1,15 +1,15 @@
 # Quickstart: Rate Limiting & QoS
 
-1. Start `forward-server` and a v0.11 `forward-client`.
+1. Start `portunus-server` and a v0.11 `portunus-client`.
 2. Push one TCP rule with `rate_limit.bandwidth_in_bps = 1048576` and
    `rate_limit.concurrent_connections = 100`. Verify
-   `forward_rate_limit_*` collectors appear under `/metrics` for that
+   `portunus_rate_limit_*` collectors appear under `/metrics` for that
    rule.
 3. Drive 5 MB/s of TCP traffic at the rule for 30 s; assert measured
-   ingress ≤ 1 MB/s ± 10% and `forward_rate_limit_throttle_seconds_total`
+   ingress ≤ 1 MB/s ± 10% and `portunus_rate_limit_throttle_seconds_total`
    grows monotonically.
 4. Open 100 concurrent connections; assert the 101st is closed with
-   RST within 50 ms and `forward_rate_limit_reject_total{reason="conn_concurrent"}`
+   RST within 50 ms and `portunus_rate_limit_reject_total{reason="conn_concurrent"}`
    increments by 1.
 5. `PUT /v1/rules/{id}` lowering the bandwidth cap to 102400 (100 KB/s);
    assert the in-flight throttled connection's throughput converges to

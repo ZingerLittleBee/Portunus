@@ -30,7 +30,7 @@ zero or negative rates.
 ## Per-rule caps
 
 ```sh
-forward-server push-rule edge-01 443 backend.local:8080 \
+portunus-server push-rule edge-01 443 backend.local:8080 \
   --bandwidth-in-bps 1048576 \           # 1 MB/s in
   --bandwidth-out-bps 524288 \           # 512 KB/s out
   --new-connections-per-sec 100 \
@@ -51,23 +51,23 @@ Per-owner caps **bind before** per-rule caps — rejects carry distinct
 
 ```sh
 # Set Alice's envelope on edge-01
-forward-server owner-cap set edge-01 alice \
+portunus-server owner-cap set edge-01 alice \
   --bandwidth-in-bps 10485760 \         # 10 MB/s aggregate
   --concurrent-connections 5000
 
 # Inspect
-forward-server owner-cap get edge-01 alice
-forward-server owner-cap list edge-01
+portunus-server owner-cap get edge-01 alice
+portunus-server owner-cap list edge-01
 
 # Remove
-forward-server owner-cap delete edge-01 alice
+portunus-server owner-cap delete edge-01 alice
 ```
 
 REST surface: `/v1/clients/{id}/owners/{owner_id}/rate-limit`.
 
 ## Reject reasons
 
-Six values surface on `forward_rate_limit_reject_total{reason=…}`:
+Six values surface on `portunus_rate_limit_reject_total{reason=…}`:
 
 - `conn_concurrent`
 - `conn_rate`
@@ -106,9 +106,9 @@ clean RST visible to the client.
 ## Metrics
 
 ```
-forward_rate_limit_reject_total{client,rule,owner,reason}
-forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}
-forward_rate_limit_active_connections{client,rule,owner}
+portunus_rate_limit_reject_total{client,rule,owner,reason}
+portunus_rate_limit_throttle_seconds_total{client,rule,owner,direction}
+portunus_rate_limit_active_connections{client,rule,owner}
 ```
 
 Data-plane reject and throttle events are **tracing-only** — they do

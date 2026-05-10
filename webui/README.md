@@ -1,6 +1,6 @@
-# forward-webui
+# portunus-webui
 
-Operator Web UI for `forward-server`. React + Vite + TypeScript SPA,
+Operator Web UI for `portunus-server`. React + Vite + TypeScript SPA,
 embedded into the server binary at compile time via `rust-embed` and
 served on the existing operator HTTP listener at `/`.
 
@@ -22,7 +22,7 @@ pnpm install --frozen-lockfile
 pnpm build           # tsc -b && vite build && size-limit (≤ 500 KB gz)
 ```
 
-The output lands in `webui/dist/`. The next `cargo build -p forward-server`
+The output lands in `webui/dist/`. The next `cargo build -p portunus-server`
 will pick it up via `rust-embed` and bake it into the binary.
 
 `pnpm build` fails the build if the gzipped main bundle exceeds 500 KB
@@ -35,7 +35,7 @@ In one shell, start the server (or any v0.5+ build with the operator
 HTTP listener exposed):
 
 ```sh
-cargo run -p forward-server -- --config-dir /tmp/forward-dev serve
+cargo run -p portunus-server -- --config-dir /tmp/portunus-dev serve
 ```
 
 In another shell:
@@ -50,7 +50,7 @@ Hot-reload works for any source under `src/`.
 ## Skip the UI for backend-only work
 
 ```sh
-FORWARD_SKIP_WEBUI=1 cargo build -p forward-server
+PORTUNUS_SKIP_WEBUI=1 cargo build -p portunus-server
 ```
 
 The build emits a stub `webui/dist/index.html` so `rust-embed` still has
@@ -60,7 +60,7 @@ content to embed. Release pipelines NEVER set this env var.
 
 ```sh
 pnpm test            # Vitest (unit + component, jsdom-free via happy-dom)
-pnpm test:e2e        # Playwright (spawns a real forward-server)
+pnpm test:e2e        # Playwright (spawns a real portunus-server)
 pnpm lint            # eslint --ext ts,tsx
 ```
 

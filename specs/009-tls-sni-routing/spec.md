@@ -212,7 +212,7 @@ contains one event per failure case with enough fields for triage.
 - An operator removes the only remaining rule on an SNI port → the
   listener is torn down using the existing v0.7 drain semantics; in-flight
   forwarded connections complete or hit the existing drain timeout.
-- Two operators (separate `client` identities running forward-client) each
+- Two operators (separate `client` identities running portunus-client) each
   bind their own `:443 + api.example.com` route → both succeed; SNI route
   uniqueness is scoped per-client, not global.
 - An IDN hostname is configured: the operator submits the Punycode form
@@ -221,7 +221,7 @@ contains one event per failure case with enough fields for triage.
 - An operator pushes an `sni_pattern` whose grammar is malformed (multiple
   asterisks, a `*` not at the leftmost label, non-ASCII bytes, length over
   253 chars) → push is refused at validation with a specific error code.
-- An old (v0.8 or earlier) forward-client connects to a v0.9 server →
+- An old (v0.8 or earlier) portunus-client connects to a v0.9 server →
   attempts to push any rule with `sni_pattern` set are refused with HTTP
   422 before reaching the wire; existing non-SNI rules still flow.
 
@@ -318,7 +318,7 @@ contains one event per failure case with enough fields for triage.
   compatible. A pre-v0.9 client receiving a rule with no pattern MUST
   decode and execute it identically to v0.8.
 - **FR-024**: The system MUST refuse any push of a rule with a non-empty
-  pattern targeted at a forward-client whose declared version is below
+  pattern targeted at a portunus-client whose declared version is below
   v0.9.0, returning a specific error code that names the missing client
   capability. The refusal MUST occur before any rule is activated.
 - **FR-025**: The control-plane MUST NOT introduce new top-level wire
@@ -383,7 +383,7 @@ contains one event per failure case with enough fields for triage.
   rule participates in SNI routing and how its hostname comparison works.
   Three forms: exact host, single-level wildcard, absent. Stored
   lowercased ASCII. Subject to grammar validation.
-- **SNI Listener**: the runtime construct on a forward-client that owns
+- **SNI Listener**: the runtime construct on a portunus-client that owns
   one bound TCP port, accepts connections, peeks ClientHello, dispatches
   to one of its member rules, and tracks per-listener counters that have
   no rule attribution. Lifetime is bounded by the membership of its
@@ -401,7 +401,7 @@ contains one event per failure case with enough fields for triage.
   active SNI listener describing how many connections were rejected
   because the SNI matched no rule, or because the ClientHello could not
   be parsed.
-- **Client Capability**: the declared version of a connected forward-client,
+- **Client Capability**: the declared version of a connected portunus-client,
   used to gate any SNI-bearing rule push.
 
 ## Success Criteria *(mandatory)*
@@ -421,9 +421,9 @@ contains one event per failure case with enough fields for triage.
   same hardware is no more than 5 ms at the 99th percentile, where the
   baseline is the v0.7 connection_setup_latency benchmark.
 - **SC-004**: Across an upgrade from v0.8 to v0.9 with no rule changes,
-  the forward-client wire stream is byte-stable: a v0.8 capture replayed
+  the portunus-client wire stream is byte-stable: a v0.8 capture replayed
   against a v0.9 server produces an identical response stream.
-- **SC-005**: An operator using a v0.8 forward-client cannot accidentally
+- **SC-005**: An operator using a v0.8 portunus-client cannot accidentally
   activate a SNI rule: every such push is refused before any forwarding
   begins, and the refusal carries an error code that names the missing
   capability.
@@ -463,7 +463,7 @@ contains one event per failure case with enough fields for triage.
   metrics carry no `owner` label — these events have no rule attribution
   and adding `owner` would either be wrong or expand cardinality without
   signal.
-- **A-007**: SNI uniqueness is scoped per `client` (the forward-client
+- **A-007**: SNI uniqueness is scoped per `client` (the portunus-client
   identity), not globally; two clients can each own their own listener
   on `:443 + api.example.com` without conflict.
 - **A-008**: The existing v0.8 SQLite store is the authoritative
@@ -480,5 +480,5 @@ contains one event per failure case with enough fields for triage.
 - **D-003**: v0.7 client-version handshake — used by FR-024's gate.
 - **D-004**: v0.6 Web UI rule pages — extended with the new column and
   form input.
-- **D-005**: Existing forward-client `RuleStats` / `StatsReport` channel
+- **D-005**: Existing portunus-client `RuleStats` / `StatsReport` channel
   — carries the new counter fields.

@@ -5,7 +5,7 @@
 // The rule-push step from quickstart.md §6 is omitted: the operator
 // rejects pushes for clients that aren't currently connected over the
 // gRPC control plane, and the e2e fixture doesn't spin up a real
-// forward-client. The rule-list / live-stats panels are covered by the
+// portunus-client. The rule-list / live-stats panels are covered by the
 // rule_stats_stream contract test (server-side) and us3-audit-and-metrics
 // (UI side).
 

@@ -11,7 +11,7 @@
 - Q: Audit write durability window on crash — what is the maximum bounded loss between durable persistence and a process kill? → A: Typical ≤ 100 ms; under sustained burst load ≤ 1 s.
 - Q: Backup compatibility policy across server versions? → A: Forward-compatible within the v0.x major — a backup produced by version X is restorable on any binary ≥ X via automatic schema migration on restore; older binaries refuse to read a newer backup.
 - Q: Where does the server's persistent data file live, and how is the location selected? → A: A new `--data-dir` flag (independent from `--config-dir`) with resolution `--data-dir > $STATE_DIRECTORY > $XDG_STATE_HOME/portunus > $HOME/.local/state/portunus > ./portunus.state`. Production deployments are documented to point this at `/var/lib/portunus/`, integrated with systemd's `StateDirectory=portunus`. The data file inside it is named `state.db` and is not operator-renameable. The data-dir MUST refuse to operate on filesystems that cannot honour POSIX file locking and `fsync` (notably NFS and tmpfs).
-- Q: Does the v0.8 work also adjust the client's `--bundle` flag, or stay strictly server-side? → A: The client gets one ergonomic addition: `--bundle` becomes optional with a documented search order (`--bundle > $FORWARD_CLIENT_BUNDLE > $XDG_CONFIG_HOME/portunus/client.bundle.json > $HOME/.config/portunus/client.bundle.json > ./client.bundle.json`). No new client-side persistent state is introduced; the client remains stateless to disk.
+- Q: Does the v0.8 work also adjust the client's `--bundle` flag, or stay strictly server-side? → A: The client gets one ergonomic addition: `--bundle` becomes optional with a documented search order (`--bundle > $PORTUNUS_CLIENT_BUNDLE > $XDG_CONFIG_HOME/portunus/client.bundle.json > $HOME/.config/portunus/client.bundle.json > ./client.bundle.json`). No new client-side persistent state is introduced; the client remains stateless to disk.
 
 **Input**: User description: "v0.8: migrate all server-side persistent data
 from JSON files + in-memory ring to a single embedded local SQL data store;
@@ -29,7 +29,7 @@ the project is not yet deployed."
 An operator is investigating an alert that fired overnight: a credential
 was denied access to a rule. They open the audit view in the Web UI (or
 hit `GET /v1/audit`) and expect to see the deny event. Today the
-forward-server process restarts (planned upgrade, host reboot, or crash)
+portunus-server process restarts (planned upgrade, host reboot, or crash)
 wipe the in-memory audit ring buffer, so any event before the most recent
 restart is gone — the operator cannot complete the investigation. After
 v0.8, audit events persist across restarts.
@@ -208,7 +208,7 @@ caller would have received (default newest-first slice, default cap).
   location and a recovery path (restore from backup), and must NOT
   silently re-initialise (which would erase state).
 - **Data file locked by another process** (e.g., a second
-  `forward-server` instance pointed at the same file): the second
+  `portunus-server` instance pointed at the same file): the second
   process must fail to start with a clear "store is in use" error,
   not corrupt the file or block indefinitely.
 - **Schema version newer than the running binary**: the server must
@@ -307,7 +307,7 @@ caller would have received (default newest-first slice, default cap).
   per-byte or per-packet code path acquires a database handle or
   performs a database read.
 - **FR-011**: The control-plane wire protocol between
-  `forward-server` and `forward-client` MUST NOT add a breaking field
+  `portunus-server` and `portunus-client` MUST NOT add a breaking field
   in this feature. Additive proto fields are permitted only if a
   separate concern (out of this spec's scope) requires them.
 - **FR-012**: The server MUST maintain a schema-version record in
@@ -348,7 +348,7 @@ caller would have received (default newest-first slice, default cap).
 - **FR-017**: The bootstrap of an initial superadmin on an empty
   store MUST succeed atomically: a partial bootstrap (user without
   credential, or vice versa) MUST NOT be observable on disk.
-- **FR-018**: When two `forward-server` processes attempt to operate
+- **FR-018**: When two `portunus-server` processes attempt to operate
   on the same data file at the same time, the second process MUST
   fail to start with a clear "store is in use" error and MUST NOT
   corrupt the file.
@@ -369,10 +369,10 @@ caller would have received (default newest-first slice, default cap).
   `fsync` (e.g., common NFS configurations, tmpfs), the server MUST
   refuse to start with a clear, actionable error rather than risk
   silent data corruption.
-- **FR-020**: The `forward-client` binary's `--bundle` flag MUST
+- **FR-020**: The `portunus-client` binary's `--bundle` flag MUST
   become optional. When `--bundle` is omitted, the client MUST
   resolve the bundle path in this order, taking the first that
-  resolves to an existing readable file: (1) `$FORWARD_CLIENT_BUNDLE`
+  resolves to an existing readable file: (1) `$PORTUNUS_CLIENT_BUNDLE`
   environment variable; (2) `$XDG_CONFIG_HOME/portunus/client.bundle.json`;
   (3) `$HOME/.config/portunus/client.bundle.json`;
   (4) `./client.bundle.json`. When none resolve, the client MUST
@@ -396,7 +396,7 @@ caller would have received (default newest-first slice, default cap).
 - **Operator Grant**: an authorisation record binding a user to a
   resource (`grant_id`, `user_id`, resource selector). Same shape
   as v0.5.
-- **Client Token**: a hashed token authenticating a `forward-client`
+- **Client Token**: a hashed token authenticating a `portunus-client`
   to the data-plane control channel (`client_name`, `token_hash`,
   `issued_at`, `revoked_at`). Same shape as v0.1 / v0.5.
 - **Audit Entry**: one record per operator-API allow / deny outcome
@@ -411,7 +411,7 @@ caller would have received (default newest-first slice, default cap).
 
 ### Measurable Outcomes
 
-- **SC-001**: After a clean restart of `forward-server`, an operator
+- **SC-001**: After a clean restart of `portunus-server`, an operator
   can retrieve every audit event recorded before the restart through
   the same endpoint they used before the restart, with no events
   lost and no events reordered. Following an abrupt process kill,
@@ -488,7 +488,7 @@ caller would have received (default newest-first slice, default cap).
   enforce automatic eviction; operators choose their own retention
   policy. The current Prometheus drop counter remains and tracks any
   in-memory burst-buffer drops separately from durable retention.
-- **Single-process operator**: only one `forward-server` process
+- **Single-process operator**: only one `portunus-server` process
   operates on a given data file at a time. Multi-process or
   multi-host clustering is out of scope for v0.8; the file-locking
   guard in FR-018 is a defence-in-depth check, not a clustering
@@ -505,7 +505,7 @@ caller would have received (default newest-first slice, default cap).
   `<config-dir>/identity.json`, `<config-dir>/rules.json`) are not
   read on startup, even if leftover files from a prior
   installation exist.
-- **Client remains stateless to disk**: `forward-client` does not
+- **Client remains stateless to disk**: `portunus-client` does not
   introduce any persistent file in v0.8. Per-target health,
   runtime stats, the resolver cache, and reconnect state stay
   in-memory. The bundle is read-only configuration material; it is

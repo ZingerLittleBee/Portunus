@@ -1,7 +1,7 @@
 # Portunus server configuration (v0.7.0).
-# Used by `forward-server --config /etc/forward/server.toml serve`.
-# Defaults match the deploy/systemd/forward-server.service layout.
-# Schema: see crates/forward-core/src/config.rs (ServerConfig).
+# Used by `portunus-server --config /etc/portunus/server.toml serve`.
+# Defaults match the deploy/systemd/portunus-server.service layout.
+# Schema: see crates/portunus-core/src/config.rs (ServerConfig).
 
 # gRPC control-plane listener — clients dial this address.
 # Bind to 0.0.0.0 for cross-host clients, or to a specific interface
@@ -29,19 +29,19 @@ metrics_listen = "127.0.0.1:7081"
 # only — for routable deployments, replace these with operator-managed
 # materials whose SAN covers the address(es) clients will dial.
 # server.key MUST be mode 0600 (the loader rejects looser perms).
-tls_cert_path = "/var/lib/forward/server.crt"
-tls_key_path = "/var/lib/forward/server.key"
+tls_cert_path = "/var/lib/portunus/server.crt"
+tls_key_path = "/var/lib/portunus/server.key"
 
 # Bearer-token store. Created on first `provision-client`. Mode 0600.
 # Tokens are 256-bit random secrets; keep this file backed up.
-token_store_path = "/var/lib/forward/tokens.json"
+token_store_path = "/var/lib/portunus/tokens.json"
 
 # Operator-side identity store (005-multi-user-rbac, v0.5.0+). Holds
 # users / credentials / grants for the operator HTTP API. Created on
 # first `bootstrap-superadmin` (or first start with `operator_token`
 # set below). Mode 0600. Atomic-write JSON; safe to rsync across
 # hosts for HA setups. Keep backed up alongside `token_store_path`.
-# operator_store_path = "/var/lib/forward/identity.json"
+# operator_store_path = "/var/lib/portunus/identity.json"
 
 # One-shot bootstrap shortcut for the operator superadmin (FR-006).
 # When set AND the identity store has NO superadmin yet, the server
@@ -50,10 +50,10 @@ token_store_path = "/var/lib/forward/tokens.json"
 # silently ignored when a superadmin already exists) or remove it.
 #
 # Generate a fresh token out-of-band:
-#   forward-server gen-token   # → 43-char URL-safe-base64
+#   portunus-server gen-token   # → 43-char URL-safe-base64
 #
 # Alternative: skip this line and run
-#   forward-server bootstrap-superadmin --name ops
+#   portunus-server bootstrap-superadmin --name ops
 # which prints the freshly-minted bearer token to stdout exactly once.
 # operator_token = "<43-char URL-safe-base64 token>"
 
@@ -72,7 +72,7 @@ log_format = "json"
 # Default: 1024. Each port in a range consumes one TCP listener (one fd) on
 # the client; the cap exists so an operator typo can't burst the client's
 # RLIMIT_NOFILE. Raise only after raising LimitNOFILE in the systemd unit
-# accordingly (see deploy/systemd/forward-{server,client}.service).
+# accordingly (see deploy/systemd/portunus-{server,client}.service).
 # range_rule_max_ports = 1024
 
 # UDP forwarding tunables (004-udp-forward, v0.4.0+). Surfaced to the
@@ -88,7 +88,7 @@ log_format = "json"
 # udp_flow_idle_secs = 60
 #
 # Per-rule cap on simultaneous live UDP flows. Range: 1..=65535.
-# Default: 1024. The cap activates `forward_rule_flows_dropped_overflow_total`
+# Default: 1024. The cap activates `portunus_rule_flows_dropped_overflow_total`
 # when sustained churn from many distinct source ports exceeds the
 # ceiling — those drops are recorded; existing flows are NEVER evicted
 # to make room (idle eviction handles steady-state shrinkage). Raise

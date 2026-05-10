@@ -39,7 +39,7 @@ Validation:
 If any target in a pushed rule has `proxy_protocol != None`, the target client
 must have `client_version >= 0.10.0`.
 
-## 2. Runtime entities on forward-client
+## 2. Runtime entities on portunus-client
 
 ### 2.1 Upstream connection context
 
@@ -49,7 +49,7 @@ accepted downstream connection:
 | Field | Type | Meaning |
 |---|---|---|
 | `source_addr` | `SocketAddr` | Original client peer address |
-| `dest_addr` | `SocketAddr` | Accepted local address on the forward-client listener |
+| `dest_addr` | `SocketAddr` | Accepted local address on the portunus-client listener |
 
 These are fed into PROXY header encoding before byte forwarding begins.
 

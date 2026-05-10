@@ -23,7 +23,7 @@ test("theme toggle updates data-theme within 200 ms", async ({ page, server }) =
   expect(Date.now() - start).toBeLessThan(200);
 
   // localStorage written.
-  const stored = await page.evaluate(() => window.localStorage.getItem("forward.theme"));
+  const stored = await page.evaluate(() => window.localStorage.getItem("portunus.theme"));
   expect(stored).toBe("dark");
 });
 
@@ -35,7 +35,7 @@ test("language toggle to zh-CN renders Chinese strings", async ({ page, server }
   // The Settings page itself flips: 设置 is the zh-CN settings.title.
   await expect(page.getByRole("heading", { level: 1, name: "设置" })).toBeVisible();
 
-  const stored = await page.evaluate(() => window.localStorage.getItem("forward.lang"));
+  const stored = await page.evaluate(() => window.localStorage.getItem("portunus.lang"));
   expect(stored).toBe("zh-CN");
 });
 
@@ -49,7 +49,7 @@ test("preferences persist across reload", async ({ page, server }) => {
   await page.reload();
 
   expect(await page.evaluate(() => document.documentElement.dataset["theme"])).toBe("dark");
-  expect(await page.evaluate(() => window.localStorage.getItem("forward.lang"))).toBe("zh-CN");
+  expect(await page.evaluate(() => window.localStorage.getItem("portunus.lang"))).toBe("zh-CN");
 });
 
 test("prefers-color-scheme: dark with theme=system picks dark", async ({ browser, server }) => {

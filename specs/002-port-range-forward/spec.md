@@ -101,7 +101,7 @@ existing per-rule cardinality is still useful in the interim.
 several distinct ports in the range, wait one stats interval, confirm
 `rule-stats` returns one row whose byte counts equal the sum of bytes
 sent across all ports, and `/metrics` exposes exactly one
-`forward_rule_bytes_in_total{client,rule}` series for the range
+`portunus_rule_bytes_in_total{client,rule}` series for the range
 (not 50 series).
 
 **Acceptance Scenarios**:
@@ -113,8 +113,8 @@ sent across all ports, and `/metrics` exposes exactly one
    across all three ports (within the existing ±1 KB tolerance).
 2. **Given** the same rule, **When** scraping `/metrics`, **Then**
    exactly one entry per existing per-rule collector
-   (`forward_rule_bytes_in_total`, `forward_rule_bytes_out_total`,
-   `forward_rule_active_connections`) appears for that `rule_id` —
+   (`portunus_rule_bytes_in_total`, `portunus_rule_bytes_out_total`,
+   `portunus_rule_active_connections`) appears for that `rule_id` —
    not 50.
 
 ---

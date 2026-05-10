@@ -39,7 +39,7 @@ The wire / persistence / HTTP / CLI surfaces evolve **additively**:
 
 The TCP forwarder hot path is **unchanged**: `accept → copy_bidirectional`,
 the resolver layer, the per-connection setup. The UDP data plane is a
-new sibling of `forward-client/src/forwarder/proxy.rs` that does not
+new sibling of `portunus-client/src/forwarder/proxy.rs` that does not
 touch `proxy.rs`. The criterion `data_plane.rs` baseline is the
 regression gate (Constitution II — must stay within ±5%).
 
@@ -55,7 +55,7 @@ regression gate (Constitution II — must stay within ±5%).
              `protocol` value; `RuleStats` proto fields land additively
              so the on-disk shape is forward-compatible at the wire
              level (rules.json itself is not stats — stats are runtime).
-**Testing**: `cargo test` per crate (unit + integration); `forward-e2e`
+**Testing**: `cargo test` per crate (unit + integration); `portunus-e2e`
              integration crate exercises server + client + real UDP
              sockets (loopback echo); new UDP flow table has its own
              unit tests with real `UdpSocket` pairs (mocks for sockets
@@ -68,14 +68,14 @@ regression gate (Constitution II — must stay within ±5%).
                      close enough to Linux for the test surface; any
                      platform-specific quirk (e.g., `IP_RECVERR` for
                      ICMP error visibility) lives behind `cfg`.
-**Project Type**: Multi-crate Cargo workspace (unchanged): `forward-core`,
-                  `forward-proto`, `forward-auth`, `forward-server`,
-                  `forward-client`, `forward-e2e`. No frontend.
+**Project Type**: Multi-crate Cargo workspace (unchanged): `portunus-core`,
+                  `portunus-proto`, `portunus-auth`, `portunus-server`,
+                  `portunus-client`, `portunus-e2e`. No frontend.
 **Performance Goals**:
   - **UDP throughput**: ≥ 50 000 datagrams/s of bidirectional 512-byte
     datagrams on loopback for ≥ 60 s with zero in-proxy drops (SC-002).
     Will be measured by a new criterion bench
-    `forward-client/benches/udp_data_plane.rs` (per-datagram median +
+    `portunus-client/benches/udp_data_plane.rs` (per-datagram median +
     sustained throughput).
   - **TCP regression budget**: existing `data_plane.rs` baseline must
     stay within ±5% (SC-006 + Constitution II). Re-run on every PR
@@ -146,15 +146,15 @@ regression gate (Constitution II — must stay within ±5%).
 |---|---|---|
 | I. Security by Default (TLS + bearer token, no plaintext) | ✅ | No control-plane transport changes. UDP rules ride the same `RuleUpdate` over the existing TLS+bearer-token gRPC stream as TCP rules. Capability negotiation lives entirely on the existing authenticated stream: the client declares `Hello.supported_protocols` after the same TLS+bearer auth that v0.3.0 uses, the server stores it on `ConnectedClient`, and `push-rule` rejects unsupported-protocol pushes BEFORE persisting the rule. Per-rule policy (per-tenant protocol whitelist) is the natural enforcement seam when multi-tenant lands; for v0.4.0 every authenticated client declares which protocols it can activate, no implicit trust. **No new credentials, no new auth surface, no new key material.** UDP per-flow upstream sockets bind to ephemeral ports on `0.0.0.0` (or operator-pinned interface); no inbound port is opened for end-users beyond the rule's `listen_port`. |
 | II. Performance Is a Feature | ✅ | TCP hot path unchanged: `forwarder/proxy.rs` is not modified. UDP gets its own data-plane module behind a protocol dispatch in `forwarder/mod.rs::activate`. Two new criterion benches: `udp_data_plane.rs` measures per-datagram p50/p99 and sustained dgrams/s (must beat SC-002's 50 k/s loopback floor); the existing `data_plane.rs` continues as the TCP regression gate (must stay within ±5%). The flow-table lookup is one HashMap get under a `tokio::sync::Mutex`; the alternative (lock-free dashmap) is on the table only if benches show contention — measured first, optimised second. |
-| III. Test-First Discipline | ✅ | (a) Wire byte-compat: `forward-proto/tests/udp_wire_compat.rs` (NEW) — a TCP-only `Rule` and a TCP-only `RuleStats` (with all UDP fields at default zero) MUST encode byte-identical to v0.3.0 (proto3 zero-default + unknown-field-drop semantics). (b) UDP data plane unit tests: real `UdpSocket` pairs over loopback drive the flow-table state machine — flow creation, idle eviction, overflow drop, reply routing isolation. (c) End-to-end: `forward-e2e/tests/udp_smoke.rs` (NEW) wires a real `forward-client` against a real UDP echo and asserts US1+US3+US4 acceptance scenarios. (d) DNS-target UDP reuses the v0.3.0 `MockResolver` machinery to assert US2 without depending on a live DNS path. (e) **Constitution III "no socket mocks"**: enforced — UDP tests use real `UdpSocket` everywhere, the only mock is `Resolve` (which mocks an external network service, not a socket). |
-| IV. Observability & Operability | ✅ | Four new metrics, all `{client,rule}`-labelled (one row per rule, SC-004): `forward_rule_udp_datagrams_in_total` (counter), `forward_rule_udp_datagrams_out_total` (counter), `forward_rule_active_flows` (gauge), `forward_rule_flows_dropped_overflow_total` (counter). Existing `forward_rule_bytes_{in,out}_total` carry UDP byte counts as well — same semantics across protocols. Audit logs gain `rule.udp_flow_opened` (one per new flow, includes rule_id + source addr + chosen upstream addr) at INFO and `rule.udp_flow_evicted` at DEBUG (rate-limit-friendly). DNS resolution events (`rule.dns_resolved`/`rule.dns_failed`) are emitted by the shared resolver layer, identical to TCP. **No log line per datagram** — that would dwarf the data plane. **Graceful drain**: SIGINT/SIGTERM signals tear down UDP listeners after the existing TCP drain timeout; per-flow state is dropped synchronously (UDP has no "in-flight" notion to wait for). |
+| III. Test-First Discipline | ✅ | (a) Wire byte-compat: `portunus-proto/tests/udp_wire_compat.rs` (NEW) — a TCP-only `Rule` and a TCP-only `RuleStats` (with all UDP fields at default zero) MUST encode byte-identical to v0.3.0 (proto3 zero-default + unknown-field-drop semantics). (b) UDP data plane unit tests: real `UdpSocket` pairs over loopback drive the flow-table state machine — flow creation, idle eviction, overflow drop, reply routing isolation. (c) End-to-end: `portunus-e2e/tests/udp_smoke.rs` (NEW) wires a real `portunus-client` against a real UDP echo and asserts US1+US3+US4 acceptance scenarios. (d) DNS-target UDP reuses the v0.3.0 `MockResolver` machinery to assert US2 without depending on a live DNS path. (e) **Constitution III "no socket mocks"**: enforced — UDP tests use real `UdpSocket` everywhere, the only mock is `Resolve` (which mocks an external network service, not a socket). |
+| IV. Observability & Operability | ✅ | Four new metrics, all `{client,rule}`-labelled (one row per rule, SC-004): `portunus_rule_udp_datagrams_in_total` (counter), `portunus_rule_udp_datagrams_out_total` (counter), `portunus_rule_active_flows` (gauge), `portunus_rule_flows_dropped_overflow_total` (counter). Existing `portunus_rule_bytes_{in,out}_total` carry UDP byte counts as well — same semantics across protocols. Audit logs gain `rule.udp_flow_opened` (one per new flow, includes rule_id + source addr + chosen upstream addr) at INFO and `rule.udp_flow_evicted` at DEBUG (rate-limit-friendly). DNS resolution events (`rule.dns_resolved`/`rule.dns_failed`) are emitted by the shared resolver layer, identical to TCP. **No log line per datagram** — that would dwarf the data plane. **Graceful drain**: SIGINT/SIGTERM signals tear down UDP listeners after the existing TCP drain timeout; per-flow state is dropped synchronously (UDP has no "in-flight" notion to wait for). |
 | V. Multi-Tenant Isolation | ✅ | Protocol is a per-rule property, owned by one `(client_name, rule_id)` pair. The flow table is per-rule, so one tenant's churn cannot evict another tenant's flows. UDP listener bind happens through the same per-port allocator as TCP — when multi-tenant lands, the per-tenant port-range and protocol whitelist enforce at the same seam. Upstream sockets are per-flow and bound to ephemeral ports owned by the client process; no shared upstream socket means no cross-flow interference. |
 
 **Gate result**: PASS. No constitutional violations; nothing to track in
 the Complexity Tracking table.
 
 **Post-Phase-1 re-check**: Re-evaluated after `data-model.md`,
-`contracts/forward.proto`, `contracts/operator-api.md`, and
+`contracts/portunus.proto`, `contracts/operator-api.md`, and
 `contracts/persistence.md` landed. UDP-specific stats fields are
 additive optional/default-zero, so v0.3.0 wire-compat holds (R-009).
 The new metrics retain the v0.2.0/v0.3.0 cardinality budget (R-008).
@@ -173,7 +173,7 @@ specs/004-udp-forward/
 ├── data-model.md        # Phase 1 output
 ├── quickstart.md        # Phase 1 output
 ├── contracts/
-│   ├── forward.proto    # Phase 1: additive proto diff (overlay vs v0.3.0)
+│   ├── portunus.proto    # Phase 1: additive proto diff (overlay vs v0.3.0)
 │   ├── operator-api.md  # Phase 1: HTTP + CLI surface deltas
 │   └── persistence.md   # Phase 1: rules persistence schema deltas
 ├── checklists/
@@ -185,18 +185,18 @@ specs/004-udp-forward/
 
 ```text
 proto/
-└── forward.proto                         # add Protocol::UDP = 2;
+└── portunus.proto                         # add Protocol::UDP = 2;
                                           #   add Hello.supported_protocols = 3 (repeated Protocol);
                                           #   add Welcome.udp_flow_idle_secs = 3, .udp_max_flows_per_rule = 4;
                                           #   add RuleStats.{datagrams_in=7, datagrams_out=8, active_flows=9, flows_dropped_overflow=10};
                                           #   add PerPortStats.{datagrams_in=4, datagrams_out=5}
 
 crates/
-├── forward-core/src/
+├── portunus-core/src/
 │   └── (no changes — protocol is a proto enum; Target/Hostname unchanged)
-├── forward-proto/
+├── portunus-proto/
 │   └── tests/udp_wire_compat.rs          # NEW: TCP-only Rule + RuleStats encode byte-identical to v0.3.0
-├── forward-server/src/
+├── portunus-server/src/
 │   ├── grpc/service.rs                   # consume first inbound ClientMessage; if Hello, store
 │   │                                          #   supported_protocols on ConnectedClient; THEN send Welcome
 │   │                                          #   (carrying udp_flow_idle_secs / udp_max_flows_per_rule);
@@ -212,7 +212,7 @@ crates/
 │   │                                          #   surface `unsupported_protocol` as HTTP 422
 │   ├── metrics.rs                        # NEW collectors: udp_datagrams_in/out, active_flows, flows_dropped_overflow
 │   └── config.rs                         # NEW operator config: udp_flow_idle_secs (default 60), udp_max_flows_per_rule (default 1024)
-├── forward-client/src/
+├── portunus-client/src/
 │   ├── control.rs                        # Hello: declare {TCP, UDP} in supported_protocols;
 │   │                                          #   on RuleUpdate with unknown protocol → reply RuleStatus.failed
 │   │                                          #   reason="unsupported_protocol" (defence-in-depth);
@@ -230,7 +230,7 @@ crates/
 │   │                                          #   refactor `connect_target` to consume it (TCP behaviour byte-identical)
 │   ├── benches/udp_data_plane.rs         # NEW: criterion bench (per-datagram + sustained throughput)
 │   └── benches/data_plane.rs             # UNCHANGED — regression gate
-├── forward-e2e/tests/
+├── portunus-e2e/tests/
 │   ├── common/mod.rs                     # add push_rule_http_with_protocol helper
 │   └── udp_smoke.rs                      # NEW: real client, real UDP echo, US1+US2+US3+US4 acceptance
 └── deploy/
@@ -239,7 +239,7 @@ crates/
 
 **Structure Decision**: same multi-crate workspace as v0.1.0 / v0.2.0 /
 v0.3.0; the only structural addition is the
-`forward-client/src/forwarder/udp/` module — kept inside the existing
+`portunus-client/src/forwarder/udp/` module — kept inside the existing
 `forwarder` parent so the TCP and UDP listeners share the lifecycle
 machinery (activate/deactivate/drain) without leaking implementation
 across the protocol boundary. The TCP hot path is in a sibling file

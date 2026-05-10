@@ -13,7 +13,7 @@ on the inherited baseline from earlier releases where relevant.
 ## R-001 — Wire shape: extend `Rule` additively, do not introduce a `MultiTargetRule`
 
 **Decision**: Add a single repeated field `repeated Target targets = 9` to the
-existing `forward.v1.Rule` proto3 message. Each `Target` carries
+existing `portunus.v1.Rule` proto3 message. Each `Target` carries
 `(host, port, priority)`. Existing `target_host` (field 3) and `target_port`
 (field 4) fields are preserved as the canonical encoding for **single-target**
 rules.
@@ -30,8 +30,8 @@ rules.
   activation site on the client (`match targets.len() { 1 => fast_path,
   _ => failover_path }`).
 - The constitution's MAJOR-version-on-breaking-change rule (governance)
-  would force `forward.v2` if we had to drop or rename existing fields.
-  Adding optional fields is a MINOR change and stays in `forward.v1`.
+  would force `portunus.v2` if we had to drop or rename existing fields.
+  Adding optional fields is a MINOR change and stays in `portunus.v1`.
 
 **Alternatives considered**:
 - A new `MultiTargetRule` message — rejected for the surface-doubling
@@ -204,7 +204,7 @@ bump.
   in `rules.json` works trivially; downgrading with multi-target
   rules in `rules.json` is documented as **unsupported** (the v0.6.0
   reader would silently load a broken rule). Release notes mention
-  this; operators who need rollback do `forward-server gen-token`
+  this; operators who need rollback do `portunus-server gen-token`
   on a fresh config dir for v0.6.0 if they truly need to roll back.
 
 **Alternatives considered**:
@@ -273,7 +273,7 @@ times out).
 
 ## R-009 — Per-target metrics cardinality
 
-**Decision**: The Prometheus `/metrics` endpoint exposes `forward_rule_target_failovers_total{client, rule}` (rule-level) but does NOT expose per-target counters. Per-target byte / connection / health counters are surfaced only via `rule-stats --per-target` (CLI) and the Web UI rule-detail page.
+**Decision**: The Prometheus `/metrics` endpoint exposes `portunus_rule_target_failovers_total{client, rule}` (rule-level) but does NOT expose per-target counters. Per-target byte / connection / health counters are surfaced only via `rule-stats --per-target` (CLI) and the Web UI rule-detail page.
 
 **Rationale**:
 - Per-target series at scale (50 rules × 5 targets × 4 counter types =

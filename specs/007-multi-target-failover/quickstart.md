@@ -11,8 +11,8 @@ A two-host walkthrough that exercises every primary user story (US1–US4):
 
 This walkthrough assumes the v0.6.0 quickstart has been run at least once and the operator already has:
 
-- `forward-server` running on `server-host` with operator HTTP listening on `:7080`.
-- `forward-client` running on `edge-host` and registered with the server (so `Hello.client_version >= 0.7.0`).
+- `portunus-server` running on `server-host` with operator HTTP listening on `:7080`.
+- `portunus-client` running on `edge-host` and registered with the server (so `Hello.client_version >= 0.7.0`).
 - A bearer token in `$OPERATOR_TOKEN` with a grant that allows `(client="edge-01", listen_port=8080..=8080, protocol=tcp)`.
 - An active probe-friendly L4 endpoint behind `primary.test:80` and `secondary.test:80` — a one-line `nc -lk 80` is enough.
 
@@ -25,7 +25,7 @@ If any of those is missing, run `specs/006-management-web-ui/quickstart.md` firs
 ### Via CLI
 
 ```sh
-forward-server push-rule edge-01 8080 \
+portunus-server push-rule edge-01 8080 \
     --target primary.test:80 \
     --target secondary.test:80 \
     --health-check-interval-secs 10 \
@@ -87,7 +87,7 @@ Whatever `nc -lk 80` is running on `primary.test:80` should print `ping`. The se
 Confirm via stats:
 
 ```sh
-forward-server rule-stats 42 --per-target
+portunus-server rule-stats 42 --per-target
 ```
 
 Expected: `[0] primary.test:80 ... conns=1`, `[1] secondary.test:80 ... conns=0`.
@@ -112,7 +112,7 @@ After the third failed attempt within 30 s (passive failure threshold from FR-00
 Verify the failover counter incremented:
 
 ```sh
-forward-server rule-stats 42
+portunus-server rule-stats 42
 # expect: target_failovers_total: 1
 ```
 
@@ -125,7 +125,7 @@ Verify Prometheus:
 
 ```sh
 curl -s https://server-host:7080/metrics | grep target_failovers_total
-# forward_rule_target_failovers_total{client="edge-01",rule="42"} 1
+# portunus_rule_target_failovers_total{client="edge-01",rule="42"} 1
 ```
 
 ## Step 4 — Recover the primary (US2, P2)
@@ -145,7 +145,7 @@ echo "ping" | nc -w1 edge-host 8080
 The primary's `nc` prints `ping`. Verify:
 
 ```sh
-forward-server rule-stats 42
+portunus-server rule-stats 42
 # expect: target_failovers_total: 2  (Healthy→Failed → Failed→Healthy)
 ```
 
@@ -173,8 +173,8 @@ Restart the primary, open a NEW connection, and confirm it lands on the primary.
 Push a single-target rule via the legacy CLI form on a different listen port:
 
 ```sh
-forward-server push-rule edge-01 8081 single.test:80 --protocol tcp
-forward-server rule-stats 43
+portunus-server push-rule edge-01 8081 single.test:80 --protocol tcp
+portunus-server rule-stats 43
 # expect: target_failovers_total: 0  (single-target — no failover state)
 ```
 
@@ -183,7 +183,7 @@ Open the Web UI rule detail page for rule 43 — the `Target` panel renders the 
 Run the data-plane benchmark to confirm SC-003:
 
 ```sh
-cd crates/forward-client
+cd crates/portunus-client
 cargo bench --bench data_plane -- --baseline v0.6.0
 # expect: ≤ 1% regression on the single_target_throughput benchmark
 ```
@@ -218,8 +218,8 @@ curl -sS -X POST https://server-host:7080/v1/rules \
 ## Step 8 — Cleanup
 
 ```sh
-forward-server remove-rule 42
-forward-server remove-rule 43
+portunus-server remove-rule 42
+portunus-server remove-rule 43
 ```
 
 The Web UI rules list updates within the next SSE tick.
@@ -246,7 +246,7 @@ The Web UI rules list updates within the next SSE tick.
 **Failover never happens, even after the primary is killed**:
 
 - Check the active probe interval — if unset, you need ≥ 3 end-user-driven connect failures within 30 s to trip the threshold (FR-008). For a quick walkthrough, set `health_check_interval_secs: 10` so the probe trips on its own within 30 s.
-- Check `forward_rule_target_failovers_total` is being scraped — if the counter is incrementing in `/metrics` but the Web UI doesn't update, the SSE channel from spec 006 may be disconnected.
+- Check `portunus_rule_target_failovers_total` is being scraped — if the counter is incrementing in `/metrics` but the Web UI doesn't update, the SSE channel from spec 006 may be disconnected.
 
 **Recovery never happens, even after primary is back online**:
 

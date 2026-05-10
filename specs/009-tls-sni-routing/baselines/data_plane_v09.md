@@ -2,8 +2,8 @@
 
 Captured: 2026-05-09
 Hardware: macOS (Darwin 25.4.0), Apple Silicon
-Bench file: `crates/forward-client/benches/data_plane.rs`
-v0.7 reference: `crates/forward-client/benches/baselines/v0.7.0.json`
+Bench file: `crates/portunus-client/benches/data_plane.rs`
+v0.7 reference: `crates/portunus-client/benches/baselines/v0.7.0.json`
 
 ## Scope
 
@@ -25,10 +25,10 @@ v0.9 measurement here uses the same mode AND a multi-sample full run.
 
 ```sh
 # v0.7 capture mode (matches baseline file methodology)
-cargo bench -p forward-client --bench data_plane -- --quick
+cargo bench -p portunus-client --bench data_plane -- --quick
 
 # Higher-fidelity sweep used to characterise variance
-cargo bench -p forward-client --bench data_plane
+cargo bench -p portunus-client --bench data_plane
 ```
 
 ## Results — `--quick` mode (apples-to-apples vs v0.7.0.json)
@@ -88,7 +88,7 @@ Future feature releases that touch the legacy data plane should:
 1. Capture a fresh v0.9 baseline at release-tag time using a
    long-running full bench (≥ 100 samples), pinned CPU affinity if
    possible, and write it to
-   `crates/forward-client/benches/baselines/v0.9.0.json`.
+   `crates/portunus-client/benches/baselines/v0.9.0.json`.
 2. Compare the new release's full-mode mean to that v0.9 baseline,
    not the v0.7 quick-mode snapshot.
 3. Trip CI only when criterion's `p < 0.05` and `Δ > +5 %` together

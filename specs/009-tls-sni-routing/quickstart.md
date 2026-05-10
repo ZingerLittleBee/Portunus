@@ -16,13 +16,13 @@ Total wall-clock time: ~10 minutes.
 
 ## 0. Prerequisites
 
-- `forward-server` and `forward-client` binaries built from the v0.9
+- `portunus-server` and `portunus-client` binaries built from the v0.9
   branch.
-- Two TCP-only HTTPS-style backends reachable from the forward-client
+- Two TCP-only HTTPS-style backends reachable from the portunus-client
   (anything that returns bytes is fine — `nc -lk -p 8443 < banner.bin`
   works).
 - `openssl` 3.x (for `s_client -servername`).
-- An operator-API admin token (issued via `forward-server bootstrap-superadmin`
+- An operator-API admin token (issued via `portunus-server bootstrap-superadmin`
   per v0.5 RBAC; the v0.8 procedure is unchanged).
 - Existing v0.8 `<data-dir>/state.db`, OR a fresh data dir — the v0.9
   binary auto-runs migration V002 on first boot.
@@ -32,7 +32,7 @@ Total wall-clock time: ~10 minutes.
 ## 1. Start the v0.9 server
 
 ```bash
-forward-server serve \
+portunus-server serve \
     --data-dir /var/lib/portunus \
     --config-dir /etc/portunus
 ```
@@ -53,7 +53,7 @@ column.
 ## 2. Connect a v0.9 client
 
 ```bash
-forward-client run \
+portunus-client run \
     --bundle /etc/portunus/edge-01.bundle.json
 ```
 
@@ -61,7 +61,7 @@ Confirm the server logged the version:
 
 ```bash
 $ curl -sH "Authorization: Bearer $ADMIN" \
-       https://forward-server.local/v1/clients | jq '.[0].client_version'
+       https://portunus-server.local/v1/clients | jq '.[0].client_version'
 "0.9.0"
 ```
 
@@ -75,15 +75,15 @@ TCP rules — the SNI feature gates only kick in when you push a
 
 ```bash
 # Exact hostname → backend A
-forward-server push-rule edge-01 443 10.0.1.5:8443 \
+portunus-server push-rule edge-01 443 10.0.1.5:8443 \
     --protocol tcp --sni api.example.com
 
 # Single-label wildcard → backend B
-forward-server push-rule edge-01 443 10.0.1.6:8443 \
+portunus-server push-rule edge-01 443 10.0.1.6:8443 \
     --protocol tcp --sni '*.web.example.com'
 ```
 
-> Argument shape: `forward-server push-rule <client> <listen> [target]
+> Argument shape: `portunus-server push-rule <client> <listen> [target]
 > [--protocol tcp|udp] [--sni <pattern>] ...`. `<listen>` is a single
 > port or `start-end` range; `[target]` is `host:port` (or `host:start-end`
 > for ranges). The contract spec at `contracts/cli.md` uses
@@ -91,7 +91,7 @@ forward-server push-rule edge-01 443 10.0.1.6:8443 \
 > currently keeps the v0.1 positional shape. Both forms surface the
 > same `--sni` flag.
 
-Both pushes return immediately. The forward-client binds `:443` once
+Both pushes return immediately. The portunus-client binds `:443` once
 (the first push), then adds a second rule to the existing SNI listener
 without rebinding (the second push). In-flight connections — there are
 none yet, but verify under load — are not interrupted.
@@ -99,7 +99,7 @@ none yet, but verify under load — are not interrupted.
 `list-rules` should show:
 
 ```text
-$ forward-server list-rules --client edge-01
+$ portunus-server list-rules --client edge-01
 ID     CLIENT               PORT   TARGET                           SNI                      STATE
 1      edge-01              443    10.0.1.5:8443                    api.example.com          active
 2      edge-01              443    10.0.1.6:8443                    *.web.example.com        active
@@ -137,14 +137,14 @@ an SNI that matches nothing? Push a rule on the same port without
 `--sni`:
 
 ```bash
-forward-server push-rule edge-01 443 10.0.1.7:8443 --protocol tcp
+portunus-server push-rule edge-01 443 10.0.1.7:8443 --protocol tcp
 ```
 
 The listener stays in SNI mode (it was first activated as SNI when you
 pushed rule 1). The new rule slots in as the fallback.
 
 ```text
-$ forward-server list-rules --client edge-01
+$ portunus-server list-rules --client edge-01
 ID     CLIENT               PORT   TARGET                           SNI                      STATE
 1      edge-01              443    10.0.1.5:8443                    api.example.com          active
 2      edge-01              443    10.0.1.6:8443                    *.web.example.com        active
@@ -166,13 +166,13 @@ the **operationally honest** workflow is:
 
 ```bash
 # 1. Identify the existing legacy rule (filter the table for `:444`)
-$ forward-server list-rules --client edge-01 | awk '$3 == 444'
+$ portunus-server list-rules --client edge-01 | awk '$3 == 444'
 
 # 2. Remove it (this drains existing connections per v0.7 semantics)
-$ forward-server remove-rule <ID>
+$ portunus-server remove-rule <ID>
 
 # 3. Push the new SNI rules. The listener re-binds in SNI mode.
-$ forward-server push-rule edge-01 444 10.0.2.5:8443 \
+$ portunus-server push-rule edge-01 444 10.0.2.5:8443 \
     --protocol tcp --sni api.internal
 ```
 
@@ -195,13 +195,13 @@ and ClientHello-peek modes, which we considered too risky for v0.9.
 After running mixed traffic for a minute, scrape `/metrics`:
 
 ```bash
-$ curl -s http://127.0.0.1:7090/metrics | grep ^forward_tls
-forward_tls_sni_route_total{client="edge-01",owner="u-7",result="exact",rule="1"} 124
-forward_tls_sni_route_total{client="edge-01",owner="u-7",result="wildcard",rule="2"} 41
-forward_tls_sni_route_total{client="edge-01",owner="u-7",result="fallback",rule="3"} 8
-forward_tls_sni_listener_miss_total{client="edge-01",port="443"} 2
-forward_tls_sni_listener_parse_failures_total{client="edge-01",port="443"} 1
-forward_tls_sni_routes_active 3
+$ curl -s http://127.0.0.1:7090/metrics | grep ^portunus_tls
+portunus_tls_sni_route_total{client="edge-01",owner="u-7",result="exact",rule="1"} 124
+portunus_tls_sni_route_total{client="edge-01",owner="u-7",result="wildcard",rule="2"} 41
+portunus_tls_sni_route_total{client="edge-01",owner="u-7",result="fallback",rule="3"} 8
+portunus_tls_sni_listener_miss_total{client="edge-01",port="443"} 2
+portunus_tls_sni_listener_parse_failures_total{client="edge-01",port="443"} 1
+portunus_tls_sni_routes_active 3
 ```
 
 > The `/metrics` endpoint binds loopback-only and does NOT require

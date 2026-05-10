@@ -18,7 +18,7 @@ byte-passthrough — never decrypts, terminates, or re-encrypts TLS.
 - QUIC / HTTP/3 (UDP) SNI routing — different parser path, deferred.
 - SNI on TCP port-range rules — see D5; relaxable later.
 - Connection rate limiting / QoS, PROXY protocol — separate backlog items.
-- A `/metrics` endpoint on forward-client — out of scope; SNI metrics piggy-back
+- A `/metrics` endpoint on portunus-client — out of scope; SNI metrics piggy-back
   on the existing `RuleStats` → server-side Prometheus path (see §Observability).
 - Adding `client_name` to the `rules` SQLite table — see §Data Model.
 - Online conversion between legacy plain-TCP and SNI mode for an active port —
@@ -27,17 +27,17 @@ byte-passthrough — never decrypts, terminates, or re-encrypts TLS.
 ## Where This Feature Lives
 
 The data plane (listener bind, accept loop, proxy/splice) lives in
-**forward-client** (`crates/forward-client/src/forwarder/`), driven by
-`ClientRule`s pushed over the bidi gRPC stream. forward-server is control-plane
+**portunus-client** (`crates/portunus-client/src/forwarder/`), driven by
+`ClientRule`s pushed over the bidi gRPC stream. portunus-server is control-plane
 only. Therefore:
 
-- forward-client gets the new SNI peek + routing modules and a per-port
+- portunus-client gets the new SNI peek + routing modules and a per-port
   group-aware listener.
-- forward-proto's `Rule` gains `optional string sni_pattern = 11;` and
+- portunus-proto's `Rule` gains `optional string sni_pattern = 11;` and
   `RuleStats` gains five SNI counter fields.
-- forward-server gets schema/validation/RBAC/CLI/Web-UI changes and a
+- portunus-server gets schema/validation/RBAC/CLI/Web-UI changes and a
   client-version capability gate (mirrors v0.7's multi-target precedent at
-  `crates/forward-server/src/operator/http.rs:353`).
+  `crates/portunus-server/src/operator/http.rs:353`).
 - The wire RuleUpdate remains single-rule; clients group by `listen_port`
   locally (see §Mode-Locked Listener Lifetime).
 
@@ -58,7 +58,7 @@ only. Therefore:
 | D11a | RuleStats wire (hits) | Add three `uint64` counter fields to `RuleStats` at field numbers **13, 14, 15** (`sni_route_exact_total`, `sni_route_wildcard_total`, `sni_route_fallback_total`) | Fields 11 (`target_failovers_total`) and 12 (`per_target`) are taken by v0.7. Hits are attributable to the matched `rule_id`, so they belong on `RuleStats`. |
 | D11b | Listener-level counters | Add a new `SniListenerStats { listen_port, sni_route_miss_total, client_hello_parse_failures_total }` message; carry it in `StatsReport.sni_listener_stats = 3` | Miss / parse-failure happen *before* a rule is selected and have no `rule_id`. Forcing them onto `RuleStats` would require a fake rule attribution and confuse operators. |
 | D12 | Peek-duration histogram | **Deferred to v0.10+** | Histogram doesn't fit the monotonic-counter shape of `RuleStats` / `SniListenerStats`; needs a separate channel. Counters give enough operational signal for v0.9. |
-| D13 | Data-plane events surface | client `tracing` events + Prometheus counters **only**; **NOT** the SQLite `audit` ring | `crates/forward-server/src/operator/audit.rs:16-31` documents that high-frequency client-side events stay in the structured tracing log; SQLite `audit` is reserved for operator allow/deny actions. Same precedent as v0.7's `rule.target.health_changed`. |
+| D13 | Data-plane events surface | client `tracing` events + Prometheus counters **only**; **NOT** the SQLite `audit` ring | `crates/portunus-server/src/operator/audit.rs:16-31` documents that high-frequency client-side events stay in the structured tracing log; SQLite `audit` is reserved for operator allow/deny actions. Same precedent as v0.7's `rule.target.health_changed`. |
 
 ## Mode-Locked Listener Lifetime (replaces "atomic group rebroadcast")
 
@@ -103,7 +103,7 @@ disruption that entails), then push SNI rules onto a freshly bound listener.
 
 ## User-Visible Behaviour
 
-### Routing path (data plane, forward-client)
+### Routing path (data plane, portunus-client)
 
 ```
 client TCP SYN
@@ -133,7 +133,7 @@ listener mode (set at first activation, immutable for lifetime)
 
 - `Rule.sni_pattern: Option<String>` on the rule resource.
 - Proto: `optional string sni_pattern = 11;` (next free slot after v1.4 field 10).
-  Wire-compat test under `crates/forward-proto/tests/`.
+  Wire-compat test under `crates/portunus-proto/tests/`.
 - `POST /v1/rules` accepts the field; validation rejects:
   - non-TCP rule with `sni_pattern` set → 400 `validation.sni_on_unsupported_rule`
   - port-range rule (`listen_port_end IS NOT NULL`) with `sni_pattern` set →
@@ -147,7 +147,7 @@ listener mode (set at first activation, immutable for lifetime)
   - any conflict from the §Overlap table → 409 with the specific code.
 - D9 capability gate: `sni_pattern.is_some()` to a client whose last
   `Hello.client_version < 0.9.0` → 422 `sni_unsupported_by_client`.
-- CLI: `forward-server push-rule --sni <pattern>` (optional). Same validation.
+- CLI: `portunus-server push-rule --sni <pattern>` (optional). Same validation.
 - `list-rules --json` and `GET /v1/rules` include `sni_pattern` when set.
 - Web UI rules page: new `SNI` column; new/edit form shows an optional
   `SNI Pattern` input only when Protocol = TCP and Port mode = Single, with
@@ -155,7 +155,7 @@ listener mode (set at first activation, immutable for lifetime)
 
 ### Failure handling — client tracing events (NOT audit ring)
 
-All five events below are emitted as forward-client structured tracing
+All five events below are emitted as portunus-client structured tracing
 events with `target = "tls_sni"`. They do **not** flow into the SQLite
 `audit` ring (D13 / R-AUDIT precedent at `audit.rs:16-31`). Operators
 correlate via the structured log and the Prometheus counters below.
@@ -187,9 +187,9 @@ live listener.
 
 ## Architecture
 
-### forward-proto
+### portunus-proto
 
-`proto/forward.proto` Rule:
+`proto/portunus.proto` Rule:
 ```proto
 // Additive in v1.5 (spec 009-tls-sni-routing). Wire field number 11.
 // Absent → plain TCP forward / TLS-only fallback (depending on listener mode).
@@ -197,7 +197,7 @@ live listener.
 optional string sni_pattern = 11;
 ```
 
-`proto/forward.proto` RuleStats (D11a — hits only):
+`proto/portunus.proto` RuleStats (D11a — hits only):
 ```proto
 // Additive in v1.5 (spec 009-tls-sni-routing). Field numbers continue
 // after v0.7's `target_failovers_total = 11` and `per_target = 12`.
@@ -207,7 +207,7 @@ uint64 sni_route_wildcard_total = 14;
 uint64 sni_route_fallback_total = 15;
 ```
 
-`proto/forward.proto` new SniListenerStats (D11b — listener-level events
+`proto/portunus.proto` new SniListenerStats (D11b — listener-level events
 that have no rule attribution):
 ```proto
 // New in v1.5 (spec 009-tls-sni-routing). One per active SNI listener
@@ -219,7 +219,7 @@ message SniListenerStats {
 }
 ```
 
-`proto/forward.proto` StatsReport gains field 3:
+`proto/portunus.proto` StatsReport gains field 3:
 ```proto
 message StatsReport {
   uint64 sent_at_unix_ms = 1;
@@ -229,7 +229,7 @@ message StatsReport {
 }
 ```
 
-Wire-compat tests (`crates/forward-proto/tests/sni_wire_compat.rs`):
+Wire-compat tests (`crates/portunus-proto/tests/sni_wire_compat.rs`):
 - v0.8 binary encoding round-trips through v0.9 deserialiser → all new
   fields absent / zero.
 - v0.9 encoding with sni fields zero / `sni_listener_stats` empty is
@@ -240,10 +240,10 @@ Wire-compat tests (`crates/forward-proto/tests/sni_wire_compat.rs`):
 - **Negative**: explicitly assert that nothing in this spec touches
   `RuleStats` field 11 (`target_failovers_total`) or 12 (`per_target`).
 
-### forward-client (data plane)
+### portunus-client (data plane)
 
 ```
-crates/forward-client/src/forwarder/
+crates/portunus-client/src/forwarder/
 ├── mod.rs                  # ClientRule grows pub sni_pattern: Option<String>
 ├── sni/
 │   ├── mod.rs              # pub use
@@ -267,7 +267,7 @@ listeners. The control loop sends rule deltas to it. State per
 
 The manager also keeps a **reverse index** `HashMap<RuleId, ListenPort>`
 because `RuleUpdate(REMOVE)` carries only `rule_id` (per
-`proto/forward.proto:179`). Without it, REMOVE can't find which group owns
+`proto/portunus.proto:179`). Without it, REMOVE can't find which group owns
 the rule. Index is updated on every PUSH/REMOVE.
 
 On each `RuleUpdate`:
@@ -295,23 +295,23 @@ pub struct ClientRule {
 }
 ```
 
-### forward-server (control plane only)
+### portunus-server (control plane only)
 
-- `crates/forward-server/src/rules.rs` — overlap check rewritten per the
+- `crates/portunus-server/src/rules.rs` — overlap check rewritten per the
   §Overlap table; `by_client_listen_start` becomes
   `BTreeMap<u16, Vec<RuleId>>` (no new dep). All callers updated.
-- `crates/forward-server/src/store/migrations/V002__add_sni_pattern.sql` —
+- `crates/portunus-server/src/store/migrations/V002__add_sni_pattern.sql` —
   schema migration (below).
-- `crates/forward-server/src/operator/http.rs` — D9 capability gate; helper
+- `crates/portunus-server/src/operator/http.rs` — D9 capability gate; helper
   `version_at_least_0_9` next to `version_at_least_0_7`.
-- `crates/forward-server/src/main.rs` — `push-rule --sni <pattern>` flag.
-- `crates/forward-server/src/grpc/service.rs` — extend the existing
+- `crates/portunus-server/src/main.rs` — `push-rule --sni <pattern>` flag.
+- `crates/portunus-server/src/grpc/service.rs` — extend the existing
   `StatsReport` fold (around `:317`) to:
   - read the three new `RuleStats` SNI counters and update per-rule
     collectors with `client, rule, owner, result` labels;
   - read the new `StatsReport.sni_listener_stats` repeated field and update
     listener-level collectors with `client, port` labels.
-- `crates/forward-server/src/metrics.rs` — register the new collectors,
+- `crates/portunus-server/src/metrics.rs` — register the new collectors,
   reusing the existing `client, rule, owner` label triple for hits and a
   new `client, port` pair for listener-level counters (no `rule_id` /
   `owner_user_id` labels — kept consistent with v0.7 conventions at
@@ -345,7 +345,7 @@ then dispatches into the existing `proxy::proxy`.
 
 ## Data Model & Schema
 
-`Rule` (Rust, `crates/forward-server/src/rules.rs`):
+`Rule` (Rust, `crates/portunus-server/src/rules.rs`):
 ```rust
 pub struct Rule {
     // ... existing fields incl. listen_port, listen_port_end, protocol
@@ -379,29 +379,29 @@ data migration (additive column).
 ### Prometheus metrics (server-side, surfaced via existing `/metrics`)
 
 Labels follow the v0.5+ convention used everywhere else in
-`crates/forward-server/src/metrics.rs:156` — `client`, `rule`, `owner` for
+`crates/portunus-server/src/metrics.rs:156` — `client`, `rule`, `owner` for
 per-rule, plus `result` where applicable. We deliberately do **not** invent
 `rule_id` or `owner_user_id` labels.
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `forward_tls_sni_route_total` | counter | `client`, `rule`, `owner`, `result=exact|wildcard|fallback` | three `RuleStats.sni_route_*_total` fields, one fold per row |
-| `forward_tls_sni_listener_miss_total` | counter | `client`, `port` | `SniListenerStats.sni_route_miss_total` |
-| `forward_tls_client_hello_parse_failures_total` | counter | `client`, `port` | `SniListenerStats.client_hello_parse_failures_total` |
-| `forward_tls_sni_routes_active` | gauge | — | `ServerRuleStore` count of rules with `sni_pattern.is_some()` (server-side, no client plumbing) |
+| `portunus_tls_sni_route_total` | counter | `client`, `rule`, `owner`, `result=exact|wildcard|fallback` | three `RuleStats.sni_route_*_total` fields, one fold per row |
+| `portunus_tls_sni_listener_miss_total` | counter | `client`, `port` | `SniListenerStats.sni_route_miss_total` |
+| `portunus_tls_client_hello_parse_failures_total` | counter | `client`, `port` | `SniListenerStats.client_hello_parse_failures_total` |
+| `portunus_tls_sni_routes_active` | gauge | — | `ServerRuleStore` count of rules with `sni_pattern.is_some()` (server-side, no client plumbing) |
 
 Why the listener-level metrics use `port` (not `rule`): miss / parse-failure
 happen before a rule is selected, so there is no honest `rule` label to
 attach. `client` keeps cardinality bounded — one client × one listener port
 per series.
 
-`forward_tls_client_hello_peek_duration_seconds` (histogram, D12) is
+`portunus_tls_client_hello_peek_duration_seconds` (histogram, D12) is
 **deferred** to v0.10+.
 
 ### Logs
 
-forward-client emits all five `tls_sni` tracing events listed in §Failure
-handling. forward-server does **not** mirror them into the SQLite `audit`
+portunus-client emits all five `tls_sni` tracing events listed in §Failure
+handling. portunus-server does **not** mirror them into the SQLite `audit`
 ring — that ring is reserved for operator allow/deny actions per
 `audit.rs:16-31`. Operators correlate via the structured tracing log plus
 the Prometheus counters above.
@@ -414,7 +414,7 @@ tests authored before implementation.
 ### Unit tests (in-source `#[cfg(test)] mod tests`)
 
 - `sni/client_hello.rs`: real packet captures (TLS 1.0/1.1/1.2/1.3) under
-  `crates/forward-client/tests/fixtures/tls/*.bin`; truncation at varied
+  `crates/portunus-client/tests/fixtures/tls/*.bin`; truncation at varied
   offsets; missing/empty SNI extension; oversize host; multiple `server_name`
   entries (first wins); incremental feed (Truncated → Ok); handshake message
   fragmented across two records.
@@ -428,7 +428,7 @@ tests authored before implementation.
 
 ### Contract / integration tests
 
-forward-server (`crates/forward-server/tests/`):
+portunus-server (`crates/portunus-server/tests/`):
 | File | Covers |
 |---|---|
 | `sni_rule_validation.rs` | UDP / range + sni → 400; malformed pattern → 400 |
@@ -436,7 +436,7 @@ forward-server (`crates/forward-server/tests/`):
 | `sni_overlap_matrix.rs` | Every row of the §Overlap table |
 | `sni_legacy_to_sni_unsupported.rs` | Active legacy rule + SNI candidate → 409 with the documented code |
 
-forward-client (`crates/forward-client/tests/`):
+portunus-client (`crates/portunus-client/tests/`):
 | File | Covers |
 |---|---|
 | `sni_route_e2e_exact.rs` | Two SNI rules on `:443`, rustls clients land on the correct upstream |
@@ -450,17 +450,17 @@ forward-client (`crates/forward-client/tests/`):
 | `sni_remove_by_rule_id.rs` | RuleUpdate(REMOVE) with only rule_id removes the right group member; reverse index stays consistent |
 | `legacy_plain_tcp_unchanged.rs` | A non-SNI port on the same client is byte-identical to v0.7 (no peek path entered) |
 
-forward-server end-to-end (`crates/forward-server/tests/`):
+portunus-server end-to-end (`crates/portunus-server/tests/`):
 | File | Covers |
 |---|---|
-| `sni_metrics_surface.rs` | After a forward-client emits SNI counters, server `/metrics` exposes `forward_tls_sni_route_total{client,rule,owner,result}` and `forward_tls_sni_listener_miss_total{client,port}` |
+| `sni_metrics_surface.rs` | After a portunus-client emits SNI counters, server `/metrics` exposes `portunus_tls_sni_route_total{client,rule,owner,result}` and `portunus_tls_sni_listener_miss_total{client,port}` |
 
-forward-proto (`crates/forward-proto/tests/`):
+portunus-proto (`crates/portunus-proto/tests/`):
 | File | Covers |
 |---|---|
 | `sni_wire_compat.rs` | Field 11 on Rule, fields 11–15 on RuleStats; absent-field bytes identical to v0.8 |
 
-### Benches (`crates/forward-client/benches/sni_route.rs`)
+### Benches (`crates/portunus-client/benches/sni_route.rs`)
 
 - `SniRoutingTable::lookup` ns/op at 100 / 1 000 / 10 000 routes (hit + miss).
 - End-to-end TCP connect + handshake setup latency vs. v0.7 baseline; SNI
@@ -503,7 +503,7 @@ forward-proto (`crates/forward-proto/tests/`):
    `server_name` in clear text? (Privacy vs. observability.) Recommendation:
    yes — the value is already on the wire in clear, and operators need it
    for routing diagnostics.
-2. Should v0.9 ship a `forward-client-bundle.json` field for SNI defaults
+2. Should v0.9 ship a `portunus-client-bundle.json` field for SNI defaults
    (e.g. operator-side timeout override per client)? Recommendation: no —
    keep tunables server-side; revisit if real deployments ask.
 3. Histogram deferral (D12) — confirm during `/speckit-specify` whether

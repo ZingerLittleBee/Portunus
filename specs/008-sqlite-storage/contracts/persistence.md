@@ -12,7 +12,7 @@ Authoritative definition of:
 Implementations on either side of this contract — server boot path,
 backup CLI, restore CLI, future tooling that reads `state.db`
 directly — MUST follow these rules. Test artefacts under
-`crates/forward-server/tests/` and `crates/forward-auth/tests/` are
+`crates/portunus-server/tests/` and `crates/portunus-auth/tests/` are
 the verification points.
 
 ---
@@ -89,7 +89,7 @@ identical to a quiesced `state.db` of the producing version.
   restored file) are the v0.8 server's responsibility; third-party
   tools that just want to read may use any standard SQLite client.
 - Filename convention (informational, not enforced): the backup CLI
-  defaults to `forward-state-<RFC3339>.db` if `--out` names a
+  defaults to `portunus-state-<RFC3339>.db` if `--out` names a
   directory rather than a file.
 
 The backup CLI MUST:
@@ -126,8 +126,8 @@ The restore CLI MUST:
 | schema-too-old, migration in flight fails | boot, mid-migration | Roll back the failing migration in its own transaction; leave DB at the prior version; refuse to start; exit 78 |
 | Filesystem unsupported (NFS / tmpfs / ramfs) | boot, after `--data-dir` resolution, BEFORE opening `state.db` | Refuse to start; log `event=startup.unsupported_filesystem path=... fs=<class>`; exit 78. Detail in `R-008`/`FR-019` |
 | Another process holds the writer lock | boot, on first PRAGMA | Refuse to start; log `event=startup.store_in_use path=...`; exit 75 (EX_TEMPFAIL); operator can retry after stopping the other instance |
-| Disk full mid-transaction | runtime | Map to `ForwardError::Internal`; transaction rolls back; surface 5xx with structured error to operator API caller; do not exit |
-| Audit hand-off queue full | runtime | Drop oldest pending entry; increment `forward_audit_buffer_drops_total`; do NOT back-pressure operator path (FR-006) |
+| Disk full mid-transaction | runtime | Map to `PortunusError::Internal`; transaction rolls back; surface 5xx with structured error to operator API caller; do not exit |
+| Audit hand-off queue full | runtime | Drop oldest pending entry; increment `portunus_audit_buffer_drops_total`; do NOT back-pressure operator path (FR-006) |
 
 Exit codes follow `sysexits.h` (`EX_CONFIG=78`, `EX_TEMPFAIL=75`,
 `EX_OK=0`).
@@ -168,7 +168,7 @@ For each file present, emit:
 ```
 event = "startup.legacy_persistence_file_ignored"
 path  = "<absolute path>"
-hint  = "Pre-v0.8 file; not loaded. Run `forward-server reset` to clean."
+hint  = "Pre-v0.8 file; not loaded. Run `portunus-server reset` to clean."
 ```
 
 The server MUST NOT read these files. The presence of any of them

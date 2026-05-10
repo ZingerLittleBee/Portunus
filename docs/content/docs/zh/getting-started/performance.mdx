@@ -23,9 +23,9 @@ icon: Gauge
 
 | 层级 | 命令 | 目的 |
 | --- | --- | --- |
-| Criterion TCP 数据面 | `cargo bench -p forward-client --bench data_plane -- --quick` | 稳定的 loopback proxy primitive 回归信号。 |
-| Criterion UDP 数据面 | `cargo bench -p forward-client --bench udp_data_plane -- --quick` | UDP steady-state 与 RTT 回归信号。 |
-| 真实进程 smoke | `scripts/perf_loopback.py` | 跑真实 `forward-server`、`forward-client`、`push-rule` 和 `iperf3`。 |
+| Criterion TCP 数据面 | `cargo bench -p portunus-client --bench data_plane -- --quick` | 稳定的 loopback proxy primitive 回归信号。 |
+| Criterion UDP 数据面 | `cargo bench -p portunus-client --bench udp_data_plane -- --quick` | UDP steady-state 与 RTT 回归信号。 |
+| 真实进程 smoke | `scripts/perf_loopback.py` | 跑真实 `portunus-server`、`portunus-client`、`push-rule` 和 `iperf3`。 |
 
 ## 当前本机结果
 
@@ -42,7 +42,7 @@ iperf 3.20
 命令：
 
 ```sh
-cargo bench -p forward-client --bench data_plane -- --quick
+cargo bench -p portunus-client --bench data_plane -- --quick
 python3 scripts/bench_regression_gate.py --max-regression-pct 50
 ```
 
@@ -69,7 +69,7 @@ hot-path 调整 —— 1 字节 RTT 在噪声内不变，bulk 吞吐有显著提
 命令：
 
 ```sh
-cargo bench -p forward-client --bench udp_data_plane -- --quick
+cargo bench -p portunus-client --bench udp_data_plane -- --quick
 ```
 
 | Benchmark | Median | Throughput |
@@ -85,7 +85,7 @@ cargo bench -p forward-client --bench udp_data_plane -- --quick
 命令：
 
 ```sh
-cargo bench -p forward-server --bench operator_api -- --quick
+cargo bench -p portunus-server --bench operator_api -- --quick
 ```
 
 | Benchmark | Median |
@@ -151,7 +151,7 @@ TMPDIR=/root scripts/perf_loopback.py --seconds 10 --omit-seconds 2 \
   --with-iptables --iptables-bin /usr/sbin/iptables
 ```
 
-这台机器的 `/tmp` 是 `tmpfs`，而 `forward-server` 会拒绝把 TLS / persistence
+这台机器的 `/tmp` 是 `tmpfs`，而 `portunus-server` 会拒绝把 TLS / persistence
 状态放在 tmpfs 上，所以这里用 `TMPDIR=/root` 把临时 config / data 目录放到
 ext4。脚本结束后已清理 iptables 规则；`iptables -t nat -S OUTPUT` 只剩默认
 `-P OUTPUT ACCEPT` policy。
@@ -224,9 +224,9 @@ byte-stable（不改语义、不改 wire format），未启用时回落到 v0.10
 
 | 改动 | 文件 | 效果 |
 | --- | --- | --- |
-| Uncapped TCP copy buffer 8 KiB → 64 KiB | `crates/forward-client/src/forwarder/proxy.rs` | `tokio::io::copy_bidirectional` → `copy_bidirectional_with_sizes(64 KiB, 64 KiB)`。bulk 转发 read/write 系统调用减少；每条热连接常驻内存 16 KiB → 128 KiB。 |
-| 集中式 `dial()` + `SO_SNDBUF` / `SO_RCVBUF` | `crates/forward-client/src/resolver/mod.rs` | 出向 TCP dial 走单一 helper：按地址族新建 `TcpSocket`，设置 `dial_send_buffer_bytes` / `dial_recv_buffer_bytes`（默认各 1 MiB），再 `connect`。loopback 收益小；高 BDP WAN 路径收益明显。best-effort，内核可能 clamp。 |
-| 限速路径 chunk: 固定 16 KiB → 动态 | `crates/forward-client/src/forwarder/rate_limit/copy.rs` | 单次 chunk = `clamp(tightest_cap_bps × 100 ms, 8 KiB, 64 KiB)`。高速 cap 享受快路径同等的 syscall 摊销；低速 cap 不会一次读大块再睡很久。10% 限速精度 gate（`t010_bandwidth_cap_shapes_to_target_rate_within_10pct`）依旧通过。 |
+| Uncapped TCP copy buffer 8 KiB → 64 KiB | `crates/portunus-client/src/forwarder/proxy.rs` | `tokio::io::copy_bidirectional` → `copy_bidirectional_with_sizes(64 KiB, 64 KiB)`。bulk 转发 read/write 系统调用减少；每条热连接常驻内存 16 KiB → 128 KiB。 |
+| 集中式 `dial()` + `SO_SNDBUF` / `SO_RCVBUF` | `crates/portunus-client/src/resolver/mod.rs` | 出向 TCP dial 走单一 helper：按地址族新建 `TcpSocket`，设置 `dial_send_buffer_bytes` / `dial_recv_buffer_bytes`（默认各 1 MiB），再 `connect`。loopback 收益小；高 BDP WAN 路径收益明显。best-effort，内核可能 clamp。 |
+| 限速路径 chunk: 固定 16 KiB → 动态 | `crates/portunus-client/src/forwarder/rate_limit/copy.rs` | 单次 chunk = `clamp(tightest_cap_bps × 100 ms, 8 KiB, 64 KiB)`。高速 cap 享受快路径同等的 syscall 摊销；低速 cap 不会一次读大块再睡很久。10% 限速精度 gate（`t010_bandwidth_cap_shapes_to_target_rate_within_10pct`）依旧通过。 |
 
 测得的变化：
 
@@ -281,7 +281,7 @@ brew install iperf3
 sudo apt-get update
 sudo apt-get install -y iperf3
 
-FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+PORTUNUS_SKIP_WEBUI=1 cargo build --release -p portunus-server -p portunus-client
 scripts/perf_loopback.py --seconds 10 --omit-seconds 2 --json-out /tmp/portunus-perf.json
 
 # 仅 Linux，需要 root 或免密码 sudo 执行 iptables。
@@ -318,11 +318,11 @@ Linux 上加 `--with-iptables` 后，JSON 还会包含：
 ### Criterion 回归
 
 ```sh
-cargo bench -p forward-client --bench data_plane
+cargo bench -p portunus-client --bench data_plane
 python3 scripts/bench_regression_gate.py --max-regression-pct 50
 
-cargo bench -p forward-client --bench udp_data_plane -- --quick
-cargo bench -p forward-server --bench operator_api -- --quick
+cargo bench -p portunus-client --bench udp_data_plane -- --quick
+cargo bench -p portunus-server --bench operator_api -- --quick
 ```
 
 ### VPS
@@ -338,11 +338,11 @@ source "$HOME/.cargo/env"
 
 git clone <repo-url> Portunus
 cd Portunus
-FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+PORTUNUS_SKIP_WEBUI=1 cargo build --release -p portunus-server -p portunus-client
 scripts/perf_loopback.py --seconds 30 --omit-seconds 5 --json-out perf-vps-loopback.json
 ```
 
-两机测试时，把 `forward-server` 放控制机，`forward-client` 与 `iperf3 -s` 放 edge /
+两机测试时，把 `portunus-server` 放控制机，`portunus-client` 与 `iperf3 -s` 放 edge /
 target 机，然后从第三台或控制机执行：
 
 ```sh

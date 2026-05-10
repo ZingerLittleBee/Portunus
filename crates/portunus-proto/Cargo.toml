@@ -1,0 +1,19 @@
+[package]
+name = "portunus-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generated gRPC types for the Portunus control plane (portunus.v1)."
+
+[lints]
+workspace = true
+
+[dependencies]
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }

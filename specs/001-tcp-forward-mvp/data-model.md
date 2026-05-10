@@ -224,7 +224,7 @@ etc.) is the source of truth.
 
 ## ClientIdentity (in-memory, request-scoped)
 
-Returned by the `Authenticator` trait (`forward-auth`):
+Returned by the `Authenticator` trait (`portunus-auth`):
 
 ```rust
 pub struct ClientIdentity {

@@ -46,7 +46,7 @@ no `prefer_ipv6` flags written is byte-identical to a v0.2.0 store
 **serde wire**:
 
 ```rust
-// in forward-server/src/rules.rs
+// in portunus-server/src/rules.rs
 struct PersistedRule {
     rule_id: RuleId,
     client_name: ClientName,
@@ -98,7 +98,7 @@ is out of scope here.
 ## Resolver cache
 
 **Not persisted.** As noted in `data-model.md`, the resolver cache is
-process-local and discarded across `forward-client` restarts. This is
+process-local and discarded across `portunus-client` restarts. This is
 intentional — a restarted client should re-validate DNS state on
 first traffic rather than acting on a stale cache from a previous
 process generation.

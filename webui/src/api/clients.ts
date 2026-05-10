@@ -47,7 +47,7 @@ export function useRevokeClient() {
 
 // 011-rate-limiting-qos T040: per-owner rate-limit envelope CRUD on a
 // connected client. Backed by the operator endpoints implemented in
-// crates/forward-server/src/operator/owner_cap.rs.
+// crates/portunus-server/src/operator/owner_cap.rs.
 
 export const CLIENT_OWNERS_KEY = (client: string) =>
   ["clients", client, "owners"] as const;

@@ -6,14 +6,14 @@
 This document fixes the on-disk schema and write protocol for the
 operator-identity store. The schema is **versioned**; loaders refuse
 unknown versions to keep forward-compat predictable. The write
-protocol mirrors `forward-auth::file_store::FileTokenStore` verbatim
+protocol mirrors `portunus-auth::file_store::FileTokenStore` verbatim
 so operators have one mental model for both stores.
 
 ## File location
 
 - Default: `<config_dir>/identity.json`, where `config_dir` is the
   directory holding `server.toml` (typically
-  `/etc/forward-server/`).
+  `/etc/portunus-server/`).
 - Override: `operator_store_path = "/some/path/identity.json"` in
   `server.toml`.
 - Permissions: created `0600` by the server. Operators MUST keep this
@@ -100,7 +100,7 @@ existing v0.4 persisted shapes (`rules.json` precedent in spec 001).
   in the JSON (operators can grep credentials by recency without
   parsing timestamps). The on-wire format is opaque to operators.
 - `token_hash`: 64 lowercase hex chars. Same encoding as
-  `forward-auth::file_store`'s `TokenRecordWire::token_hash`.
+  `portunus-auth::file_store`'s `TokenRecordWire::token_hash`.
 - `created_at`, `last_used_at`, `revoked_at`: RFC 3339 / ISO 8601 UTC,
   with `Z` suffix.
 - `last_used_at`: nullable. `null` until the credential's first
@@ -144,7 +144,7 @@ does NOT auto-repair. Operators restore from backup or re-run
 
 ## Atomic write protocol
 
-Verbatim from `forward-auth::file_store::FileTokenStore::flush_locked`.
+Verbatim from `portunus-auth::file_store::FileTokenStore::flush_locked`.
 Reproduced here for the contract.
 
 Given target path `P = identity.json`:
@@ -177,7 +177,7 @@ Failure handling:
 
 ## Concurrency
 
-- One `forward-server` process per host (Constitution Tech
+- One `portunus-server` process per host (Constitution Tech
   Constraints), so file locking across processes is unnecessary.
 - In-process: a single `RwLock` over the in-memory snapshot. Reads
   (auth verification on every operator request) take the read lock;
@@ -226,7 +226,7 @@ config does NOT take the server down.
   feature may add `rules.json` parallel to this design.
 - **Audit log**. Audit lines emit through the existing tracing/JSON
   pipeline (R-008). Persistent audit storage is a future feature.
-- **Client→server tokens** (`forward-auth::file_store`). That store
+- **Client→server tokens** (`portunus-auth::file_store`). That store
   remains a separate file (`tokens.json` or whatever
   `tokens_path` says in `server.toml`). Two stores, two locks, two
   files — see data-model.md § "Mapping to existing v0.4.0 types".

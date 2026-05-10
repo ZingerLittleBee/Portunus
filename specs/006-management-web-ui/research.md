@@ -139,9 +139,9 @@ chunk; the build script (`pnpm build`) wraps `vite build && size-limit`.
 ## R-006 — Embedding static assets in the Rust binary
 
 **Decision**: `rust-embed = "8"` with the `compression` feature on,
-sourcing from `webui/dist/`. A `build.rs` in `forward-server`
+sourcing from `webui/dist/`. A `build.rs` in `portunus-server`
 panics with a clear error if the directory is missing AND env var
-`FORWARD_SKIP_WEBUI=1` is unset (release builds never set it).
+`PORTUNUS_SKIP_WEBUI=1` is unset (release builds never set it).
 
 **Rationale**:
 - `rust-embed` is the de-facto crate for "compile-time include of a
@@ -151,7 +151,7 @@ panics with a clear error if the directory is missing AND env var
 - The build.rs gate keeps releases honest: a CI release build that
   forgot to run `pnpm build` will fail loudly, preventing a UI-less
   binary from being tagged.
-- The `FORWARD_SKIP_WEBUI=1` escape hatch keeps the dev loop painless
+- The `PORTUNUS_SKIP_WEBUI=1` escape hatch keeps the dev loop painless
   for backend-only work — `cargo test` doesn't need Node.
 
 **Alternatives considered**:
@@ -161,7 +161,7 @@ panics with a clear error if the directory is missing AND env var
   handful of files.
 - **Serve from a config-dir at runtime** — breaks single-binary
   distribution; operators would need to manage two artefacts.
-- **Separate static-file server alongside `forward-server`** —
+- **Separate static-file server alongside `portunus-server`** —
   same problem; rejected by Constitution.
 
 ---
@@ -241,7 +241,7 @@ inside `AppState`, capacity 1000. The existing `auth_layer` allow
 and deny emit sites (already calling `info!` / `warn!`) gain a
 sibling call that pushes into the ring buffer. On overflow, the
 oldest entry is dropped silently (a Prometheus counter
-`forward_audit_buffer_drops_total` is incremented for ops visibility).
+`portunus_audit_buffer_drops_total` is incremented for ops visibility).
 Server restart wipes the buffer — by design; the structured JSON
 log file is the cold-storage of record.
 
@@ -317,7 +317,7 @@ extension; no new authentication or RBAC logic.
 bundles: `webui/src/i18n/en.json` and `webui/src/i18n/zh-CN.json`.
 First-load language defaults to `navigator.languages[0]` if it
 matches `zh-*`, else `en`. User toggle persists to `localStorage`
-under key `forward.lang`.
+under key `portunus.lang`.
 
 **Rationale**:
 - `i18next` is the standard React i18n stack; lazy-load support
@@ -338,7 +338,7 @@ under key `forward.lang`.
 ## R-012 — Token storage: sessionStorage vs IndexedDB vs cookies
 
 **Decision**: `sessionStorage` (per Q1 of session, already in spec
-FR-003). Keyed under `forward.token`. **No** cookies, **no**
+FR-003). Keyed under `portunus.token`. **No** cookies, **no**
 localStorage, **no** IndexedDB.
 
 **Rationale**:
@@ -365,7 +365,7 @@ localStorage, **no** IndexedDB.
 
 **Decision**: `vite.config.ts` configures a dev-server proxy that
 forwards `/v1/*` and `/metrics` to `http://127.0.0.1:7080` (the
-default operator HTTP port). Devs run `forward-server serve` in one
+default operator HTTP port). Devs run `portunus-server serve` in one
 terminal and `pnpm dev --host 127.0.0.1` in another.
 
 **Rationale**:
@@ -377,7 +377,7 @@ terminal and `pnpm dev --host 127.0.0.1` in another.
   the proxy.
 
 **Alternatives considered**:
-- **CORS allow-list on `forward-server`** — punctures a hole in
+- **CORS allow-list on `portunus-server`** — punctures a hole in
   the operator-loopback assumption; rejected.
 - **Embed during dev too** — incompatible with HMR; you'd need
   to rebuild the UI on every save.
@@ -387,7 +387,7 @@ terminal and `pnpm dev --host 127.0.0.1` in another.
 ## R-014 — Playwright vs Cypress for e2e
 
 **Decision**: Playwright. Tests live under `webui/tests/e2e/`. A
-fixture spawns `forward-server` with a known `operator_token`,
+fixture spawns `portunus-server` with a known `operator_token`,
 discovers the operator HTTP port from stderr (matches v0.4 / v0.5
 e2e pattern), and runs the SPA against the live binary.
 

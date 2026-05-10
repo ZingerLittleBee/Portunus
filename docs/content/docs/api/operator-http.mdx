@@ -4,7 +4,7 @@ description: The /v1 surface served on operator_http_listen. Loopback by default
 icon: Code
 ---
 
-`forward-server` exposes its operator surface as an HTTP API on
+`portunus-server` exposes its operator surface as an HTTP API on
 `operator_http_listen` (loopback by default). Every `/v1/*` request
 requires `Authorization: Bearer <token>`.
 
@@ -127,7 +127,7 @@ the per-spec contract docs in
 
 ```sh
 curl -sS -X POST http://127.0.0.1:7080/v1/rules \
-  -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+  -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "client": "edge-01",

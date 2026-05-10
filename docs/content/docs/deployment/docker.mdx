@@ -12,11 +12,11 @@ a multi-stage `rust:1.88` builder and produce minimal
 
 ```sh
 # Server
-docker build -t forward-server:latest \
+docker build -t portunus-server:latest \
   -f deploy/docker/Dockerfile.server .
 
 # Client
-docker build -t forward-client:latest \
+docker build -t portunus-client:latest \
   -f deploy/docker/Dockerfile.client .
 ```
 
@@ -32,7 +32,7 @@ for production. It wires a single server + client with loopback paths
 so you can immediately:
 
 ```sh
-docker compose exec server forward-server bootstrap-superadmin --name ops
+docker compose exec server portunus-server bootstrap-superadmin --name ops
 ```
 
 …and start pushing rules from inside the server container.
@@ -44,19 +44,19 @@ unit:
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./forward-config/` | `/etc/portunus/` | TLS material, optional `server.toml`, client bundles |
-| `./forward-state/` | `/var/lib/portunus/` | `state.db` and sidecar files |
+| `./portunus-config/` | `/etc/portunus/` | TLS material, optional `server.toml`, client bundles |
+| `./portunus-state/` | `/var/lib/portunus/` | `state.db` and sidecar files |
 
 Mount with:
 
 ```sh
-docker run -d --name forward-server \
+docker run -d --name portunus-server \
   -p 7443:7443 \
   -p 127.0.0.1:7080:7080 \
   -p 127.0.0.1:7081:7081 \
-  -v $(pwd)/forward-config:/etc/portunus \
-  -v $(pwd)/forward-state:/var/lib/portunus \
-  forward-server:latest
+  -v $(pwd)/portunus-config:/etc/portunus \
+  -v $(pwd)/portunus-state:/var/lib/portunus \
+  portunus-server:latest
 ```
 
 ## Considerations
@@ -70,8 +70,8 @@ docker run -d --name forward-server \
   operator CLI inside the container.
 - **Filesystem class check** still fires inside containers — make sure
   your bind-mount source is a real local filesystem (not tmpfs).
-- **`forward-client`** needs the bundle present at
-  `/etc/portunus/client.bundle.json` (or `FORWARD_CLIENT_BUNDLE`).
+- **`portunus-client`** needs the bundle present at
+  `/etc/portunus/client.bundle.json` (or `PORTUNUS_CLIENT_BUNDLE`).
 
 ## Health checks
 
@@ -79,10 +79,10 @@ A simple `HEALTHCHECK` for the server:
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD ["forward-server", "list-clients"]
+  CMD ["portunus-server", "list-clients"]
 ```
 
-(This requires `FORWARD_OPERATOR_TOKEN` to be in the container's
+(This requires `PORTUNUS_OPERATOR_TOKEN` to be in the container's
 environment; set it via the orchestrator's secret system.)
 
 ## Networking notes

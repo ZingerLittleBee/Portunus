@@ -76,16 +76,16 @@ boolean. Used by the Web UI to populate the Owner quotas tab.
 rendering, and the Web UI rules table all expose the per-rule
 `rate_limit` object verbatim (or omit when null).
 
-## 4. Prometheus surface (forward-server)
+## 4. Prometheus surface (portunus-server)
 
 Additive collectors (folded from `RuleStats` and
 `StatsReport.owner_rate_limit_stats`):
 
 ```
-forward_rate_limit_reject_total{client, rule, owner, reason}
-forward_rate_limit_throttle_seconds_total{client, rule, owner, direction}
-forward_rate_limit_active_connections{client, rule, owner}
-forward_rate_limit_owner_active_connections{client, owner}
+portunus_rate_limit_reject_total{client, rule, owner, reason}
+portunus_rate_limit_throttle_seconds_total{client, rule, owner, direction}
+portunus_rate_limit_active_connections{client, rule, owner}
+portunus_rate_limit_owner_active_connections{client, owner}
 ```
 
 `reason` ∈ {`conn_concurrent`, `conn_rate`, `udp_flow_rate`,

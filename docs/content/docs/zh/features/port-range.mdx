@@ -24,14 +24,14 @@ v0.2.0 起支持。一条规则可以原子地绑定多个监听端口。
 ## 推送一条范围规则
 
 ```sh
-forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050
 # 原子地绑定 51 个端口
 ```
 
 UDP 同样支持：
 
 ```sh
-forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
   --protocol udp
 ```
 
@@ -54,10 +54,10 @@ range_rule_max_ports = 1024
 
 ```sh
 # CLI
-forward-server rule-stats <rule_id> --per-port
+portunus-server rule-stats <rule_id> --per-port
 
 # HTTP
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
 ```
 

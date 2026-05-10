@@ -11,7 +11,7 @@ ingress and egress), new-connection rate (TCP conn/sec or UDP flow/sec), and
 concurrent connection / flow count. Each cap is independently optional;
 absent fields preserve v0.10 wire and behavioural semantics byte-for-byte.
 
-Enforcement lives in the data plane on `forward-client`. Bandwidth caps
+Enforcement lives in the data plane on `portunus-client`. Bandwidth caps
 **throttle** in-flight reads/writes via a token bucket; connection-rate and
 concurrent caps **reject** new connections (TCP RST after accept; UDP packet
 drop before NAT binding) before the v0.7 multi-target selection step. The
@@ -50,10 +50,10 @@ keyed `(client_name, owner_id)`; schema-version range shifts `[1,3] → [1,4]`.
 - Existing crates touched: `tokio` (timers + atomics for token buckets),
   `prost`, `tonic`, `serde`, `prometheus`, `rusqlite`, `tracing`,
   `refinery` (one new migration)
-- Existing codepaths touched: `proto/forward.proto`, `forward-core`
-  (per-rule and per-owner cap envelope types), `forward-server`
+- Existing codepaths touched: `proto/portunus.proto`, `portunus-core`
+  (per-rule and per-owner cap envelope types), `portunus-server`
   (rule + owner-cap persistence, validation, capability gate, operator
-  HTTP API, metrics fold for owner stats), `forward-client` (token-bucket
+  HTTP API, metrics fold for owner stats), `portunus-client` (token-bucket
   enforcement layer in front of the v0.7 multi-target dial path and in
   the bidirectional copy loop), Web UI (rules table + editor + new
   Owner quotas tab)
@@ -68,15 +68,15 @@ nullable; null = unlimited.
 
 **Testing**:
 - `cargo test` — unit + integration + contract coverage
-- `forward-proto` wire-compat tests for the new `RateLimit` and
+- `portunus-proto` wire-compat tests for the new `RateLimit` and
   `RateLimitStats` messages and the `Rule.rate_limit` / `RuleStats.rate_limit`
   / `StatsReport.owner_rate_limit_stats` field tags
-- `forward-server` contract tests for validation (cap = 0 rejected,
+- `portunus-server` contract tests for validation (cap = 0 rejected,
   burst override range, capability gate, owner envelope CRUD)
-- `forward-client` integration tests for token-bucket convergence,
+- `portunus-client` integration tests for token-bucket convergence,
   reject path (TCP RST, UDP drop), graceful drain under hot-reload,
   and per-owner ceiling binding before per-rule
-- `forward-e2e` two-host scenario covering owner A vs owner B
+- `portunus-e2e` two-host scenario covering owner A vs owner B
   starvation isolation
 - `criterion` benches: data-plane regression for the no-cap path
   (Constitution II) and token-bucket overhead at the 1 MB/s, 10 MB/s,
@@ -106,7 +106,7 @@ nullable; null = unlimited.
   per bucket); cap update is a pointer swap of an `Arc<RateLimitConfig>`,
   no allocation per packet.
 - Capability gate refuses any cap-bearing rule or any owner-envelope
-  mutation aimed at a forward-client whose self-reported
+  mutation aimed at a portunus-client whose self-reported
   `client_version < 0.11.0`.
 - Concurrent-cap behaviour on hot-reload below live count is **graceful
   drain** — no connection MAY be closed by the rate limiter (Q4).
@@ -164,15 +164,15 @@ specs/011-rate-limiting-qos/
 
 ```text
 proto/
-└── forward.proto
+└── portunus.proto
 
 crates/
-├── forward-core/
+├── portunus-core/
 │   ├── src/rate_limit.rs              # NEW: RateLimit envelope + validation
 │   └── tests/
-├── forward-proto/
+├── portunus-proto/
 │   └── tests/
-├── forward-server/
+├── portunus-server/
 │   ├── src/
 │   │   ├── operator/http.rs           # capability gate + owner-cap routes
 │   │   ├── operator/owner_cap.rs      # NEW: owner-cap REST handlers
@@ -184,7 +184,7 @@ crates/
 │   │   └── store/migrations/
 │   │       └── V005__add_rate_limit_columns.sql   # NEW
 │   └── tests/
-├── forward-client/
+├── portunus-client/
 │   ├── src/
 │   │   ├── control.rs                 # absorb owner caps from rule push
 │   │   ├── forwarder/
@@ -197,7 +197,7 @@ crates/
 │   │   │   ├── stats.rs               # report rate-limit counters
 │   │   │   └── udp/                   # gate NAT-bind behind UDP flow rate
 │   │   └── tests/
-├── forward-e2e/
+├── portunus-e2e/
 │   └── tests/                         # owner A vs B starvation scenario
 └── webui/
     ├── src/
@@ -209,8 +209,8 @@ crates/
 
 **Structure Decision**: The feature lands inside the existing crates plus
 the embedded Web UI. Per-rule cap data lives next to existing rule state
-in `forward-server`; per-owner cap data gets its own table and a thin
-`owner.rs` aggregation surface. On `forward-client`, the rate limiter is
+in `portunus-server`; per-owner cap data gets its own table and a thin
+`owner.rs` aggregation surface. On `portunus-client`, the rate limiter is
 a new sibling module under `forwarder/` so the v0.7 failover and v0.10
 PROXY paths remain untouched on no-cap rules. The Web UI extends the
 v0.6 rule editor and adds one new tab on the client detail page.

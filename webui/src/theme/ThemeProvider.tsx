@@ -3,7 +3,7 @@ import * as React from "react";
 export type ThemeChoice = "light" | "dark" | "system";
 type EffectiveTheme = "light" | "dark";
 
-const THEME_KEY = "forward.theme";
+const THEME_KEY = "portunus.theme";
 
 interface ThemeContextValue {
   theme: ThemeChoice;

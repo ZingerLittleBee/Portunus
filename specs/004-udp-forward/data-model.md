@@ -22,7 +22,7 @@ Capability negotiation is **proactive** (push-time), not reactive
 
 1. **Client → server (Hello)**: The client declares its supported
    protocols in a new `Hello.supported_protocols repeated Protocol`
-   field (see `contracts/forward.proto`). v0.4.0 clients send
+   field (see `contracts/portunus.proto`). v0.4.0 clients send
    `{TCP, UDP}`. v0.3.0 clients don't send the field; the server
    treats absence as `{TCP}`.
 2. **Server (ConnectedClient)**: The Control RPC handler reads the
@@ -169,7 +169,7 @@ RuleStats {
 ```
 
 **Invariant**: `bytes_in / bytes_out` are protocol-agnostic. The same
-collector family (`forward_rule_bytes_in_total{client,rule}`) carries
+collector family (`portunus_rule_bytes_in_total{client,rule}`) carries
 both TCP and UDP byte counts. Operators distinguish by the
 **protocol-specific** collectors that are non-zero on each rule.
 
@@ -238,14 +238,14 @@ Server-side at push time (mirrors v0.2.0/v0.3.0 push validation):
 
 | Collector | Type | Labels | Notes |
 |---|---|---|---|
-| `forward_rule_bytes_in_total` | counter | `client,rule` | **Existing.** Now carries TCP+UDP. |
-| `forward_rule_bytes_out_total` | counter | `client,rule` | Same. |
-| `forward_rule_active_connections` | gauge | `client,rule` | **Existing.** TCP only — UDP rules report 0. |
-| `forward_rule_active_flows` | gauge | `client,rule` | **NEW.** UDP only — TCP rules report 0 (or are absent if never set). |
-| `forward_rule_dns_failures_total` | counter | `client,rule` | **Existing v0.3.0.** Now also incremented by UDP rules. |
-| `forward_rule_udp_datagrams_in_total` | counter | `client,rule` | **NEW.** UDP only. |
-| `forward_rule_udp_datagrams_out_total` | counter | `client,rule` | **NEW.** UDP only. |
-| `forward_rule_flows_dropped_overflow_total` | counter | `client,rule` | **NEW.** UDP only. |
+| `portunus_rule_bytes_in_total` | counter | `client,rule` | **Existing.** Now carries TCP+UDP. |
+| `portunus_rule_bytes_out_total` | counter | `client,rule` | Same. |
+| `portunus_rule_active_connections` | gauge | `client,rule` | **Existing.** TCP only — UDP rules report 0. |
+| `portunus_rule_active_flows` | gauge | `client,rule` | **NEW.** UDP only — TCP rules report 0 (or are absent if never set). |
+| `portunus_rule_dns_failures_total` | counter | `client,rule` | **Existing v0.3.0.** Now also incremented by UDP rules. |
+| `portunus_rule_udp_datagrams_in_total` | counter | `client,rule` | **NEW.** UDP only. |
+| `portunus_rule_udp_datagrams_out_total` | counter | `client,rule` | **NEW.** UDP only. |
+| `portunus_rule_flows_dropped_overflow_total` | counter | `client,rule` | **NEW.** UDP only. |
 
 `remove-rule` removes the labels for ALL collectors (extending the v0.3.0
 cleanup pattern that drops the `dns_failures` row). A 1024-port UDP

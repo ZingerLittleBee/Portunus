@@ -3,7 +3,7 @@
 Port-based TCP and UDP forwarding service with a control-plane server,
 edge client, and operator surface.
 
-A `forward-server` runs on a control host. Edge hosts run `forward-client`,
+A `portunus-server` runs on a control host. Edge hosts run `portunus-client`,
 authenticate over TLS + bearer token, and accept rule pushes from the
 operator. Each rule binds a listener on the client (TCP `accept` loop or
 UDP `recv_from` loop, per the rule's `protocol`) and forwards traffic to
@@ -21,9 +21,9 @@ The release notes and performance baseline are in
 ## Status
 
 - Initial release (v0.1.0) — see [CHANGELOG](CHANGELOG.md).
-- Rust 1.88, edition 2024, workspace of six crates (`forward-proto`,
-  `forward-core`, `forward-auth`, `forward-server`, `forward-client`,
-  `forward-e2e`).
+- Rust 1.88, edition 2024, workspace of six crates (`portunus-proto`,
+  `portunus-core`, `portunus-auth`, `portunus-server`, `portunus-client`,
+  `portunus-e2e`).
 - Auth model: TLS + bearer token. Cert-based client auth (mTLS) was
   deliberately removed in Constitution v2.0; see `.specify/memory/constitution.md`.
 
@@ -32,48 +32,48 @@ The release notes and performance baseline are in
 Prerequisites: Rust 1.88+ stable. `protoc` is vendored via `prost-build`.
 
 ```sh
-cargo build --release -p forward-server -p forward-client
-# →  target/release/forward-server
-#    target/release/forward-client
+cargo build --release -p portunus-server -p portunus-client
+# →  target/release/portunus-server
+#    target/release/portunus-client
 ```
 
 ## Basic flow
 
 ```sh
 # Host A — start the server (TLS material + token store auto-generated)
-./target/release/forward-server --config-dir ./srv serve
+./target/release/portunus-server --config-dir ./srv serve
 
 # Operator (Host A) — bootstrap the superadmin operator account (v0.5.0+).
 # Prints the bearer token EXACTLY ONCE — capture it now.
-./target/release/forward-server --config-dir ./srv bootstrap-superadmin --name ops
-# →  superadmin user_id=_superadmin token=<paste-into-FORWARD_OPERATOR_TOKEN>
+./target/release/portunus-server --config-dir ./srv bootstrap-superadmin --name ops
+# →  superadmin user_id=_superadmin token=<paste-into-PORTUNUS_OPERATOR_TOKEN>
 
-# Every operator subcommand below reads FORWARD_OPERATOR_TOKEN from env.
-export FORWARD_OPERATOR_TOKEN=<paste-token-here>
+# Every operator subcommand below reads PORTUNUS_OPERATOR_TOKEN from env.
+export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 
 # Operator — provision a forwarding client and copy the bundle
-./target/release/forward-server --config-dir ./srv \
+./target/release/portunus-server --config-dir ./srv \
   provision-client edge-01 --out ./edge-01.bundle.json
 
 # Host B — start the client against the issued bundle
-./target/release/forward-client --bundle ./edge-01.bundle.json
+./target/release/portunus-client --bundle ./edge-01.bundle.json
 
 # Operator — push a rule (8080 on edge-01 → example.com:80)
-./target/release/forward-server push-rule edge-01 8080 example.com:80
+./target/release/portunus-server push-rule edge-01 8080 example.com:80
 
 # Operator — push a port-range rule (30000-30050 → upstream.local:30000-30050)
-./target/release/forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+./target/release/portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050
 
 # Operator — push a UDP rule (v0.4.0+)
-./target/release/forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+./target/release/portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
 
 # UDP and TCP rules can coexist on the same port — the kernel demuxes by protocol
-./target/release/forward-server push-rule edge-01 6000 upstream.local:9999  # TCP:6000
+./target/release/portunus-server push-rule edge-01 6000 upstream.local:9999  # TCP:6000
 
 # Operator — observe traffic
-./target/release/forward-server rule-stats <rule_id>
-./target/release/forward-server rule-stats <rule_id> --per-port  # range rules only
-curl -s 127.0.0.1:7081/metrics | grep forward_rule_bytes
+./target/release/portunus-server rule-stats <rule_id>
+./target/release/portunus-server rule-stats <rule_id> --per-port  # range rules only
+curl -s 127.0.0.1:7081/metrics | grep portunus_rule_bytes
 ```
 
 Range rules (v0.2.0,
@@ -96,14 +96,14 @@ stays Active throughout, individual connections fail fast with a
 classified reason. Default address-family is IPv4-first; pass
 `--prefer-ipv6` to flip the order per rule. DNS failure rate is
 exposed per rule both via `rule-stats` and as
-`forward_rule_dns_failures_total{client,rule}` in `/metrics`.
+`portunus_rule_dns_failures_total{client,rule}` in `/metrics`.
 
 ```sh
 # DNS target — resolves api.example.com on first connect, caches TTL
-./target/release/forward-server push-rule edge-01 8443 api.example.com:443
+./target/release/portunus-server push-rule edge-01 8443 api.example.com:443
 
 # Same target, prefer IPv6 (AAAA-first; falls back to A if no AAAA)
-./target/release/forward-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+./target/release/portunus-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
 ```
 
 IP-target rules from v0.2.0 keep their byte-identical hot path —
@@ -118,18 +118,18 @@ alongside the existing `tokens.json`. Two bootstrap paths:
 
 ```sh
 # Path A — interactive single-shot bootstrap (recommended).
-./target/release/forward-server --config-dir ./srv bootstrap-superadmin --name ops
+./target/release/portunus-server --config-dir ./srv bootstrap-superadmin --name ops
 # Path B — server.toml shortcut. Add this once, restart, then remove.
 #   operator_token = "<43-char URL-safe-base64 token>"
-./target/release/forward-server gen-token  # ← prints a fresh token to stdout
+./target/release/portunus-server gen-token  # ← prints a fresh token to stdout
 ```
 
 Add a constrained user, give them a credential, scope what they can push:
 
 ```sh
-./target/release/forward-server user-add alice --display-name Alice
-./target/release/forward-server credential-issue alice --label laptop
-./target/release/forward-server grant-add --user-id alice --client edge-01 \
+./target/release/portunus-server user-add alice --display-name Alice
+./target/release/portunus-server credential-issue alice --label laptop
+./target/release/portunus-server grant-add --user-id alice --client edge-01 \
   --listen-port-start 30000 --listen-port-end 30050 --protocols tcp,udp
 ```
 
@@ -153,8 +153,8 @@ token and rotates it herself; the response carries a fresh token, the
 old token then 401s on subsequent requests:
 
 ```sh
-FORWARD_OPERATOR_TOKEN=<alice's old token> \
-  ./target/release/forward-server credential-rotate alice <credential_id>
+PORTUNUS_OPERATOR_TOKEN=<alice's old token> \
+  ./target/release/portunus-server credential-rotate alice <credential_id>
 ```
 
 The data plane (gRPC client tokens, TCP/UDP forwarding hot path, DNS
@@ -172,10 +172,10 @@ revocation, and the SC-001 5-minute target — is in
 
 Production scaffolding lives under [`deploy/`](deploy):
 
-- [`deploy/systemd/`](deploy/systemd) — `forward-server.service` and
-  `forward-client.service` with hardened defaults (`User=` + `ProtectSystem=`
+- [`deploy/systemd/`](deploy/systemd) — `portunus-server.service` and
+  `portunus-client.service` with hardened defaults (`User=` + `ProtectSystem=`
   + `CapabilityBoundingSet=` etc.) plus an `install.sh` that creates the
-  service users and lays out `/etc/forward/` + `/var/lib/forward/`.
+  service users and lays out `/etc/portunus/` + `/var/lib/portunus/`.
 - [`deploy/docker/`](deploy/docker) — `Dockerfile.server` and
   `Dockerfile.client` runtime images that copy prebuilt binaries into
   `distroless/cc:nonroot`, plus a local-only `docker-compose.yml` for
@@ -196,7 +196,7 @@ Exit codes and HTTP status mappings are frozen at v1.
 
 ## Web UI
 
-`forward-server` ships a single-page React UI on the operator HTTP
+`portunus-server` ships a single-page React UI on the operator HTTP
 listener (loopback by default). Open the listener address in a modern
 browser (Chrome / Firefox / Safari / Edge — latest two releases),
 paste your operator bearer token at the login screen, and you get:
@@ -221,7 +221,7 @@ the listener behind a reverse proxy that adds its own auth.
 Build instructions for the SPA live in
 [`webui/README.md`](webui/README.md). Release pipelines run
 `pnpm install --frozen-lockfile && pnpm build` before
-`cargo build --release -p forward-server` so the bundle is embedded
+`cargo build --release -p portunus-server` so the bundle is embedded
 into the binary at compile time. There is **no** runtime Node
 dependency on the deployment host.
 
@@ -229,14 +229,14 @@ dependency on the deployment host.
 
 ```
 crates/
-  forward-proto/    gRPC schema (control-plane) — generated by tonic-prost
-  forward-core/     IDs, errors, config, structured-log redaction layer
-  forward-auth/     Authenticator trait + FileTokenStore (mode 0600)
-  forward-server/   Control-plane binary: gRPC + operator HTTP + Prometheus
-  forward-client/   Edge binary: bidi gRPC stream + TCP forwarding listeners
-  forward-e2e/      Process-level integration tests
+  portunus-proto/    gRPC schema (control-plane) — generated by tonic-prost
+  portunus-core/     IDs, errors, config, structured-log redaction layer
+  portunus-auth/     Authenticator trait + FileTokenStore (mode 0600)
+  portunus-server/   Control-plane binary: gRPC + operator HTTP + Prometheus
+  portunus-client/   Edge binary: bidi gRPC stream + TCP forwarding listeners
+  portunus-e2e/      Process-level integration tests
 deploy/
-  systemd/          forward-{server,client}.service + install.sh
+  systemd/          portunus-{server,client}.service + install.sh
   docker/           Dockerfile.{server,client} + local docker-compose.yml
   server.toml.example
 docs/
@@ -256,11 +256,11 @@ specs/001-tcp-forward-mvp/
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo bench -p forward-client --bench data_plane -- --save-baseline v0.1.0
+cargo bench -p portunus-client --bench data_plane -- --save-baseline v0.1.0
 ```
 
 The criterion baseline lives at
-`crates/forward-client/benches/baselines/v0.1.0.json`. Re-running
+`crates/portunus-client/benches/baselines/v0.1.0.json`. Re-running
 `cargo bench` without `--save-baseline` compares against it.
 
 CI runs a regression gate (`.github/workflows/bench.yml`) on PRs touching
@@ -269,7 +269,7 @@ benchmark's median is >25% slower than the committed baseline. When an
 intentional perf change lands, recapture and commit the new numbers:
 
 ```sh
-cargo bench -p forward-client --bench data_plane -- --save-baseline v0.1.0
+cargo bench -p portunus-client --bench data_plane -- --save-baseline v0.1.0
 # regenerate the JSON summary (see CHANGELOG for the snippet that built it)
 ```
 

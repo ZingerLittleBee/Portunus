@@ -14,8 +14,8 @@ Context.
 
 **Decision**: Use gRPC (HTTP/2) with bidirectional streaming, implemented via
 `tonic` 0.12 + `prost` 0.13. Codegen through `tonic-build` invoked from
-`forward-proto`'s `build.rs`. Wire schema in `proto/forward.proto`, versioned
-with a top-level package `forward.v1`.
+`portunus-proto`'s `build.rs`. Wire schema in `proto/portunus.proto`, versioned
+with a top-level package `portunus.v1`.
 
 **Rationale**:
 - Bidirectional streaming naturally models the long-lived control channel:
@@ -135,7 +135,7 @@ output, hex-encoded). No salt, no per-user pepper.
 ## Decision 5 — Server Certificate Pinning on the Client
 
 **Decision**: Implement a custom `rustls::client::danger::ServerCertVerifier`
-in `forward-client/src/pinned_verifier.rs`. The verifier:
+in `portunus-client/src/pinned_verifier.rs`. The verifier:
 1. Computes SHA-256 over the leaf certificate's DER bytes.
 2. Compares to the fingerprint string from the credential bundle.
 3. Returns `Ok(ServerCertVerified::assertion())` on match, otherwise
@@ -215,7 +215,7 @@ sockets are forcibly closed.
 
 ## Decision 8 — Operator Interface: CLI + Loopback HTTP
 
-**Decision**: The `forward-server` binary exposes both a CLI subcommand
+**Decision**: The `portunus-server` binary exposes both a CLI subcommand
 surface (`provision-client`, `revoke`, `list-clients`, `push-rule`,
 `remove-rule`, `rule-stats`) and a small HTTP service bound to
 `127.0.0.1` with the same operations, so future tooling (a web UI,
@@ -243,11 +243,11 @@ fall back to direct in-process execution when invoked stand-alone.
 
 **Decision**: A separate HTTP endpoint at `127.0.0.1:<metrics_port>/metrics`
 exposes Prometheus-format text. Collectors:
-- `forward_clients_connected` (gauge) — current count
-- `forward_rule_bytes_in_total{client,rule}` (counter)
-- `forward_rule_bytes_out_total{client,rule}` (counter)
-- `forward_rule_active_connections{client,rule}` (gauge)
-- `forward_auth_failures_total{reason}` (counter)
+- `portunus_clients_connected` (gauge) — current count
+- `portunus_rule_bytes_in_total{client,rule}` (counter)
+- `portunus_rule_bytes_out_total{client,rule}` (counter)
+- `portunus_rule_active_connections{client,rule}` (gauge)
+- `portunus_auth_failures_total{reason}` (counter)
 
 **Rationale**:
 - Constitution IV makes the metrics endpoint a MUST. The spec's claim of

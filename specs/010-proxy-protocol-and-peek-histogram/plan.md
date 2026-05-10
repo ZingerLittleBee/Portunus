@@ -7,11 +7,11 @@
 
 v0.10 adds two missing pieces on top of the existing v0.9 codebase:
 
-1. Per-target PROXY protocol injection on the forward-client upstream dial path.
+1. Per-target PROXY protocol injection on the portunus-client upstream dial path.
 2. A Prometheus histogram for TLS ClientHello peek duration on SNI-mode listeners.
 
 The design stays additive. A target may opt into PROXY v1 or v2 independently of
-its siblings in the same rule. The forward-client writes exactly one PROXY header
+its siblings in the same rule. The portunus-client writes exactly one PROXY header
 to the upstream socket before any forwarded bytes when the selected target opts in,
 and writes nothing otherwise. The header always reports the original client source
 address and the accepted listener's concrete local address, not the wildcard bind.
@@ -33,16 +33,16 @@ patterns.
 **Primary Dependencies**:
 - New workspace deps: none
 - Existing crates touched: `tokio`, `prost`, `tonic`, `serde`, `prometheus`, `rusqlite`, `tracing`
-- Existing codepaths touched: `proto/forward.proto`, `forward-core` target model, `forward-server` rule persistence / operator API / metrics fold, `forward-client` failover dial path, SNI listener stats
+- Existing codepaths touched: `proto/portunus.proto`, `portunus-core` target model, `portunus-server` rule persistence / operator API / metrics fold, `portunus-client` failover dial path, SNI listener stats
 
 **Storage**: Existing SQLite store. One additive migration on `rules` target persistence to record per-target PROXY protocol mode. Existing proto / JSON shapes remain backward-compatible when the field is absent.
 
 **Testing**:
 - `cargo test` for unit + integration + contract coverage
-- `forward-proto` wire-compat tests for new target / stats fields
-- `forward-server` contract tests for validation and capability gating
-- `forward-client` integration tests for PROXY v1/v2 prelude emission and SNI histogram reporting
-- `forward-e2e` observability / mixed-target scenarios where useful
+- `portunus-proto` wire-compat tests for new target / stats fields
+- `portunus-server` contract tests for validation and capability gating
+- `portunus-client` integration tests for PROXY v1/v2 prelude emission and SNI histogram reporting
+- `portunus-e2e` observability / mixed-target scenarios where useful
 
 **Target Platform**: Linux primary, macOS development
 **Project Type**: Cargo workspace with server/client binaries
@@ -103,15 +103,15 @@ specs/010-proxy-protocol-and-peek-histogram/
 
 ```text
 proto/
-└── forward.proto
+└── portunus.proto
 
 crates/
-├── forward-core/
+├── portunus-core/
 │   ├── src/rule_target.rs
 │   └── tests/
-├── forward-proto/
+├── portunus-proto/
 │   └── tests/
-├── forward-server/
+├── portunus-server/
 │   ├── src/
 │   │   ├── operator/http.rs
 │   │   ├── operator/rule_cli.rs
@@ -120,7 +120,7 @@ crates/
 │   │   ├── metrics.rs
 │   │   └── store/migrations/
 │   └── tests/
-├── forward-client/
+├── portunus-client/
 │   ├── src/
 │   │   ├── control.rs
 │   │   ├── forwarder/failover.rs
@@ -130,7 +130,7 @@ crates/
 │   │   ├── forwarder/sni/peek.rs
 │   │   └── forwarder/stats.rs
 │   └── tests/
-└── forward-e2e/
+└── portunus-e2e/
     └── tests/
 ```
 

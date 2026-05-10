@@ -24,14 +24,14 @@ opt-in via `--per-port`.
 ## Push a range rule
 
 ```sh
-forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050
 # binds 51 ports atomically
 ```
 
 UDP works the same way:
 
 ```sh
-forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
   --protocol udp
 ```
 
@@ -55,10 +55,10 @@ range_rule_max_ports = 1024
 
 ```sh
 # CLI
-forward-server rule-stats <rule_id> --per-port
+portunus-server rule-stats <rule_id> --per-port
 
 # HTTP
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
 ```
 

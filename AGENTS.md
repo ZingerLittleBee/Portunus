@@ -13,7 +13,7 @@ hot-reload that lowers a concurrent cap below the live count
 new workspace deps.
 
 Key invariants:
-- "Per-client" cap is per-RBAC-owner within a forward-client (Q1).
+- "Per-client" cap is per-RBAC-owner within a portunus-client (Q1).
   Cap envelope keyed `(client, owner)`. Node-level aggregate caps
   are explicitly out of scope for v0.11.
 - Wire fields are additive: `Rule.rate_limit = 12`,

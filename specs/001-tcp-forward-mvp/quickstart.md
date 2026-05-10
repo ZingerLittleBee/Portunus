@@ -4,7 +4,7 @@
 **Audience**: an operator going from a fresh checkout to "100 MB streamed
 through a forwarding rule" in under 5 minutes (the SC-001 target).
 
-This document doubles as the script the e2e test crate (`forward-e2e`)
+This document doubles as the script the e2e test crate (`portunus-e2e`)
 exercises programmatically.
 
 ---
@@ -22,10 +22,10 @@ exercises programmatically.
 ## Build
 
 ```sh
-cargo build --release -p forward-server -p forward-client
+cargo build --release -p portunus-server -p portunus-client
 # produces:
-#   target/release/forward-server
-#   target/release/forward-client
+#   target/release/portunus-server
+#   target/release/portunus-client
 ```
 
 ---
@@ -34,7 +34,7 @@ cargo build --release -p forward-server -p forward-client
 
 ```sh
 mkdir -p ./srv
-./target/release/forward-server --config-dir ./srv \
+./target/release/portunus-server --config-dir ./srv \
   --control-listen 0.0.0.0:7443 \
   --operator-http-listen 127.0.0.1:7080 \
   --metrics-listen 127.0.0.1:7081
@@ -57,7 +57,7 @@ It logs (JSON, one line per event):
 ## Step 2 — Provision a client (Host A)
 
 ```sh
-./target/release/forward-server --config-dir ./srv \
+./target/release/portunus-server --config-dir ./srv \
   provision-client edge-01 --out ./srv/edge-01.bundle.json
 ```
 
@@ -93,7 +93,7 @@ Transfer `edge-01.bundle.json` to Host B over a channel you trust (`scp`,
 ## Step 3 — Start the client (Host B)
 
 ```sh
-./target/release/forward-client --bundle ./edge-01.bundle.json
+./target/release/portunus-client --bundle ./edge-01.bundle.json
 ```
 
 Client log:
@@ -111,7 +111,7 @@ Within 5 seconds (SC-001 budget), Host A's server logs:
 
 Verify on Host A:
 ```sh
-./target/release/forward-server --config-dir ./srv list-clients
+./target/release/portunus-server --config-dir ./srv list-clients
 ```
 ```
 NAME      CONNECTED   REMOTE              CONNECTED-AT
@@ -138,7 +138,7 @@ Or an HTTP server: `python3 -m http.server 8080`.
 ## Step 5 — Push a forwarding rule (Host A)
 
 ```sh
-./target/release/forward-server --config-dir ./srv \
+./target/release/portunus-server --config-dir ./srv \
   push-rule edge-01 18080 10.0.0.5:8080
 ```
 
@@ -182,12 +182,12 @@ sha256sum /tmp/out.bin   # must match in.bin's hash
 
 Server metrics (Host A, after a stats interval ~5 s):
 ```sh
-curl -s http://127.0.0.1:7081/metrics | grep '^forward_rule'
+curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
 ```
-Shows `forward_rule_bytes_in_total{client="edge-01",rule="1"}` ≈ 100 MB.
+Shows `portunus_rule_bytes_in_total{client="edge-01",rule="1"}` ≈ 100 MB.
 
 ```sh
-./target/release/forward-server --config-dir ./srv rule-stats 1
+./target/release/portunus-server --config-dir ./srv rule-stats 1
 ```
 ```
 rule_id=1 bytes_in=104857600 bytes_out=0 active_connections=0
@@ -200,7 +200,7 @@ rule_id=1 bytes_in=104857600 bytes_out=0 active_connections=0
 ## Step 7 — Remove the rule, shut down
 
 ```sh
-./target/release/forward-server --config-dir ./srv remove-rule 1
+./target/release/portunus-server --config-dir ./srv remove-rule 1
 ```
 
 Server log:
@@ -225,7 +225,7 @@ exit `0`.
 
 ```sh
 # Tamper with the bundle's server_cert_sha256 field, restart client.
-./target/release/forward-client --bundle ./tampered-bundle.json
+./target/release/portunus-client --bundle ./tampered-bundle.json
 ```
 
 Client log:
@@ -237,7 +237,7 @@ And exits non-zero. Server logs nothing (handshake never completed).
 ### Revoke
 
 ```sh
-./target/release/forward-server --config-dir ./srv revoke edge-01
+./target/release/portunus-server --config-dir ./srv revoke edge-01
 ```
 
 Server log:
@@ -258,7 +258,7 @@ Server log: {"event":"auth.failure","client_name":"edge-01","reason":"token_revo
 
 Stop the client, then:
 ```sh
-./target/release/forward-server --config-dir ./srv push-rule edge-01 18080 10.0.0.5:8080
+./target/release/portunus-server --config-dir ./srv push-rule edge-01 18080 10.0.0.5:8080
 # exit code 4
 # stderr: error: client_not_connected
 ```
@@ -271,12 +271,12 @@ With a rule already listening on 18080 (or anything else holding it on
 Host B):
 
 ```sh
-./target/release/forward-server --config-dir ./srv push-rule edge-01 18080 10.0.0.5:8080
+./target/release/portunus-server --config-dir ./srv push-rule edge-01 18080 10.0.0.5:8080
 # exit code 6 (activation_failed)
 # stderr: error: activation_failed: port_in_use
-./target/release/forward-server --config-dir ./srv list-rules --client edge-01
+./target/release/portunus-server --config-dir ./srv list-rules --client edge-01
 # rule_id=2 state=Failed(port_in_use) listen_port=18080 …
-./target/release/forward-server --config-dir ./srv remove-rule 2
+./target/release/portunus-server --config-dir ./srv remove-rule 2
 # now the port is free for a new push
 ```
 

@@ -90,7 +90,7 @@ from the group (see §4).
 
 ### 1.2 SQLite schema migration
 
-`crates/forward-server/src/store/migrations/V002__add_sni_pattern.sql`:
+`crates/portunus-server/src/store/migrations/V002__add_sni_pattern.sql`:
 
 ```sql
 ALTER TABLE rules ADD COLUMN sni_pattern TEXT;
@@ -121,7 +121,7 @@ convention for runtime counters.
 
 ---
 
-## 2. In-memory routing entities (forward-client)
+## 2. In-memory routing entities (portunus-client)
 
 ### 2.1 `ClientRule` (extended)
 
@@ -217,7 +217,7 @@ Per-connection accept handler:
 
 ### 2.4 `PortGroupManager`
 
-The single ownership root for SNI/legacy listeners on a forward-client.
+The single ownership root for SNI/legacy listeners on a portunus-client.
 
 ```rust
 pub struct PortGroupManager {
@@ -281,7 +281,7 @@ enum GroupState {
 
 ---
 
-## 3. Wire entities (forward-proto)
+## 3. Wire entities (portunus-proto)
 
 See [`contracts/wire.md`](./contracts/wire.md) for the full proto delta.
 Summary:

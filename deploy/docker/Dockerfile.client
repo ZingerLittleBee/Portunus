@@ -1,18 +1,18 @@
-# forward-client runtime image.
+# portunus-client runtime image.
 # Build context must provide prebuilt Linux binaries at:
-#   docker-bin/amd64/forward-client
-#   docker-bin/arm64/forward-client
+#   docker-bin/amd64/portunus-client
+#   docker-bin/arm64/portunus-client
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 ARG TARGETARCH
-COPY docker-bin/${TARGETARCH}/forward-client /usr/local/bin/forward-client
+COPY docker-bin/${TARGETARCH}/portunus-client /usr/local/bin/portunus-client
 
-# Bundle is mounted read-only at /etc/forward/client.bundle.json.
+# Bundle is mounted read-only at /etc/portunus/client.bundle.json.
 # Forwarding rules pushed by the operator may bind any port the kernel allows;
 # host networking (or explicit `-p` per rule) is required for traffic to reach
 # the listener from outside the container.
 USER nonroot:nonroot
 
-ENTRYPOINT ["/usr/local/bin/forward-client"]
-CMD ["--bundle", "/etc/forward/client.bundle.json"]
+ENTRYPOINT ["/usr/local/bin/portunus-client"]
+CMD ["--bundle", "/etc/portunus/client.bundle.json"]

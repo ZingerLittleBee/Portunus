@@ -170,9 +170,9 @@ The 5-second-cadence SSE channel from spec 006 gains the same two fields. Each `
 ONE new series per rule, regardless of target count:
 
 ```text
-# HELP forward_rule_target_failovers_total Total Healthy<->Failed target health transitions on this rule.
-# TYPE forward_rule_target_failovers_total counter
-forward_rule_target_failovers_total{client="edge-01",rule="42"} 3
+# HELP portunus_rule_target_failovers_total Total Healthy<->Failed target health transitions on this rule.
+# TYPE portunus_rule_target_failovers_total counter
+portunus_rule_target_failovers_total{client="edge-01",rule="42"} 3
 ```
 
 No per-target time series are exported (FR-018, SC-006). Per-target counters are query-only via §4.
@@ -182,7 +182,7 @@ No per-target time series are exported (FR-018, SC-006). Per-target counters are
 ### Legacy form (v0.6.0, still works)
 
 ```sh
-forward-server push-rule edge-01 8080 example.com:80 --protocol tcp
+portunus-server push-rule edge-01 8080 example.com:80 --protocol tcp
 ```
 
 Equivalent to a v0.6.0-shaped POST. Builds a one-element targets list under the hood.
@@ -190,7 +190,7 @@ Equivalent to a v0.6.0-shaped POST. Builds a one-element targets list under the 
 ### New repeatable `--target` form
 
 ```sh
-forward-server push-rule edge-01 8080 \
+portunus-server push-rule edge-01 8080 \
     --target primary.example.com:80 \
     --target secondary.example.com:80 \
     --protocol tcp \
@@ -202,7 +202,7 @@ forward-server push-rule edge-01 8080 \
 ### `--targets-json` form (machine-friendly)
 
 ```sh
-forward-server push-rule edge-01 8080 --protocol tcp \
+portunus-server push-rule edge-01 8080 --protocol tcp \
     --targets-json '[{"host":"primary.example.com","port":80,"priority":0},
                      {"host":"secondary.example.com","port":80,"priority":1}]'
 ```
@@ -246,12 +246,12 @@ For single-target rules, `--per-target` prints `per-target detail: (single-targe
 
 | Test | Crate | What it asserts |
 |---|---|---|
-| `rules_multi_target_contract::accept_legacy_shape` | forward-server | legacy POST round-trips to a length-1 `targets[]` response |
-| `rules_multi_target_contract::accept_new_shape` | forward-server | new POST round-trips and echoes targets in priority order |
-| `rules_multi_target_contract::reject_both_shapes` | forward-server | both fields present → 400 `rule_shape_conflict` |
-| `rules_multi_target_contract::reject_neither` | forward-server | neither present → 400 `rule_shape_missing` |
-| `rules_multi_target_contract::reject_duplicates` | forward-server | duplicate (host,port) → 400 `targets_duplicate` |
-| `rules_multi_target_contract::reject_old_client` | forward-server | multi-target push to v0.6.0 client → 422 `multi_target_unsupported_by_client` |
-| `rules_multi_target_contract::stats_default_back_compat` | forward-server | default stats response carries `target_failovers_total` field even for single-target rules |
-| `rules_multi_target_contract::stats_per_target_query` | forward-server | `?per_target=true` populates `per_target[]` for multi-target rules and returns `per_target: []` for single-target |
-| `rules_multi_target_contract::metrics_cardinality` | forward-server | `/metrics` adds exactly 1 new series per rule regardless of `targets.len()` |
+| `rules_multi_target_contract::accept_legacy_shape` | portunus-server | legacy POST round-trips to a length-1 `targets[]` response |
+| `rules_multi_target_contract::accept_new_shape` | portunus-server | new POST round-trips and echoes targets in priority order |
+| `rules_multi_target_contract::reject_both_shapes` | portunus-server | both fields present → 400 `rule_shape_conflict` |
+| `rules_multi_target_contract::reject_neither` | portunus-server | neither present → 400 `rule_shape_missing` |
+| `rules_multi_target_contract::reject_duplicates` | portunus-server | duplicate (host,port) → 400 `targets_duplicate` |
+| `rules_multi_target_contract::reject_old_client` | portunus-server | multi-target push to v0.6.0 client → 422 `multi_target_unsupported_by_client` |
+| `rules_multi_target_contract::stats_default_back_compat` | portunus-server | default stats response carries `target_failovers_total` field even for single-target rules |
+| `rules_multi_target_contract::stats_per_target_query` | portunus-server | `?per_target=true` populates `per_target[]` for multi-target rules and returns `per_target: []` for single-target |
+| `rules_multi_target_contract::metrics_cardinality` | portunus-server | `/metrics` adds exactly 1 new series per rule regardless of `targets.len()` |

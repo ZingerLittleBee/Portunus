@@ -4,13 +4,13 @@ description: Single-page React dashboard embedded into the server binary. Login,
 icon: LayoutDashboard
 ---
 
-Available since v0.6.0. The UI is embedded into `forward-server` via
+Available since v0.6.0. The UI is embedded into `portunus-server` via
 `rust-embed` and served at the existing operator HTTP listener's root
 path `/`. **There is no runtime Node dependency on the deployment host.**
 
 ## Open it
 
-`forward-server` ships with the SPA bundled. Open the operator HTTP
+`portunus-server` ships with the SPA bundled. Open the operator HTTP
 listener address in a modern browser:
 
 ```
@@ -41,7 +41,7 @@ The login page asks for your operator bearer token. Paste it and click
 | **Credentials** | Self-service rotation for the logged-in user |
 | **Grants** | (superadmin) RBAC grant management |
 | **Rules** | Push, list, remove. Per-rule live stats over SSE (5 s cadence; falls back to polling if SSE blocked) |
-| **Clients** | List and inspect connected `forward-client` instances |
+| **Clients** | List and inspect connected `portunus-client` instances |
 | **Audit log** | (superadmin) Filter by outcome, paginate via cursor, export NDJSON |
 | **Metrics** | (superadmin) Raw `/metrics` payload behind RBAC |
 | **Settings** | Theme + language toggles |
@@ -106,13 +106,13 @@ cd webui
 pnpm install --frozen-lockfile
 pnpm build      # vite build + size-limit gate (gzipped ≤ 500 KB)
 cd ..
-cargo build --release -p forward-server
+cargo build --release -p portunus-server
 ```
 
 Backend-only iteration:
 
 ```sh
-FORWARD_SKIP_WEBUI=1 cargo build -p forward-server
+PORTUNUS_SKIP_WEBUI=1 cargo build -p portunus-server
 # Compiles a UI-less stub so rust-embed always has something to embed.
 ```
 

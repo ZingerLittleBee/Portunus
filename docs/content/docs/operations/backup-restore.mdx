@@ -11,7 +11,7 @@ reset CLI subcommands.
 ## Backup
 
 ```sh
-forward-server backup --out ~/forward-backup-$(date +%F).db
+portunus-server backup --out ~/portunus-backup-$(date +%F).db
 ```
 
 Uses the SQLite Online Backup API (`rusqlite::backup::Backup`). The
@@ -24,7 +24,7 @@ Refuses to overwrite an existing destination — pick a unique path
 Verify:
 
 ```sh
-sqlite3 ~/forward-backup-2026-05-08.db \
+sqlite3 ~/portunus-backup-2026-05-08.db \
     'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
 ```
 
@@ -36,7 +36,7 @@ sqlite3 ~/forward-backup-2026-05-08.db \
 set -eu
 DEST=/var/backups/portunus/$(date +%F).db
 mkdir -p "$(dirname "$DEST")"
-sudo -u portunus forward-server \
+sudo -u portunus portunus-server \
   --data-dir /var/lib/portunus \
   backup --out "$DEST"
 find /var/backups/portunus -name '*.db' -mtime +30 -delete
@@ -46,23 +46,23 @@ find /var/backups/portunus -name '*.db' -mtime +30 -delete
 
 ```sh
 # 1. Stop the running server.
-sudo systemctl stop forward-server
+sudo systemctl stop portunus-server
 
 # 2. Wipe local state.
-forward-server reset --confirm
+portunus-server reset --confirm
 
 # 3. Restore.
-forward-server restore --in /tmp/forward-backup-2026-05-08.db
+portunus-server restore --in /tmp/portunus-backup-2026-05-08.db
 
 # 4. Start.
-sudo systemctl start forward-server
+sudo systemctl start portunus-server
 ```
 
 `restore`:
 
 - Validates the SQLite header magic before copying.
 - Refuses to clobber a non-empty data dir without `--force`.
-- Runs forward migrations automatically if the binary is newer than
+- Runs schema migrations automatically if the binary is newer than
   the backup's schema.
 - **Refuses** if the backup is **newer** than the binary, exiting `78`
   with `event=startup.schema_version_too_new`. Either keep the older
@@ -72,10 +72,10 @@ sudo systemctl start forward-server
 
 ```sh
 # Dry run (no flag) prints what would be removed.
-forward-server reset
+portunus-server reset
 
 # Real wipe.
-forward-server reset --confirm
+portunus-server reset --confirm
 ```
 
 Removes `state.db` plus the sidecar `state.db-wal` and `state.db-shm`.
@@ -96,7 +96,7 @@ and `server.toml` survive).
 - **NFS / tmpfs / ramfs** for `--data-dir` is rejected at startup with
   `event=startup.unsupported_filesystem`. Use a local writable
   filesystem.
-- **Two `forward-server serve` against the same data-dir** exit with
+- **Two `portunus-server serve` against the same data-dir** exit with
   `event=startup.store_in_use` (exit 75). Clustering is out of scope
   for the current release.
 - **`reset --confirm` does not wipe `--config-dir`** — only state.

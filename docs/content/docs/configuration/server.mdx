@@ -4,7 +4,7 @@ description: Every setting in server.toml, with ranges and defaults.
 icon: ServerCog
 ---
 
-`forward-server` reads its config from `server.toml` in the directory
+`portunus-server` reads its config from `server.toml` in the directory
 passed via `--config-dir`. A minimal config that uses only defaults is
 valid — every key below is optional.
 
@@ -32,8 +32,8 @@ metrics_listen = "127.0.0.1:7081"
 # for routable deployments, replace with operator-managed materials
 # whose SAN covers the address(es) clients will dial.
 # server.key MUST be mode 0600 (the loader rejects looser perms).
-tls_cert_path = "/var/lib/forward/server.crt"
-tls_key_path  = "/var/lib/forward/server.key"
+tls_cert_path = "/var/lib/portunus/server.crt"
+tls_key_path  = "/var/lib/portunus/server.key"
 ```
 
 ## Persistence
@@ -42,11 +42,11 @@ tls_key_path  = "/var/lib/forward/server.key"
 # Bearer-token store for client authentication.
 # Created on first `provision-client`. Mode 0600.
 # Tokens are 256-bit random secrets; keep this file backed up.
-token_store_path = "/var/lib/forward/tokens.json"
+token_store_path = "/var/lib/portunus/tokens.json"
 
 # Operator-side identity store (users / credentials / grants).
 # Mode 0600. Atomic-write JSON; safe to rsync across hosts.
-operator_store_path = "/var/lib/forward/identity.json"
+operator_store_path = "/var/lib/portunus/identity.json"
 ```
 
 Since v0.8 most state lives in `<data-dir>/state.db` (SQLite). See
@@ -63,9 +63,9 @@ Since v0.8 most state lives in `<data-dir>/state.db` (SQLite). See
 operator_token = "<43-char URL-safe-base64 token>"
 ```
 
-Generate a token: `forward-server gen-token`.
+Generate a token: `portunus-server gen-token`.
 
-Alternative: `forward-server bootstrap-superadmin --name ops` prints
+Alternative: `portunus-server bootstrap-superadmin --name ops` prints
 a fresh bearer once.
 
 ## Drain & logging
@@ -98,7 +98,7 @@ udp_flow_idle_secs = 60
 
 # Per-rule cap on simultaneous live UDP flows.
 # Range: 1..=65535. Default: 1024.
-# Sustained churn beyond this bumps forward_rule_flows_dropped_overflow_total
+# Sustained churn beyond this bumps portunus_rule_flows_dropped_overflow_total
 # rather than evicting existing flows.
 udp_max_flows_per_rule = 1024
 ```
@@ -124,7 +124,7 @@ A future release may expose these under a `[resolver]` table.
 Every listen address is also overridable on the CLI:
 
 ```sh
-forward-server --config-dir ./srv \
+portunus-server --config-dir ./srv \
   --control-listen 0.0.0.0:7443 \
   --operator-http-listen 127.0.0.1:7080 \
   --metrics-listen 127.0.0.1:7081 \

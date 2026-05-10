@@ -10,7 +10,7 @@
 
 **Rationale**:
 - The spec requires mixed-target rules where only some upstreams expect PROXY.
-- `forward-client` already chooses a concrete target before dialing in the
+- `portunus-client` already chooses a concrete target before dialing in the
   multi-target path, so the prelude decision naturally belongs there.
 
 **Alternatives considered**:
@@ -47,7 +47,7 @@ existing failover path.
 
 **Rationale**:
 - The operator explicitly opted into PROXY. Falling back to raw forwarding would
-  silently violate the contract and leak the forward-client address.
+  silently violate the contract and leak the portunus-client address.
 
 ## R-005 — Capability gate follows the existing version-gate pattern
 

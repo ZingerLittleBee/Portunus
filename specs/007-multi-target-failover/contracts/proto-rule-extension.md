@@ -1,8 +1,8 @@
-# Contract: proto wire extension (forward.v1, additive in v1.4)
+# Contract: proto wire extension (portunus.v1, additive in v1.4)
 
 **Phase**: 1 (design) | **Feature**: 007-multi-target-failover | **Date**: 2026-05-08
 
-This contract defines the additive proto3 changes to `proto/forward.proto`. All changes are non-breaking. v0.6.0 readers decode the new wire as a v0.6.0 single-target rule (per back-compat encoding rule, see below). v0.7.0 readers decode either shape.
+This contract defines the additive proto3 changes to `proto/portunus.proto`. All changes are non-breaking. v0.6.0 readers decode the new wire as a v0.6.0 single-target rule (per back-compat encoding rule, see below). v0.7.0 readers decode either shape.
 
 ---
 
@@ -97,7 +97,7 @@ message RuleStats {
   //
   // Cumulative count of Healthy <-> Failed transitions across all
   // targets of this rule. Feeds the
-  // `forward_rule_target_failovers_total{client,rule}` Prometheus
+  // `portunus_rule_target_failovers_total{client,rule}` Prometheus
   // counter (FR-018). Always 0 for single-target rules (no target
   // health state allocated).
   uint64 target_failovers_total = 11;
@@ -173,8 +173,8 @@ The following round-trip properties MUST hold and are enforced by contract tests
 
 | Test | Crate | What it asserts |
 |---|---|---|
-| `targets_wire_compat::roundtrip_legacy_single_target` | forward-proto | W-1 |
-| `targets_wire_compat::v06_reader_drops_targets` | forward-proto | W-2 (uses captured v0.6.0 descriptor bytes) |
-| `targets_wire_compat::reject_both_shapes` | forward-server (HTTP layer) | W-3 / FR-004 |
-| `targets_wire_compat::byte_eq_single_target` | forward-proto | W-4, W-6 |
-| `targets_wire_compat::stats_back_compat` | forward-proto | W-5 |
+| `targets_wire_compat::roundtrip_legacy_single_target` | portunus-proto | W-1 |
+| `targets_wire_compat::v06_reader_drops_targets` | portunus-proto | W-2 (uses captured v0.6.0 descriptor bytes) |
+| `targets_wire_compat::reject_both_shapes` | portunus-server (HTTP layer) | W-3 / FR-004 |
+| `targets_wire_compat::byte_eq_single_target` | portunus-proto | W-4, W-6 |
+| `targets_wire_compat::stats_back_compat` | portunus-proto | W-5 |

@@ -29,7 +29,7 @@ One row in the in-memory ring buffer; one record per
 | `reason` | `Option<String>` | `None` for Allow; for Deny, the static `RbacError::code()` string. Bounded enum. |
 
 **Cardinality**: capacity 1000 (oldest dropped silently;
-`forward_audit_buffer_drops_total` counter increments).
+`portunus_audit_buffer_drops_total` counter increments).
 
 **Ownership**: held inside `AppState::audit_log: Arc<AuditRing>`.
 `AuditRing` is a thin wrapper over `Mutex<VecDeque<AuditEntry>>` with
@@ -111,7 +111,7 @@ request extensions (already populated by `auth_middleware`).
 
 | Key | Value | Notes |
 |---|---|---|
-| `forward.token` | string (URL-safe base64, 256 bit) | Bearer; sent on every request. Cleared on 401 / logout / tab close. |
+| `portunus.token` | string (URL-safe base64, 256 bit) | Bearer; sent on every request. Cleared on 401 / logout / tab close. |
 
 Wrapped by `webui/src/auth/token-store.ts` — a minimal adapter
 providing `get` / `set` / `clear` and a `subscribe` callback for
@@ -121,8 +121,8 @@ cross-tab logout (via `storage` events on `sessionStorage` siblings).
 
 | Key | Value | Notes |
 |---|---|---|
-| `forward.theme` | `"light" \| "dark" \| "system"` | `"system"` follows `prefers-color-scheme`. |
-| `forward.lang` | `"en" \| "zh-CN"` | `null` ⇒ derive from `navigator.languages[0]`. |
+| `portunus.theme` | `"light" \| "dark" \| "system"` | `"system"` follows `prefers-color-scheme`. |
+| `portunus.lang` | `"en" \| "zh-CN"` | `null` ⇒ derive from `navigator.languages[0]`. |
 
 ### `Identity` (in-memory, TanStack Query cache)
 

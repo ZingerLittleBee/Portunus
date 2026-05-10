@@ -18,13 +18,13 @@ Client 就 `TcpStream::connect` 上游目标，然后双向字节拷贝直到任
 ## 推送规则
 
 ```sh
-forward-server push-rule <client_name> <listen_port> <target_host>:<target_port>
+portunus-server push-rule <client_name> <listen_port> <target_host>:<target_port>
 ```
 
 例：
 
 ```sh
-forward-server push-rule edge-01 8080 example.com:80
+portunus-server push-rule edge-01 8080 example.com:80
 # → rule_id=1
 ```
 
@@ -35,21 +35,21 @@ forward-server push-rule edge-01 8080 example.com:80
 
 ```sh
 # 操作员 CLI
-forward-server list-rules --client edge-01
-forward-server rule-stats 1
+portunus-server list-rules --client edge-01
+portunus-server rule-stats 1
 
 # 操作员 HTTP API
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/rules
 
 # Prometheus
-curl -s http://127.0.0.1:7081/metrics | grep '^forward_rule'
+curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
 ```
 
 ## 移除
 
 ```sh
-forward-server remove-rule <rule_id>
+portunus-server remove-rule <rule_id>
 ```
 
 未结束的连接最长 drain `shutdown_drain_timeout_secs`（默认 30 秒）。监听器
@@ -68,9 +68,9 @@ forward-server remove-rule <rule_id>
 
 每条规则的 collector（每条活规则一行，标签 `{client, rule, owner}`）：
 
-- `forward_rule_bytes_in_total`
-- `forward_rule_bytes_out_total`
-- `forward_rule_active_connections`
+- `portunus_rule_bytes_in_total`
+- `portunus_rule_bytes_out_total`
+- `portunus_rule_active_connections`
 
 完整 collector 列表见 [指标](/zh/docs/observability/metrics)。
 

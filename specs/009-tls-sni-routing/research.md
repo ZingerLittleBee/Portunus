@@ -14,7 +14,7 @@ Decisions are numbered `R-NNN` so later artifacts (`data-model.md`,
 ## R-001 — ClientHello parser implementation
 
 **Decision**: Hand-roll a pure-Rust parser (~150 LOC) at
-`crates/forward-client/src/forwarder/sni/client_hello.rs`. Read only what
+`crates/portunus-client/src/forwarder/sni/client_hello.rs`. Read only what
 is needed to extract the `server_name` extension; skip everything else by
 length. Tracks handshake-message reassembly across multiple TLS records
 (RFC 8446 §5.1).
@@ -173,16 +173,16 @@ data-plane plumbing uses `tokio::sync::watch` (existing), `Vec` /
 
 ## R-007 — Capability gate (client-version)
 
-**Decision**: forward-server's operator API refuses any
+**Decision**: portunus-server's operator API refuses any
 `POST /v1/rules` whose body has `sni_pattern.is_some()` if the targeted
-forward-client's last `Hello.client_version` is below `0.9.0`. Response:
+portunus-client's last `Hello.client_version` is below `0.9.0`. Response:
 `HTTP 422 sni_unsupported_by_client { client_name, client_version }`.
 The check sits next to the v0.7 multi-target check at
-`crates/forward-server/src/operator/http.rs:353` (function
+`crates/portunus-server/src/operator/http.rs:353` (function
 `version_at_least_0_7` — we add `version_at_least_0_9` alongside).
 
 **Rationale**:
-- v0.8 forward-client decodes proto3 in the standard way: unknown fields
+- v0.8 portunus-client decodes proto3 in the standard way: unknown fields
   are dropped on decode. Without the gate it would activate the rule
   as a plain TCP forward, silently losing SNI dispatch.
 - Mirrors the v0.7 multi-target gate (R-007 from spec 007), so the
@@ -265,13 +265,13 @@ connection is closed and a tracing event is emitted.
 
 **Decision**: All five SNI events (`tls.client_hello_timeout`,
 `tls.parse_failed`, `tls.no_sni`, `tls.sni_no_match`, `tls.sni_routed`)
-are emitted **only** as forward-client `tracing` events with
+are emitted **only** as portunus-client `tracing` events with
 `target = "tls_sni"`. They do **NOT** flow into the SQLite `audit` ring,
 do **NOT** generate a `ClientMessage` to the server, and do **NOT** add
 any new wire envelope.
 
 **Rationale**:
-- `crates/forward-server/src/operator/audit.rs:16-31` reserves the
+- `crates/portunus-server/src/operator/audit.rs:16-31` reserves the
   audit ring for operator allow/deny actions and explicitly documents
   that high-frequency client-side events stay in the structured tracing
   log (the v0.7 precedent: `rule.target.health_changed`).
@@ -317,7 +317,7 @@ Listener-level metrics use `(client, port)` — no `rule`, no `owner`.
 `openssl s_client -connect localhost:N -servername host` against a
 local `openssl s_server` for TLS 1.0 / 1.1 / 1.2 / 1.3 (one binary
 fixture per version, plus one fragmented capture). Store under
-`crates/forward-client/tests/fixtures/tls/*.bin`. Fragmented capture is
+`crates/portunus-client/tests/fixtures/tls/*.bin`. Fragmented capture is
 synthesised by truncating + concatenating record-layer headers around a
 real ClientHello.
 

@@ -52,7 +52,7 @@ Stored in new SQLite table `rate_limit_owner` keyed
 Lifecycle:
 - Created by `PUT /v1/clients/{id}/owners/{owner_id}/rate-limit`.
 - Removed by explicit `DELETE` or by garbage collection when the
-  owner's last rule on this client is removed (`forward-server`
+  owner's last rule on this client is removed (`portunus-server`
   background sweep).
 
 ### 1.4 Capability gate
@@ -63,7 +63,7 @@ mutation targets a `client_name` whose last reported
 `422 rate_limit_unsupported_by_client` and the change does not take
 effect anywhere.
 
-## 2. Runtime entities on forward-client
+## 2. Runtime entities on portunus-client
 
 ### 2.1 `TokenBucket`
 
@@ -97,7 +97,7 @@ Held under `Arc<RuleRateLimiter>` so a hot-reload swap is atomic.
 
 Same shape as `RuleRateLimiter`. One per owner. Looked up via
 `HashMap<OwnerId, Arc<OwnerRateLimiter>>` keyed by owner id, owned
-by the `forward-client` rate-limit subsystem.
+by the `portunus-client` rate-limit subsystem.
 
 ### 2.4 Reject reason enum
 

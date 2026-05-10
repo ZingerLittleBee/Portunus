@@ -4,7 +4,7 @@ description: Every collector Portunus exposes, with cardinality budget notes.
 icon: BarChart3
 ---
 
-`forward-server` exposes Prometheus metrics on
+`portunus-server` exposes Prometheus metrics on
 `metrics_listen` (default `127.0.0.1:7081`). The endpoint is
 loopback-pinned — scrape from a sibling Prometheus on the same host or
 a sidecar.
@@ -29,10 +29,10 @@ Rows are removed when the rule is removed.
 ## Server-level
 
 ```
-forward_clients_connected
-forward_auth_failures_total{reason}
-forward_operator_requests_total{outcome, reason}
-forward_audit_buffer_drops_total
+portunus_clients_connected
+portunus_auth_failures_total{reason}
+portunus_operator_requests_total{outcome, reason}
+portunus_audit_buffer_drops_total
 ```
 
 `outcome` ∈ `{allow, deny}`; `reason` is `"ok"` on allow or the static
@@ -41,29 +41,29 @@ forward_audit_buffer_drops_total
 ## Per-rule TCP
 
 ```
-forward_rule_bytes_in_total{client, rule, owner}
-forward_rule_bytes_out_total{client, rule, owner}
-forward_rule_active_connections{client, rule, owner}
-forward_rule_dns_failures_total{client, rule, owner}
-forward_rule_target_failovers_total{client, rule}
+portunus_rule_bytes_in_total{client, rule, owner}
+portunus_rule_bytes_out_total{client, rule, owner}
+portunus_rule_active_connections{client, rule, owner}
+portunus_rule_dns_failures_total{client, rule, owner}
+portunus_rule_target_failovers_total{client, rule}
 ```
 
 ## Per-rule UDP
 
 ```
-forward_rule_udp_datagrams_in_total{client, rule, owner}
-forward_rule_udp_datagrams_out_total{client, rule, owner}
-forward_rule_active_flows{client, rule, owner}
-forward_rule_flows_dropped_overflow_total{client, rule, owner}
+portunus_rule_udp_datagrams_in_total{client, rule, owner}
+portunus_rule_udp_datagrams_out_total{client, rule, owner}
+portunus_rule_active_flows{client, rule, owner}
+portunus_rule_flows_dropped_overflow_total{client, rule, owner}
 ```
 
 ## TLS SNI routing (v0.9+)
 
 ```
-forward_tls_sni_route_total{client, rule, owner, result}
-forward_tls_sni_listener_miss_total{client, port}
-forward_tls_sni_listener_parse_failures_total{client, port}
-forward_tls_sni_routes_active
+portunus_tls_sni_route_total{client, rule, owner, result}
+portunus_tls_sni_listener_miss_total{client, port}
+portunus_tls_sni_listener_parse_failures_total{client, port}
+portunus_tls_sni_routes_active
 ```
 
 `result` ∈ `{exact, wildcard, fallback, no_match}`.
@@ -71,9 +71,9 @@ forward_tls_sni_routes_active
 ## SNI peek histogram (v0.10+)
 
 ```
-forward_tls_client_hello_peek_duration_seconds_bucket{client, port, le}
-forward_tls_client_hello_peek_duration_seconds_sum
-forward_tls_client_hello_peek_duration_seconds_count
+portunus_tls_client_hello_peek_duration_seconds_bucket{client, port, le}
+portunus_tls_client_hello_peek_duration_seconds_sum
+portunus_tls_client_hello_peek_duration_seconds_count
 ```
 
 Finite buckets up to 3 s; observations above 3 s increment `_count` and
@@ -82,9 +82,9 @@ Finite buckets up to 3 s; observations above 3 s increment `_count` and
 ## Rate limiting (v0.11+)
 
 ```
-forward_rate_limit_reject_total{client, rule, owner, reason}
-forward_rate_limit_throttle_seconds_total{client, rule, owner, direction}
-forward_rate_limit_active_connections{client, rule, owner}
+portunus_rate_limit_reject_total{client, rule, owner, reason}
+portunus_rate_limit_throttle_seconds_total{client, rule, owner, direction}
+portunus_rate_limit_active_connections{client, rule, owner}
 ```
 
 Reject reasons: `conn_concurrent`, `conn_rate`, `udp_flow_rate`,
@@ -97,15 +97,15 @@ owner-scoped rejects.
 
 ```text
 # Top 5 rules by ingress bytes/sec over last 5m
-topk(5, sum by (rule) (rate(forward_rule_bytes_in_total[5m])))
+topk(5, sum by (rule) (rate(portunus_rule_bytes_in_total[5m])))
 
 # Reject ratio per rule
-rate(forward_rate_limit_reject_total[5m]) /
-rate(forward_rule_active_connections[5m])
+rate(portunus_rate_limit_reject_total[5m]) /
+rate(portunus_rule_active_connections[5m])
 
 # Throttle wall-clock per rule (per direction)
-rate(forward_rate_limit_throttle_seconds_total[5m])
+rate(portunus_rate_limit_throttle_seconds_total[5m])
 
 # Auth failures by reason
-sum by (reason) (rate(forward_auth_failures_total[5m]))
+sum by (reason) (rate(portunus_auth_failures_total[5m]))
 ```

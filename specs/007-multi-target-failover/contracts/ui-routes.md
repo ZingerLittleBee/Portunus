@@ -190,7 +190,7 @@ Mirroring the spec-006 e2e pattern, the v0.7 test pass adds:
 - `webui/tests/e2e/us3-target-detail-render.spec.ts` — operator opens a multi-target rule's detail page, verifies the Targets section renders both rows with health badges and live byte counters.
 - `webui/tests/e2e/us4-single-target-back-compat.spec.ts` — operator pushes a single-target rule via the form (one target row), verifies the rendered detail page shows the "single-target rule" note rather than per-target counters.
 
-These ride the existing playwright fixture (spawns `forward-server` on port 47080, embedded SPA).
+These ride the existing playwright fixture (spawns `portunus-server` on port 47080, embedded SPA).
 
 ## 8. What the contract does NOT change
 

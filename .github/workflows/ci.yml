@@ -126,8 +126,8 @@ jobs:
           name: webui-dist
           path: webui/dist
 
-      - name: cargo build --release -p forward-server
-        run: cargo build --release -p forward-server
+      - name: cargo build --release -p portunus-server
+        run: cargo build --release -p portunus-server
 
       - name: pnpm install
         working-directory: webui
@@ -140,5 +140,5 @@ jobs:
       - name: Playwright test
         working-directory: webui
         env:
-          FORWARD_SERVER_BIN: ${{ github.workspace }}/target/release/forward-server
+          PORTUNUS_SERVER_BIN: ${{ github.workspace }}/target/release/portunus-server
         run: pnpm exec playwright test

@@ -97,7 +97,7 @@ When `POST /v1/rules` carries `sni_pattern.is_some()` and the targeted
   channel.
 
 The check sits at the same control point as v0.7's multi-target gate
-(`crates/forward-server/src/operator/http.rs:353`). A new helper
+(`crates/portunus-server/src/operator/http.rs:353`). A new helper
 `version_at_least_0_9(v: &str) -> bool` lives next to the existing
 `version_at_least_0_7`.
 
@@ -109,18 +109,18 @@ Five new collectors are registered on the existing Prometheus registry:
 
 | Collector | Type | Labels | Source |
 |---|---|---|---|
-| `forward_tls_sni_route_total` | counter | `client, rule, owner, result=exact|wildcard|fallback` | `RuleStats.sni_route_*_total` (3 fields → 3 series per rule) |
-| `forward_tls_sni_listener_miss_total` | counter | `client, port` | `SniListenerStats.sni_route_miss_total` |
-| `forward_tls_client_hello_parse_failures_total` | counter | `client, port` | `SniListenerStats.client_hello_parse_failures_total` |
-| `forward_tls_sni_routes_active` | gauge | _none_ | `ServerRuleStore` count of rules with `sni_pattern.is_some()` |
+| `portunus_tls_sni_route_total` | counter | `client, rule, owner, result=exact|wildcard|fallback` | `RuleStats.sni_route_*_total` (3 fields → 3 series per rule) |
+| `portunus_tls_sni_listener_miss_total` | counter | `client, port` | `SniListenerStats.sni_route_miss_total` |
+| `portunus_tls_client_hello_parse_failures_total` | counter | `client, port` | `SniListenerStats.client_hello_parse_failures_total` |
+| `portunus_tls_sni_routes_active` | gauge | _none_ | `ServerRuleStore` count of rules with `sni_pattern.is_some()` |
 
-Label conventions follow `crates/forward-server/src/metrics.rs:156` —
+Label conventions follow `crates/portunus-server/src/metrics.rs:156` —
 `client, rule, owner` for per-rule (matching v0.5..v0.8), `client, port`
 for per-listener (no `rule` / `owner` because listener-level events
 have no rule attribution).
 
 No existing series is renamed. No existing series is reused with new
-semantics — in particular `forward_audit_buffer_drops_total` is **not**
+semantics — in particular `portunus_audit_buffer_drops_total` is **not**
 touched (audit ring is for operator events only; SNI events are
 diagnostic, see `../design.md` D13).
 
@@ -131,14 +131,14 @@ diagnostic, see `../design.md` D13).
 The SQLite `audit` ring continues to record only operator allow/deny
 events. Data-plane SNI events (`tls.client_hello_timeout`,
 `tls.parse_failed`, `tls.no_sni`, `tls.sni_no_match`, `tls.sni_routed`)
-flow through forward-client `tracing` only and are observable via the
+flow through portunus-client `tracing` only and are observable via the
 structured log + the Prometheus counters above.
 
 ---
 
 ## 6. CLI mirror
 
-`forward-server push-rule --sni <pattern>` is documented in
+`portunus-server push-rule --sni <pattern>` is documented in
 [`./cli.md`](./cli.md). Validation is identical to the HTTP API; the
 flag is rejected at parse time when combined with `--port-range` or
 `--protocol udp` so operators get a fast local error.
@@ -147,7 +147,7 @@ flag is rejected at parse time when combined with `--port-range` or
 
 ## 7. Contract test plan
 
-Tests live in `crates/forward-server/tests/`.
+Tests live in `crates/portunus-server/tests/`.
 
 | File | Asserts |
 |---|---|
@@ -155,5 +155,5 @@ Tests live in `crates/forward-server/tests/`.
 | `sni_capability_gate.rs` | A v0.8 client connection followed by `POST /v1/rules` with `sni_pattern` set returns 422 `sni_unsupported_by_client`; no rule appears in `GET /v1/rules`; no `RuleUpdate` is observed on the bidi channel. |
 | `sni_overlap_matrix.rs` | Each row of [`../data-model.md`](../data-model.md) Overlap matrix produces the documented outcome. |
 | `sni_legacy_to_sni_unsupported.rs` | Legacy plain-TCP rule active → push of SNI sibling → 409 with the specific code; remove first, then push succeeds. |
-| `sni_metrics_surface.rs` | After a forward-client emits `RuleStats` fields 13/14/15 and a `SniListenerStats` entry, `GET /metrics` exposes `forward_tls_sni_route_total{client,rule,owner,result}` and `forward_tls_sni_listener_miss_total{client,port}` with the expected values. |
+| `sni_metrics_surface.rs` | After a portunus-client emits `RuleStats` fields 13/14/15 and a `SniListenerStats` entry, `GET /metrics` exposes `portunus_tls_sni_route_total{client,rule,owner,result}` and `portunus_tls_sni_listener_miss_total{client,port}` with the expected values. |
 | `sni_audit_ring_isolation.rs` | After mixed traffic that fires every tracing event listed in §5, `GET /v1/audit` is unchanged (zero new entries). |

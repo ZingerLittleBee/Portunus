@@ -7,7 +7,7 @@ import zhCN from "./zh-CN.json";
 export const SUPPORTED_LANGUAGES = ["en", "zh-CN"] as const;
 export type Language = (typeof SUPPORTED_LANGUAGES)[number];
 
-const LANG_KEY = "forward.lang";
+const LANG_KEY = "portunus.lang";
 
 function readStoredLang(): Language | null {
   try {

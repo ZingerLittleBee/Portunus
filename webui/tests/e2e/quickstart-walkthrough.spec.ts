@@ -2,7 +2,7 @@
 // This is the executable counterpart of `specs/006-management-web-ui/quickstart.md`.
 // Coarse-grained on purpose: the per-user-story specs cover fine-grained
 // assertions. § 6 (rule push) is omitted here because pushing a rule
-// requires an actually-connected forward-client over the gRPC control
+// requires an actually-connected portunus-client over the gRPC control
 // plane; spinning a real edge client up under Playwright would slow the
 // suite down without buying coverage that us1-superadmin doesn't already
 // provide via the UI.

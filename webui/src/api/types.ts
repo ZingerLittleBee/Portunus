@@ -1,5 +1,5 @@
 /// Shared TypeScript shapes for the operator HTTP API.
-/// Mirrors the serde-Serialize structs in `crates/forward-server/src/`
+/// Mirrors the serde-Serialize structs in `crates/portunus-server/src/`
 /// — keep in sync when the server contract changes.
 
 import type { Identity, Role } from "@/lib/permissions";

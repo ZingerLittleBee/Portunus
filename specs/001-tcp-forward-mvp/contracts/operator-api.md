@@ -1,7 +1,7 @@
 # Operator Interface Contract
 
 **Feature**: 001-tcp-forward-mvp
-**Surface**: CLI subcommands of `forward-server` AND a loopback HTTP API.
+**Surface**: CLI subcommands of `portunus-server` AND a loopback HTTP API.
 The two surfaces are 1:1 — the CLI is a thin wrapper that calls the HTTP
 API when one is reachable on `operator_http_listen`, and falls back to
 in-process execution otherwise. This contract defines both.
@@ -14,7 +14,7 @@ additional authentication.
 
 ## CLI
 
-### `forward-server provision-client <name> [--out <path>]`
+### `portunus-server provision-client <name> [--out <path>]`
 
 Creates a fresh credential bundle for `<name>`.
 
@@ -29,7 +29,7 @@ Creates a fresh credential bundle for `<name>`.
 
 **Stderr** (on success): one structured log line of `event=audit.provision`.
 
-### `forward-server revoke <name>`
+### `portunus-server revoke <name>`
 
 Marks the token for `<name>` as revoked. Disconnects the client if currently
 connected. Idempotent — revoking an already-revoked or non-existent name
@@ -39,7 +39,7 @@ returns exit `0` (with a stderr note for the non-existent case).
 - `0` — revocation persisted.
 - `1` — I/O error.
 
-### `forward-server list-clients [--format text|json]`
+### `portunus-server list-clients [--format text|json]`
 
 Lists the union of {provisioned clients, currently-connected clients}.
 
@@ -58,7 +58,7 @@ Lists the union of {provisioned clients, currently-connected clients}.
 ]
 ```
 
-### `forward-server push-rule <client> <listen_port> <target_host>:<target_port> [--protocol tcp]`
+### `portunus-server push-rule <client> <listen_port> <target_host>:<target_port> [--protocol tcp]`
 
 Pushes a forwarding rule to the named client. Returns the assigned `rule_id`.
 
@@ -70,7 +70,7 @@ Pushes a forwarding rule to the named client. Returns the assigned `rule_id`.
 - `7` — `ack_timeout`: client did not respond within `--ack-timeout`. The rule remains in `Pending`. Operator may `list-rules` and decide whether to `remove`.
 - `1` — other.
 
-### `forward-server remove-rule <rule_id>`
+### `portunus-server remove-rule <rule_id>`
 
 Removes a rule (any state). Idempotent.
 
@@ -78,11 +78,11 @@ Removes a rule (any state). Idempotent.
 - `0` — removed.
 - `8` — `rule_not_found`.
 
-### `forward-server list-rules [--client <name>] [--format text|json]`
+### `portunus-server list-rules [--client <name>] [--format text|json]`
 
 Lists rules with their state. Useful for finding `Failed` rules to clean up.
 
-### `forward-server rule-stats <rule_id> [--format text|json]`
+### `portunus-server rule-stats <rule_id> [--format text|json]`
 
 Returns current per-rule stats from the server's cache (last known
 `bytes_in`, `bytes_out`, `active_connections`). Stats are refreshed by the

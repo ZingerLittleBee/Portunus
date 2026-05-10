@@ -187,7 +187,7 @@ same operator-intuitive bound as today's rule count.
 
 ## R-005 — Hostname validator (RFC 1123 strict)
 
-**Decision**: A pure-function validator in `forward-core/src/hostname.rs`,
+**Decision**: A pure-function validator in `portunus-core/src/hostname.rs`,
 zero dependencies, returning `Result<Hostname, HostnameError>`. The
 validator enforces:
 
@@ -218,7 +218,7 @@ validator enforces:
   than URL-parsing tolerance.
 - **`hickory-proto::rr::domain::Name::from_ascii`** — rejected:
   requires the resolver dep at the server (which doesn't need it).
-  Hostname validation lives in `forward-core` so server-side push
+  Hostname validation lives in `portunus-core` so server-side push
   validation has no resolver dep.
 
 ---
@@ -226,7 +226,7 @@ validator enforces:
 ## R-006 — Where the resolver layer plugs into the proxy
 
 **Decision**: Define a trait `Resolver` in
-`forward-client/src/resolver/mod.rs`:
+`portunus-client/src/resolver/mod.rs`:
 
 ```rust
 #[async_trait]
@@ -246,7 +246,7 @@ targets, the trait short-circuits straight to `TcpStream::connect((ip,
 port))` with **zero** cache or resolver involvement (Constitution II:
 "IP-literal rules MUST NOT regress vs v0.2.0").
 
-The forwarder constructs one `LiveResolver` per `forward-client` process
+The forwarder constructs one `LiveResolver` per `portunus-client` process
 (lifetime = client), not per rule — so the cache is shared across all
 rules on the client (R-002).
 
@@ -261,7 +261,7 @@ rules on the client (R-002).
   stats-bumping on failure — keeping the proxy's connect path
   honest and free of resolver-shaped logic.
 - The `Target` enum (already classified by hostname syntax in
-  `forward-core`) means the resolver doesn't re-parse the input on
+  `portunus-core`) means the resolver doesn't re-parse the input on
   every call — classification happens once at rule-store load.
 
 **Alternatives considered**:
@@ -278,11 +278,11 @@ rules on the client (R-002).
 
 **Decision**: Add `optional bool prefer_ipv6 = 8` to the existing
 `Rule` proto message. Field number 8 follows v0.2.0's used range
-(2,3,4,6,7 — see `proto/forward.proto`). proto3 `optional` means
+(2,3,4,6,7 — see `proto/portunus.proto`). proto3 `optional` means
 absent decodes as `None`, which the server treats as the default
 (IPv4-first). A v0.2.0-shaped `Rule` (no field 8 on the wire) MUST
 encode/decode byte-identically — verified by a contract test in
-`forward-proto/tests/dns_wire_compat.rs`.
+`portunus-proto/tests/dns_wire_compat.rs`.
 
 **Rationale**:
 
@@ -308,8 +308,8 @@ encode/decode byte-identically — verified by a contract test in
 ## R-008 — Metric naming, wire transport, and label cardinality
 
 **Decision**: New collector
-`forward_rule_dns_failures_total{client, rule}`, type `IntCounterVec`,
-joining the existing per-rule family (`forward_rule_bytes_in_total`,
+`portunus_rule_dns_failures_total{client, rule}`, type `IntCounterVec`,
+joining the existing per-rule family (`portunus_rule_bytes_in_total`,
 etc.). Same label set, same cardinality contract: one row per
 `(client, rule)` pair. **No `reason` label** — the failure-mode
 classifier (NXDOMAIN, SERVFAIL, timeout, …) is captured in the
@@ -319,7 +319,7 @@ exploded into Prometheus rows.
 **Wire transport**: the count is bumped on the client (FR-008 increment
 rule), then carried to the server on the existing per-rule
 `StatsReport` tick via a new `RuleStats.dns_failures = 6` proto field
-(see `contracts/forward.proto` overlay). The server accumulates per
+(see `contracts/portunus.proto` overlay). The server accumulates per
 `(client, rule)` and exposes the resulting value through both the
 Prometheus collector above and the operator HTTP
 `GET /v1/rules/{id}/stats` body.
@@ -346,7 +346,7 @@ Prometheus collector above and the operator HTTP
 - **Dedicated `DnsFailureReport` message in the bidirectional stream**
   — rejected: solves nothing the existing `StatsReport` doesn't already
   solve, costs a new message type and an extra envelope variant.
-- **`forward_rule_dns_failures_by_reason{client, rule, reason}`** —
+- **`portunus_rule_dns_failures_by_reason{client, rule, reason}`** —
   rejected as above.
 - **Histogram of resolution latency** — deferred. The ≤ 1 query per
   cache window load (SC-005) means resolver-latency histograms would
@@ -363,7 +363,7 @@ Prometheus collector above and the operator HTTP
    `Resolver` trait, driven by the test: returns canned answers, can
    be told to fail, advances time via an injected `Clock`. Drives
    all unit tests for the resolver/cache/single-flight code.
-2. **Hosts-file override** for `forward-e2e` integration tests:
+2. **Hosts-file override** for `portunus-e2e` integration tests:
    write a temp `/etc/hosts`-style mapping during test setup
    (`HostnameTo::Local("dual.test", "127.0.0.1")`) and either point
    `hickory-resolver` at it via `--hosts-file` config, or use a

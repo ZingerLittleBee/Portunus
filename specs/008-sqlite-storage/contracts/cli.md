@@ -5,12 +5,12 @@ change on the client side. Existing subcommands keep their v0.7
 spelling, flags, and exit codes byte-stable.
 
 This contract is the source of truth for every CLI test under
-`crates/forward-server/tests/cli_*.rs` and
-`crates/forward-client/tests/bundle_search_path.rs`.
+`crates/portunus-server/tests/cli_*.rs` and
+`crates/portunus-client/tests/bundle_search_path.rs`.
 
 ---
 
-## `forward-server` — server-side CLI
+## `portunus-server` — server-side CLI
 
 ### Top-level flag added
 
@@ -35,7 +35,7 @@ the store (e.g., `--version`) MUST NOT require it.
 ### New subcommand: `serve` — additive flags only
 
 ```
-forward-server serve [--config-dir <DIR>] [--data-dir <DIR>] [other v0.7 flags]
+portunus-server serve [--config-dir <DIR>] [--data-dir <DIR>] [other v0.7 flags]
 ```
 
 No flag is renamed or removed. Operators with existing systemd units
@@ -45,11 +45,11 @@ keep working as long as they pass `--data-dir` (or rely on
 ### New subcommand: `backup`
 
 ```
-forward-server backup --out <PATH> [--data-dir <DIR>]
+portunus-server backup --out <PATH> [--data-dir <DIR>]
 
   --out <PATH>     Destination file path. If <PATH> is a directory,
                    the artefact is written as
-                   <PATH>/forward-state-<RFC3339>.db inside it.
+                   <PATH>/portunus-state-<RFC3339>.db inside it.
                    Refuses to overwrite an existing file.
 ```
 
@@ -66,7 +66,7 @@ Behaviour:
 ### New subcommand: `restore`
 
 ```
-forward-server restore --in <PATH> [--data-dir <DIR>] [--force]
+portunus-server restore --in <PATH> [--data-dir <DIR>] [--force]
 
   --in <PATH>      Backup artefact produced by `backup`.
   --force          Permit overwriting a non-empty <data-dir>/state.db.
@@ -88,7 +88,7 @@ supported range, exit 78 with a clear version-mismatch message.
 ### New subcommand: `reset`
 
 ```
-forward-server reset --confirm [--data-dir <DIR>]
+portunus-server reset --confirm [--data-dir <DIR>]
 
   --confirm        Mandatory. Without it, prints the exact command the
                    operator must run, then exits 1.
@@ -111,7 +111,7 @@ expected next.
 ### New subcommand: `audit prune`
 
 ```
-forward-server audit prune --before <RFC3339> [--data-dir <DIR>] [--dry-run]
+portunus-server audit prune --before <RFC3339> [--data-dir <DIR>] [--dry-run]
 
   --before <RFC3339>   Delete audit entries with ts < <RFC3339>.
   --dry-run            Print the count of entries that WOULD be
@@ -146,15 +146,15 @@ seeded ULIDs and timestamps).
 
 ---
 
-## `forward-client` — client-side CLI
+## `portunus-client` — client-side CLI
 
 ### `--bundle` becomes optional
 
 ```
-forward-client [--bundle <PATH>] [other v0.7 flags]
+portunus-client [--bundle <PATH>] [other v0.7 flags]
 
   --bundle <PATH>      Optional. Resolution order when omitted:
-                         1. $FORWARD_CLIENT_BUNDLE
+                         1. $PORTUNUS_CLIENT_BUNDLE
                          2. $XDG_CONFIG_HOME/portunus/client.bundle.json
                          3. $HOME/.config/portunus/client.bundle.json
                          4. ./client.bundle.json

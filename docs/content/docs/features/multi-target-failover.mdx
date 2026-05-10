@@ -23,13 +23,13 @@ an ordered list of up to 8.
 
 ```sh
 # Repeat --target; lower priority wins
-forward-server push-rule edge-01 8443 \
+portunus-server push-rule edge-01 8443 \
   --target primary.example.com:443@1 \
   --target backup.example.com:443@2 \
   --target standby.example.com:443@3
 
 # Or pass a JSON literal
-forward-server push-rule edge-01 8443 --targets-json '[
+portunus-server push-rule edge-01 8443 --targets-json '[
   {"host":"primary.example.com","port":443,"priority":1},
   {"host":"backup.example.com","port":443,"priority":2}
 ]'
@@ -51,14 +51,14 @@ Prometheus cardinality bounded:
 
 ```sh
 # CLI
-forward-server rule-stats <id> --per-target
+portunus-server rule-stats <id> --per-target
 
 # HTTP
-curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats?per_target=true'
 
 # SSE (live stream)
-curl -N -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+curl -N -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats/stream?per_target=true'
 ```
 
@@ -68,7 +68,7 @@ counters that update on the existing 5-second SSE cadence.
 
 ## Default `/metrics`
 
-One always-on counter: `forward_rule_target_failovers_total{client,rule}`
+One always-on counter: `portunus_rule_target_failovers_total{client,rule}`
 captures Healthy↔Failed transitions per rule. Per-target byte counters
 are **never** in default `/metrics` series.
 

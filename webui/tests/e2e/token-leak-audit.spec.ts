@@ -1,6 +1,6 @@
 // T066 — automates § 9 of quickstart.md (SC-006).
 // Asserts:
-//   (a) sessionStorage holds forward.token
+//   (a) sessionStorage holds portunus.token
 //   (b) localStorage carries only theme + lang preferences
 //   (c) no DOM text contains the bearer prefix anywhere on rendered pages
 //   (d) every request includes the bearer ONLY in the Authorization header
@@ -29,13 +29,13 @@ test("session storage + no token leak in DOM or URL", async ({ page, server }) =
   await page.waitForLoadState("networkidle");
 
   // (a) sessionStorage contains the bearer.
-  const sessTok = await page.evaluate(() => window.sessionStorage.getItem("forward.token"));
+  const sessTok = await page.evaluate(() => window.sessionStorage.getItem("portunus.token"));
   expect(sessTok).toBe(server.superadminToken);
 
   // (b) localStorage holds only theme + lang.
   const localKeys = await page.evaluate(() => Object.keys(window.localStorage).sort());
   for (const k of localKeys) {
-    expect(["forward.theme", "forward.lang"]).toContain(k);
+    expect(["portunus.theme", "portunus.lang"]).toContain(k);
   }
 
   // (c) No DOM text leaks the bearer.

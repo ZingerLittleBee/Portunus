@@ -24,7 +24,7 @@ server 的叶证书指纹与 bundle 中的 `server_cert_sha256` 不匹配。
 ### `auth.failure { reason: "token_revoked" }`
 
 ```sh
-forward-server revoke edge-01
+portunus-server revoke edge-01
 # ↓
 # Server 日志：client.disconnected reason=token_revoked
 # 重启后 Client 日志：auth.failure reason=token_revoked
@@ -42,7 +42,7 @@ forward-server revoke edge-01
 ### `port_in_use`
 
 ```sh
-forward-server push-rule edge-01 18080 10.0.0.5:8080
+portunus-server push-rule edge-01 18080 10.0.0.5:8080
 # exit 6: activation_failed: port_in_use
 ```
 
@@ -56,7 +56,7 @@ client 上有别的东西（另一条规则、无关进程、低端口的内核 
 ### `client_not_connected`
 
 ```sh
-forward-server push-rule edge-01 18080 …
+portunus-server push-rule edge-01 18080 …
 # exit 4: client_not_connected
 ```
 
@@ -64,7 +64,7 @@ client 丢失了 gRPC 流。规则在 server 端持久化；client 重连后 ser
 重推。确认状态：
 
 ```sh
-forward-server list-clients
+portunus-server list-clients
 ```
 
 ## RBAC 拒绝
@@ -97,7 +97,7 @@ forward-server list-clients
 
 ### `startup.store_in_use`（exit 75）
 
-另一个 `forward-server serve` 已经拿着数据库。找出并停掉那个进程；clustering
+另一个 `portunus-server serve` 已经拿着数据库。找出并停掉那个进程；clustering
 不在范围。
 
 ### `startup.schema_version_too_new`（exit 78）
@@ -110,7 +110,7 @@ forward-server list-clients
 server 还没有任何超管。运行：
 
 ```sh
-forward-server bootstrap-superadmin --name 'Initial admin'
+portunus-server bootstrap-superadmin --name 'Initial admin'
 ```
 
 …或在 `server.toml` 中设置 `operator_token` 然后重启一次。
@@ -122,7 +122,7 @@ forward-server bootstrap-superadmin --name 'Initial admin'
 跑 criterion 基准对比：
 
 ```sh
-cargo bench -p forward-client --bench data_plane
+cargo bench -p portunus-client --bench data_plane
 ```
 
 CI 的回归守门
@@ -132,7 +132,7 @@ CI 的回归守门
 
 ### "持续 UDP 负载下连接被丢"
 
-查 `forward_rule_flows_dropped_overflow_total`。非零则把 `server.toml` 中的
+查 `portunus_rule_flows_dropped_overflow_total`。非零则把 `server.toml` 中的
 `udp_max_flows_per_rule` 调高（同时调高 client systemd unit 的 `LimitNOFILE`）。
 
 ### "SNI 模式 listener 上 TLS 握手好像变慢"
@@ -141,7 +141,7 @@ CI 的回归守门
 
 ```text
 histogram_quantile(0.99,
-  rate(forward_tls_client_hello_peek_duration_seconds_bucket[5m]))
+  rate(portunus_tls_client_hello_peek_duration_seconds_bucket[5m]))
 ```
 
 长尾（接近 3 s）通常意味着 client 在慢网络下分片发送 ClientHello —— 不是
@@ -153,7 +153,7 @@ GitHub issues：https://github.com/ZingerLittleBee/Portunus/issues
 
 请附：
 
-- `forward-server --version` 与 `forward-client --version` 输出。
+- `portunus-server --version` 与 `portunus-client --version` 输出。
 - 相关结构化日志（仅事件名通常即可定位失败模式）。
 - 操作员命令 + 完整错误。
 - 数据面问题请附规则定义与流量形态。

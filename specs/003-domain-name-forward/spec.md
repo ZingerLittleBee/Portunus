@@ -158,7 +158,7 @@ the story is about presentation.
 
 **Independent Test**: Push a rule pointing at a deliberately broken
 DNS name, drive 10 connection attempts through it, then read the
-metrics endpoint. Verify exactly one row of `forward_rule_dns_failures_total`
+metrics endpoint. Verify exactly one row of `portunus_rule_dns_failures_total`
 exists per rule with a count of 10 — single row per rule (matches the
 SC-002 cardinality budget inherited from v0.2.0), one column for the
 rule id, no per-attempt explosion.
@@ -174,7 +174,7 @@ rule id, no per-attempt explosion.
    failures).
 3. **Given** any number of rules with mixed DNS health, **When** the
    operator queries the metrics endpoint, **Then** the cardinality of
-   `forward_rule_dns_failures_total` is exactly one row per rule that
+   `portunus_rule_dns_failures_total` is exactly one row per rule that
    has ever had a resolution attempted — never one row per attempt,
    per address-family, or per resolved IP.
 
@@ -352,7 +352,7 @@ rule id, no per-attempt explosion.
   from being treated as a per-connection dependency.
 - **SC-006**: The Prometheus surface for a forwarding client running
   any number of DNS-target rules emits exactly **one row of
-  `forward_rule_dns_failures_total` per rule that has ever attempted
+  `portunus_rule_dns_failures_total` per rule that has ever attempted
   resolution** — cardinality MUST NOT grow with attempt count or
   resolved-address count.
 

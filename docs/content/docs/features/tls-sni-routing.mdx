@@ -24,11 +24,11 @@ in SNI mode.
 
 ```sh
 # Exact host
-forward-server push-rule edge-01 443 api.example.com:8443 \
+portunus-server push-rule edge-01 443 api.example.com:8443 \
   --sni api.example.com
 
 # Single-label wildcard
-forward-server push-rule edge-01 443 web.example.com:8080 \
+portunus-server push-rule edge-01 443 web.example.com:8080 \
   --sni '*.example.com'
 ```
 
@@ -43,7 +43,7 @@ mode catches valid TLS connections whose SNI is **missing or
 unmatched**:
 
 ```sh
-forward-server push-rule edge-01 443 fallback.example.com:8080
+portunus-server push-rule edge-01 443 fallback.example.com:8080
 # (no --sni → fallback)
 ```
 
@@ -73,10 +73,10 @@ HTTP 422 `sni_unsupported_by_client` before any rule activates.
 ## Metrics
 
 ```
-forward_tls_sni_route_total{client,rule,owner,result}
-forward_tls_sni_listener_miss_total{client,port}
-forward_tls_sni_listener_parse_failures_total{client,port}
-forward_tls_sni_routes_active
+portunus_tls_sni_route_total{client,rule,owner,result}
+portunus_tls_sni_listener_miss_total{client,port}
+portunus_tls_sni_listener_parse_failures_total{client,port}
+portunus_tls_sni_routes_active
 ```
 
 `result` ∈ `{exact, wildcard, fallback, no_match}`.

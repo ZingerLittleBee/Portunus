@@ -10,7 +10,7 @@ v0.8 起，server 端所有持久化制品都活在 `<data-dir>/state.db` 里。
 ## 备份
 
 ```sh
-forward-server backup --out ~/forward-backup-$(date +%F).db
+portunus-server backup --out ~/portunus-backup-$(date +%F).db
 ```
 
 走 SQLite Online Backup API（`rusqlite::backup::Backup`）。备份 **兼顾 WAL**
@@ -21,7 +21,7 @@ forward-server backup --out ~/forward-backup-$(date +%F).db
 校验：
 
 ```sh
-sqlite3 ~/forward-backup-2026-05-08.db \
+sqlite3 ~/portunus-backup-2026-05-08.db \
     'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
 ```
 
@@ -33,7 +33,7 @@ sqlite3 ~/forward-backup-2026-05-08.db \
 set -eu
 DEST=/var/backups/portunus/$(date +%F).db
 mkdir -p "$(dirname "$DEST")"
-sudo -u portunus forward-server \
+sudo -u portunus portunus-server \
   --data-dir /var/lib/portunus \
   backup --out "$DEST"
 find /var/backups/portunus -name '*.db' -mtime +30 -delete
@@ -43,23 +43,23 @@ find /var/backups/portunus -name '*.db' -mtime +30 -delete
 
 ```sh
 # 1. 停掉正在运行的 server。
-sudo systemctl stop forward-server
+sudo systemctl stop portunus-server
 
 # 2. 清空本地状态。
-forward-server reset --confirm
+portunus-server reset --confirm
 
 # 3. 恢复。
-forward-server restore --in /tmp/forward-backup-2026-05-08.db
+portunus-server restore --in /tmp/portunus-backup-2026-05-08.db
 
 # 4. 启动。
-sudo systemctl start forward-server
+sudo systemctl start portunus-server
 ```
 
 `restore`：
 
 - 拷贝前先校验 SQLite header 魔数。
 - 缺少 `--force` 时拒绝覆写非空 data-dir。
-- 备份的 schema 比当前二进制旧时，自动跑 forward 迁移。
+- 备份的 schema 比当前二进制旧时，自动跑 schema 迁移。
 - 备份的 schema **比当前二进制还新** 时 **拒绝** 并以 `78` 退出，事件
   `startup.schema_version_too_new`。要么保留旧备份，要么用对应版本的二进制
   来恢复。
@@ -68,10 +68,10 @@ sudo systemctl start forward-server
 
 ```sh
 # 干跑（不带 --confirm）打印将要删除的内容。
-forward-server reset
+portunus-server reset
 
 # 真正清除。
-forward-server reset --confirm
+portunus-server reset --confirm
 ```
 
 清除 `state.db` 与边车 `state.db-wal`、`state.db-shm`。
@@ -89,7 +89,7 @@ v0.5–v0.7 的 `identity.json` 是 mode-0600 的原子写 JSON，可以放心 `
 
 - **`--data-dir` 落在 NFS / tmpfs / ramfs** 启动期会以
   `event=startup.unsupported_filesystem` 拒绝。请用本地可写文件系统。
-- **两个 `forward-server serve` 同时打开同一 data-dir** 第二个会以
+- **两个 `portunus-server serve` 同时打开同一 data-dir** 第二个会以
   `event=startup.store_in_use`（退出 75）退出。clustering 不在当前版本范围。
 - **`reset --confirm` 不会清空 `--config-dir`** —— 只清 state。如需也清
   server.crt / server.key，请单独删除。

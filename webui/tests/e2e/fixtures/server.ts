@@ -30,12 +30,14 @@ async function waitForListener(url: string, timeoutMs = 10_000): Promise<void> {
     }
     await sleep(150);
   }
-  throw new Error(`forward-server did not come up at ${url}: ${String(lastErr)}`);
+  throw new Error(`portunus-server did not come up at ${url}: ${String(lastErr)}`);
 }
 
 function spawnServer(configDir: string): ChildProcess {
   const bin =
-    process.env.FORWARD_SERVER_BIN ?? join(process.cwd(), "..", "target", "release", "forward-server");
+    process.env.PORTUNUS_SERVER_BIN ??
+    process.env.PORTUNUS_SERVER_BIN ??
+    join(process.cwd(), "..", "target", "release", "portunus-server");
   const proc = spawn(bin, ["--config-dir", configDir, "--data-dir", join(configDir, "state"), "serve"], {
     env: { ...process.env, RUST_LOG: "info" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -62,7 +64,7 @@ log_format = "compact"
 
 export const test = base.extend<{ server: ServerHandle }>({
   server: async ({}, use) => {
-    const configDir = mkdtempSync(join(tmpdir(), "forward-e2e-"));
+    const configDir = mkdtempSync(join(tmpdir(), "portunus-e2e-"));
     writeServerToml(configDir);
     const proc = spawnServer(configDir);
     const httpUrl = `http://127.0.0.1:${HTTP_PORT}`;

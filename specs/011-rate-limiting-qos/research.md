@@ -6,7 +6,7 @@
 ## R-001 — Hand-rolled token bucket, no `governor` crate
 
 **Decision**: Implement `{rate, burst}` token buckets in
-`forward-client` using `tokio::time::Instant` plus `AtomicU64` for the
+`portunus-client` using `tokio::time::Instant` plus `AtomicU64` for the
 bucket level. No new workspace dependency.
 
 **Rationale**:
@@ -48,7 +48,7 @@ counter. A bucket is `None` when its cap is unset.
 ## R-003 — Per-owner limiter mirrors the per-rule shape
 
 **Decision**: A separate `OwnerRateLimiter` of identical shape lives
-in a `HashMap<OwnerId, Arc<OwnerRateLimiter>>` on `forward-client`,
+in a `HashMap<OwnerId, Arc<OwnerRateLimiter>>` on `portunus-client`,
 populated from the rule-push channel and from a new
 `OwnerRateLimitUpdate` server-message variant. Each capped flow
 consults the per-owner limiter **before** the per-rule limiter (Q1,
@@ -66,7 +66,7 @@ FR-013).
   inconsistent state across same-owner rules and explosive
   per-rule wire size.
 - Server-side owner enforcement. Rejected: data plane lives on
-  `forward-client` and the server has no per-packet visibility.
+  `portunus-client` and the server has no per-packet visibility.
 
 ## R-004 — Wire field tag assignments
 
@@ -172,7 +172,7 @@ forcible close (Q4, FR-011).
 ## R-009 — UDP first-packet enforcement before NAT bind
 
 **Decision**: For UDP rules with a flow-rate or concurrent-flow cap,
-the `forward-client` UDP path consults the limiter on the first
+the `portunus-client` UDP path consults the limiter on the first
 packet of a new flow, **before** v0.4 NAT binding. A reject path is a
 silent drop of the packet and an increment of
 `rate_limit_reject_total{reason="udp_flow_rate" | "owner_udp_flow_rate"}`.

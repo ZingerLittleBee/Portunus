@@ -24,7 +24,7 @@ sudo install -d -m 0750 -o portunus -g portunus /etc/portunus
 A minimal systemd unit:
 
 ```ini
-# /etc/systemd/system/forward-server.service
+# /etc/systemd/system/portunus-server.service
 [Unit]
 Description=Portunus server
 After=network.target
@@ -34,7 +34,7 @@ User=portunus
 Group=portunus
 StateDirectory=portunus
 StateDirectoryMode=0700
-ExecStart=/usr/local/bin/forward-server serve \
+ExecStart=/usr/local/bin/portunus-server serve \
     --config-dir /etc/portunus \
     --data-dir   /var/lib/portunus
 Restart=on-failure
@@ -51,7 +51,7 @@ exposes `$STATE_DIRECTORY=/var/lib/portunus` to the process.
 Bootstrap the first superadmin (one-time):
 
 ```bash
-sudo -u portunus forward-server \
+sudo -u portunus portunus-server \
     --config-dir /etc/portunus \
     --data-dir   /var/lib/portunus \
     bootstrap-superadmin --name 'Initial admin'
@@ -62,8 +62,8 @@ sudo -u portunus forward-server \
 Then enable and start:
 
 ```bash
-sudo systemctl enable --now forward-server
-sudo systemctl status forward-server
+sudo systemctl enable --now portunus-server
+sudo systemctl status portunus-server
 ```
 
 Smoke check:
@@ -77,16 +77,16 @@ curl -k -H "Authorization: Bearer $TOKEN" https://localhost:7443/v1/users/me
 ## 2. Dev workstation cold start
 
 ```bash
-cargo build --release -p forward-server -p forward-client
+cargo build --release -p portunus-server -p portunus-client
 ```
 
 Defaults are XDG-aligned, so no flags needed:
 
 ```bash
-./target/release/forward-server bootstrap-superadmin --name 'Dev admin'
+./target/release/portunus-server bootstrap-superadmin --name 'Dev admin'
 # Token printed once; copy it.
 
-./target/release/forward-server serve
+./target/release/portunus-server serve
 # Reads:
 #   $XDG_CONFIG_HOME/portunus   (or ~/.config/portunus)
 #   $XDG_STATE_HOME/portunus    (or ~/.local/state/portunus)
@@ -110,7 +110,7 @@ For a v0.7 dev install lurking in `~/.config/portunus` (or
 wherever `--config-dir` pointed):
 
 ```bash
-forward-server serve
+portunus-server serve
 # Logs:
 #   event=startup.legacy_persistence_file_ignored path=~/.config/portunus/tokens.json
 #   event=startup.legacy_persistence_file_ignored path=~/.config/portunus/identity.json
@@ -122,7 +122,7 @@ To clean up:
 
 ```bash
 rm ~/.config/portunus/{tokens,identity,rules}.json
-forward-server reset --confirm    # also wipes state.db if present
+portunus-server reset --confirm    # also wipes state.db if present
 ```
 
 ---
@@ -132,15 +132,15 @@ forward-server reset --confirm    # also wipes state.db if present
 Take a backup while the server is running:
 
 ```bash
-forward-server backup --out ~/forward-backup-$(date +%F).db
-# /home/me/forward-backup-2026-05-08.db
+portunus-server backup --out ~/portunus-backup-$(date +%F).db
+# /home/me/portunus-backup-2026-05-08.db
 # event=cli.backup_complete ...
 ```
 
 Verify the artefact:
 
 ```bash
-sqlite3 ~/forward-backup-2026-05-08.db \
+sqlite3 ~/portunus-backup-2026-05-08.db \
     'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
 ```
 
@@ -148,22 +148,22 @@ Restore on a fresh host:
 
 ```bash
 # Stop any local server.
-forward-server reset --confirm
+portunus-server reset --confirm
 
-forward-server restore --in /tmp/forward-backup-2026-05-08.db
-forward-server serve
+portunus-server restore --in /tmp/portunus-backup-2026-05-08.db
+portunus-server serve
 # State is exactly what the source had; if the binary is newer than the
 # backup's schema, forward migrations run automatically.
 ```
 
 ---
 
-## 4. `forward-client` walkthrough
+## 4. `portunus-client` walkthrough
 
 Provision a client (server side):
 
 ```bash
-forward-server provision-client --client-name edge-1 \
+portunus-server provision-client --client-name edge-1 \
     --advertised-endpoint forward.example.com:7443 \
     --out edge-1.bundle.json
 ```
@@ -172,15 +172,15 @@ Run the client (any of these works):
 
 ```bash
 # Explicit
-forward-client --bundle ~/edge-1.bundle.json
+portunus-client --bundle ~/edge-1.bundle.json
 
 # Via env var
-FORWARD_CLIENT_BUNDLE=~/edge-1.bundle.json forward-client
+PORTUNUS_CLIENT_BUNDLE=~/edge-1.bundle.json portunus-client
 
 # Drop the bundle into XDG config and let resolution find it
 mkdir -p ~/.config/portunus
 mv edge-1.bundle.json ~/.config/portunus/client.bundle.json
-forward-client
+portunus-client
 ```
 
 If no path resolves the client exits 1 and lists every path it
@@ -220,28 +220,28 @@ Run the new test suites:
 cargo test --workspace --release
 
 # Audit-survives-restart integration:
-cargo test -p forward-server --test audit_persists_across_restart
+cargo test -p portunus-server --test audit_persists_across_restart
 
 # Multi-entity atomic mutation under SIGKILL:
-cargo test -p forward-auth --test multi_entity_atomic
+cargo test -p portunus-auth --test multi_entity_atomic
 
 # Backup → restore roundtrip:
-cargo test -p forward-server --test backup_restore_roundtrip
+cargo test -p portunus-server --test backup_restore_roundtrip
 
 # CLI contract:
-cargo test -p forward-server --test cli_backup
-cargo test -p forward-server --test cli_restore
-cargo test -p forward-server --test cli_reset
-cargo test -p forward-server --test cli_audit_prune
+cargo test -p portunus-server --test cli_backup
+cargo test -p portunus-server --test cli_restore
+cargo test -p portunus-server --test cli_reset
+cargo test -p portunus-server --test cli_audit_prune
 
 # Operator API regression (proves v0.7 byte-stability):
-cargo test -p forward-server --test operator_api_v07_compat
+cargo test -p portunus-server --test operator_api_v07_compat
 ```
 
 Run the new bench (criterion):
 
 ```bash
-cargo bench -p forward-server --bench operator_api
+cargo bench -p portunus-server --bench operator_api
 # Produces target/criterion/... — compare against the saved v0.7
 # baseline checked into specs/008-sqlite-storage/baselines/.
 ```
@@ -249,7 +249,7 @@ cargo bench -p forward-server --bench operator_api
 Regenerate fixtures (if you change a migration):
 
 ```bash
-cargo run -p forward-server --bin forward-server -- \
+cargo run -p portunus-server --bin portunus-server -- \
     --data-dir tests/fixtures/seeded \
     bootstrap-superadmin --name Seed
 # Then commit tests/fixtures/seeded/state.db.
@@ -262,7 +262,7 @@ cargo run -p forward-server --bin forward-server -- \
 - **Pointing `--data-dir` at NFS / tmpfs**: the server refuses to
   start with `event=startup.unsupported_filesystem`. Move the
   data-dir to a local writable filesystem.
-- **Running two `forward-server serve` against the same data-dir**:
+- **Running two `portunus-server serve` against the same data-dir**:
   the second exits with `event=startup.store_in_use` (exit 75).
   This is by design — clustering is out of scope for v0.8.
 - **Backup taken on v0.9 and trying to restore on a v0.8 binary**:

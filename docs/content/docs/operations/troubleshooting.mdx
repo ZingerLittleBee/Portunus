@@ -27,7 +27,7 @@ on the server.
 ### `auth.failure { reason: "token_revoked" }`
 
 ```sh
-forward-server revoke edge-01
+portunus-server revoke edge-01
 # ↓
 # Server log: client.disconnected reason=token_revoked
 # Restarted client log: auth.failure reason=token_revoked
@@ -47,7 +47,7 @@ Check `control_listen` on the server matches what the bundle's
 ### `port_in_use`
 
 ```sh
-forward-server push-rule edge-01 18080 10.0.0.5:8080
+portunus-server push-rule edge-01 18080 10.0.0.5:8080
 # exit 6: activation_failed: port_in_use
 ```
 
@@ -61,7 +61,7 @@ is **no auto-retry** — failed rules block port reuse until removed
 ### `client_not_connected`
 
 ```sh
-forward-server push-rule edge-01 18080 …
+portunus-server push-rule edge-01 18080 …
 # exit 4: client_not_connected
 ```
 
@@ -69,7 +69,7 @@ The client lost its gRPC stream. Rules persist server-side; the server
 re-pushes on reconnect. Confirm with:
 
 ```sh
-forward-server list-clients
+portunus-server list-clients
 ```
 
 ## RBAC denials
@@ -103,7 +103,7 @@ filesystem.
 
 ### `startup.store_in_use` (exit 75)
 
-Another `forward-server serve` already holds the database. Find and
+Another `portunus-server serve` already holds the database. Find and
 stop the rogue process; clustering is out of scope.
 
 ### `startup.schema_version_too_new` (exit 78)
@@ -117,7 +117,7 @@ backup or run the newer binary version.
 Server has no superadmin yet. Run:
 
 ```sh
-forward-server bootstrap-superadmin --name 'Initial admin'
+portunus-server bootstrap-superadmin --name 'Initial admin'
 ```
 
 …or set `operator_token` in `server.toml` and restart once.
@@ -129,7 +129,7 @@ forward-server bootstrap-superadmin --name 'Initial admin'
 Run the criterion bench to compare:
 
 ```sh
-cargo bench -p forward-client --bench data_plane
+cargo bench -p portunus-client --bench data_plane
 ```
 
 The CI regression gate
@@ -140,7 +140,7 @@ bisect with `git bisect run cargo bench …`.
 
 ### "Connections drop under sustained UDP load"
 
-Check `forward_rule_flows_dropped_overflow_total`. If non-zero, raise
+Check `portunus_rule_flows_dropped_overflow_total`. If non-zero, raise
 `udp_max_flows_per_rule` in `server.toml` (and `LimitNOFILE` on the
 client systemd unit).
 
@@ -150,7 +150,7 @@ Inspect the peek histogram:
 
 ```text
 histogram_quantile(0.99,
-  rate(forward_tls_client_hello_peek_duration_seconds_bucket[5m]))
+  rate(portunus_tls_client_hello_peek_duration_seconds_bucket[5m]))
 ```
 
 A long tail (close to 3 s) usually means clients are sending
@@ -163,7 +163,7 @@ GitHub issues: https://github.com/ZingerLittleBee/Portunus/issues
 
 Include:
 
-- Output of `forward-server --version` and `forward-client --version`.
+- Output of `portunus-server --version` and `portunus-client --version`.
 - Relevant structured-log lines (the JSON event names alone usually
   identify the failure mode).
 - Operator command + the exact error.

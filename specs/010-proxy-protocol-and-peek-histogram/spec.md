@@ -9,9 +9,9 @@
 
 ### Session 2026-05-09
 
-- Q: Which destination endpoint should the emitted PROXY v1/v2 header report? → A: Original client→forward-client listener IP and port.
+- Q: Which destination endpoint should the emitted PROXY v1/v2 header report? → A: Original client→portunus-client listener IP and port.
 - Q: Which peek outcomes should the peek-duration histogram record? → A: All SNI-mode peek outcomes: success, timeout, and parse error.
-- Q: For wildcard forward-client listeners, which destination IP should the PROXY header report? → A: The accepted socket's actual local IP and port.
+- Q: For wildcard portunus-client listeners, which destination IP should the PROXY header report? → A: The accepted socket's actual local IP and port.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -19,7 +19,7 @@
 
 An operator runs Portunus in front of a TLS service (typically port 443) and
 fans out to multiple upstream backends with v0.9 SNI routing. Today, every
-backend's access log shows the forward-client's IP address as the client peer,
+backend's access log shows the portunus-client's IP address as the client peer,
 because Portunus is a transparent L4 proxy that opens its own TCP connection
 to the upstream. The operator wants the backend to see the **real end client's**
 IP address (and source port) so existing access logging, geo-IP, abuse
@@ -33,10 +33,10 @@ never decrypts TLS) or accept that their access logs are useless. PROXY
 protocol is the universally accepted solution that nginx, HAProxy, Caddy,
 Traefik, Postgres, Redis, and many TCP services already understand.
 
-**Independent Test**: A two-host setup — forward-client → nginx with
+**Independent Test**: A two-host setup — portunus-client → nginx with
 `proxy_protocol on;` — receives a TLS connection from a known external IP.
 Assert that nginx's `$proxy_protocol_addr` (or equivalent) matches that
-external IP rather than the forward-client's bind address. The test passes
+external IP rather than the portunus-client's bind address. The test passes
 when the backend reports the real client IP for both IPv4 and IPv6
 connections, and fails (no fall-through) if the operator opts in but the
 backend has not been configured to expect PROXY protocol.
@@ -44,22 +44,22 @@ backend has not been configured to expect PROXY protocol.
 **Acceptance Scenarios**:
 
 1. **Given** a target with PROXY-protocol opted in (version 1) and a TLS
-   client connecting from `203.0.113.45:54321` to forward-client on
-   `:443`, **When** forward-client opens the upstream TCP connection,
+   client connecting from `203.0.113.45:54321` to portunus-client on
+   `:443`, **When** portunus-client opens the upstream TCP connection,
    **Then** the upstream receives a single PROXY v1 ASCII line carrying
    `203.0.113.45 <fwd-client-local-ip> 54321 <fwd-client-local-port>`
    before any TLS bytes flow.
 2. **Given** the same setup but PROXY-protocol version 2, **When**
-   forward-client opens the upstream TCP connection, **Then** the upstream
+   portunus-client opens the upstream TCP connection, **Then** the upstream
    receives the 12-byte PROXY v2 signature plus a TCP4 address block with
    the same source/dest values, again before any TLS bytes flow.
 3. **Given** a v0.10 server is asked to push a rule whose target opts into
-   PROXY-protocol to a forward-client whose self-reported version is older
+   PROXY-protocol to a portunus-client whose self-reported version is older
    than 0.10, **When** the operator submits the push, **Then** the server
    refuses the push with a structured error indicating the client cannot
    support PROXY-protocol and the rule is **not** activated anywhere.
 4. **Given** a target that does **not** opt into PROXY-protocol, **When**
-   forward-client opens the upstream connection, **Then** the upstream byte
+   portunus-client opens the upstream connection, **Then** the upstream byte
    stream is byte-identical to v0.9 (no header is prepended).
 5. **Given** a target that opts in but the upstream resets the connection
    before the PROXY header finishes writing, **When** the write fails,
@@ -85,7 +85,7 @@ adoption story. Slated below PROXY-protocol because v0.9 already ships peek
 counters that flag whether peeks are failing — only the *distribution* of
 all SNI-mode peek durations is new.
 
-**Independent Test**: With a forward-client running an SNI-mode listener,
+**Independent Test**: With a portunus-client running an SNI-mode listener,
 generate a controlled mix of low-RTT and high-RTT clients (e.g., via
 artificial network delay). Scrape the server's Prometheus surface and
 verify that bucketed peek-duration counts increase under load and that the
@@ -129,7 +129,7 @@ the **shape** of that field (per-target) is load-bearing.
 
 **Independent Test**: Configure one rule with two targets — target A opts
 into PROXY-protocol, target B does not — and direct two TLS connections
-through forward-client such that the multi-target failover/selection
+through portunus-client such that the multi-target failover/selection
 hands one to A and one to B. Capture upstream bytes; A's stream begins
 with a PROXY header and B's does not.
 
@@ -147,19 +147,19 @@ with a PROXY header and B's does not.
 ### Edge Cases
 
 - **Mixed address families**: TLS client connects over IPv6 to a
-  forward-client listener on a dual-stack socket; the upstream connection
+  portunus-client listener on a dual-stack socket; the upstream connection
   may also be IPv6 or IPv4. The PROXY header must report the address
-  family of the **client→forward-client** connection (the original
+  family of the **client→portunus-client** connection (the original
   client's view), not the upstream connection — that is the contract
   backends rely on.
-- **Wildcard listener bind addresses**: if forward-client listens on a
+- **Wildcard listener bind addresses**: if portunus-client listens on a
   wildcard address such as `0.0.0.0` or `::`, the PROXY header must use
   the accepted socket's actual local IP address and port, not the
   configured wildcard bind address.
 - **Loopback / unix-style upstream targets**: Portunus only supports
   TCP/UDP targets; UNIX-domain sockets are not in scope. PROXY v2 has a
   UNIX address-family block; we will not emit it.
-- **Capability mismatch on hot reload**: a v0.10 forward-client connects,
+- **Capability mismatch on hot reload**: a v0.10 portunus-client connects,
   the server activates a PROXY-enabled rule on it, then the client
   reconnects after a downgrade to v0.9. The server must re-evaluate the
   capability gate at reconnect and refuse to re-push that rule, leaving
@@ -199,9 +199,9 @@ with a PROXY header and B's does not.
   the very first bytes of the upstream stream, before any client→upstream
   bytes are forwarded.
 - **FR-004**: The PROXY header MUST carry the source IP and source port of
-  the **original client→forward-client** connection and the destination IP
+  the **original client→portunus-client** connection and the destination IP
   and destination port that the original client targeted (the
-  forward-client's listening socket), regardless of the upstream
+  portunus-client's listening socket), regardless of the upstream
   connection's address family. For wildcard listener bind addresses, the
   destination IP and port MUST be the accepted socket's actual local
   endpoint.
@@ -215,7 +215,7 @@ with a PROXY header and B's does not.
   target so that v0.7 multi-target health and failover apply, and MUST NOT
   fall back to forwarding without the header.
 - **FR-008**: The system MUST refuse to push a rule whose target opts into
-  PROXY-protocol to any forward-client whose self-reported version is
+  PROXY-protocol to any portunus-client whose self-reported version is
   older than v0.10, returning a structured `proxy_protocol_unsupported_by_client`
   error before activating the rule anywhere.
 - **FR-009**: The per-target PROXY-protocol setting MUST be visible and
@@ -268,13 +268,13 @@ with a PROXY header and B's does not.
 
 - **NR-001**: TLS termination, decryption, or re-encryption — the system
   remains a pure L4 byte-passthrough. Same posture as v0.9.
-- **NR-002**: PROXY-protocol consumption on the **client→forward-client**
+- **NR-002**: PROXY-protocol consumption on the **client→portunus-client**
   ingress side (i.e., trusting an upstream load balancer's PROXY header
   on incoming connections). v0.10 only **injects** to upstreams.
 - **NR-003**: PROXY-protocol on UDP rules. Although the v2 spec defines
   UDP/DGRAM blocks, UDP is a separate design conversation and is
   deferred.
-- **NR-004**: A `/metrics` endpoint on forward-client. Metrics continue
+- **NR-004**: A `/metrics` endpoint on portunus-client. Metrics continue
   to flow through the existing client→server stats reporting channel.
 - **NR-005**: TLV/extension fields in the PROXY v2 binary header (e.g.,
   authority, CRC32C, custom TLVs). v0.10 emits the minimum address block
@@ -300,7 +300,7 @@ with a PROXY header and B's does not.
   reported to the server alongside existing stats.
 - **Capability gate decision**: a server-side check performed at
   rule-push time that compares the requested target's PROXY-protocol
-  setting against the destination forward-client's self-reported version
+  setting against the destination portunus-client's self-reported version
   before activating the rule. Same shape as v0.9's
   `sni_unsupported_by_client` precedent.
 
@@ -310,8 +310,8 @@ with a PROXY header and B's does not.
 
 - **SC-001**: For 100% of upstream connections to opted-in targets, the
   backend's access log shows the **end client's** IP and source port
-  rather than the forward-client's bind address, across both IPv4 and
-  IPv6 client connections, with zero observed cases of forward-client
+  rather than the portunus-client's bind address, across both IPv4 and
+  IPv6 client connections, with zero observed cases of portunus-client
   IP leakage in a representative test workload of at least 10,000
   connections.
 - **SC-002**: Opting a target into PROXY-protocol adds no more than one
@@ -326,7 +326,7 @@ with a PROXY header and B's does not.
   hour can compute peek-duration p50, p95, p99, and p999 from the
   Prometheus surface using only standard `histogram_quantile` queries,
   without needing per-connection log parsing or external tooling.
-- **SC-005**: A v0.9 forward-client paired with a v0.10 server cannot
+- **SC-005**: A v0.9 portunus-client paired with a v0.10 server cannot
   inadvertently activate a PROXY-protocol-enabled target — the server
   refuses the push and the operator receives a clear, actionable error
   identifying the version mismatch within the same API call.
@@ -354,7 +354,7 @@ with a PROXY header and B's does not.
   on the existing targets/rules persistence table; the schema-version
   handshake range advances by one minor step. Pre-existing rows
   read as "not opted in".
-- The capability gate compares against the forward-client's
+- The capability gate compares against the portunus-client's
   self-reported version on its most recent control-plane reconnect
   (the v0.7 / v0.9 precedent); no new wire field is required for the
   comparison itself.
@@ -386,6 +386,6 @@ For traceability, the original feature description provided to
 > per-SNI-listener via new additive Prometheus channel, fixed log-
 > spaced buckets, SNI-mode only. Out of scope: L7, rate-limit, QUIC
 > SNI, port-range SNI, configurable peek-budget, ingress-side PROXY
-> consumption, /metrics on forward-client. Inherited baselines: v0.9
+> consumption, /metrics on portunus-client. Inherited baselines: v0.9
 > (SNI), v0.7 (multi-target failover), v0.5 (RBAC envelope, metric
 > labels). Branch: 010-proxy-protocol-and-peek-histogram.

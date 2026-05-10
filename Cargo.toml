@@ -98,7 +98,7 @@ prometheus = "0.13"
 # Persistent store (008-sqlite-storage)
 # `bundled` statically links a pinned SQLite (preserves single-binary
 # deployment posture; no system libsqlite3 build dep). `backup` exposes
-# the Online Backup API used by `forward-server backup` / `restore`.
+# the Online Backup API used by `portunus-server backup` / `restore`.
 # `chrono` gives DateTime<Utc> ↔ TEXT mapping consistent with v0.7
 # wire types. See specs/008-sqlite-storage/research.md R-001.
 rusqlite = { version = "0.32", features = ["bundled", "blob", "backup", "chrono", "limits"] }
@@ -114,9 +114,9 @@ num_cpus = "1"
 nix = { version = "0.29", default-features = false, features = ["fs", "net", "socket"] }
 
 # Forward workspace crates
-forward-proto = { path = "crates/forward-proto" }
-forward-core = { path = "crates/forward-core" }
-forward-auth = { path = "crates/forward-auth" }
+portunus-proto = { path = "crates/portunus-proto" }
+portunus-core = { path = "crates/portunus-core" }
+portunus-auth = { path = "crates/portunus-auth" }
 
 # Dev dependencies
 criterion = { version = "0.5", features = ["html_reports"] }

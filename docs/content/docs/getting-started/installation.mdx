@@ -4,8 +4,8 @@ description: Install Portunus in 60 seconds. Build from source, pull a Docker im
 icon: Download
 ---
 
-`Portunus` ships as two single binaries — `forward-server` (control plane)
-and `forward-client` (edge). Pick the option that matches your environment.
+`Portunus` ships as two single binaries — `portunus-server` (control plane)
+and `portunus-client` (edge). Pick the option that matches your environment.
 
 ## Prerequisites
 
@@ -20,14 +20,14 @@ and `forward-client` (edge). Pick the option that matches your environment.
 ```sh
 git clone https://github.com/ZingerLittleBee/Portunus.git
 cd Portunus
-cargo build --release -p forward-server -p forward-client
+cargo build --release -p portunus-server -p portunus-client
 ```
 
 You now have:
 
 ```
-target/release/forward-server
-target/release/forward-client
+target/release/portunus-server
+target/release/portunus-client
 ```
 
 Copy them to `/usr/local/bin/` (or anywhere on `PATH`) and you are done.
@@ -44,10 +44,10 @@ The repo ships multi-stage Dockerfiles that produce
 
 ```sh
 # Server
-docker build -t forward-server:latest -f deploy/docker/Dockerfile.server .
+docker build -t portunus-server:latest -f deploy/docker/Dockerfile.server .
 
 # Client
-docker build -t forward-client:latest -f deploy/docker/Dockerfile.client .
+docker build -t portunus-client:latest -f deploy/docker/Dockerfile.client .
 ```
 
 A local-only `docker-compose.yml` lives at `deploy/docker/docker-compose.yml`
@@ -74,11 +74,11 @@ breakdown and hardening notes.
 ## Verify the install
 
 ```sh
-forward-server --version
-forward-client --version
+portunus-server --version
+portunus-client --version
 ```
 
-They should print `forward-server <version>` and `forward-client <version>`.
+They should print `portunus-server <version>` and `portunus-client <version>`.
 
 ## Next steps
 

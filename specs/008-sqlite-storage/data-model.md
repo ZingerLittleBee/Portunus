@@ -2,11 +2,11 @@
 
 The on-disk DDL semantics for `<data-dir>/state.db`. Tables map 1:1 to
 the spec's "Key Entities" list. SQL fragments are illustrative — the
-authoritative form lives in `crates/forward-server/src/store/migrations/V001__initial_schema.sql`.
+authoritative form lives in `crates/portunus-server/src/store/migrations/V001__initial_schema.sql`.
 
 All `*_at` columns are stored as ISO-8601 UTC strings (`TEXT`) to match
 `chrono::DateTime<Utc>` round-trip behaviour already used by
-`forward-auth`. ULIDs serialise as their canonical 26-char base32 form.
+`portunus-auth`. ULIDs serialise as their canonical 26-char base32 form.
 
 ---
 
@@ -75,7 +75,7 @@ CREATE TABLE users (
 ) STRICT;
 ```
 
-Mirrors `forward_auth::User`. `STRICT` table mode is enabled (SQLite
+Mirrors `portunus_auth::User`. `STRICT` table mode is enabled (SQLite
 ≥ 3.37) to catch type drift early.
 
 ---
@@ -119,7 +119,7 @@ CREATE INDEX grants_resource_lookup   ON grants(resource_kind, resource_value);
 ```
 
 The `resource_kind` / `resource_value` pair is opaque at the SQL layer
-— `forward-auth` interprets it. v0.7 RBAC envelope unchanged.
+— `portunus-auth` interprets it. v0.7 RBAC envelope unchanged.
 
 ---
 
@@ -150,7 +150,7 @@ CREATE INDEX rules_listen_idx ON rules(listen_port, listen_port_end);
 Single-target rules use `target_host` / `target_port` directly and
 keep `rule_targets` empty. Multi-target rules (v0.7) populate
 `rule_targets` and treat `target_host` / `target_port` as ignored at
-runtime — same shape `forward_server::rules::Rule` already uses. The
+runtime — same shape `portunus_server::rules::Rule` already uses. The
 `!targets.is_empty()` discriminator stays at the application layer
 (documented in v0.7 `data-model.md`).
 
@@ -187,7 +187,7 @@ CREATE TABLE client_tokens (
 
 `UNIQUE(token_hash)` defends against a (negligible-probability)
 collision across re-provisions; an INSERT failing this constraint
-maps to `ForwardError::Conflict`.
+maps to `PortunusError::Conflict`.
 
 ---
 
@@ -214,7 +214,7 @@ CREATE INDEX audit_user_ts_idx      ON audit(user_id, ts DESC);
 ```
 
 Append-only at the application level (no UPDATE / DELETE except
-through `forward-server audit prune --before <ts>`). `seq` doubles as
+through `portunus-server audit prune --before <ts>`). `seq` doubles as
 the cursor pagination token (FR-007).
 
 The `details_json` column carries forward-compatible extension

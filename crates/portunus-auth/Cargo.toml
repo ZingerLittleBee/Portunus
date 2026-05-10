@@ -1,0 +1,32 @@
+[package]
+name = "portunus-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authentication seam (Constitution Principle I) for Portunus."
+
+[lints]
+workspace = true
+
+[dependencies]
+portunus-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+bitflags = { version = "2", features = ["serde"] }
+# 008-sqlite-storage: SQLite-backed Authenticator / OperatorAuthenticator
+# trait impls. The Store handle itself lives in portunus-server; this
+# crate just consumes a `&Connection` through the trait seam.
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }

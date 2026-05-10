@@ -111,7 +111,7 @@ rule.
 
 ## Test plan
 
-`crates/forward-server/tests/rule_stats_stream_contract.rs` (new):
+`crates/portunus-server/tests/rule_stats_stream_contract.rs` (new):
 
 1. Subscribe as the rule's owner → receive a snapshot within 6 s.
 2. Subscribe as superadmin to a rule owned by alice → snapshot

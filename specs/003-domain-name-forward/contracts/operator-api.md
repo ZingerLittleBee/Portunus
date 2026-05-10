@@ -1,7 +1,7 @@
 # Operator API & CLI deltas (v0.3.0)
 
 Additive overlay on the v0.2.0 operator surfaces (HTTP at
-`127.0.0.1:7080/v1/...` + `forward-server` CLI subcommands). All deltas
+`127.0.0.1:7080/v1/...` + `portunus-server` CLI subcommands). All deltas
 are backward-compatible: a v0.2.0-shaped HTTP request body or CLI
 invocation continues to work; new fields and flags default to the
 v0.2.0 behavior.
@@ -100,9 +100,9 @@ present so operators can poll one endpoint and not branch on rule type.
 **New collector**:
 
 ```
-# HELP forward_rule_dns_failures_total Per-rule monotonic count of end-user connections refused due to DNS resolution failure (NXDOMAIN, SERVFAIL, timeout, full multi-A exhaustion).
-# TYPE forward_rule_dns_failures_total counter
-forward_rule_dns_failures_total{client="edge-01",rule="42"} 7
+# HELP portunus_rule_dns_failures_total Per-rule monotonic count of end-user connections refused due to DNS resolution failure (NXDOMAIN, SERVFAIL, timeout, full multi-A exhaustion).
+# TYPE portunus_rule_dns_failures_total counter
+portunus_rule_dns_failures_total{client="edge-01",rule="42"} 7
 ```
 
 Cardinality contract: one row per `(client, rule)` pair, never per
@@ -112,7 +112,7 @@ attempt, per address, or per failure-mode reason (R-008 / SC-006).
 
 ## CLI
 
-### `forward-server push-rule <client_name> <listen_spec> <target_spec> [--prefer-ipv6]`
+### `portunus-server push-rule <client_name> <listen_spec> <target_spec> [--prefer-ipv6]`
 
 **Argument shapes (additive)**:
 
@@ -127,27 +127,27 @@ attempt, per address, or per failure-mode reason (R-008 / SC-006).
 
 ```sh
 # v0.2.0 single-port IP target — unchanged
-forward-server push-rule edge-01 8080 192.168.1.10:80
+portunus-server push-rule edge-01 8080 192.168.1.10:80
 
 # v0.2.0 port-range IP target — unchanged
-forward-server push-rule edge-01 30000-30099 192.168.1.10:30000-30099
+portunus-server push-rule edge-01 30000-30099 192.168.1.10:30000-30099
 
 # v0.3.0 single-port DNS target, IPv4-first (default)
-forward-server push-rule edge-01 8443 api.example.com:443
+portunus-server push-rule edge-01 8443 api.example.com:443
 
 # v0.3.0 single-port DNS target, IPv6-preferred
-forward-server push-rule edge-01 8443 api.example.com:443 --prefer-ipv6
+portunus-server push-rule edge-01 8443 api.example.com:443 --prefer-ipv6
 
 # v0.3.0 port-range DNS target — one resolution per range (FR-011)
-forward-server push-rule edge-01 8000-8009 api.example.com:8000-8009
+portunus-server push-rule edge-01 8000-8009 api.example.com:8000-8009
 
 # Validation failure surfaces immediately
-forward-server push-rule edge-01 8080 'foo_bar.example:80'
+portunus-server push-rule edge-01 8080 'foo_bar.example:80'
 # → exit 1, stderr: invalid_target_host: DNS name 'foo_bar.example' contains
 #   invalid character '_' (RFC 1123 strict)
 ```
 
-### `forward-server rule-stats <id> [--per-port]`
+### `portunus-server rule-stats <id> [--per-port]`
 
 **Output (additive)**: gains a `dns_failures` row alongside the
 v0.1.0/v0.2.0 fields:
@@ -162,7 +162,7 @@ rule 42 (client edge-01)
 
 Same field is exposed through `--json` mode (v0.2.0).
 
-### `forward-server list-rules`
+### `portunus-server list-rules`
 
 **Output (additive)**: gains a `target_host` (already present in
 v0.2.0 — now legitimately may be a hostname) and a `prefer_ipv6`

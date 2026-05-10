@@ -5,18 +5,18 @@ icon: Zap
 ---
 
 This walkthrough mirrors `quickstart.md` from the v0.1 spec — it doubles as
-the script the `forward-e2e` integration tests exercise programmatically.
+the script the `portunus-e2e` integration tests exercise programmatically.
 
 ## 0. Prerequisites
 
-You need [`forward-server` and `forward-client` installed](/docs/getting-started/installation)
+You need [`portunus-server` and `portunus-client` installed](/docs/getting-started/installation)
 and on `PATH`, plus two terminals (or two hosts).
 
 ## 1. Start the server (Host A)
 
 ```sh
 mkdir -p ./srv
-forward-server --config-dir ./srv \
+portunus-server --config-dir ./srv \
   --control-listen 0.0.0.0:7443 \
   --operator-http-listen 127.0.0.1:7080 \
   --metrics-listen 127.0.0.1:7081 \
@@ -37,7 +37,7 @@ and an empty `./srv/tokens.json`. Logs are JSON lines:
 The operator API is bearer-authed (v0.5.0+). Mint a superadmin once:
 
 ```sh
-forward-server --config-dir ./srv bootstrap-superadmin --name ops
+portunus-server --config-dir ./srv bootstrap-superadmin --name ops
 # → superadmin user_id=_superadmin token=<bearer>
 ```
 
@@ -46,15 +46,15 @@ forward-server --config-dir ./srv bootstrap-superadmin --name ops
 </Callout>
 
 ```sh
-export FORWARD_OPERATOR_TOKEN=<paste-token-here>
+export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 ```
 
-Every operator subcommand below reads `FORWARD_OPERATOR_TOKEN` from env.
+Every operator subcommand below reads `PORTUNUS_OPERATOR_TOKEN` from env.
 
 ## 3. Provision a forwarding client
 
 ```sh
-forward-server --config-dir ./srv \
+portunus-server --config-dir ./srv \
   provision-client edge-01 --out ./srv/edge-01.bundle.json
 ```
 
@@ -64,13 +64,13 @@ and the client's bearer token. Transfer it to Host B over a trusted channel.
 ## 4. Start the client (Host B)
 
 ```sh
-forward-client --bundle ./edge-01.bundle.json
+portunus-client --bundle ./edge-01.bundle.json
 ```
 
 Within a few seconds the server logs `client.connected`. Verify:
 
 ```sh
-forward-server --config-dir ./srv list-clients
+portunus-server --config-dir ./srv list-clients
 # NAME      CONNECTED   REMOTE              CONNECTED-AT
 # edge-01   yes         203.0.113.5:51234   2026-05-06T12:01:30Z
 ```
@@ -79,7 +79,7 @@ forward-server --config-dir ./srv list-clients
 
 ```sh
 # 18080 on edge-01 → 10.0.0.5:8080
-forward-server push-rule edge-01 18080 10.0.0.5:8080
+portunus-server push-rule edge-01 18080 10.0.0.5:8080
 # → rule_id=1
 ```
 
@@ -101,17 +101,17 @@ sha256sum /tmp/in.bin /tmp/out.bin   # hashes must match
 
 ```sh
 # Aggregate counters via the operator CLI
-forward-server rule-stats 1
+portunus-server rule-stats 1
 # → rule_id=1 bytes_in=104857600 bytes_out=0 active_connections=0
 
 # Same numbers via Prometheus
-curl -s http://127.0.0.1:7081/metrics | grep '^forward_rule'
+curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
 ```
 
 ## 8. Tear down
 
 ```sh
-forward-server remove-rule 1
+portunus-server remove-rule 1
 # Rule drains, in-flight connections finish within shutdown_drain_timeout_secs.
 ```
 

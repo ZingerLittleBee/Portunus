@@ -1,7 +1,7 @@
 // 007-multi-target-failover T042 — Web UI surface coverage for the
 // multi-target rule-push form. Runs against the real server fixture so
 // the form's POST body lands as actual HTTP traffic — no mocks. The
-// e2e fixture does not spin up a forward-client, so current server
+// e2e fixture does not spin up a portunus-client, so current server
 // semantics reject the push after validation with client_not_connected.
 
 import { test, expect } from "./fixtures/server";

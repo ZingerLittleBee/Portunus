@@ -2,10 +2,10 @@
 #
 # Usage:
 #   1. Build the binaries and stage them for the runtime-only Dockerfiles:
-#        cargo build --release -p forward-server -p forward-client
+#        cargo build --release -p portunus-server -p portunus-client
 #        arch="$(docker version --format '{{.Server.Arch}}')"
 #        mkdir -p "docker-bin/${arch}"
-#        cp target/release/forward-server target/release/forward-client "docker-bin/${arch}/"
+#        cp target/release/portunus-server target/release/portunus-client "docker-bin/${arch}/"
 #   2. Build:    docker compose -f deploy/docker/docker-compose.yml build
 #   3. Start:    docker compose -f deploy/docker/docker-compose.yml up -d server
 #   4. Provision a client (writes bundle into shared volume):
@@ -21,21 +21,21 @@
 #        docker compose -f deploy/docker/docker-compose.yml \
 #          run --rm operator push-rule edge-01 8080 echo 9000
 #   7. Drive traffic from inside the network:
-#        docker run --rm --network container:forward-client alpine:3.20 \
+#        docker run --rm --network container:portunus-client alpine:3.20 \
 #          sh -c 'apk add --no-cache netcat-openbsd >/dev/null && echo hello | nc -q1 127.0.0.1 8080'
 #
 # Notes:
 # - Operator HTTP (7080) and metrics (7081) are loopback-only by design.
 #   To inspect /metrics from the host: `docker compose exec server` won't
 #   work (distroless has no shell), so use `docker run --rm --network
-#   container:forward-server-1 curlimages/curl -s 127.0.0.1:7081/metrics`.
+#   container:portunus-server-1 curlimages/curl -s 127.0.0.1:7081/metrics`.
 # - This compose is for local exploration only. For production use the
 #   systemd units in deploy/systemd/ or roll the images into your
 #   orchestrator with a real config + secret management story.
 
 services:
   server:
-    container_name: forward-server
+    container_name: portunus-server
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.server
@@ -43,8 +43,8 @@ services:
     ports:
       - "7443:7443"
     volumes:
-      - server-data:/var/lib/forward
-      - server-config:/etc/forward
+      - server-data:/var/lib/portunus
+      - server-config:/etc/portunus
       - shared-bundles:/shared
     restart: unless-stopped
 
@@ -55,16 +55,16 @@ services:
     profiles: ["cli"]
     image: portunus/server:dev
     volumes:
-      - server-data:/var/lib/forward
-      - server-config:/etc/forward
+      - server-data:/var/lib/portunus
+      - server-config:/etc/portunus
       - shared-bundles:/shared
     network_mode: "service:server"
-    entrypoint: ["/usr/local/bin/forward-server"]
-    command: ["--config-dir", "/var/lib/forward", "--config", "/etc/forward/server.toml", "list-clients"]
+    entrypoint: ["/usr/local/bin/portunus-server"]
+    command: ["--config-dir", "/var/lib/portunus", "--config", "/etc/portunus/server.toml", "list-clients"]
 
   client:
     profiles: ["client"]
-    container_name: forward-client
+    container_name: portunus-client
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.client
@@ -78,7 +78,7 @@ services:
   # quickstart push-rule example so you can curl/`nc` through a real rule
   # without depending on outbound internet.
   echo:
-    container_name: forward-echo
+    container_name: portunus-echo
     image: alpine:3.20
     command: ["sh", "-c", "apk add --no-cache socat && socat TCP-LISTEN:9000,fork,reuseaddr EXEC:cat"]
     expose:

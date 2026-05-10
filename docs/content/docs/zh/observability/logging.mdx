@@ -33,12 +33,12 @@ log_format = "json"     # 默认
 使用标准 `tracing-subscriber` env-filter：
 
 ```sh
-RUST_LOG=info forward-server serve
-RUST_LOG=forward_server=debug,forward_client=info forward-server serve
+RUST_LOG=info portunus-server serve
+RUST_LOG=portunus_server=debug,portunus_client=info portunus-server serve
 
 # 按 target 过滤
-RUST_LOG=tls_sni=trace forward-client
-RUST_LOG=forward_client::forwarder::udp=debug forward-client
+RUST_LOG=tls_sni=trace portunus-client
+RUST_LOG=portunus_client::forwarder::udp=debug portunus-client
 ```
 
 ## request_id 透传
@@ -78,7 +78,7 @@ Redaction 层会清洗任何 **字段名** 命中
 
 ```sh
 # 紧凑、按 target 标签的格式，便于实时跟看
-RUST_LOG=info forward-server --log-format compact serve
+RUST_LOG=info portunus-server --log-format compact serve
 
 # 或写在 TOML 中：
 log_format = "compact"

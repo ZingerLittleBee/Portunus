@@ -58,7 +58,7 @@ The operator can see, at any moment, which targets a rule has, which one is curr
 
 1. **Given** a rule that has experienced 5 failovers since creation, **When** the operator queries `rule-stats --per-target`, **Then** the output lists every target with its priority, current health status, last-failure timestamp, last-success timestamp, consecutive-failure count, and per-target byte counters; and the rule-level `target_failovers_total` reads `5`.
 2. **Given** the same rule, **When** the operator opens the rule's detail page in the Web UI, **Then** the targets list renders with health badges, and the per-target byte counters and `target_failovers_total` update live (5-second cadence) as traffic flows.
-3. **Given** a multi-target rule whose primary has been Failed for 24 hours, **When** the operator scrapes Prometheus `/metrics`, **Then** `forward_rule_target_failovers_total{client,rule}` shows the total transition count and is suitable for a "primary-down rate over time" alert.
+3. **Given** a multi-target rule whose primary has been Failed for 24 hours, **When** the operator scrapes Prometheus `/metrics`, **Then** `portunus_rule_target_failovers_total{client,rule}` shows the total transition count and is suitable for a "primary-down rate over time" alert.
 
 ---
 
@@ -121,7 +121,7 @@ The operator pushes a multi-target rule via the same `push-rule` CLI subcommand,
 
 - **FR-016**: The per-rule statistics surface MUST report, per target: current health state, last-failure timestamp, last-success timestamp, consecutive-failure count, bytes transferred in, bytes transferred out, connections accepted (TCP) or flows accepted (UDP). It MUST also report the rule-level `target_failovers_total`.
 - **FR-017**: The CLI per-rule stats command MUST surface per-target counters only behind an explicit `--per-target` flag, mirroring how range rules surface `--per-port`. The default output MUST stay at the same per-rule cardinality as v0.6.0.
-- **FR-018**: The operator metrics endpoint MUST expose `forward_rule_target_failovers_total{client, rule}` as a counter. Per-target byte counters MUST NOT be exported as default Prometheus series; they remain query-only via the per-rule stats surface to keep `/metrics` cardinality bounded.
+- **FR-018**: The operator metrics endpoint MUST expose `portunus_rule_target_failovers_total{client, rule}` as a counter. Per-target byte counters MUST NOT be exported as default Prometheus series; they remain query-only via the per-rule stats surface to keep `/metrics` cardinality bounded.
 - **FR-019**: The Web UI rule detail page MUST render the targets list in priority order with per-target current health badges, last-failure / last-success timestamps, and live per-target byte counters that update on the same 5-second cadence as the existing per-rule live stats.
 - **FR-020**: The Web UI rule push form MUST allow the operator to add and remove target rows inline. Single-target pushes via this form MUST produce a request indistinguishable from the v0.6.0 single-target form at the data plane.
 
@@ -144,7 +144,7 @@ The operator pushes a multi-target rule via the same `push-rule` CLI subcommand,
 - **SC-003**: Single-target rule throughput regresses by ≤ 1% on the existing TCP forwarder data-plane benchmark vs the v0.6.0 baseline. Verified by the criterion benchmark gate currently enforced in CI.
 - **SC-004**: An operator can push, edit, and delete a multi-target rule through the same CLI subcommand and the same Web UI form they use for single-target rules — no separate menu, no separate command. Verified by a UX walkthrough that creates a multi-target rule using only surfaces the operator already knows.
 - **SC-005**: An operator can identify, in under 30 seconds of looking at the Web UI rule detail page, which target a multi-target rule currently sends new connections to and which targets have failed in the last hour. Verified by the per-target health badges and per-target byte counters surfacing on the detail page.
-- **SC-006**: A `/metrics` scrape on a host running 100 multi-target rules adds ≤ 100 new series compared to the same 100 single-target rules — i.e., the per-target byte counters do not appear in the default `/metrics` payload (FR-018), only `forward_rule_target_failovers_total{client, rule}` is added per rule.
+- **SC-006**: A `/metrics` scrape on a host running 100 multi-target rules adds ≤ 100 new series compared to the same 100 single-target rules — i.e., the per-target byte counters do not appear in the default `/metrics` payload (FR-018), only `portunus_rule_target_failovers_total{client, rule}` is added per rule.
 - **SC-007**: When all targets are unhealthy, the data plane attempts the highest-priority target rather than silently dropping. The end-user sees an explicit connection failure within the rule's connect timeout, and the per-rule connection-failure counter increments — no mystery silent drops.
 
 ## Assumptions

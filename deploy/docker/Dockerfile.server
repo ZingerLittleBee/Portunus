@@ -1,18 +1,18 @@
-# forward-server runtime image.
+# portunus-server runtime image.
 # Build context must provide prebuilt Linux binaries at:
-#   docker-bin/amd64/forward-server
-#   docker-bin/arm64/forward-server
+#   docker-bin/amd64/portunus-server
+#   docker-bin/arm64/portunus-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 ARG TARGETARCH
-COPY docker-bin/${TARGETARCH}/forward-server /usr/local/bin/forward-server
+COPY docker-bin/${TARGETARCH}/portunus-server /usr/local/bin/portunus-server
 
-# /var/lib/forward holds tls cert/key (mode 0600) + tokens.json (mode 0600).
-# /etc/forward holds server.toml (read-only).
+# /var/lib/portunus holds tls cert/key (mode 0600) + tokens.json (mode 0600).
+# /etc/portunus holds server.toml (read-only).
 # Both must be mounted by the operator (volumes or bind mounts).
 USER nonroot:nonroot
 EXPOSE 7443
 
-ENTRYPOINT ["/usr/local/bin/forward-server"]
-CMD ["--config-dir", "/var/lib/forward", "--config", "/etc/forward/server.toml", "serve"]
+ENTRYPOINT ["/usr/local/bin/portunus-server"]
+CMD ["--config-dir", "/var/lib/portunus", "--config", "/etc/portunus/server.toml", "serve"]

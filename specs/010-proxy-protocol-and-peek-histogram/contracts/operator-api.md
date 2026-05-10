@@ -35,7 +35,7 @@ per-target `proxy_protocol` setting.
 
 Additive collector:
 
-`forward_tls_client_hello_peek_duration_seconds_bucket{client,port,le}`
+`portunus_tls_client_hello_peek_duration_seconds_bucket{client,port,le}`
 
 With companion `_sum` and `_count` series.
 

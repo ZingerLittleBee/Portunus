@@ -13,7 +13,7 @@ applies.
 ### CLI
 
 ```text
-forward-server push-rule [OPTIONS] <CLIENT> <LISTEN> <TARGET>
+portunus-server push-rule [OPTIONS] <CLIENT> <LISTEN> <TARGET>
 
   --protocol <PROTOCOL>      tcp | udp   [default: tcp]
   --prefer-ipv6              (v0.3.0)
@@ -27,13 +27,13 @@ invocations:
 
 ```sh
 # Single-port UDP rule
-forward-server push-rule edge-01 6000 echo.example:9999 --protocol udp
+portunus-server push-rule edge-01 6000 echo.example:9999 --protocol udp
 
 # UDP range rule
-forward-server push-rule edge-01 6000-6010 host:7000-7010 --protocol udp
+portunus-server push-rule edge-01 6000-6010 host:7000-7010 --protocol udp
 
 # UDP rule with IPv6 preference (combines with v0.3.0 flag)
-forward-server push-rule edge-01 6000 echo.example:9999 --protocol udp --prefer-ipv6
+portunus-server push-rule edge-01 6000 echo.example:9999 --protocol udp --prefer-ipv6
 ```
 
 ### HTTP
@@ -170,31 +170,31 @@ array gains `datagrams_in` / `datagrams_out`.
 ## `/metrics` (Prometheus, loopback)
 
 Four new collectors, with the same `{client, rule}` label set as the
-v0.3.0 `forward_rule_dns_failures_total`:
+v0.3.0 `portunus_rule_dns_failures_total`:
 
 ```text
-# HELP forward_rule_active_flows Current live UDP flows per rule
-# TYPE forward_rule_active_flows gauge
-forward_rule_active_flows{client="edge-01",rule="0"} 3
+# HELP portunus_rule_active_flows Current live UDP flows per rule
+# TYPE portunus_rule_active_flows gauge
+portunus_rule_active_flows{client="edge-01",rule="0"} 3
 
-# HELP forward_rule_udp_datagrams_in_total Cumulative UDP datagrams ingressing each rule
-# TYPE forward_rule_udp_datagrams_in_total counter
-forward_rule_udp_datagrams_in_total{client="edge-01",rule="0"} 42
+# HELP portunus_rule_udp_datagrams_in_total Cumulative UDP datagrams ingressing each rule
+# TYPE portunus_rule_udp_datagrams_in_total counter
+portunus_rule_udp_datagrams_in_total{client="edge-01",rule="0"} 42
 
-# HELP forward_rule_udp_datagrams_out_total Cumulative UDP datagrams egressing each rule
-# TYPE forward_rule_udp_datagrams_out_total counter
-forward_rule_udp_datagrams_out_total{client="edge-01",rule="0"} 21
+# HELP portunus_rule_udp_datagrams_out_total Cumulative UDP datagrams egressing each rule
+# TYPE portunus_rule_udp_datagrams_out_total counter
+portunus_rule_udp_datagrams_out_total{client="edge-01",rule="0"} 21
 
-# HELP forward_rule_flows_dropped_overflow_total Cumulative new-flow datagrams dropped because the per-rule flow table was at capacity
-# TYPE forward_rule_flows_dropped_overflow_total counter
-forward_rule_flows_dropped_overflow_total{client="edge-01",rule="0"} 0
+# HELP portunus_rule_flows_dropped_overflow_total Cumulative new-flow datagrams dropped because the per-rule flow table was at capacity
+# TYPE portunus_rule_flows_dropped_overflow_total counter
+portunus_rule_flows_dropped_overflow_total{client="edge-01",rule="0"} 0
 ```
 
 **Cardinality**: one row per rule per collector. A 1024-port UDP range
 rule produces exactly one row in each of the four collectors above
 (SC-004). `remove-rule` drops the labels for ALL four (extending the
 v0.3.0 `dns_failures_total` cleanup pattern); test in
-`forward-server/src/metrics.rs::tests` covers this.
+`portunus-server/src/metrics.rs::tests` covers this.
 
 ---
 

@@ -2,8 +2,8 @@
 
 Captured: 2026-05-09
 Hardware: macOS (Darwin 25.4.0), Apple Silicon (criterion `--quick` mode)
-Bench file: `crates/forward-server/benches/operator_api.rs`
-Run: `cargo bench -p forward-server --bench operator_api -- --quick post_v1_rules`
+Bench file: `crates/portunus-server/benches/operator_api.rs`
+Run: `cargo bench -p portunus-server --bench operator_api -- --quick post_v1_rules`
 
 ## Scope
 
@@ -54,8 +54,8 @@ inputs).
   read-path baseline.
 - The 5 % budget is comfortable today (mean 4.7 %). Re-run after any
   change to:
-  - `crates/forward-server/src/operator/http.rs::validate_sni_pattern`
-  - `crates/forward-server/src/operator/http.rs::post_rules`
+  - `crates/portunus-server/src/operator/http.rs::validate_sni_pattern`
+  - `crates/portunus-server/src/operator/http.rs::post_rules`
   - The Rust toolchain pinned in `rust-toolchain.toml` /
     `Cargo.toml::workspace.package.rust-version`
 

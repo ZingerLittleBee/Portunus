@@ -1,9 +1,9 @@
 {
-  "name": "forward-webui",
+  "name": "portunus-webui",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Operator Web UI for forward-server (006-management-web-ui).",
+  "description": "Operator Web UI for portunus-server (006-management-web-ui).",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && size-limit",

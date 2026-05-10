@@ -10,7 +10,7 @@ additive deltas to existing v0.4.0 surfaces.
 
 The HTTP API is the canonical surface. The CLI is a thin wrapper that
 calls the same HTTP endpoints with the bearer token from
-`FORWARD_OPERATOR_TOKEN` (env) or `--token <value>` (flag).
+`PORTUNUS_OPERATOR_TOKEN` (env) or `--token <value>` (flag).
 
 ## Authentication
 
@@ -62,7 +62,7 @@ Forbidden`), the `error.code` is one of:
 
 ## Bootstrap (NEW)
 
-**CLI**: `forward-server bootstrap-superadmin --name "<display name>"`
+**CLI**: `portunus-server bootstrap-superadmin --name "<display name>"`
 
 - Refuses with exit `2` and `reason = "already_bootstrapped"` if any
   user with role `superadmin` exists in `identity.json`.
@@ -125,7 +125,7 @@ All require role `superadmin`.
   `"invalid_display_name"` / `"reserved_user_id"`.
 - `403 Forbidden` `code = "role_required"` — caller is not superadmin.
 
-**CLI**: `forward-server user-add <id> --display-name "<name>"
+**CLI**: `portunus-server user-add <id> --display-name "<name>"
 [--role superadmin]`
 
 ### `GET /v1/users`
@@ -160,7 +160,7 @@ All require role `superadmin`.
 `credential_count` counts only Active credentials. `grant_count`
 counts all grants (no Revoked grants exist — revoke removes).
 
-**CLI**: `forward-server user-list [--format json|table]`
+**CLI**: `portunus-server user-list [--format json|table]`
 
 ### `GET /v1/users/{id}`
 
@@ -171,7 +171,7 @@ array (credential entries omit `token_hash`; only metadata is exposed).
 
 - `404 Not Found` `code = "user_not_found"`.
 
-**CLI**: `forward-server user-get <id> [--format json|table]`
+**CLI**: `portunus-server user-get <id> [--format json|table]`
 
 ### `DELETE /v1/users/{id}`
 
@@ -198,7 +198,7 @@ rules. Synchronous; the response returns after the cascade.
   last superadmin (would brick the operator surface). Bootstrap
   another first.
 
-**CLI**: `forward-server user-remove <id>`
+**CLI**: `portunus-server user-remove <id>`
 
 ## Credential Endpoints (NEW)
 
@@ -236,7 +236,7 @@ include it.
 - `403 Forbidden` `code = "not_owner"` — caller is `user` and
   `{id}` is not them.
 
-**CLI**: `forward-server credential-issue <user-id> [--label "<text>"]`
+**CLI**: `portunus-server credential-issue <user-id> [--label "<text>"]`
 
 ### `POST /v1/users/{id}/credentials/{cred_id}/rotate`
 
@@ -264,7 +264,7 @@ The old `cred_id` is now Revoked; verifying it returns
   belong to this user.
 - `403 Forbidden` `code = "not_owner"`.
 
-**CLI**: `forward-server credential-rotate <cred-id>` (the user-id
+**CLI**: `portunus-server credential-rotate <cred-id>` (the user-id
 is inferred from the cred-id; the call presents *the cred being
 rotated* as the bearer).
 
@@ -275,7 +275,7 @@ Superadmin-only OR same-user.
 
 **Response** `204 No Content`.
 
-**CLI**: `forward-server credential-revoke <cred-id>`
+**CLI**: `portunus-server credential-revoke <cred-id>`
 
 ### `GET /v1/users/{id}/credentials`
 
@@ -306,7 +306,7 @@ emitted).
 }
 ```
 
-**CLI**: `forward-server credential-list <user-id> [--format json|table]`
+**CLI**: `portunus-server credential-list <user-id> [--format json|table]`
 
 ## Grant Endpoints (NEW)
 
@@ -355,7 +355,7 @@ All require role `superadmin`.
   `"empty_protocol_set"` / `"invalid_client"`.
 - `403 Forbidden` `code = "role_required"`.
 
-**CLI**: `forward-server grant-add <user-id> --client <name|*>
+**CLI**: `portunus-server grant-add <user-id> --client <name|*>
 --listen-ports <start>..<end> --protocols tcp,udp [--note "<text>"]`
 
 ### `GET /v1/grants[?user_id=<id>]`
@@ -373,7 +373,7 @@ All require role `superadmin`.
 }
 ```
 
-**CLI**: `forward-server grant-list [--user <id>]
+**CLI**: `portunus-server grant-list [--user <id>]
 [--format json|table]`
 
 ### `DELETE /v1/grants/{grant_id}`
@@ -394,7 +394,7 @@ rule no longer covered. Synchronous.
 
 - `404 Not Found` `code = "grant_not_found"`.
 
-**CLI**: `forward-server grant-revoke <grant-id>`
+**CLI**: `portunus-server grant-revoke <grant-id>`
 
 ## Rule Endpoints (CHANGED — additive)
 
@@ -476,7 +476,7 @@ unchanged).
 Order of precedence:
 
 1. `--token <value>` flag on the subcommand.
-2. `FORWARD_OPERATOR_TOKEN` env var.
+2. `PORTUNUS_OPERATOR_TOKEN` env var.
 3. (none — error: `unauthenticated` before any HTTP call).
 
 The CLI does NOT prompt for the token interactively. Pipelines and
@@ -488,8 +488,8 @@ scripts use env vars; humans paste into a one-off subshell.
 |---|---|
 | `curl /v1/rules` (no Authorization header) | `401 unauthenticated`. |
 | `curl -H "Authorization: Bearer $T" /v1/rules` (T issued via bootstrap or operator-issued superadmin) | Identical wire shape to v0.4.0 success path; response gains `owner` field. |
-| `forward-server push-rule …` (no env, no flag) | Exits `4 unauthenticated`. |
-| `forward-server push-rule …` (with `FORWARD_OPERATOR_TOKEN`) | Identical to v0.4.0 success path; response includes `owner`. |
+| `portunus-server push-rule …` (no env, no flag) | Exits `4 unauthenticated`. |
+| `portunus-server push-rule …` (with `PORTUNUS_OPERATOR_TOKEN`) | Identical to v0.4.0 success path; response includes `owner`. |
 | Operator's existing `server.toml` (no `operator_token`, no `identity.json`) | Server starts; every operator request returns `503 bootstrap_required`. Data plane (gRPC) is unaffected. |
 
 The "additive on top of v0.4.0" promise from spec FR-006 is honored

@@ -5,12 +5,12 @@
 
 ## Summary
 
-v0.9 lets a single forward-client TCP listener fan out to different
+v0.9 lets a single portunus-client TCP listener fan out to different
 upstreams based on the TLS hostname (SNI) the client requests in its
 ClientHello. Portunus stays a pure L4 byte-passthrough — never decrypts,
 terminates, or re-encrypts TLS. The implementation lives entirely in the
-data plane on `forward-client` (peek + parse + route) and in additive
-control-plane fields on `forward-server`; the auth seam, credential
+data plane on `portunus-client` (peek + parse + route) and in additive
+control-plane fields on `portunus-server`; the auth seam, credential
 hashing, persistence layer, and forwarding hot-path layout are
 **byte-stable** for v0.8 callers.
 
@@ -26,7 +26,7 @@ mid-flight, eliminating the need for a new `RuleGroup*` wire message
 existing bidi gRPC stream.
 
 A v0.7-style client-version capability gate (D9 / FR-024) refuses any
-`sni_pattern.is_some()` push to a forward-client whose declared version
+`sni_pattern.is_some()` push to a portunus-client whose declared version
 is below `0.9.0`, returning `422 sni_unsupported_by_client` before any
 rule activates — so a v0.8 client cannot silently "downgrade" a SNI rule
 into a plain TCP forward.
@@ -61,20 +61,20 @@ its Phase 0/1 artifacts treat that document as authoritative.
 **Primary Dependencies**:
 - New: **none** (zero new workspace deps — see R-006). `tokio::sync::watch` replaces ArcSwap; `Vec<RuleId>` replaces SmallVec; the ClientHello parser is hand-rolled (~150 LOC, no `tls-parser` / `rustls`-internals dependency) — R-001, R-002.
 - Retained: `tokio`, `tokio-rustls`, `tonic 0.14` (control plane), `prost` (proto codegen), `axum` (operator HTTP), `clap`, `serde`/`serde_json`, `prometheus`, `rusqlite` + `r2d2` + `refinery` (v0.8 store), `tracing`.
-- Re-touched (no deps added): `crates/forward-proto/proto/forward.proto` (additive fields), `crates/forward-server/src/store/migrations/V002__add_sni_pattern.sql` (new migration), `crates/forward-server/src/rules.rs` (overlap rules), `crates/forward-client/src/forwarder/` (new `sni/` module + `port_groups.rs`).
+- Re-touched (no deps added): `crates/portunus-proto/proto/portunus.proto` (additive fields), `crates/portunus-server/src/store/migrations/V002__add_sni_pattern.sql` (new migration), `crates/portunus-server/src/rules.rs` (overlap rules), `crates/portunus-client/src/forwarder/` (new `sni/` module + `port_groups.rs`).
 
 **Storage**: SQLite (v0.8 store unchanged). Migration V002 adds one nullable column to `rules` plus one partial index. Schema version range `[1,1] → [1,2]`. No new tables, no data backfill (additive only — R-003).
 
 **Testing**: `cargo test` workspace-wide; tiered as today —
 - **Unit**: in-source `#[cfg(test)] mod tests` for the ClientHello parser (real-pcap fixtures TLS 1.0/1.1/1.2/1.3, fragment reassembly, malformed inputs) and `SniRoutingTable::lookup` (priority + single-label wildcard guard + case insensitivity).
 - **Contract**: per-crate `tests/` for the operator API field, the CLI `--sni` flag, the wire-compat round-trip (proto fields 11 / 13 / 14 / 15 / `SniListenerStats`), the capability gate (HTTP 422), and every row of the §Overlap matrix in `spec.md`.
-- **Integration**: `crates/forward-client/tests/sni_route_e2e_*.rs` against rustls clients on real loopback sockets — exact / wildcard / fallback / timeout / not-TLS / byte-passthrough / hot reload / remove-by-rule-id.
-- **Cross-crate end-to-end**: `crates/forward-server/tests/sni_metrics_surface.rs` asserts the server `/metrics` exposes the new collectors after a forward-client emits them.
-- **Bench**: `crates/forward-client/benches/sni_route.rs` (criterion) for `SniRoutingTable::lookup` + connection-setup-latency vs. v0.7 baseline. Existing `crates/forward-client/benches/data_plane.rs` continues to gate the legacy-port byte-stability budget.
+- **Integration**: `crates/portunus-client/tests/sni_route_e2e_*.rs` against rustls clients on real loopback sockets — exact / wildcard / fallback / timeout / not-TLS / byte-passthrough / hot reload / remove-by-rule-id.
+- **Cross-crate end-to-end**: `crates/portunus-server/tests/sni_metrics_surface.rs` asserts the server `/metrics` exposes the new collectors after a portunus-client emits them.
+- **Bench**: `crates/portunus-client/benches/sni_route.rs` (criterion) for `SniRoutingTable::lookup` + connection-setup-latency vs. v0.7 baseline. Existing `crates/portunus-client/benches/data_plane.rs` continues to gate the legacy-port byte-stability budget.
 
 **Target Platform**: Linux x86_64 + aarch64 (primary); macOS for development. Windows out of scope.
 
-**Project Type**: Cargo workspace, six crates (`forward-server`, `forward-client`, `forward-auth`, `forward-core`, `forward-proto`, `forward-e2e`). v0.9 changes are concentrated in `forward-client` (data plane) and `forward-server` (control plane). `forward-auth` and `forward-core` are not touched.
+**Project Type**: Cargo workspace, six crates (`portunus-server`, `portunus-client`, `portunus-auth`, `portunus-core`, `portunus-proto`, `portunus-e2e`). v0.9 changes are concentrated in `portunus-client` (data plane) and `portunus-server` (control plane). `portunus-auth` and `portunus-core` are not touched.
 
 **Performance Goals**:
 - SNI listener connection-setup latency p99 within +5 ms of v0.7 plain-TCP baseline (SC-003) — peek parse must stay below 100 µs at p99 so the budget is dominated by network time.
@@ -103,7 +103,7 @@ Constitution version: `2.0.1` (TLS + bearer token; data-plane userspace; SQLite 
 | Principle | Status | Justification |
 |---|---|---|
 | **I. Security by Default** | ✅ | Auth seam unchanged. SNI routing operates strictly post-authentication on the control plane (rule push) and on the data plane is L4 only — never reads past the ClientHello, never derives a credential from the SNI value. The capability gate (FR-024) sits behind the existing operator-API auth middleware. The new wire fields are scalar values (`string`, `uint64`); no new crypto, no new TLS path. Server certificate / client bearer-token model untouched. |
-| **II. Performance Is a Feature** | ✅ (with bench gate) | Legacy plain-TCP listener path is byte-stable and gated by `crates/forward-client/benches/data_plane.rs` (Constitution II hot-path budget). SNI listener path is allowed up to +5 ms p99 setup latency relative to v0.7 (SC-003) and ≤ 100 µs p99 lookup (SC-006); both gated by `crates/forward-client/benches/sni_route.rs`. Zero new workspace deps (R-006) keeps the binary footprint flat. The accept loop never blocks on rebuild — the routing table is built in the control task and swapped via `tokio::sync::watch::send_replace` (D7). |
+| **II. Performance Is a Feature** | ✅ (with bench gate) | Legacy plain-TCP listener path is byte-stable and gated by `crates/portunus-client/benches/data_plane.rs` (Constitution II hot-path budget). SNI listener path is allowed up to +5 ms p99 setup latency relative to v0.7 (SC-003) and ≤ 100 µs p99 lookup (SC-006); both gated by `crates/portunus-client/benches/sni_route.rs`. Zero new workspace deps (R-006) keeps the binary footprint flat. The accept loop never blocks on rebuild — the routing table is built in the control task and swapped via `tokio::sync::watch::send_replace` (D7). |
 | **III. Test-First Discipline** | ✅ | TDD applies to every new path: parser unit tests + lookup unit tests + the §Overlap matrix contract test + e2e integration tests + capability-gate contract test + wire-compat round-trip + the negative wire-compat assertion that fields 11/12 of `RuleStats` are NOT touched (HIGH-1 from round-3 review). Real loopback sockets in integration tests; no mocks for the TLS path. |
 | **IV. Observability & Operability** | ✅ | Three new per-rule counters and two new per-listener counters surfaced through the existing `/metrics` endpoint with the v0.5+ `client, rule, owner, result` and `client, port` label conventions (FR-034). Listener-level metrics use `port` because miss / parse-failure have no honest rule attribution (HIGH-2 from round-3). Data-plane events stay in `tracing` only — they do NOT pollute the SQLite operator audit ring (D13 / FR-035). Graceful reload preserved: routing table swap is non-blocking; in-flight connections keep their `Arc<SniRoutingTable>` snapshot. Drain on listener teardown reuses the existing v0.7 cancellation-token machinery. |
 | **V. Multi-Tenant Isolation** | ✅ | SNI uniqueness is enforced per `(client_name, listen_port)` in `ServerRuleStore` (D10 / FR-021). Two clients can each own their own listener on `:443 + api.example.com` without seeing each other's traffic, error messages, or counter cardinality. RBAC `grants` are unchanged — the new field is part of an existing rule resource that is already grant-scoped. Listener-level metrics carry `client` so tenant attribution is preserved. |
@@ -112,10 +112,10 @@ Constitution version: `2.0.1` (TLS + bearer token; data-plane userspace; SQLite 
 
 **Constitution gate (post-Phase 1, after `research.md`, `data-model.md`, `contracts/*`, `quickstart.md` written): PASS.** No new violations surfaced from the Phase 1 design:
 
-- Principle I: `contracts/operator-api.md` and `contracts/wire.md` confirm auth envelope unchanged; `contracts/wire.md` enumerates exactly which proto field numbers are introduced (Rule.11, RuleStats.13/14/15, StatsReport.3, plus `SniListenerStats` as a new top-level message) and asserts fields 11/12 of `RuleStats` are NOT touched — pinned by `crates/forward-proto/tests/sni_wire_compat.rs`.
+- Principle I: `contracts/operator-api.md` and `contracts/wire.md` confirm auth envelope unchanged; `contracts/wire.md` enumerates exactly which proto field numbers are introduced (Rule.11, RuleStats.13/14/15, StatsReport.3, plus `SniListenerStats` as a new top-level message) and asserts fields 11/12 of `RuleStats` are NOT touched — pinned by `crates/portunus-proto/tests/sni_wire_compat.rs`.
 - Principle II: `contracts/wire.md` documents the byte-stable invariant when `sni_pattern = None` and `sni_listener_stats` is empty; `data-model.md` shows the single additive SQL column with no implicit default change.
 - Principle III: every contract surface in `contracts/*` carries an enumerated test plan (parser fixtures, overlap matrix, capability gate, wire round-trip, e2e exact/wildcard/fallback/timeout/not-TLS/passthrough/hot-reload/remove-by-rule-id, metrics surface).
-- Principle IV: `contracts/operator-api.md` lists all five new metric series (with labels) and the five new tracing event names; the existing `forward_audit_buffer_drops_total` is NOT reused — these counters are diagnostic, not audit.
+- Principle IV: `contracts/operator-api.md` lists all five new metric series (with labels) and the five new tracing event names; the existing `portunus_audit_buffer_drops_total` is NOT reused — these counters are diagnostic, not audit.
 - Principle V: `data-model.md` documents that `(client_name, listen_port, sni_pattern)` uniqueness is in-memory in `ServerRuleStore`, NOT a SQL constraint, with the rationale that SQL would either be too loose (global per port — would break two-client SNI sharing) or require a schema-impacting `client_name` column on `rules` that is out of scope for v0.9.
 
 ## Project Structure
@@ -133,7 +133,7 @@ specs/009-tls-sni-routing/
 ├── contracts/
 │   ├── operator-api.md                     # POST /v1/rules + GET /v1/rules + capability-gate response shapes
 │   ├── wire.md                             # proto field numbers 11 / 13/14/15 / SniListenerStats / StatsReport.3 + the byte-stable invariant
-│   └── cli.md                              # forward-server push-rule --sni <pattern>
+│   └── cli.md                              # portunus-server push-rule --sni <pattern>
 ├── checklists/
 │   └── requirements.md                     # /speckit-specify quality checklist
 └── tasks.md                                # /speckit-tasks output (NOT created here)
@@ -143,15 +143,15 @@ specs/009-tls-sni-routing/
 
 ```text
 crates/
-├── forward-proto/
+├── portunus-proto/
 │   ├── proto/
-│   │   └── forward.proto                   # ★ adds Rule.sni_pattern = 11; RuleStats.sni_route_*_total = 13/14/15;
+│   │   └── portunus.proto                   # ★ adds Rule.sni_pattern = 11; RuleStats.sni_route_*_total = 13/14/15;
 │   │                                        #   new SniListenerStats { listen_port, sni_route_miss_total,
 │   │                                        #   client_hello_parse_failures_total }; StatsReport.sni_listener_stats = 3
 │   └── tests/
 │       └── sni_wire_compat.rs              # NEW — round-trip + negative assertion that fields 11/12 of RuleStats are untouched
 │
-├── forward-server/
+├── portunus-server/
 │   ├── src/
 │   │   ├── rules.rs                        # ★ overlap check rewritten per §Overlap matrix; by_client_listen_start
 │   │   │                                    #   becomes BTreeMap<u16, Vec<RuleId>>; new conflict codes
@@ -161,21 +161,21 @@ crates/
 │   │   │   ├── http.rs                     # ★ adds version_at_least_0_9; capability gate before push
 │   │   │   └── audit.rs                    # unchanged (data-plane SNI events deliberately bypass this)
 │   │   ├── grpc/service.rs                 # ★ extends StatsReport fold to ingest sni_route_*_total + sni_listener_stats
-│   │   ├── metrics.rs                      # ★ registers forward_tls_sni_route_total{client,rule,owner,result},
-│   │   │                                    #   forward_tls_sni_listener_miss_total{client,port},
-│   │   │                                    #   forward_tls_client_hello_parse_failures_total{client,port},
-│   │   │                                    #   forward_tls_sni_routes_active (gauge)
+│   │   ├── metrics.rs                      # ★ registers portunus_tls_sni_route_total{client,rule,owner,result},
+│   │   │                                    #   portunus_tls_sni_listener_miss_total{client,port},
+│   │   │                                    #   portunus_tls_client_hello_parse_failures_total{client,port},
+│   │   │                                    #   portunus_tls_sni_routes_active (gauge)
 │   │   └── main.rs                         # ★ adds `push-rule --sni <pattern>` flag with same validation as the API
 │   ├── tests/
 │   │   ├── sni_rule_validation.rs          # NEW — UDP/range + sni → 400; malformed → 400
 │   │   ├── sni_capability_gate.rs          # NEW — push w/ sni to v0.8 client → 422
 │   │   ├── sni_overlap_matrix.rs           # NEW — every row of the §Overlap matrix
 │   │   ├── sni_legacy_to_sni_unsupported.rs # NEW — active legacy + SNI candidate → 409
-│   │   └── sni_metrics_surface.rs          # NEW — /metrics shows forward_tls_sni_*
+│   │   └── sni_metrics_surface.rs          # NEW — /metrics shows portunus_tls_sni_*
 │   └── benches/
 │       └── operator_api.rs                 # existing; assert no regression on the rule-push path
 │
-├── forward-client/
+├── portunus-client/
 │   ├── src/
 │   │   ├── forwarder/
 │   │   │   ├── mod.rs                      # ★ ClientRule.sni_pattern: Option<String>
@@ -204,19 +204,19 @@ crates/
 │   └── benches/
 │       └── sni_route.rs                    # NEW — lookup ns/op + setup-latency vs v0.7 baseline
 │
-├── forward-auth/                           # NOT TOUCHED
-├── forward-core/                           # NOT TOUCHED
-└── forward-e2e/                            # NOT TOUCHED (per-crate tests cover the surface)
+├── portunus-auth/                           # NOT TOUCHED
+├── portunus-core/                           # NOT TOUCHED
+└── portunus-e2e/                            # NOT TOUCHED (per-crate tests cover the surface)
 ```
 
 **Structure Decision**: Six-crate Cargo workspace inherited from v0.7+. v0.9
 introduces no new crate. The data-plane work is concentrated under
-`crates/forward-client/src/forwarder/sni/` and `crates/forward-client/src/port_groups.rs`;
-the control-plane work threads through `crates/forward-server/src/rules.rs`,
+`crates/portunus-client/src/forwarder/sni/` and `crates/portunus-client/src/port_groups.rs`;
+the control-plane work threads through `crates/portunus-server/src/rules.rs`,
 `store/migrations/`, `operator/http.rs`, `grpc/service.rs`, `metrics.rs`, and
 `main.rs`. The proto changes (one Rule field, three RuleStats fields, one new
 top-level message, one StatsReport field) live in
-`crates/forward-proto/proto/forward.proto`.
+`crates/portunus-proto/proto/portunus.proto`.
 
 ## Complexity Tracking
 
