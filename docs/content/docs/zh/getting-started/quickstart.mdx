@@ -1,0 +1,130 @@
+---
+title: 快速开始
+description: 从 fresh checkout 到 "100 MB 流量通过转发规则" —— 五分钟以内完成。
+icon: Zap
+---
+
+本流程对应 v0.1 spec 中的 `quickstart.md` —— 它也正是 `forward-e2e` 集成测试
+逐步执行的脚本。
+
+## 0. 前置条件
+
+需要 [`forward-server` 和 `forward-client` 已安装](/zh/docs/getting-started/installation)
+并位于 `PATH`，外加两个终端（或两台主机）。
+
+## 1. 启动 Server（主机 A）
+
+```sh
+mkdir -p ./srv
+forward-server --config-dir ./srv \
+  --control-listen 0.0.0.0:7443 \
+  --operator-http-listen 127.0.0.1:7080 \
+  --metrics-listen 127.0.0.1:7081 \
+  serve
+```
+
+首次启动时，Server 会创建 `./srv/server.crt`、`./srv/server.key` 和空的
+`./srv/tokens.json`。日志为 JSON：
+
+```json
+{"event":"tls.cert_generated","fingerprint_sha256":"…"}
+{"event":"control.listening","addr":"0.0.0.0:7443"}
+{"event":"operator_http.listening","addr":"127.0.0.1:7080"}
+```
+
+## 2. 引导超管账户
+
+操作员 API 需要 Bearer 认证（v0.5.0 起）。一次性引导超管：
+
+```sh
+forward-server --config-dir ./srv bootstrap-superadmin --name ops
+# → superadmin user_id=_superadmin token=<bearer>
+```
+
+<Callout type="warn">
+  Bearer Token **只会输出一次**，请立即妥善保存。
+</Callout>
+
+```sh
+export FORWARD_OPERATOR_TOKEN=<paste-token-here>
+```
+
+下文所有操作员子命令都从环境变量 `FORWARD_OPERATOR_TOKEN` 读取 Token。
+
+## 3. 配发一个 Client
+
+```sh
+forward-server --config-dir ./srv \
+  provision-client edge-01 --out ./srv/edge-01.bundle.json
+```
+
+下发包（mode 0600）包含 Server 端点、固定的证书 SHA-256、以及该 Client 的
+Bearer Token。请通过可信通道（如 scp）传到主机 B。
+
+## 4. 启动 Client（主机 B）
+
+```sh
+forward-client --bundle ./edge-01.bundle.json
+```
+
+数秒之内 Server 会输出 `client.connected`。验证：
+
+```sh
+forward-server --config-dir ./srv list-clients
+# NAME      CONNECTED   REMOTE              CONNECTED-AT
+# edge-01   yes         203.0.113.5:51234   2026-05-06T12:01:30Z
+```
+
+## 5. 推送一条转发规则
+
+```sh
+# edge-01:18080 → 10.0.0.5:8080
+forward-server push-rule edge-01 18080 10.0.0.5:8080
+# → rule_id=1
+```
+
+规则会在大约 1 秒（ack 预算）内由 `Pending` 转为 `Active`，Client 即开始
+监听 18080 并把每条新 TCP 连接转发到 `10.0.0.5:8080`。
+
+## 6. 通过规则传输流量
+
+```sh
+# 发送 100 MB （目标主机上运行 nc -lk 8080 > /tmp/out.bin）
+dd if=/dev/urandom of=/tmp/in.bin bs=1M count=100
+nc <host-B> 18080 < /tmp/in.bin
+
+sha256sum /tmp/in.bin /tmp/out.bin   # 哈希必须一致
+```
+
+## 7. 观测
+
+```sh
+# 通过操作员 CLI 看聚合计数
+forward-server rule-stats 1
+# → rule_id=1 bytes_in=104857600 bytes_out=0 active_connections=0
+
+# 通过 Prometheus 看相同的数字
+curl -s http://127.0.0.1:7081/metrics | grep '^forward_rule'
+```
+
+## 8. 拆除
+
+```sh
+forward-server remove-rule 1
+# 规则进入 drain，未结束的连接会在 shutdown_drain_timeout_secs 内自然结束
+```
+
+向任一二进制发送 `SIGTERM`：双方都会优雅 drain 未完成连接（默认 30 秒），
+然后以 `0` 退出。
+
+## 接下来读什么？
+
+| 你想做的事 | 阅读 |
+| --- | --- |
+| 增加 UDP 规则 | [UDP 转发](/zh/docs/features/udp-forwarding) |
+| 一次转发多个端口 | [端口范围规则](/zh/docs/features/port-range) |
+| 用域名作为目标 | [DNS 域名目标](/zh/docs/features/dns-targets) |
+| 给同事限定可访问的 Client | [多用户 RBAC](/zh/docs/features/rbac) |
+| 用浏览器替代 CLI | [Web UI](/zh/docs/features/web-ui) |
+| 限制每条规则或每个租户的流量 | [限流与 QoS](/zh/docs/features/rate-limiting) |
+| 部署到生产 | [部署](/zh/docs/deployment/systemd) |

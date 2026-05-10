@@ -1,0 +1,95 @@
+---
+title: 备份与恢复
+description: 兼顾 WAL 的在线备份、校验完整的恢复、刻意保守的 reset。
+icon: Save
+---
+
+v0.8 起，server 端所有持久化制品都活在 `<data-dir>/state.db` 里。forward-rs
+提供配套的 backup / restore / reset CLI 子命令。
+
+## 备份
+
+```sh
+forward-server backup --out ~/forward-backup-$(date +%F).db
+```
+
+走 SQLite Online Backup API（`rusqlite::backup::Backup`）。备份 **兼顾 WAL**
+且无须暂停写入即可一致 —— 在线服务期间运行也安全。
+
+会拒绝覆写已存在目标 —— 选择唯一路径（按日期命名是惯例）。
+
+校验：
+
+```sh
+sqlite3 ~/forward-backup-2026-05-08.db \
+    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
+```
+
+## Cron 调度
+
+```sh
+# /etc/cron.daily/forward-rs-backup
+#!/bin/sh
+set -eu
+DEST=/var/backups/forward-rs/$(date +%F).db
+mkdir -p "$(dirname "$DEST")"
+sudo -u forward-rs forward-server \
+  --data-dir /var/lib/forward-rs \
+  backup --out "$DEST"
+find /var/backups/forward-rs -name '*.db' -mtime +30 -delete
+```
+
+## 恢复
+
+```sh
+# 1. 停掉正在运行的 server。
+sudo systemctl stop forward-server
+
+# 2. 清空本地状态。
+forward-server reset --confirm
+
+# 3. 恢复。
+forward-server restore --in /tmp/forward-backup-2026-05-08.db
+
+# 4. 启动。
+sudo systemctl start forward-server
+```
+
+`restore`：
+
+- 拷贝前先校验 SQLite header 魔数。
+- 缺少 `--force` 时拒绝覆写非空 data-dir。
+- 备份的 schema 比当前二进制旧时，自动跑 forward 迁移。
+- 备份的 schema **比当前二进制还新** 时 **拒绝** 并以 `78` 退出，事件
+  `startup.schema_version_too_new`。要么保留旧备份，要么用对应版本的二进制
+  来恢复。
+
+## Reset
+
+```sh
+# 干跑（不带 --confirm）打印将要删除的内容。
+forward-server reset
+
+# 真正清除。
+forward-server reset --confirm
+```
+
+清除 `state.db` 与边车 `state.db-wal`、`state.db-shm`。
+
+reset CLI **拒绝** 在前 16 字节不是 SQLite header 的路径上动作 —— 防止 typo
+错的 `--data-dir`。**不会** 清空 `--config-dir`（server.crt / server.key /
+`server.toml` 都保留）。
+
+## 跨主机迁移
+
+v0.5–v0.7 的 `identity.json` 是 mode-0600 的原子写 JSON，可以放心 `rsync`。
+`state.db` **不行** —— 跨主机迁移请走 `backup` / `restore` 流程。
+
+## 常见坑
+
+- **`--data-dir` 落在 NFS / tmpfs / ramfs** 启动期会以
+  `event=startup.unsupported_filesystem` 拒绝。请用本地可写文件系统。
+- **两个 `forward-server serve` 同时打开同一 data-dir** 第二个会以
+  `event=startup.store_in_use`（退出 75）退出。clustering 不在当前版本范围。
+- **`reset --confirm` 不会清空 `--config-dir`** —— 只清 state。如需也清
+  server.crt / server.key，请单独删除。

@@ -1,0 +1,54 @@
+---
+title: PROXY 协议与 Peek 直方图
+description: 每个上游可单独开启 PROXY v1 / v2 前缀，让后端看到原始客户端 IP；同时附带 SNI peek 时长直方图。
+icon: Shield
+---
+
+v0.10.0 起支持。两项内容：
+
+1. 每目标可开启的 **PROXY 协议**（v1 文本或 v2 二进制）。
+2. SNI 模式 listener 的 **ClientHello peek 时长直方图**。
+
+## PROXY 协议
+
+后端通过 `proxy_protocol = "v1"` 或 `"v2"` 显式开启时，Client 会在
+原始连接的负载之前先发送一段 PROXY 头部。后端就可以看到原始客户端的
+`(src_addr, src_port, dst_addr, dst_port)`。
+
+逐目标开启意味着同一条规则里可以混合 PROXY-aware 与不感知后端：
+
+```sh
+forward-server push-rule edge-01 443 \
+  --target backend-a.local:8080@1 --target-proxy-protocol a:v2 \
+  --target backend-b.local:8080@2
+# backend-a 看到 v2 二进制头部；backend-b 看到旧的字节流
+```
+
+（具体 CLI 标记拼写可能略有差异 —— 请以 `forward-server push-rule --help`
+为准。）
+
+## 模式
+
+| 模式 | 描述 |
+| --- | --- |
+| `v1` | 可读文本头部，例如 `PROXY TCP4 1.2.3.4 5.6.7.8 12345 80\r\n` |
+| `v2` | 16 字节二进制头部，遵循 PROXY 协议 v2 规范 |
+| 缺省 | 无前缀 —— 旧的字节流 |
+
+选择是 **逐目标** 而非 **逐规则**，所以多目标规则可以混合开关。
+
+## Peek 时长直方图（仅 SNI 模式 listener）
+
+当 listener 处于 [SNI 路由模式](/zh/docs/features/tls-sni-routing) 时，
+forward-rs 会记录 ClientHello peek + 解析所耗时间：
+
+```
+forward_tls_client_hello_peek_duration_seconds_bucket{...}
+forward_tls_client_hello_peek_duration_seconds_sum
+forward_tls_client_hello_peek_duration_seconds_count
+```
+
+桶按 Prometheus 惯例划分，最大有限边界为 **3 秒**；超过 3 秒的观测值会让
+`_count` 与 `le="+Inf"` 同步增长，但不会增加 `le="3"`。
+
+旧的纯 TCP listener **不会** 暴露该直方图 —— 那些路径根本不做 peek。

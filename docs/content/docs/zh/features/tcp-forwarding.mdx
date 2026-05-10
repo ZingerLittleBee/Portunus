@@ -1,0 +1,81 @@
+---
+title: TCP 转发
+description: 项目最基础的转发原语 —— 在边缘 Client 上绑定 TCP 监听，把每条 accept 到的连接转发给配置的上游目标。
+icon: ArrowRightLeft
+---
+
+TCP 转发是项目的核心。其它所有功能（UDP、端口范围、SNI 路由、限流……）都
+建立在它之上。
+
+## 工作原理
+
+每条 TCP 规则在 Client 上启动一个 `accept` 循环。每当 accept 到一条新连接，
+Client 就 `TcpStream::connect` 上游目标，然后双向字节拷贝直到任意一侧关闭。
+
+用户态 **不做任何缓冲**（除了内核 send/recv 窗口）。转发器是纯粹的 L4 字节
+直通：TLS 会话、HTTP 请求和任意协议都可以原封不动通过。
+
+## 推送规则
+
+```sh
+forward-server push-rule <client_name> <listen_port> <target_host>:<target_port>
+```
+
+例：
+
+```sh
+forward-server push-rule edge-01 8080 example.com:80
+# → rule_id=1
+```
+
+大约 1 秒内（ack 预算）规则会从 `Pending` 变为 `Active`，Client 即开始
+在 8080 端口接受连接。
+
+## 检视
+
+```sh
+# 操作员 CLI
+forward-server list-rules --client edge-01
+forward-server rule-stats 1
+
+# 操作员 HTTP API
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     http://127.0.0.1:7080/v1/rules
+
+# Prometheus
+curl -s http://127.0.0.1:7081/metrics | grep '^forward_rule'
+```
+
+## 移除
+
+```sh
+forward-server remove-rule <rule_id>
+```
+
+未结束的连接最长 drain `shutdown_drain_timeout_secs`（默认 30 秒）。监听器
+会立即停止 accept。
+
+## 失败模式
+
+| 条件 | 表现 |
+| --- | --- |
+| Client 上的监听端口已被占用 | 规则状态 `Failed(port_in_use)`；移除并换端口重试 |
+| Target 拒绝连接 / 超时 | 连接级错误；规则保持 `Active`，不会清空指标 |
+| 推送时 Client 已断开 | HTTP 4xx，码值 `client_not_connected` |
+| Client 重连后 | 规则在 Server 端持久化，会重新下发到该 Client |
+
+## 指标
+
+每条规则的 collector（每条活规则一行，标签 `{client, rule, owner}`）：
+
+- `forward_rule_bytes_in_total`
+- `forward_rule_bytes_out_total`
+- `forward_rule_active_connections`
+
+完整 collector 列表见 [指标](/zh/docs/observability/metrics)。
+
+## 相关阅读
+
+- [UDP 转发](/zh/docs/features/udp-forwarding) —— 同样的模型，UDP 版本
+- [多目标故障切换](/zh/docs/features/multi-target-failover) —— 每条规则可推送 1..=8 个目标
+- [DNS 域名目标](/zh/docs/features/dns-targets) —— 用域名替代 IP 字面量

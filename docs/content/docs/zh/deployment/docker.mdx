@@ -1,0 +1,88 @@
+---
+title: 用 Docker 部署
+description: 多阶段 rust:1.88 → distroless/cc:nonroot 镜像，附带仅供本地试用的 docker-compose。
+icon: Container
+---
+
+仓库在 `deploy/docker/` 下提供两份 Dockerfile，皆采用多阶段 `rust:1.88`
+构建器，最终产出最小化的 `distroless/cc:nonroot` 运行镜像。
+
+## 构建
+
+```sh
+# Server
+docker build -t forward-server:latest \
+  -f deploy/docker/Dockerfile.server .
+
+# Client
+docker build -t forward-client:latest \
+  -f deploy/docker/Dockerfile.client .
+```
+
+## 本地试用：docker-compose
+
+```sh
+cd deploy/docker
+docker compose up
+```
+
+compose 文件 **仅供本地** —— 是为快速试玩准备的，不是生产编排。它用 loopback
+路径把一个 server + 一个 client 接起来，你可以立即：
+
+```sh
+docker compose exec server forward-server bootstrap-superadmin --name ops
+```
+
+…并从 server 容器内部直接 push-rule。
+
+## 卷与路径
+
+容器内默认布局沿用 systemd unit 的 FHS：
+
+| 宿主路径 | 容器路径 | 用途 |
+| --- | --- | --- |
+| `./forward-config/` | `/etc/forward-rs/` | TLS 材料、可选 `server.toml`、Client bundle |
+| `./forward-state/` | `/var/lib/forward-rs/` | `state.db` 与边车文件 |
+
+挂载：
+
+```sh
+docker run -d --name forward-server \
+  -p 7443:7443 \
+  -p 127.0.0.1:7080:7080 \
+  -p 127.0.0.1:7081:7081 \
+  -v $(pwd)/forward-config:/etc/forward-rs \
+  -v $(pwd)/forward-state:/var/lib/forward-rs \
+  forward-server:latest
+```
+
+## 注意事项
+
+- **Distroless 运行时没有 shell**。如需 `docker compose exec` 进入，需要
+  compose 中已声明可执行的二进制；临时排查可以挂另一个 sidecar 容器
+  `--volumes-from`，或者把构件拉回宿主。
+- **操作员 API 的 loopback 绑定** 在容器内强制。要从工作站访问，请走 SSH
+  隧道，或在容器内直接调操作员 CLI。
+- **文件系统分类检查** 在容器中同样会触发 —— 请确保 bind-mount 源是真正
+  的本地文件系统（不要 tmpfs）。
+- **`forward-client`** 需要 bundle 落在
+  `/etc/forward-rs/client.bundle.json`（或 `FORWARD_CLIENT_BUNDLE`）。
+
+## 健康检查
+
+server 的最小 `HEALTHCHECK`：
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["forward-server", "list-clients"]
+```
+
+（这需要容器环境中存在 `FORWARD_OPERATOR_TOKEN`；请通过编排系统的 secrets
+机制注入。）
+
+## 网络备注
+
+- 跨主机连接 Client 时，控制面 listener（`7443`）是 **唯一必须暴露** 的
+  端口。
+- 操作员 HTTP listener（`7080`）与 metrics listener（`7081`）应在容器内
+  保持 loopback；按需通过反向代理 + 认证或 SSH 隧道暴露。

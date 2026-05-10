@@ -1,0 +1,110 @@
+---
+title: Client 配置
+description: forward-client 如何拾取下发包，以及哪些环境变量会影响行为。
+icon: Cog
+---
+
+`forward-client` 几乎所有配置都来自 Server 通过 `provision-client` 签出的
+**下发包**。没有 `client.toml`。
+
+## 下发包
+
+```json
+{
+  "version": 1,
+  "client_name": "edge-01",
+  "server_endpoint": "host-A.example.com:7443",
+  "server_cert_sha256": "f5e7c2a1...",
+  "token": "<bearer>"
+}
+```
+
+由 Server 签出：
+
+```sh
+forward-server provision-client edge-01 --out ./edge-01.bundle.json
+```
+
+文件 mode 是 `0600`。请通过可信通道（scp / rsync / 密钥管理）传到边缘
+主机。
+
+<Callout type="warn">
+  如果主机 B 实际访问 Server 的地址与 Server 默认通告的不同，请编辑
+  `server_endpoint`。默认值是 Server 返回的 hostname，可能需要调整。
+</Callout>
+
+## 启动 Client
+
+### 显式 `--bundle`
+
+```sh
+forward-client --bundle ./edge-01.bundle.json
+```
+
+### Bundle 自动解析（v0.8 起）
+
+省略 `--bundle` 时按以下顺序查找：
+
+1. `$FORWARD_CLIENT_BUNDLE`
+2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
+3. `$HOME/.config/forward-rs/client.bundle.json`
+4. `./client.bundle.json`
+
+全部失败时退出 `1` 并把尝试过的全部路径打印出来。
+
+```sh
+# 把 bundle 放进 XDG config，直接跑二进制
+mkdir -p ~/.config/forward-rs
+mv edge-01.bundle.json ~/.config/forward-rs/client.bundle.json
+forward-client
+```
+
+## 标志
+
+| 标志 | 用途 |
+| --- | --- |
+| `--bundle <PATH>` | 显式 bundle 路径（覆盖解析链） |
+| `--shutdown-drain-timeout-secs <N>` | SIGTERM 时已转发连接 drain 的上限秒数（默认 30） |
+
+`forward-client --help` 给出当前权威的标志一览。
+
+## 环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `FORWARD_CLIENT_BUNDLE` | bundle 路径（解析链中优先级最高） |
+| `RUST_LOG` | 标准 `tracing-subscriber` env-filter |
+
+## TLS 指纹固定
+
+Client **按 SHA-256 指纹** 校验 Server 证书（来自 bundle 的
+`server_cert_sha256`），**不走 CA 链**。这是核心安全保证：即使 Server 的
+IP / DNS 被劫持，错误的证书会在任何 Token 出门前被拒绝。
+
+不匹配时日志：
+
+```json
+{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+```
+
+…然后 Client 非零退出。Server **不会** 输出任何日志，因为 TLS 握手根本
+没完成。
+
+## 资源限制
+
+UDP 重负载或大跨度端口范围部署，请提高 `LimitNOFILE`：
+
+```ini
+# /etc/systemd/system/forward-client.service
+[Service]
+LimitNOFILE=65535
+```
+
+普通 TCP 规则群默认即可。
+
+## 连接模型
+
+Client 维护 **一条** 到 Server 的双向 gRPC 流，断线后自动重连。Server
+会在 Client 断线时把推给该 Client 的规则以 HTTP 4xx + `client_not_connected`
+拒绝；规则不会排队。Client 重连后操作员自行重推，或依赖 Server 端的重推
+（规则 Server 端持久化）。

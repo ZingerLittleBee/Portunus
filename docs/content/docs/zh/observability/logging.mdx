@@ -1,0 +1,88 @@
+---
+title: 结构化日志
+description: 默认 JSON tracing 输出，redaction 层会清洗已知敏感字段名。
+icon: ScrollText
+---
+
+两个二进制都通过 `tracing` + `tracing-subscriber` 记录日志。默认输出
+**每条事件一行 JSON**，适合喂给任意日志收集器。
+
+## 格式
+
+```toml
+# server.toml
+log_format = "json"     # 默认
+# log_format = "compact"  # 本地开发的人类可读格式
+```
+
+典型一行：
+
+```json
+{
+  "timestamp": "2026-05-06T12:01:30Z",
+  "level": "INFO",
+  "event": "rule.activated",
+  "client_name": "edge-01",
+  "rule_id": 1,
+  "request_id": "01HM…"
+}
+```
+
+## 过滤
+
+使用标准 `tracing-subscriber` env-filter：
+
+```sh
+RUST_LOG=info forward-server serve
+RUST_LOG=forward_server=debug,forward_client=info forward-server serve
+
+# 按 target 过滤
+RUST_LOG=tls_sni=trace forward-client
+RUST_LOG=forward_client::forwarder::udp=debug forward-client
+```
+
+## request_id 透传
+
+`request_id`（ULID）端到端透传，贯穿 `RuleUpdate` / `RuleStatus` / 审计事件。
+按同一 `request_id` 即可把操作员请求 → server 审计 → client 规则激活
+关联起来。
+
+## Redaction 层
+
+Redaction 层会清洗任何 **字段名** 命中
+`token | secret | private_key` 的日志调用：
+
+- `token=…` → `token=<redacted>`
+- `secret=…` → `secret=<redacted>`
+- `private_key=…` → `private_key=<redacted>`
+
+审计代码路径尤其 **永不看到原始 Bearer Token** —— 认证中间件 verify 后将
+`OperatorIdentity` 交给审计 emitter；即使操作员实现存在 bug，也无法通过
+结构化日志泄漏 Token。
+
+## 值得告警的事件
+
+| 事件 | 级别 | 原因 |
+| --- | --- | --- |
+| `tls.cert_generated` | INFO | 首次启动自动生成自签材料 |
+| `control.tls_pinned_mismatch` | ERROR | 服务端证书指纹不匹配 —— 可能 MITM |
+| `auth.failure` | WARN | Client Bearer 被拒（撤销 / 未知 / 签名不一致） |
+| `operator.deny` | WARN | 操作员 API RBAC 拒绝 |
+| `startup.unsupported_filesystem` | ERROR | `--data-dir` 落在 NFS / tmpfs / ramfs |
+| `startup.store_in_use` | ERROR | 两个 server 进程共享 `--data-dir` |
+| `startup.schema_version_too_new` | ERROR | 用旧二进制对接新 schema |
+| `client.disconnected` | WARN/INFO | Client 丢失 gRPC 流（瞬时 / 撤销） |
+| `rule.failed` | WARN | 规则激活失败（如 `port_in_use`） |
+
+## 本地开发小贴士
+
+```sh
+# 紧凑、按 target 标签的格式，便于实时跟看
+RUST_LOG=info forward-server --log-format compact serve
+
+# 或写在 TOML 中：
+log_format = "compact"
+```
+
+把 compact 格式与 `RUST_LOG` env-filter 配合，本地输出更易读，也不影响
+生产主机走 JSON 日志收集路径。

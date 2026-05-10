@@ -1,0 +1,91 @@
+---
+title: Structured Logging
+description: JSON tracing output by default, with a redaction layer that scrubs known-sensitive field names.
+icon: ScrollText
+---
+
+Both binaries log via `tracing` + `tracing-subscriber`. The default
+output is **JSON, one line per event**, suitable for shipping to any
+log collector.
+
+## Format
+
+```toml
+# server.toml
+log_format = "json"     # default
+# log_format = "compact"  # human-readable for local dev
+```
+
+A typical line:
+
+```json
+{
+  "timestamp": "2026-05-06T12:01:30Z",
+  "level": "INFO",
+  "event": "rule.activated",
+  "client_name": "edge-01",
+  "rule_id": 1,
+  "request_id": "01HM…"
+}
+```
+
+## Filtering
+
+Use the standard `tracing-subscriber` env-filter:
+
+```sh
+RUST_LOG=info forward-server serve
+RUST_LOG=forward_server=debug,forward_client=info forward-server serve
+
+# Per-target filtering
+RUST_LOG=tls_sni=trace forward-client
+RUST_LOG=forward_client::forwarder::udp=debug forward-client
+```
+
+## request_id propagation
+
+`request_id` (ULID) is propagated end-to-end through `RuleUpdate` /
+`RuleStatus` / audit events. Correlate operator request → server audit
+→ client rule activation by the same `request_id`.
+
+## Redaction layer
+
+A redaction layer scrubs any log call whose **field names** match
+`token | secret | private_key`:
+
+- `token=…` → `token=<redacted>`
+- `secret=…` → `secret=<redacted>`
+- `private_key=…` → `private_key=<redacted>`
+
+The audit code path in particular **never sees raw bearer tokens** —
+the auth middleware verifies the bearer and hands the post-verify
+`OperatorIdentity` to the audit emitter, so even an operator
+implementation bug cannot leak a token through structured logging.
+
+## Common events to alert on
+
+| Event | Severity | Cause |
+| --- | --- | --- |
+| `tls.cert_generated` | INFO | Self-signed material auto-generated on first run |
+| `control.tls_pinned_mismatch` | ERROR | Server certificate fingerprint mismatch — possible MITM |
+| `auth.failure` | WARN | Client bearer rejected (revoked / unknown / signature mismatch) |
+| `operator.deny` | WARN | RBAC rejection on the operator API |
+| `startup.unsupported_filesystem` | ERROR | `--data-dir` on NFS / tmpfs / ramfs |
+| `startup.store_in_use` | ERROR | Two server processes sharing `--data-dir` |
+| `startup.schema_version_too_new` | ERROR | Running an older binary against a newer DB schema |
+| `client.disconnected` | WARN/INFO | Client lost the gRPC stream (transient or revoke) |
+| `rule.failed` | WARN | Rule activation failed (e.g. `port_in_use`) |
+
+## Local development tips
+
+```sh
+# Compact, tagged-by-target format for tailing
+RUST_LOG=info forward-server --log-format compact serve
+
+# Or via TOML:
+log_format = "compact"
+```
+
+Mix compact format with `RUST_LOG` env-filter and you get readable
+local output without sacrificing the JSON shipping path on production
+hosts.

@@ -1,0 +1,17 @@
+{
+  "title": "功能",
+  "icon": "Sparkles",
+  "pages": [
+    "tcp-forwarding",
+    "udp-forwarding",
+    "port-range",
+    "dns-targets",
+    "multi-target-failover",
+    "tls-sni-routing",
+    "proxy-protocol",
+    "rate-limiting",
+    "rbac",
+    "web-ui",
+    "sqlite-storage"
+  ]
+}

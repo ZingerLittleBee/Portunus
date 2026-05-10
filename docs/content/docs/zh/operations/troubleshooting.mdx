@@ -1,0 +1,159 @@
+---
+title: 故障排查
+description: 常见失败模式、错误码，以及揭示这些失败的结构化日志行。
+icon: Stethoscope
+---
+
+绝大多数故障都会以结构化日志 **加上** 具体退出码或 HTTP 状态码的形式
+出现。这两者的组合通常足以唯一确定原因。
+
+## Client 无法连接
+
+### `control.tls_pinned_mismatch`
+
+```json
+{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+```
+
+server 的叶证书指纹与 bundle 中的 `server_cert_sha256` 不匹配。
+**client 非零退出**，server 不会有任何日志（TLS 握手根本没完成）。
+
+**修复**：在 server 证书重新生成后，重新 `provision-client` 签发 bundle；
+或在 server 端恢复原 `server.crt` + `server.key`。
+
+### `auth.failure { reason: "token_revoked" }`
+
+```sh
+forward-server revoke edge-01
+# ↓
+# Server 日志：client.disconnected reason=token_revoked
+# 重启后 Client 日志：auth.failure reason=token_revoked
+```
+
+**修复**：重新签发 bundle（`provision-client`），并替换边缘主机上的文件。
+
+### Connect refused / network unreachable
+
+检查 server 端 `control_listen` 是否与 bundle 的 `server_endpoint` 一致，并
+确认防火墙没有丢弃 `tcp/7443`。
+
+## 规则激活失败
+
+### `port_in_use`
+
+```sh
+forward-server push-rule edge-01 18080 10.0.0.5:8080
+# exit 6: activation_failed: port_in_use
+```
+
+client 上有别的东西（另一条规则、无关进程、低端口的内核 TIME_WAIT 残留）
+占用了监听端口。
+
+**修复**：换一个空闲端口；或先 `remove-rule` 占用者再重试。**没有自动重试**
+—— 失败的规则会一直占住该端口（生命周期 Q4 决策有意为之），直到被显式
+移除。
+
+### `client_not_connected`
+
+```sh
+forward-server push-rule edge-01 18080 …
+# exit 4: client_not_connected
+```
+
+client 丢失了 gRPC 流。规则在 server 端持久化；client 重连后 server 自动
+重推。确认状态：
+
+```sh
+forward-server list-clients
+```
+
+## RBAC 拒绝
+
+| 码 | 原因 |
+| --- | --- |
+| `unauthenticated` | 缺少或非法 Bearer |
+| `not_owner` | 已认证，但调用方不拥有该资源 |
+| `client_not_granted` | 调用方在所请求 Client 上没有 Grant |
+| `port_outside_grant` | 监听端口落在任何一个 Grant 之外 |
+| `protocol_not_granted` | 协议（TCP/UDP）不在 Grant 中 |
+
+闭集匹配规则见 [RBAC](/zh/docs/features/rbac)。
+
+## Capability 守门
+
+| 码 | 原因 |
+| --- | --- |
+| `unsupported_protocol` | UDP 规则推给 pre-v0.4 client |
+| `multi_target_unsupported_by_client` | `targets[]` 推给 pre-v0.7 client |
+| `sni_unsupported_by_client` | `sni_pattern` 推给 pre-v0.9 client |
+| `rate_limit_unsupported_by_client` | `rate_limit` 推给 pre-v0.11 client |
+| `conflict.legacy_to_sni_unsupported` | 同一 `(client, port)` 上混用旧的纯 TCP 与 SNI |
+
+## Server 启动失败
+
+### `startup.unsupported_filesystem`
+
+`--data-dir` 落在 NFS / tmpfs / ramfs。请改本地可写文件系统。
+
+### `startup.store_in_use`（exit 75）
+
+另一个 `forward-server serve` 已经拿着数据库。找出并停掉那个进程；clustering
+不在范围。
+
+### `startup.schema_version_too_new`（exit 78）
+
+用旧二进制对接新 schema（例如把 v0.11 备份恢复到 v0.10 二进制上）。要么保留
+旧备份，要么用对应版本的二进制。
+
+### `bootstrap_required`（HTTP 503）
+
+server 还没有任何超管。运行：
+
+```sh
+forward-server bootstrap-superadmin --name 'Initial admin'
+```
+
+…或在 `server.toml` 中设置 `operator_token` 然后重启一次。
+
+## 性能问题
+
+### "升级后吞吐回退"
+
+跑 criterion 基准对比：
+
+```sh
+cargo bench -p forward-client --bench data_plane
+```
+
+CI 的回归守门
+（`.github/workflows/bench.yml` →
+`scripts/bench_regression_gate.py`）只要任何基准的中位数比 v0.1.0 baseline
+慢 25% 就会失败。怀疑回归时可用 `git bisect run cargo bench …` 二分。
+
+### "持续 UDP 负载下连接被丢"
+
+查 `forward_rule_flows_dropped_overflow_total`。非零则把 `server.toml` 中的
+`udp_max_flows_per_rule` 调高（同时调高 client systemd unit 的 `LimitNOFILE`）。
+
+### "SNI 模式 listener 上 TLS 握手好像变慢"
+
+看 peek 直方图：
+
+```text
+histogram_quantile(0.99,
+  rate(forward_tls_client_hello_peek_duration_seconds_bucket[5m]))
+```
+
+长尾（接近 3 s）通常意味着 client 在慢网络下分片发送 ClientHello —— 不是
+forward-rs 的问题。
+
+## 哪里报 bug
+
+GitHub issues：https://github.com/ZingerLittleBee/forward-rs/issues
+
+请附：
+
+- `forward-server --version` 与 `forward-client --version` 输出。
+- 相关结构化日志（仅事件名通常即可定位失败模式）。
+- 操作员命令 + 完整错误。
+- 数据面问题请附规则定义与流量形态。

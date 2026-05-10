@@ -1,0 +1,107 @@
+---
+title: Audit Log
+description: Every operator request emits one structured allow/deny event. Persisted to SQLite since v0.8.
+icon: ScrollText
+---
+
+Every `/v1/*` request emits exactly one structured tracing event:
+
+- `event = "operator.allow"` (INFO) on success.
+- `event = "operator.deny"` (WARN) on RBAC denial.
+
+Each entry carries `actor`, `method`, `path`, `outcome`, and (on deny)
+the `RbacError::code()` reason. **Raw bearer tokens never reach the
+audit code path** — the audit emitter only sees the post-verify
+`OperatorIdentity`.
+
+## Persistence
+
+Since v0.8 the audit log is durable in the SQLite `audit` table.
+Earlier versions used an in-memory ring buffer (capacity 1000) — the
+SPA's audit page has used the new envelope endpoint since then.
+
+## Reading the log
+
+### Live tail (v0.7-shape, back-compat)
+
+```sh
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/audit?limit=100&outcome=deny'
+# → JSON array of AuditEntry objects, newest-first
+```
+
+This path is byte-stable for v0.7 callers (no `since`/`until`/`cursor`).
+
+### Historic scroll-back (v0.8+ envelope)
+
+```sh
+# Last 24 hours, paginated
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/audit?since=2026-05-07T15:00:00Z&limit=50'
+# → {"entries":[...], "next_cursor":"abc123"}
+
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/audit?cursor=abc123&limit=50'
+# → next page
+```
+
+The Web UI's audit page uses the envelope automatically — operator
+clicks "Load earlier" to walk the cursor.
+
+### Filter by outcome
+
+```sh
+?outcome=allow
+?outcome=deny
+```
+
+The Web UI also exposes a client-side outcome filter for fast scrolling
+over already-fetched rows.
+
+## Pruning
+
+The durable audit table is bounded by the prune CLI, not by a fixed
+ring size:
+
+```sh
+# Dry run
+forward-server audit prune --before 2026-05-01T00:00:00Z --dry-run
+
+# Real prune (BEGIN IMMEDIATE + PRAGMA incremental_vacuum)
+forward-server audit prune --before 2026-05-01T00:00:00Z
+```
+
+Run from cron daily / weekly to bound database growth.
+
+## Buffer overflow signal
+
+When the in-memory buffer (v0.6 path) overflowed, the
+`forward_audit_buffer_drops_total` counter incremented. The metric
+remains for the v0.6 code path; on v0.8+ durable storage, drops should
+not occur in normal operation.
+
+## What is **not** audited
+
+The audit log captures **operator** events only — pushing rules,
+managing users, etc. Data-plane events (forwarded byte counts,
+rate-limit rejects, SNI route decisions, DNS failures) are
+**tracing-only** and do not enter the audit ring or the SQLite audit
+table. This is a deliberate constitutional invariant (D13) so:
+
+- The audit table size scales with operator activity, not traffic.
+- Data-plane noise doesn't drown out RBAC events.
+- Per-tenant ownership remains the audit's organising principle.
+
+## Export to JSON
+
+The Web UI's "Download as JSON" button on the audit page emits an
+NDJSON file of currently-visible rows:
+
+```
+audit-2026-05-09.ndjson
+{"timestamp":"…","actor":"alice","method":"POST","path":"/v1/rules","outcome":"deny","reason":"port_outside_grant"}
+{"timestamp":"…",…}
+```
+
+`head -1` of the file is a complete `AuditEntry` JSON object — feed it
+to your SIEM or a downstream pipeline.

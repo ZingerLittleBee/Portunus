@@ -1,0 +1,120 @@
+---
+title: 多用户 RBAC
+description: 操作员 API 的 Bearer Token 认证 + 用户 / 凭据 / 限定到 Client、端口范围、协议的 Grant。
+icon: Users
+---
+
+v0.5.0 起支持。在保持数据面不变的基础上，操作员侧引入了正式的 RBAC 层。
+
+## 概念
+
+- **User** —— id（lower-snake `[a-z][a-z0-9_-]{0,31}`）、role
+  （`superadmin` / `user`）、显示名、可选的 `disabled` 标志。下划线开头的
+  id 通过公共构造器会被拒绝。
+- **Credential** —— 绑定到某个 User 的 Bearer Token。在静止存储中以
+  `blake3` 哈希；原始 Token 仅在签发 / 旋转时可见。携带可选 label、
+  status（`active` / `revoked`）和 `last_used_at`。
+- **Grant** —— 每个用户的授权三元组 `{client, listen-port range, protocol set}`。
+  `client` 可以是具名 ClientName 或通配符 `"*"`。
+
+## 引导
+
+两条路径，二选一：
+
+### A —— 交互式一次性引导（推荐）
+
+```sh
+forward-server --config-dir ./srv bootstrap-superadmin --name ops
+# → superadmin user_id=_superadmin token=<paste-into-FORWARD_OPERATOR_TOKEN>
+```
+
+Bearer Token **只输出一次**。幂等 —— 二次执行会非零退出。
+
+### B —— server.toml 捷径
+
+```toml
+operator_token = "<43-char URL-safe-base64 token>"
+```
+
+如果首次启动时身份存储里还没有任何超管，Server 会用该 Token 自动签出一个
+保留账号 `_legacy` 超管。该选项幂等 —— 即使保留它跨重启也安全。
+
+带外生成 Token：
+
+```sh
+forward-server gen-token
+# → 43 字符 URL-safe-base64
+```
+
+## 添加受限租户
+
+```sh
+forward-server user-add alice --display-name Alice
+forward-server credential-issue alice --label laptop
+# → Bearer Token 仅打印一次，请妥善保存
+
+forward-server grant-add --user-id alice --client edge-01 \
+  --listen-port-start 30000 --listen-port-end 30050 \
+  --protocols tcp,udp
+```
+
+至此 alice 仅能在 `edge-01` 上、且仅在端口 `30000..=30050`、且仅在 TCP / UDP
+里 push-rule。
+
+## 闭集匹配
+
+单个 Grant 必须 **完整覆盖** 请求的端口范围 —— 跨两个 Grant 拼出来的范围
+会被拒绝。超出信封时 alice 会得到 HTTP 403 与三种码之一：
+
+- `client_not_granted`
+- `port_outside_grant`
+- `protocol_not_granted`
+
+`--client *` 通配匹配任意 Client；`--listen-port-end` 等于
+`--listen-port-start` 的 Grant 即单端口 Grant。
+
+## 自助旋转
+
+用户无须超管即可旋转自己的凭据：
+
+```sh
+FORWARD_OPERATOR_TOKEN=<alice 的旧 Token> \
+  forward-server credential-rotate alice <credential_id>
+# → 新 Bearer 打印一次；下次请求开始旧 Token 401
+```
+
+## 读侧过滤
+
+非超管调用 `GET /v1/rules` 时，结果只投影出该用户拥有的规则。超管可以加
+`?owner=<user_id>` 过滤。每条规则响应都携带 push 时盖上的 `owner` 字段。
+
+## 审计日志
+
+每条操作员请求都会发出一条结构化事件：成功是 `event = "operator.allow"`
+（INFO），RBAC 拒绝是 `"operator.deny"`（WARN）。事件携带 `actor`、
+`method`、`path`、`outcome`，拒绝时还包含 `RbacError::code()` 原因。
+
+**原始 Bearer Token 永远不会进入审计代码路径** —— 审计 emitter 只看到
+verify 之后的 `OperatorIdentity`。
+
+## CLI 一览
+
+| 命令 | 用途 |
+| --- | --- |
+| `user-add` / `user-list` / `user-get` / `user-remove` | 用户管理 |
+| `credential-issue` / `credential-list` / `credential-revoke` / `credential-rotate` | 凭据管理 |
+| `grant-add` / `grant-list` / `grant-revoke` | Grant 管理 |
+
+所有命令都从 `FORWARD_OPERATOR_TOKEN` 读取 Token（缺失时退出码 4）。
+
+## SIGHUP reload
+
+`SIGHUP` 时操作员存储会从磁盘重载 `identity.json`（v0.8 起改为 SQLite）。
+校验失败时保留之前的内存快照；任意结果都会输出一行结构化日志。
+
+## 级联顺序
+
+User 删除或 Grant 撤销时，先 **flush 身份存储**，再删除依赖的规则。即使
+中途崩溃，身份状态依然连贯。
+
+**最后一名超管保护** 会拒绝那个会让集群无主的删除操作。

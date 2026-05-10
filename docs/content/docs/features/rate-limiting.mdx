@@ -1,0 +1,123 @@
+---
+title: Rate Limiting & QoS
+description: Per-rule and per-owner caps for bandwidth, new-connection rate, and concurrent connections / flows. Hand-rolled token bucket; zero new dependencies.
+icon: Gauge
+---
+
+Available since v0.11.0. Each cap is **independently optional**; absent
+fields preserve v0.10 behaviour byte-for-byte.
+
+## Cap kinds
+
+| Cap | Effect when exceeded |
+| --- | --- |
+| `bandwidth_in_bps` | Token-bucket throttle on inbound copy half. **Connection is never closed** — the read half parks until the next refill. |
+| `bandwidth_out_bps` | Same, outbound half. Each direction has its own throttle wall-clock counter. |
+| `new_connections_per_sec` | TCP accept-then-RST or UDP first-packet drop. |
+| `concurrent_connections` | Atomic `fetch_add` then cap check on accept (TCP) / first-packet (UDP). RAII guard releases the slot on close. |
+
+Each cap has an optional sibling `*_burst` field. Absent → `burst = 1 ×
+rate`. Server validation clamps to `[rate / 100, rate × 60]` and rejects
+zero or negative rates.
+
+<Callout type="info">
+  **The rate limiter never closes existing connections** — including
+  under hot-reload that lowers a concurrent cap below the live count.
+  A lower cap drains gracefully; new connections are rejected against
+  the new ceiling.
+</Callout>
+
+## Per-rule caps
+
+```sh
+forward-server push-rule edge-01 443 backend.local:8080 \
+  --bandwidth-in-bps 1048576 \           # 1 MB/s in
+  --bandwidth-out-bps 524288 \           # 512 KB/s out
+  --new-connections-per-sec 100 \
+  --concurrent-connections 1000 \
+  --bandwidth-in-bps-burst 2097152       # optional burst override
+```
+
+The `list-rules` human output gains a compact `CAPS` column showing
+the active caps per rule.
+
+## Per-owner ceilings
+
+A per-owner ceiling caps the **aggregate** across every rule owned by
+that user on a given client. The envelope is keyed `(client, owner)`.
+
+Per-owner caps **bind before** per-rule caps — rejects carry distinct
+`owner_*` reasons.
+
+```sh
+# Set Alice's envelope on edge-01
+forward-server owner-cap set edge-01 alice \
+  --bandwidth-in-bps 10485760 \         # 10 MB/s aggregate
+  --concurrent-connections 5000
+
+# Inspect
+forward-server owner-cap get edge-01 alice
+forward-server owner-cap list edge-01
+
+# Remove
+forward-server owner-cap delete edge-01 alice
+```
+
+REST surface: `/v1/clients/{id}/owners/{owner_id}/rate-limit`.
+
+## Reject reasons
+
+Six values surface on `forward_rate_limit_reject_total{reason=…}`:
+
+- `conn_concurrent`
+- `conn_rate`
+- `udp_flow_rate`
+- `owner_concurrent`
+- `owner_conn_rate`
+- `owner_udp_flow_rate`
+
+The `owner` label is **empty** for per-rule rejects and **populated**
+for owner-scoped rejects.
+
+## Hot-reload
+
+Cap mutations swap the rule's `Arc<RuleRateLimiter>` while preserving
+`tokens` and `last_refill_micros` carryover, so:
+
+- Raising the cap doesn't mint a free burst.
+- Lowering the cap doesn't strand the existing token pool.
+- Lowering the concurrent cap below the live count drains gracefully —
+  no forcible close (FR Q4).
+
+## Capability gate
+
+Pushing `rate_limit` (or any owner-cap mutation) to a v0.10-or-earlier
+client returns HTTP 422 `rate_limit_unsupported_by_client` before any
+rule activates anywhere.
+
+## Reject path: TCP accept-then-RST
+
+forward-rs **does not pause the listener** on a capped rule, because
+v0.7 / v0.9 share listeners across rules — pausing would penalise
+sibling rules. Instead, capped rejects accept the connection, mark it
+with `SO_LINGER {l_onoff: 1, l_linger: 0}`, and close, producing a
+clean RST visible to the client.
+
+## Metrics
+
+```
+forward_rate_limit_reject_total{client,rule,owner,reason}
+forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}
+forward_rate_limit_active_connections{client,rule,owner}
+```
+
+Data-plane reject and throttle events are **tracing-only** — they do
+**not** enter the SQLite operator audit ring (mirrors the v0.9 D13
+invariant).
+
+## Web UI
+
+The rule editor gains a "Quality of service" section (cap inputs,
+burst overrides folded behind an "Advanced" disclosure). The rules
+table gains a compact `Caps` column. The client detail page gains an
+`Owner quotas` tab where superadmins manage per-owner envelopes.

@@ -1,0 +1,113 @@
+---
+title: 限流与 QoS
+description: 每条规则与每个所有者的带宽 / 新连接速率 / 并发上限。手工实现的 token bucket，零新依赖。
+icon: Gauge
+---
+
+v0.11.0 起支持。每个上限都是 **独立可选** 的，不设置时与 v0.10 字节相同。
+
+## 上限种类
+
+| 上限 | 触发后行为 |
+| --- | --- |
+| `bandwidth_in_bps` | 入向拷贝半段使用 token bucket 限速。**永不关闭连接** —— 读半段在下一次填充前阻塞。 |
+| `bandwidth_out_bps` | 出向同上。两个方向的限流墙钟时间分别计数。 |
+| `new_connections_per_sec` | TCP accept-then-RST，UDP 首包丢弃。 |
+| `concurrent_connections` | accept（TCP）/ 首包（UDP）时原子 `fetch_add` 后比对上限；RAII guard 在连接关闭时释放。 |
+
+每个上限都有可选的 `*_burst` 字段。缺省时 `burst = 1 × rate`。Server 验证
+会把它夹紧到 `[rate / 100, rate × 60]`，并拒绝零或负的 rate。
+
+<Callout type="info">
+  **限流器永远不会主动关闭已存在的连接** —— 即使热更新把并发上限调到当前
+  在线连接数以下，也只会优雅 drain，对新连接按新的更低上限拒绝。
+</Callout>
+
+## 每条规则的上限
+
+```sh
+forward-server push-rule edge-01 443 backend.local:8080 \
+  --bandwidth-in-bps 1048576 \           # 1 MB/s 入
+  --bandwidth-out-bps 524288 \           # 512 KB/s 出
+  --new-connections-per-sec 100 \
+  --concurrent-connections 1000 \
+  --bandwidth-in-bps-burst 2097152       # 可选的 burst 覆写
+```
+
+`list-rules` 的人类可读输出里会多出一列紧凑的 `CAPS`，显示该规则当前生效
+的上限。
+
+## 每个所有者的天花板
+
+每个所有者天花板限制的是该用户在某 Client 上 **所有规则的聚合**，
+信封的键是 `(client, owner)`。
+
+每个所有者的上限 **先于** 每条规则的上限生效；拒绝时携带的原因带 `owner_*`
+前缀。
+
+```sh
+# 设置 Alice 在 edge-01 上的信封
+forward-server owner-cap set edge-01 alice \
+  --bandwidth-in-bps 10485760 \         # 10 MB/s 聚合
+  --concurrent-connections 5000
+
+# 检视
+forward-server owner-cap get edge-01 alice
+forward-server owner-cap list edge-01
+
+# 移除
+forward-server owner-cap delete edge-01 alice
+```
+
+REST 接口：`/v1/clients/{id}/owners/{owner_id}/rate-limit`。
+
+## 拒绝原因
+
+`forward_rate_limit_reject_total{reason=…}` 上的六个值：
+
+- `conn_concurrent`
+- `conn_rate`
+- `udp_flow_rate`
+- `owner_concurrent`
+- `owner_conn_rate`
+- `owner_udp_flow_rate`
+
+逐规则拒绝时 `owner` 标签为空；逐所有者拒绝时该标签会被填充。
+
+## 热更新
+
+上限变更通过替换规则上的 `Arc<RuleRateLimiter>` 实现，但保留原有的
+`tokens` 与 `last_refill_micros`：
+
+- 调高上限不会 mint 出免费 burst。
+- 调低上限不会让现有的 token pool 立刻失效。
+- 把并发上限调到当前在线连接数以下时优雅 drain，**绝不强行 close**。
+
+## Capability gate
+
+向 v0.10 或更早的 Client 推送 `rate_limit`（或任何 owner 上限变更）会在
+任何规则激活之前返回 HTTP 422 `rate_limit_unsupported_by_client`。
+
+## 拒绝路径：TCP accept-then-RST
+
+forward-rs **不会暂停 listener** 来拒绝被限流的规则，因为 v0.7 / v0.9 的
+listener 在多条规则间共享 —— 暂停会连累兄弟规则。被限流拒绝的连接会被
+accept、设置 `SO_LINGER {l_onoff: 1, l_linger: 0}`、然后 close，从而对
+客户端表现为干净的 RST。
+
+## 指标
+
+```
+forward_rate_limit_reject_total{client,rule,owner,reason}
+forward_rate_limit_throttle_seconds_total{client,rule,owner,direction}
+forward_rate_limit_active_connections{client,rule,owner}
+```
+
+数据面的拒绝 / 限流事件 **仅出现在 tracing**，**不会** 进入 SQLite 操作员
+审计表（沿用 v0.9 D13 不变量）。
+
+## Web UI
+
+规则编辑器里多出一节 "Quality of service"。Burst 覆写默认折叠在 "Advanced"
+下。规则列表多出一列紧凑的 `Caps`。Client 详情页多了一个 `Owner quotas`
+标签，超管在此管理每个所有者的信封。

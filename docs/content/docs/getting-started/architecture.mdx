@@ -1,0 +1,97 @@
+---
+title: Architecture
+description: How the control-plane server, edge clients, operator surface, and data-plane fit together.
+icon: Network
+---
+
+`forward-rs` is a two-process system with a strict separation between the
+**control plane** (rule push, auth, metrics rollup) and the **data plane**
+(byte forwarding). The two never share code paths, which is what lets the
+project guarantee data-plane stability across releases.
+
+## Components
+
+```
+              ┌──────────────────────────────────────┐
+              │            forward-server            │
+              │                                      │
+   Operator ──┤  • CLI subcommands                   │
+   (CLI/HTTP) │  • Operator HTTP API + bearer auth   │
+              │  • Web UI (loopback)                 │
+              │  • RBAC: users, credentials, grants  │
+              │  • SQLite state store                │
+              │  • Prometheus /metrics               │
+              └──────────────┬───────────────────────┘
+                             │ gRPC / TLS-pinned
+                             │ (bidirectional stream)
+              ┌──────────────▼───────────────────────┐
+              │            forward-client            │
+              │                                      │
+   End-user ──▶ TCP accept loop / UDP recv_from loop │
+   traffic     │                                      │
+              │  • Per-rule listeners                │
+              │  • Per-target health tracking        │
+              │  • DNS resolver with caching         │
+              │  • Bidirectional copy / NAT-style    │
+              │    UDP flow demux                    │
+              └──────────────┬───────────────────────┘
+                             │ TCP / UDP
+                             ▼
+                   Configured upstream targets
+```
+
+## Control plane
+
+- **TLS + bearer-token** authentication. The server generates a self-signed
+  leaf cert on first run; every client bundle includes the SHA-256
+  fingerprint, which the client pins on every connect.
+- **Operator HTTP API** on `operator_http_listen` (loopback by default).
+  Every `/v1/*` request requires `Authorization: Bearer <token>`.
+- **gRPC control stream** on `control_listen`. Rule pushes, stats reports,
+  health updates, hot-reload events all flow over a single bidirectional
+  stream per client.
+- **SQLite state** at `<data-dir>/state.db` (WAL mode, refinery migrations).
+  Holds users, credentials, grants, rule targets, and the audit log.
+
+## Data plane
+
+- **TCP**: each rule binds an `accept` loop; per-connection bidirectional
+  copy with no userspace buffering beyond the kernel send/recv windows.
+- **UDP**: each rule binds a `recv_from` loop; the kernel allocates one
+  upstream socket per `(source-addr, port)` pair, providing NAT-style
+  return-path isolation without userspace tracking.
+- **DNS targets**: resolved on first connect, cached per the resolver's
+  TTL clamped to `[5 s, 5 min]`, with 30 s stale-while-error grace.
+- **Multi-target failover**: 1..=8 targets per rule, priority-ordered,
+  passive health detection (3 consecutive failures → Failed).
+- **TLS SNI routing**: peeks the ClientHello, parses the SNI extension,
+  routes by exact host or single-label wildcard. Never decrypts.
+- **Rate limiting**: token-bucket throttle for bandwidth caps;
+  accept-then-RST for connection-rate / concurrent caps.
+
+## Constitution invariants
+
+The project enforces a small set of invariants across every release:
+
+1. **Single-seam auth** — every operator request flows through one
+   `auth_layer`. There is no second code path.
+2. **Data-plane stability** — TCP / UDP forwarding hot paths are
+   byte-identical across versions where the spec doesn't explicitly call
+   for a change. Criterion benches gate regressions at ±25%.
+3. **Contracts before implementation** — every wire-format and HTTP-API
+   change ships with a contract test before the feature lands.
+4. **No raw secrets in logs** — a redaction layer scrubs known-sensitive
+   field names; the audit emitter only sees post-verify identities.
+5. **Server-side enforcement** — the SPA renders whatever the server
+   returns; RBAC isolation is never client-side.
+
+## Versioning
+
+Wire-format changes are **additive only**. New fields use proto3
+default-stripping so a newer client talking to an older server simply
+omits the new fields, and an older client talking to a newer server
+sees no behavioural change because the server gates pushes via a
+capability check.
+
+See [`CHANGELOG.md`](https://github.com/ZingerLittleBee/forward-rs/blob/main/CHANGELOG.md)
+for the full release history.

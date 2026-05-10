@@ -1,0 +1,72 @@
+---
+title: DNS 域名目标
+description: 把规则目标从 IP 字面量改为域名。带缓存、single-flight、RFC-8767 stale-while-error。
+icon: Globe
+---
+
+v0.3.0 起支持。`push-rule` 中的目标 host 可以是域名（例如
+`api.example.com:443`）而不必是 IP 字面量。
+
+## 工作原理
+
+- 解析在 **首次连接时懒触发**，使用 `hickory-resolver` 读取
+  `/etc/resolv.conf`。
+- 结果按解析器返回的 TTL 缓存，夹紧到 **`[5 s, 5 min]`**。
+- 解析失败时规则保持 `Active`，最近一次的答案继续可用 **30 秒** 作为宽限
+  （RFC 8767 stale-while-error）。宽限期过后每 3 秒可再次尝试。
+- 每条规则的 **single-flight** 把并发的首连合并为 **一次** 上游解析调用。
+- **多 A/AAAA 回退**：返回的多个地址按地址族偏好顺序逐个尝试，单个死 IP
+  不会拖垮连接。
+- **默认 IPv4 优先**；用 `--prefer-ipv6` 按规则切换。
+
+## 推送 DNS 目标规则
+
+```sh
+# IPv4 优先（默认）
+forward-server push-rule edge-01 8443 api.example.com:443
+
+# AAAA 优先；无 AAAA 时回退到 A
+forward-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+```
+
+## 热路径
+
+IP 字面量目标与 v0.2.0 完全字节相同：`IpAddr::from_str` 短路掉解析器，
+直接走 `TcpStream::connect`。
+
+DNS 目标的热路径性能：
+
+- **缓存命中查询**：约 75 ns 中位（一次 async-mutex 获取 + HashMap get +
+  Vec clone）。
+- **同一域名 100 个并发首连**：解析器恰好被调用一次。
+
+## 失败可见性
+
+DNS 失败有两种暴露途径：
+
+```sh
+# 规则字段
+forward-server rule-stats <id>
+# rule_id=… dns_failures=3 …
+
+# Prometheus
+curl -s 127.0.0.1:7081/metrics | grep dns_failures
+# forward_rule_dns_failures_total{client="edge-01",rule="2"} 3
+```
+
+该 collector 是每条规则一行（不是每次失败一行），保持基数预算。在
+`remove-rule` 时这一行会和 `rule_active_connections` 一起被回收。
+
+## 解析器参数
+
+目前由 spec 固定，未提供操作员级别的覆写。这里列出供参考；未来版本可能
+通过 `server.toml` 的 `[resolver]` 子表暴露：
+
+| 参数 | 值 |
+| --- | --- |
+| `cache_floor` | 5 s |
+| `cache_ceiling` | 5 min |
+| `stale_while_error_grace` | 30 s |
+| `attempt_timeout` | 3 s |
+| `negative_cache_retry` | 3 s |
+| `max_concurrent_resolves` | 64 |

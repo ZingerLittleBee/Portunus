@@ -1,0 +1,103 @@
+---
+title: Backup & Restore
+description: WAL-aware online backup, validated restore, deliberate-by-design reset.
+icon: Save
+---
+
+Since v0.8 every persistent server-side artefact lives in
+`<data-dir>/state.db`. forward-rs ships matching backup, restore, and
+reset CLI subcommands.
+
+## Backup
+
+```sh
+forward-server backup --out ~/forward-backup-$(date +%F).db
+```
+
+Uses the SQLite Online Backup API (`rusqlite::backup::Backup`). The
+backup is **WAL-aware** and consistent without quiescing writers — safe
+to run while traffic is flowing.
+
+Refuses to overwrite an existing destination — pick a unique path
+(date-stamped is the convention).
+
+Verify:
+
+```sh
+sqlite3 ~/forward-backup-2026-05-08.db \
+    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
+```
+
+## Cron schedule
+
+```sh
+# /etc/cron.daily/forward-rs-backup
+#!/bin/sh
+set -eu
+DEST=/var/backups/forward-rs/$(date +%F).db
+mkdir -p "$(dirname "$DEST")"
+sudo -u forward-rs forward-server \
+  --data-dir /var/lib/forward-rs \
+  backup --out "$DEST"
+find /var/backups/forward-rs -name '*.db' -mtime +30 -delete
+```
+
+## Restore
+
+```sh
+# 1. Stop the running server.
+sudo systemctl stop forward-server
+
+# 2. Wipe local state.
+forward-server reset --confirm
+
+# 3. Restore.
+forward-server restore --in /tmp/forward-backup-2026-05-08.db
+
+# 4. Start.
+sudo systemctl start forward-server
+```
+
+`restore`:
+
+- Validates the SQLite header magic before copying.
+- Refuses to clobber a non-empty data dir without `--force`.
+- Runs forward migrations automatically if the binary is newer than
+  the backup's schema.
+- **Refuses** if the backup is **newer** than the binary, exiting `78`
+  with `event=startup.schema_version_too_new`. Either keep the older
+  backup or restore using the matching binary version.
+
+## Reset
+
+```sh
+# Dry run (no flag) prints what would be removed.
+forward-server reset
+
+# Real wipe.
+forward-server reset --confirm
+```
+
+Removes `state.db` plus the sidecar `state.db-wal` and `state.db-shm`.
+
+The reset CLI **refuses** to operate on a path whose first 16 bytes
+don't start with the SQLite header — protects against typo'd
+`--data-dir`. It does **not** wipe `--config-dir` (the TLS material
+and `server.toml` survive).
+
+## Cross-host migration
+
+`identity.json` (v0.5–v0.7) is mode-0600 atomic-write JSON, safe to
+`rsync` across hosts. The `state.db` file is not — use the
+`backup` / `restore` flow for clean migration.
+
+## Common pitfalls
+
+- **NFS / tmpfs / ramfs** for `--data-dir` is rejected at startup with
+  `event=startup.unsupported_filesystem`. Use a local writable
+  filesystem.
+- **Two `forward-server serve` against the same data-dir** exit with
+  `event=startup.store_in_use` (exit 75). Clustering is out of scope
+  for the current release.
+- **`reset --confirm` does not wipe `--config-dir`** — only state.
+  Clear server.crt / server.key separately if you need to.

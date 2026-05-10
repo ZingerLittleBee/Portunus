@@ -1,0 +1,150 @@
+---
+title: 用 systemd 部署
+description: 加固后的 systemd unit、FHS 目录布局、自动创建服务用户与目录的 install.sh。
+icon: Server
+---
+
+`forward-rs` 在 `deploy/systemd/` 目录下提供了拿来就能用的加固 unit。两份
+unit 都设置了 `User=`、`ProtectSystem=full`、`CapabilityBoundingSet=`、
+以及与负载相称的 `LimitNOFILE` 覆写。
+
+## 一键安装
+
+```sh
+cd deploy/systemd
+sudo ./install.sh
+```
+
+脚本会：
+
+- 创建系统用户（`forward-rs:forward-rs`）。
+- 按 FHS 铺好目录：
+  - `/etc/forward-rs/` —— 管理员编辑的配置 + TLS 材料（mode 0750）。
+  - `/var/lib/forward-rs/` —— 守护进程持有的 `state.db`（mode 0700）。
+- 安装 `forward-server.service` 和 `forward-client.service`。
+
+## server.service
+
+```ini
+[Unit]
+Description=forward-rs server
+After=network.target
+
+[Service]
+User=forward-rs
+Group=forward-rs
+StateDirectory=forward-rs
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/forward-server serve \
+    --config-dir /etc/forward-rs \
+    --data-dir   /var/lib/forward-rs
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=35
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`StateDirectory=forward-rs` 是 systemd 原生写法：systemd 会用正确的属主
+自动创建 `/var/lib/forward-rs`，并把 `$STATE_DIRECTORY=/var/lib/forward-rs`
+注入进程。
+
+`TimeoutStopSec=35` 在配置的 drain（`shutdown_drain_timeout_secs = 30`）
+之上多留 5 秒余量。
+
+## client.service
+
+```ini
+[Unit]
+Description=forward-rs client
+After=network.target
+
+[Service]
+User=forward-rs
+Group=forward-rs
+ExecStart=/usr/local/bin/forward-client \
+    --bundle /etc/forward-rs/client.bundle.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=35
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## 首次启动流程
+
+安装后：
+
+```sh
+# 1. 生成 server 配置（或复制 deploy/server.toml.example）
+sudo cp deploy/server.toml.example /etc/forward-rs/server.toml
+sudo nano /etc/forward-rs/server.toml
+
+# 2. 引导超管（一次性，Token 仅打印一次）
+sudo -u forward-rs forward-server \
+    --config-dir /etc/forward-rs \
+    --data-dir   /var/lib/forward-rs \
+    bootstrap-superadmin --name 'Initial admin'
+
+# 3. 启用并启动 server
+sudo systemctl enable --now forward-server
+sudo systemctl status forward-server
+
+# 4. 配发首个 Client
+export FORWARD_OPERATOR_TOKEN=<paste-token>
+forward-server provision-client edge-01 \
+  --out /tmp/edge-01.bundle.json
+
+# 5. 把 bundle 拷到边缘主机（scp / rsync），落到那台机器的
+#    /etc/forward-rs/client.bundle.json，权限 0600。
+
+# 6. 在边缘主机上启用 client unit
+sudo systemctl enable --now forward-client
+```
+
+## 烟雾测试
+
+```sh
+curl -k -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     https://localhost:7443/v1/users/me
+```
+
+## 加固备注
+
+- **小于 1024 的端口** 需要 `CAP_NET_BIND_SERVICE`（unit 已包含）。
+  转发器只绑规则配置过的端口，能力面被严格收敛。
+- **`--data-dir` 落在 NFS / tmpfs / ramfs** 启动期会以
+  `event=startup.unsupported_filesystem` 拒绝。请改本地文件系统。
+- **两个 server 进程同时打开同一 data-dir** 第二个会以
+  `event=startup.store_in_use`（退出 75）退出。clustering 不在范围。
+
+## 备份 cron
+
+```sh
+# /etc/cron.daily/forward-rs-backup
+#!/bin/sh
+set -eu
+DEST=/var/backups/forward-rs/$(date +%F).db
+mkdir -p "$(dirname "$DEST")"
+sudo -u forward-rs forward-server \
+  --data-dir /var/lib/forward-rs \
+  backup --out "$DEST"
+find /var/backups/forward-rs -name '*.db' -mtime +30 -delete
+```
+
+在线备份走 SQLite Online Backup API —— 不需要静默写入，可在 server
+正常服务期间安全运行。

@@ -1,0 +1,101 @@
+---
+title: Upgrade Guide
+description: Wire-format invariants, capability gates, and the v0.7 → v0.8 fresh-start convention.
+icon: ArrowUp
+---
+
+forward-rs has shipped 11 minor releases (v0.1 → v0.11). Wire-format
+changes are **additive only** — newer fields use proto3
+default-stripping so cross-version pairs degrade gracefully.
+
+## Compatibility matrix
+
+| Combination | Behaviour |
+| --- | --- |
+| Newer server, older client | New rule fields are stripped on send; the server enforces capability gates and refuses pushes the client cannot honour. |
+| Older server, newer client | The client transparently omits new fields under proto3 default-stripping. Behaviour identical to running the older client. |
+| Same version both sides | Full feature surface available. |
+
+## Capability gates
+
+The server **refuses ahead of time** to push a feature that the client
+on the other end does not understand. The rule never activates anywhere
+— operators see an HTTP 422 with a specific code:
+
+| Code | Triggered by |
+| --- | --- |
+| `unsupported_protocol` | UDP rule pushed to a v0.3-or-earlier client |
+| `multi_target_unsupported_by_client` | `targets[]` pushed to a v0.6-or-earlier client |
+| `sni_unsupported_by_client` | `sni_pattern` pushed to a v0.8-or-earlier client |
+| `rate_limit_unsupported_by_client` | `rate_limit` pushed to a v0.10-or-earlier client |
+
+## Recommended upgrade order
+
+When mixing versions across server and client, **upgrade the server
+first**. The server is the gate, so a newer server with older clients
+is safe; an older server with a newer client cannot light up new
+features but otherwise operates normally.
+
+## v0.7 → v0.8 (clean-slate)
+
+This is the only "breaking" upgrade in the project's history — and only
+because v0.7 never reached production.
+
+In v0.8 every JSON file (`tokens.json`, `identity.json`, `rules.json`)
+plus the in-memory audit ring became one SQLite database at
+`<data-dir>/state.db`.
+
+There is **no upgrade path** from a v0.7 deployment that wrote JSON
+files. The expectation is a fresh `--data-dir`:
+
+```sh
+sudo systemctl stop forward-server
+sudo rm /var/lib/forward/tokens.json /var/lib/forward/identity.json
+forward-server reset --confirm
+forward-server bootstrap-superadmin --name 'Initial admin'
+sudo systemctl start forward-server
+```
+
+Existing client bundles (TLS-pinned) survive — only the operator-side
+identity and the rule definitions need re-creating.
+
+## v0.4 → v0.5 (RBAC)
+
+The operator API gained `Authorization: Bearer <token>` requirement.
+Existing CLI scripts need either:
+
+```sh
+export FORWARD_OPERATOR_TOKEN=<token>
+```
+
+…or the bootstrap shortcut in `server.toml`:
+
+```toml
+operator_token = "<43-char URL-safe-base64 token>"
+```
+
+The data plane (gRPC client tokens, TCP/UDP forwarding) is
+**byte-identical** — no client-side changes required.
+
+## Downgrade caveats
+
+- **v0.5 → v0.4**: `identity.json` becomes inert; `operator_token` is
+  silently ignored; auth-layer is absent so every operator request is
+  unauthenticated again. RBAC state is lost (re-bootstrap required on
+  a future v0.5+ upgrade). Forwarding rules and `tokens.json` survive.
+- **v0.8 → v0.7**: not supported. v0.7 wrote JSON files; v0.8 wrote
+  SQLite. There is no automated downgrade path.
+
+## Checking the schema version
+
+```sh
+sqlite3 /var/lib/forward-rs/state.db \
+    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
+```
+
+| Version range | Binary range |
+| --- | --- |
+| `[1, 1]` | v0.8 |
+| `[1, 2]` | v0.9 (TLS SNI routing) |
+| `[1, 3]` | v0.10 (PROXY protocol) |
+| `[1, 4]` | v0.11 (rate limiting) |

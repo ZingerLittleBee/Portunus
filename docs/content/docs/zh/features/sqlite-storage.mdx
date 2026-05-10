@@ -1,0 +1,124 @@
+---
+title: SQLite 存储
+description: 嵌入式统一 SQLite 存储。bundled、WAL 模式、refinery 管理迁移；附带备份 / 恢复工具。
+icon: Database
+---
+
+v0.8.0 起支持。把 Server 端所有持久 JSON 文件
+（`tokens.json`、`identity.json`、`rules.json`）以及内存审计环形缓冲，
+统一收纳到一个嵌入式 SQLite 库 `<data-dir>/state.db`。
+
+## 为什么选 SQLite
+
+- **保留单二进制部署** —— `rusqlite` 通过 `bundled` 特性静态链接固定版本的
+  SQLite，不依赖系统 libsqlite3。
+- **崩溃安全** —— WAL 模式 + `BEGIN IMMEDIATE` 写事务。
+- **迁移** —— 由 `refinery` 管理；schema 位于
+  `crates/forward-server/migrations/`。
+
+## 表
+
+| 表 | 用途 |
+| --- | --- |
+| `users` | RBAC 用户（id、role、显示名、disabled） |
+| `credentials` | Bearer Token 哈希（blake3）+ 状态 |
+| `grants` | 用户级 `(client, listen-port range, protocols)` 三元组 |
+| `rules` | 已推送的规则（v0.11 增加可空的 cap 列） |
+| `rule_targets` | 多目标规则条目（v0.7+） |
+| `audit` | 持久审计日志（取代 v0.6 的内存 ring） |
+| `rate_limit_owner` | 每个所有者的信封（v0.11+） |
+
+## 路径布局
+
+XDG 风格默认值：
+
+```
+$XDG_CONFIG_HOME/forward-rs/   （或 ~/.config/forward-rs/）
+  server.toml          （可选 —— 缺省时套用默认值）
+  server.crt
+  server.key
+
+$XDG_STATE_HOME/forward-rs/    （或 ~/.local/state/forward-rs/）
+  state.db
+  state.db-shm         （Server 运行时存在）
+  state.db-wal         （存在 pending WAL 帧时存在）
+```
+
+可用 `--config-dir` 与 `--data-dir` 覆写。生产部署通常使用
+`/etc/forward-rs/` 与 `/var/lib/forward-rs/`。
+
+## 文件系统检查
+
+如果 `--data-dir` 落在 NFS、tmpfs、ramfs 上，Server 会以
+`event=startup.unsupported_filesystem` 拒绝启动。请改到本地可写文件系统。
+
+两个 `forward-server serve` 同时打开同一个 data-dir 时，第二个会以
+`event=startup.store_in_use`（退出 75）退出 —— clustering 不在 v0.8 范围。
+
+## 备份
+
+通过 `rusqlite::backup::Backup` 实现的在线备份 —— 兼顾 WAL，无须暂停写入：
+
+```sh
+forward-server backup --out ~/forward-backup-$(date +%F).db
+```
+
+会拒绝覆写已存在的目标。
+
+## 恢复
+
+```sh
+forward-server reset --confirm     # 先清空本地状态
+forward-server restore --in ~/forward-backup-2026-05-08.db
+forward-server serve               # 自动跑 forward 迁移
+```
+
+`restore` 会校验 SQLite header 魔数；非空 data-dir 缺少 `--force` 时拒绝
+覆写。备份的 schema **比当前二进制还新** 时退出 `78`，事件
+`startup.schema_version_too_new` —— 要么保留旧备份，要么用对应版本的
+二进制做恢复。
+
+## Reset
+
+```sh
+forward-server reset --confirm
+# 清掉 state.db + state.db-wal + state.db-shm
+# 拒绝处理任何前 16 字节不是 SQLite header 的路径
+```
+
+header 检查可保护 typo 错的 `--data-dir`。`reset` **不会** 清空
+`--config-dir`（server.crt / server.key 等保留）。
+
+## 审计 prune
+
+审计表是持久化的，不再是 ring。其大小由 prune CLI 来约束，不再受固定
+ring 上限：
+
+```sh
+# 干跑 —— 仅统计不删除
+forward-server audit prune --before 2026-05-01T00:00:00Z --dry-run
+
+# 真正删除（BEGIN IMMEDIATE + PRAGMA incremental_vacuum）
+forward-server audit prune --before 2026-05-01T00:00:00Z
+```
+
+建议放进 cron daily / weekly 来约束库大小。
+
+## 审计信封模式
+
+`GET /v1/audit?since=<RFC3339>&until=<RFC3339>&cursor=<base64>&limit=N`
+返回 `{ entries, next_cursor?, count }`，取代 v0.7 的数组根，支持基于
+cursor 的历史回滚。
+
+不带 `since` / `until` / `cursor` 的 v0.7 调用方仍然得到数组根 —— 字节稳定。
+
+## `forward-client --bundle` 解析
+
+省略 `--bundle` 时按顺序查找：
+
+1. `$FORWARD_CLIENT_BUNDLE`
+2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
+3. `$HOME/.config/forward-rs/client.bundle.json`
+4. `./client.bundle.json`
+
+全部失败时退出 `1` 并把尝试过的全部路径打印出来。

@@ -1,0 +1,143 @@
+---
+title: 操作员 HTTP API
+description: 暴露在 operator_http_listen 上的 /v1 API。默认 loopback、Bearer 认证、RBAC 守门。
+icon: Code
+---
+
+`forward-server` 把操作员侧 API 暴露为 `operator_http_listen` 上的 HTTP API
+（默认 loopback）。每条 `/v1/*` 请求都需要 `Authorization: Bearer <token>`。
+
+## 认证
+
+```http
+GET /v1/clients
+Host: 127.0.0.1:7080
+Authorization: Bearer T006-quickstart-token
+```
+
+Bearer 缺失或非法时的响应：
+
+| 状态 | Body | 原因 |
+| --- | --- | --- |
+| `401 unauthenticated` | `{"error":"unauthenticated"}` | 缺 header 或 Token 非法 |
+| `403 not_owner` | `{"error":"not_owner"}` | 已认证，但调用方不拥有该资源 |
+| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC 信封拒绝（见 [RBAC](/zh/docs/features/rbac)） |
+| `503 bootstrap_required` | Server 还没有任何超管 —— 跑 `bootstrap-superadmin` |
+
+## 按区域分组的端点
+
+### Self
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/users/me` | 调用方自身的 `{ user_id, role, display_name }`（SPA AuthGate 使用） |
+
+### Clients
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/clients` | 配发 Client；响应携带 bundle |
+| `GET` | `/v1/clients` | 列出 Client；超管可见全部 |
+| `DELETE` | `/v1/clients/{name}` | 撤销 + 断线 |
+
+### Rules
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/rules` | 推送规则（单目标 / 多目标 / 端口范围 / 含上限 / 含 SNI） |
+| `GET` | `/v1/rules` | 列出规则；非超管只看到自己拥有的 |
+| `GET` | `/v1/rules?owner=<user_id>` | 超管按所有者过滤 |
+| `GET` | `/v1/rules/{id}/stats` | 聚合统计 |
+| `GET` | `/v1/rules/{id}/stats?per_port=true` | 逐端口（端口范围规则） |
+| `GET` | `/v1/rules/{id}/stats?per_target=true` | 逐目标（多目标规则） |
+| `GET` | `/v1/rules/{id}/stats/stream` | SSE 流，5 秒节奏（v0.6+） |
+| `DELETE` | `/v1/rules/{id}` | drain 后移除 |
+
+### Users
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/users` | 添加用户（超管） |
+| `GET` | `/v1/users` | 列出用户（超管） |
+| `GET` | `/v1/users/{id}` | 用户详情 |
+| `DELETE` | `/v1/users/{id}` | 级联删除（超管） |
+
+### Credentials
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/users/{id}/credentials` | 签发凭据 |
+| `GET` | `/v1/users/{id}/credentials` | 列出 |
+| `DELETE` | `/v1/users/{id}/credentials/{cred_id}` | 撤销 |
+| `POST` | `/v1/users/{id}/credentials/{cred_id}/rotate` | 旋转（自助 / 超管） |
+
+### Grants
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/grants` | 添加 Grant（超管） |
+| `GET` | `/v1/grants` | 列出 Grant（超管） |
+| `DELETE` | `/v1/grants/{id}` | 级联撤销 |
+
+### Rate limiting（v0.11+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `PUT` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | 设置每个所有者信封 |
+| `GET` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | 读信封 |
+| `DELETE` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | 删除信封 |
+
+### Audit（v0.6+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/audit?limit=N&outcome=allow\|deny` | v0.7 形态的 JSON 数组（向后兼容） |
+| `GET` | `/v1/audit?since=<RFC3339>&until=<RFC3339>&cursor=<base64>&limit=N` | v0.8 信封 `{entries, next_cursor?, count}` |
+
+### Metrics（v0.6+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/metrics` | RBAC 守门后的 `/metrics` 镜像；仅超管 |
+
+抓取面 `metrics_listen:7081/metrics` 不变（Prometheus 仍无 Bearer 抓取）。
+
+## 状态码语义
+
+| 码 | 含义 |
+| --- | --- |
+| `200` | 成功（读） |
+| `201` | 资源已创建 |
+| `204` | 成功，无 body |
+| `400` | 校验错误 |
+| `401` | `unauthenticated` |
+| `403` | RBAC 拒绝 |
+| `404` | 资源不存在 |
+| `409` | 冲突（如 `conflict.legacy_to_sni_unsupported`） |
+| `422` | Capability 守门（如 `multi_target_unsupported_by_client`、`sni_unsupported_by_client`、`rate_limit_unsupported_by_client`） |
+| `503` | `bootstrap_required` |
+
+完整 code → exit-code → HTTP-status 映射在 v1 冻结；详见每个 spec 的契约文档
+[`specs/*/contracts/operator-api.md`](https://github.com/ZingerLittleBee/forward-rs/tree/main/specs)。
+
+## 示例：推送一条带上限的规则
+
+```sh
+curl -sS -X POST http://127.0.0.1:7080/v1/rules \
+  -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client": "edge-01",
+    "listen_port": 8443,
+    "targets": [
+      {"host": "primary.local", "port": 443, "priority": 1},
+      {"host": "backup.local",  "port": 443, "priority": 2}
+    ],
+    "protocol": "tcp",
+    "sni_pattern": "*.example.com",
+    "rate_limit": {
+      "bandwidth_in_bps": 1048576,
+      "concurrent_connections": 1000
+    }
+  }'
+```

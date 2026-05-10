@@ -1,0 +1,129 @@
+---
+title: SQLite Storage
+description: Unified embedded SQLite store. Bundled, WAL-mode, refinery-managed migrations. Backup/restore tooling included.
+icon: Database
+---
+
+Available since v0.8.0. Collapses every server-side persistent JSON
+file (`tokens.json`, `identity.json`, `rules.json`) and the in-memory
+audit ring buffer into one embedded SQLite database at
+`<data-dir>/state.db`.
+
+## Why SQLite
+
+- **Single-binary deployment unchanged** — `rusqlite` with the
+  `bundled` feature statically links a pinned SQLite. No system
+  libsqlite3 dependency.
+- **Crash-safe** — WAL mode + `BEGIN IMMEDIATE` write transactions.
+- **Migrations** — managed by `refinery`; schema lives at
+  `crates/forward-server/migrations/`.
+
+## Tables
+
+| Table | Holds |
+| --- | --- |
+| `users` | RBAC users (id, role, display name, disabled flag) |
+| `credentials` | Bearer-token hashes (blake3) + status |
+| `grants` | Per-user `(client, listen-port range, protocols)` triples |
+| `rules` | Pushed rules (with v0.11 nullable cap columns) |
+| `rule_targets` | Multi-target rule entries (v0.7+) |
+| `audit` | Durable audit log (replaces the v0.6 in-memory ring) |
+| `rate_limit_owner` | Per-owner cap envelopes (v0.11+) |
+
+## Path layout
+
+XDG-aligned defaults:
+
+```
+$XDG_CONFIG_HOME/forward-rs/   (or ~/.config/forward-rs/)
+  server.toml          (optional — defaults applied if absent)
+  server.crt
+  server.key
+
+$XDG_STATE_HOME/forward-rs/    (or ~/.local/state/forward-rs/)
+  state.db
+  state.db-shm         (present while server running)
+  state.db-wal         (present iff WAL frames pending)
+```
+
+Override with `--config-dir` and `--data-dir`. Production deployments
+typically use `/etc/forward-rs/` and `/var/lib/forward-rs/`.
+
+## Filesystem checks
+
+The server refuses to start with `event=startup.unsupported_filesystem`
+if `--data-dir` points at NFS, tmpfs, or ramfs. Move the data-dir to a
+**local writable filesystem**.
+
+It also refuses two `forward-server serve` processes against the same
+data-dir (`event=startup.store_in_use`, exit 75) — clustering is out of
+scope.
+
+## Backup
+
+Online backup via `rusqlite::backup::Backup` — WAL-aware, no quiescing
+needed:
+
+```sh
+forward-server backup --out ~/forward-backup-$(date +%F).db
+```
+
+Refuses to overwrite an existing destination.
+
+## Restore
+
+```sh
+forward-server reset --confirm     # wipe local state first
+forward-server restore --in ~/forward-backup-2026-05-08.db
+forward-server serve               # forward migrations run automatically
+```
+
+`restore` validates the SQLite header magic and refuses to clobber a
+non-empty data dir without `--force`. Backups whose schema is **newer**
+than the binary's target version exit `78` with
+`startup.schema_version_too_new` — restore on the matching binary
+version, or upgrade.
+
+## Reset
+
+```sh
+forward-server reset --confirm
+# wipes state.db + state.db-wal + state.db-shm
+# refuses any path whose first 16 bytes don't match the SQLite header
+```
+
+The header check protects against typo'd `--data-dir`.
+
+## Audit prune
+
+The audit table is durable, not ring-buffered. Bound its size with the
+prune CLI:
+
+```sh
+# Dry run — count without deleting
+forward-server audit prune --before 2026-05-01T00:00:00Z --dry-run
+
+# Real prune
+forward-server audit prune --before 2026-05-01T00:00:00Z
+# Deletes under BEGIN IMMEDIATE then runs PRAGMA incremental_vacuum.
+```
+
+## Audit envelope mode
+
+`GET /v1/audit?since=<RFC3339>&until=<RFC3339>&cursor=<base64>&limit=N`
+returns `{ entries, next_cursor?, count }` instead of the v0.7 array
+root, enabling cursor-based historic scroll-back.
+
+v0.7 callers (no `since` / `until` / `cursor`) keep getting the array
+root unchanged — byte-stable.
+
+## `forward-client --bundle` resolution
+
+When `--bundle` is omitted the client searches in order:
+
+1. `$FORWARD_CLIENT_BUNDLE`
+2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
+3. `$HOME/.config/forward-rs/client.bundle.json`
+4. `./client.bundle.json`
+
+Exits `1` listing every attempted path when none resolve.

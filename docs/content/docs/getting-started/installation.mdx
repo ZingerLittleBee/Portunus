@@ -1,0 +1,90 @@
+---
+title: Installation
+description: Install forward-rs in 60 seconds. Build from source, pull a Docker image, or drop the binary into systemd.
+icon: Download
+---
+
+`forward-rs` ships as two single binaries — `forward-server` (control plane)
+and `forward-client` (edge). Pick the option that matches your environment.
+
+## Prerequisites
+
+- **Rust 1.88+ stable** (only when building from source). `protoc` is
+  vendored via `prost-build` — no system install required.
+- **Two reachable hosts** for a real deployment. For local trials,
+  one host with two terminals is enough.
+- **Linux or macOS**. Linux is the supported production target.
+
+## Option 1 — Build from source (recommended)
+
+```sh
+git clone https://github.com/ZingerLittleBee/forward-rs.git
+cd forward-rs
+cargo build --release -p forward-server -p forward-client
+```
+
+You now have:
+
+```
+target/release/forward-server
+target/release/forward-client
+```
+
+Copy them to `/usr/local/bin/` (or anywhere on `PATH`) and you are done.
+
+<Callout type="info">
+  The release profile uses `lto = "thin"`, `codegen-units = 1`, and
+  `strip = "symbols"`. A clean build takes ~3-5 minutes on a modern laptop.
+</Callout>
+
+## Option 2 — Docker
+
+The repo ships multi-stage Dockerfiles that produce
+`distroless/cc:nonroot` images.
+
+```sh
+# Server
+docker build -t forward-server:latest -f deploy/docker/Dockerfile.server .
+
+# Client
+docker build -t forward-client:latest -f deploy/docker/Dockerfile.client .
+```
+
+A local-only `docker-compose.yml` lives at `deploy/docker/docker-compose.yml`
+for kicking the tires.
+
+## Option 3 — systemd (production)
+
+The repo ships hardened systemd units under `deploy/systemd/` with
+`User=`, `ProtectSystem=`, `CapabilityBoundingSet=`, and an `install.sh`
+that creates the service users and lays out the FHS directories.
+
+```sh
+cd deploy/systemd
+sudo ./install.sh
+# Creates:
+#   /etc/forward-rs/        admin-edited config + TLS material
+#   /var/lib/forward-rs/    daemon-managed state.db
+#   forward-rs system user
+```
+
+See [Deploying with systemd](/docs/deployment/systemd) for the full unit
+breakdown and hardening notes.
+
+## Verify the install
+
+```sh
+forward-server --version
+forward-client --version
+```
+
+Both should print `forward-rs <version>`.
+
+## Next steps
+
+- **Just want to see it work?** → [Quickstart](/docs/getting-started/quickstart)
+  walks you from a fresh checkout to "100 MB streamed through a rule" in
+  under five minutes.
+- **Going to production?** → [Deploy with systemd](/docs/deployment/systemd)
+  or [Deploy with Docker](/docs/deployment/docker).
+- **Want the big picture first?** → [Architecture](/docs/getting-started/architecture).

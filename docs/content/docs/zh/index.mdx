@@ -1,0 +1,55 @@
+---
+title: 介绍
+description: 一个用 Rust 编写的端口级 TCP / UDP 转发服务，包含控制面 Server、边缘 Client、操作员管理面。
+icon: BookOpen
+---
+
+`forward-rs` 是一个用 Rust 编写的高性能端口转发服务。它由一个中心化的
+**控制面 Server** 和一个或多个 **边缘 Client** 组成：边缘 Client 在远端
+主机上绑定监听端口，并将 TCP / UDP 流量转发到指定的上游目标。
+
+操作员可以从 Server 端通过 CLI、HTTP API 或 Web UI 推送规则；每个边缘 Client
+通过一条 TLS 指纹固定 (TLS-pinned) 的双向 gRPC 流接收规则。每条规则的字节、
+连接、数据报指标每 5 秒上报一次，可通过 Prometheus 与操作员 API 查看。
+
+## 为什么选择 forward-rs？
+
+- **单二进制**，零运行时依赖。内置 SQLite、嵌入式 Web UI、内置 TLS —— 拷贝
+  二进制即可运行。
+- 控制面采用 **TLS + Bearer Token** 认证。Client 通过预先嵌入到下发包中的
+  SHA-256 证书指纹 (pinning) 校验 Server 身份。
+- **多租户 RBAC**。可将每个用户限定到指定 Client、端口范围与协议；规则的
+  归属关系由 Server 端强制执行。
+- **L4 字节直通**。即使按 SNI 路由，也绝不解密、终结或重新加密 TLS。
+- **运维友好**。配额支持热更新、连接优雅 drain、审计日志、Prometheus
+  指标、结构化 JSON 日志、备份 / 恢复工具一应俱全。
+
+## 功能一览
+
+<Cards>
+  <Card title="TCP / UDP 转发" href="/zh/docs/features/tcp-forwarding" />
+  <Card title="端口范围规则" href="/zh/docs/features/port-range" />
+  <Card title="DNS 域名目标" href="/zh/docs/features/dns-targets" />
+  <Card title="多目标故障切换" href="/zh/docs/features/multi-target-failover" />
+  <Card title="TLS SNI 路由" href="/zh/docs/features/tls-sni-routing" />
+  <Card title="PROXY 协议" href="/zh/docs/features/proxy-protocol" />
+  <Card title="限流与 QoS" href="/zh/docs/features/rate-limiting" />
+  <Card title="多用户 RBAC" href="/zh/docs/features/rbac" />
+  <Card title="Web UI" href="/zh/docs/features/web-ui" />
+  <Card title="SQLite 存储" href="/zh/docs/features/sqlite-storage" />
+</Cards>
+
+## 快速链接
+
+<Cards>
+  <Card title="60 秒安装" href="/zh/docs/getting-started/installation" />
+  <Card title="端到端快速开始" href="/zh/docs/getting-started/quickstart" />
+  <Card title="架构说明" href="/zh/docs/getting-started/architecture" />
+  <Card title="配置参考" href="/zh/docs/configuration/server" />
+  <Card title="CLI 参考" href="/zh/docs/cli/forward-server" />
+  <Card title="操作员 HTTP API" href="/zh/docs/api/operator-http" />
+</Cards>
+
+## 许可证
+
+Apache-2.0。

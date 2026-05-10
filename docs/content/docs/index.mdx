@@ -1,0 +1,58 @@
+---
+title: Introduction
+description: A Rust port-based TCP and UDP forwarding service with a control-plane server, edge client, and operator surface.
+icon: BookOpen
+---
+
+`forward-rs` is a high-performance port-forwarding service written in Rust.
+It pairs a central **control-plane server** with one or more **edge clients**
+that bind listeners on remote hosts and forward TCP / UDP traffic to
+configured upstream targets.
+
+Operators push rules from the server (CLI, HTTP API, or Web UI), and every
+edge client picks them up over a TLS-pinned bidirectional gRPC stream.
+Per-rule byte / connection / datagram metrics flow back every 5 seconds and
+surface via Prometheus and the operator API.
+
+## Why forward-rs?
+
+- **Single binary**, zero runtime dependencies. Bundled SQLite, embedded
+  Web UI, vendored TLS — copy the binary, run.
+- **TLS + bearer-token** auth on the control plane. Client certificates
+  are pinned by SHA-256 fingerprint baked into the issued bundle.
+- **Multi-tenant RBAC**. Scope each user to specific clients, port ranges,
+  and protocols; per-rule ownership is enforced server-side.
+- **L4 byte passthrough**. Never decrypts, terminates, or re-encrypts TLS —
+  even when routing by SNI.
+- **Operationally honest**. Hot-reload of caps, graceful drain, audit log,
+  Prometheus metrics, structured JSON logs, backup/restore tooling.
+
+## Feature highlights
+
+<Cards>
+  <Card title="TCP & UDP forwarding" href="/docs/features/tcp-forwarding" />
+  <Card title="Port-range rules" href="/docs/features/port-range" />
+  <Card title="DNS-name targets" href="/docs/features/dns-targets" />
+  <Card title="Multi-target failover" href="/docs/features/multi-target-failover" />
+  <Card title="TLS SNI routing" href="/docs/features/tls-sni-routing" />
+  <Card title="PROXY protocol" href="/docs/features/proxy-protocol" />
+  <Card title="Rate limiting & QoS" href="/docs/features/rate-limiting" />
+  <Card title="Multi-user RBAC" href="/docs/features/rbac" />
+  <Card title="Web UI" href="/docs/features/web-ui" />
+  <Card title="SQLite storage" href="/docs/features/sqlite-storage" />
+</Cards>
+
+## Quick links
+
+<Cards>
+  <Card title="Install in 60 seconds" href="/docs/getting-started/installation" />
+  <Card title="End-to-end quickstart" href="/docs/getting-started/quickstart" />
+  <Card title="Architecture" href="/docs/getting-started/architecture" />
+  <Card title="Configuration reference" href="/docs/configuration/server" />
+  <Card title="CLI reference" href="/docs/cli/forward-server" />
+  <Card title="Operator HTTP API" href="/docs/api/operator-http" />
+</Cards>
+
+## License
+
+Apache-2.0.

@@ -1,0 +1,111 @@
+---
+title: Prometheus Metrics
+description: Every collector forward-rs exposes, with cardinality budget notes.
+icon: BarChart3
+---
+
+`forward-server` exposes Prometheus metrics on
+`metrics_listen` (default `127.0.0.1:7081`). The endpoint is
+loopback-pinned — scrape from a sibling Prometheus on the same host or
+a sidecar.
+
+```sh
+curl -s http://127.0.0.1:7081/metrics
+```
+
+The same payload is also available at `/v1/metrics` on the operator
+HTTP listener, **gated by superadmin RBAC**. The Web UI dashboard reads
+that path so it doesn't have to cross listeners.
+
+## Cardinality budget
+
+Per-rule collectors emit **one row per live rule** (labels
+`{client, rule, owner}`). Per-port and per-target detail surface
+**only on demand** via `?per_port=true` / `?per_target=true` — never as
+default `/metrics` series.
+
+Rows are removed when the rule is removed.
+
+## Server-level
+
+```
+forward_clients_connected
+forward_auth_failures_total{reason}
+forward_operator_requests_total{outcome, reason}
+forward_audit_buffer_drops_total
+```
+
+`outcome` ∈ `{allow, deny}`; `reason` is `"ok"` on allow or the static
+`RbacError::code()` string on deny (bounded label set).
+
+## Per-rule TCP
+
+```
+forward_rule_bytes_in_total{client, rule, owner}
+forward_rule_bytes_out_total{client, rule, owner}
+forward_rule_active_connections{client, rule, owner}
+forward_rule_dns_failures_total{client, rule, owner}
+forward_rule_target_failovers_total{client, rule}
+```
+
+## Per-rule UDP
+
+```
+forward_rule_udp_datagrams_in_total{client, rule, owner}
+forward_rule_udp_datagrams_out_total{client, rule, owner}
+forward_rule_active_flows{client, rule, owner}
+forward_rule_flows_dropped_overflow_total{client, rule, owner}
+```
+
+## TLS SNI routing (v0.9+)
+
+```
+forward_tls_sni_route_total{client, rule, owner, result}
+forward_tls_sni_listener_miss_total{client, port}
+forward_tls_sni_listener_parse_failures_total{client, port}
+forward_tls_sni_routes_active
+```
+
+`result` ∈ `{exact, wildcard, fallback, no_match}`.
+
+## SNI peek histogram (v0.10+)
+
+```
+forward_tls_client_hello_peek_duration_seconds_bucket{client, port, le}
+forward_tls_client_hello_peek_duration_seconds_sum
+forward_tls_client_hello_peek_duration_seconds_count
+```
+
+Finite buckets up to 3 s; observations above 3 s increment `_count` and
+`le="+Inf"` without bumping `le="3"`. Only emitted for SNI-mode listeners.
+
+## Rate limiting (v0.11+)
+
+```
+forward_rate_limit_reject_total{client, rule, owner, reason}
+forward_rate_limit_throttle_seconds_total{client, rule, owner, direction}
+forward_rate_limit_active_connections{client, rule, owner}
+```
+
+Reject reasons: `conn_concurrent`, `conn_rate`, `udp_flow_rate`,
+`owner_concurrent`, `owner_conn_rate`, `owner_udp_flow_rate`.
+
+The `owner` label is **empty** for per-rule rejects, **populated** for
+owner-scoped rejects.
+
+## Useful queries
+
+```text
+# Top 5 rules by ingress bytes/sec over last 5m
+topk(5, sum by (rule) (rate(forward_rule_bytes_in_total[5m])))
+
+# Reject ratio per rule
+rate(forward_rate_limit_reject_total[5m]) /
+rate(forward_rule_active_connections[5m])
+
+# Throttle wall-clock per rule (per direction)
+rate(forward_rate_limit_throttle_seconds_total[5m])
+
+# Auth failures by reason
+sum by (reason) (rate(forward_auth_failures_total[5m]))
+```

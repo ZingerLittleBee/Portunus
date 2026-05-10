@@ -1,0 +1,81 @@
+---
+title: UDP 转发
+description: NAT 风格的 UDP 转发，每条源端流量自动获得一个内核分配的上游 socket。
+icon: Send
+---
+
+v0.4.0 起支持。UDP 规则可以与 TCP 规则共用同一个监听端口 —— 内核会按协议
+解复用。
+
+## 工作原理
+
+每条 UDP 规则在 Client 上启动一个 `recv_from` 循环。对于每个独特的
+`(源地址, 源端口)` 对，内核会分配一个新的上游 `UdpSocket`（每条流一个），
+从而获得 NAT 风格的回程隔离 —— **完全无须用户态流表**。
+
+内核根据源端口选择来解复用回包，所以代理永远不需要在用户态跟踪回程路径。
+
+## 推送 UDP 规则
+
+```sh
+forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+```
+
+UDP 与 TCP 规则可以共用同一个监听端口：
+
+```sh
+forward-server push-rule edge-01 6000 upstream.local:9999                # TCP
+forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
+```
+
+## 可调参数
+
+两项参数都在 `server.toml`，并通过 Welcome 消息下发到 Client：
+
+```toml
+# 流空闲多久后回收上游 socket。
+# 范围 30..=300。默认 60。
+udp_flow_idle_secs = 60
+
+# 每条规则同时存活的 UDP 流上限。
+# 范围 1..=65535。默认 1024。
+udp_max_flows_per_rule = 1024
+```
+
+当大量不同源端口造成持续抖动时，超出上限的流会让
+`forward_rule_flows_dropped_overflow_total` 累加。**已存在的流不会被驱逐
+腾位**——稳态收缩由空闲回收来完成。
+
+<Callout type="info">
+  如果你的流量确实需要更多并发的终端源，请同时调高 systemd unit 中的
+  `LimitNOFILE` 和 `udp_max_flows_per_rule`。
+</Callout>
+
+## 与端口范围 / DNS 联动
+
+UDP 可与 [端口范围规则](/zh/docs/features/port-range)（每个端口一个独立的
+listener task 与流表）和 [DNS 域名目标](/zh/docs/features/dns-targets)
+（解析器缓存与 single-flight 语义直接复用）一起使用。
+
+## 指标
+
+```
+forward_rule_udp_datagrams_in_total{client,rule,owner}
+forward_rule_udp_datagrams_out_total{client,rule,owner}
+forward_rule_active_flows{client,rule,owner}
+forward_rule_flows_dropped_overflow_total{client,rule,owner}
+```
+
+`rule-stats` 会增加一个 `protocol` 字段以及上述 UDP 计数器。
+
+## Capability gate
+
+向 v0.3.0 或更早的 Client 推 UDP 规则会得到 `unsupported_protocol`
+（HTTP 422 / 退出码 3）。请先升级 Client。
+
+## 验证过的性能
+
+- 在一台开发机 macOS 上，criterion 基准
+  `udp_data_plane.single_flow_throughput` 显示约 **78,000 datagrams/s**。
+- 1000 个并发源端口的隔离压力测试 `test_udp_us1_thousand_source_isolation`
+  零误路由。
