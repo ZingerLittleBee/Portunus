@@ -332,11 +332,30 @@ export interface AuditEntry {
 
 export function parseRuleState(raw: unknown): RuleState {
   if (typeof raw === "string") {
-    if (raw === "Pending" || raw === "Active" || raw === "Removed") return { kind: raw };
+    const normalized = raw.toLowerCase();
+    if (normalized === "pending") return { kind: "Pending" };
+    if (normalized === "active") return { kind: "Active" };
+    if (normalized === "removed") return { kind: "Removed" };
   }
-  if (raw && typeof raw === "object" && "Failed" in raw) {
-    const f = (raw as { Failed: { reason?: string } }).Failed;
-    return { kind: "Failed", reason: f?.reason ?? "" };
+  if (raw && typeof raw === "object") {
+    if ("kind" in raw) {
+      const kind = (raw as { kind?: string }).kind?.toLowerCase();
+      if (kind === "pending") return { kind: "Pending" };
+      if (kind === "active") return { kind: "Active" };
+      if (kind === "removed") return { kind: "Removed" };
+      if (kind === "failed") {
+        const reason = (raw as { reason?: string }).reason ?? "";
+        return { kind: "Failed", reason };
+      }
+    }
+    if ("Failed" in raw) {
+      const f = (raw as { Failed: { reason?: string } }).Failed;
+      return { kind: "Failed", reason: f?.reason ?? "" };
+    }
+    if ("failed" in raw) {
+      const f = (raw as { failed: { reason?: string } }).failed;
+      return { kind: "Failed", reason: f?.reason ?? "" };
+    }
   }
   return { kind: "Pending" };
 }
