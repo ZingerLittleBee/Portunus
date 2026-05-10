@@ -1,5 +1,5 @@
 {
   "title": "快速开始",
   "icon": "Rocket",
-  "pages": ["installation", "quickstart", "architecture"]
+  "pages": ["installation", "quickstart", "architecture", "../operations/performance"]
 }

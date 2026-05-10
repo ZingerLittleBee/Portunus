@@ -28,11 +28,52 @@ use super::scope::{
 };
 use super::stats::RateLimitStatsAccumulator;
 
-/// Chunk size for the half-loops. Matches the default
-/// `tokio::io::copy` internal buffer; large enough that per-chunk
-/// overhead (one bucket acquire) is amortised, small enough that a
-/// throttled flow doesn't park for >100 ms at 100 KB/s caps.
-const CHUNK: usize = 16 * 1024;
+/// Upper bound on the per-iteration chunk size. Matches the
+/// uncapped fast path's `PROXY_COPY_BUF_SIZE` so the throttling
+/// loop benefits from the same syscall amortisation when the
+/// effective cap is high (≥ ~640 KiB/s).
+const MAX_CHUNK: usize = 64 * 1024;
+
+/// Lower bound on the per-iteration chunk size. Keeps tiny caps
+/// from collapsing into byte-by-byte reads (one bucket acquire +
+/// one syscall per byte would be pathological).
+const MIN_CHUNK: usize = 8 * 1024;
+
+/// Pacing budget. The chunk size targets approximately this much
+/// wall clock between successive bucket acquires, so a low cap
+/// produces frequent small reads instead of a single large read
+/// followed by a multi-second sleep.
+const PACING_TARGET_MS: u64 = 100;
+
+/// Compute the per-iteration chunk size for the throttling copy
+/// loop. The tightest active bandwidth cap across `(rule_in_bps,
+/// rule_out_bps, owner_in_bps, owner_out_bps)` for the given
+/// `direction` determines the chunk:
+///
+/// * No cap on this direction (both rule + owner uncapped) →
+///   `MAX_CHUNK` (64 KiB), matching the uncapped fast path.
+/// * `cap_bps` configured → `clamp(cap_bps * PACING_TARGET_MS /
+///   1000, MIN_CHUNK, MAX_CHUNK)`. For a 1 MiB/s cap this lands
+///   at the 64 KiB ceiling; for 100 KiB/s caps it drops to ~10
+///   KiB; for very low caps it floors at 8 KiB.
+fn chunk_for_direction(
+    direction: BandwidthDirection,
+    rule: &RuleRateLimitHandle,
+    owner: Option<&OwnerRateLimitHandle>,
+) -> usize {
+    let rule_bps = rule.bandwidth_rate_per_sec(direction);
+    let owner_bps = owner.and_then(|o| o.bandwidth_rate_per_sec(direction));
+    let tightest_bps = match (rule_bps, owner_bps) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (None, None) => None,
+    };
+    let Some(bps) = tightest_bps else {
+        return MAX_CHUNK;
+    };
+    let target = (bps.saturating_mul(PACING_TARGET_MS) / 1000) as usize;
+    target.clamp(MIN_CHUNK, MAX_CHUNK)
+}
 
 /// Bidirectional copy with per-direction bandwidth throttling.
 ///
@@ -110,10 +151,24 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buf = vec![0u8; CHUNK];
+    // Allocate the largest possible buffer once; each iteration
+    // reads into a `&mut buf[..chunk]` slice sized to the current
+    // tightest cap. This bounds the per-connection footprint at
+    // `MAX_CHUNK` (per half-loop) while still letting the loop pace
+    // small chunks under low caps.
+    let mut buf = vec![0u8; MAX_CHUNK];
     let mut total: u64 = 0;
     loop {
-        let n = reader.read(&mut buf).await?;
+        // Recompute on every iteration so a hot-reload that swaps
+        // the per-rule or per-owner limiter (changing the effective
+        // cap) is observed without restarting the connection. The
+        // snapshot calls inside `chunk_for_direction` are the same
+        // ones already issued by `acquire_bandwidth` below, so the
+        // extra cost is two reads against an `Arc<RwLock>` per
+        // chunk — negligible vs. the syscall + bucket acquire that
+        // already happen on every iteration.
+        let chunk = chunk_for_direction(direction, limiter, owner_limiter);
+        let n = reader.read(&mut buf[..chunk]).await?;
         if n == 0 {
             // Half-close: shutdown the writer half so peer sees FIN.
             // Errors here are non-fatal — the peer may have already

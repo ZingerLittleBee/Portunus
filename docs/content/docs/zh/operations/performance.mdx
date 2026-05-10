@@ -1,0 +1,258 @@
+---
+title: 性能报告
+description: forward-rs 的性能测试方法、当前实测、常见转发方案对比，以及可复现流程。
+icon: Gauge
+---
+
+这份报告记录当前 v0.11 的性能状态。这里的数字是**同机实测证据**，不是跨所有硬件
+都成立的吞吐承诺。转发性能强依赖内核版本、CPU 频率策略、NIC 路径、socket buffer、
+以及路径是否留在内核态。
+
+## 测试方法
+
+成熟的代理/转发性能报告会先讲清楚方法，再给数字：
+
+- 记录被测对象：commit、release/debug profile、CPU、OS、kernel、工具版本、关键 sysctl。
+- 使用 release 二进制，热路径关闭 debug 日志。
+- 先测 direct baseline，再在同一台机器上测 proxy path。
+- 预热或省略开头几秒，避免 TCP slow start 和进程启动污染样本。
+- 同时报告吞吐、RTT/建立延迟、连接行为、重传、拒绝/限流指标。
+- CI 回归门和“产品性能宣称”分开。CI 负责抓漂移，固定硬件负责给可宣传的基线。
+
+本仓库现在分三层测：
+
+| 层级 | 命令 | 目的 |
+| --- | --- | --- |
+| Criterion TCP 数据面 | `cargo bench -p forward-client --bench data_plane -- --quick` | 稳定的 loopback proxy primitive 回归信号。 |
+| Criterion UDP 数据面 | `cargo bench -p forward-client --bench udp_data_plane -- --quick` | UDP steady-state 与 RTT 回归信号。 |
+| 真实进程 smoke | `scripts/perf_loopback.py` | 跑真实 `forward-server`、`forward-client`、`push-rule` 和 `iperf3`。 |
+
+## 当前本机结果
+
+采集时间：2026-05-10。
+
+```text
+Darwin ZingerBees-MacBook-Pro.local 25.4.0 RELEASE_ARM64_T6031 arm64
+rustc 1.94.0 (4a4ef493e 2026-03-02)
+iperf 3.20
+```
+
+### Criterion TCP
+
+命令：
+
+```sh
+cargo bench -p forward-client --bench data_plane -- --quick
+python3 scripts/bench_regression_gate.py --max-regression-pct 50
+```
+
+| Benchmark | Median | Throughput | Gate |
+| --- | ---: | ---: | --- |
+| `data_plane.throughput/64KiB_echo` | 90.06 us | 693.95 MiB/s | 通过 50% gate |
+| `data_plane.throughput/1024KiB_echo` | 575.74 us | 1.6962 GiB/s | 通过 50% gate |
+| `data_plane.rtt_1byte_through_proxy` | 45.82 us | n/a | 通过 50% gate |
+
+同次 gate 输出：
+
+```text
+data_plane.throughput.64KiB_echo       baseline 275343.6 ns  fresh 90973.4 ns   -66.96%
+data_plane.throughput.1024KiB_echo     baseline 1066907.4 ns fresh 572026.7 ns  -46.38%
+data_plane.rtt_1byte_through_proxy     baseline 72167.4 ns   fresh 45815.0 ns   -36.52%
+OK: all benchmarks within 50% of baseline.
+```
+
+上面的 delta 反映了下面 [近期优化](#近期优化) 一节落地的 v0.11
+hot-path 调整 —— 1 字节 RTT 在噪声内不变，bulk 吞吐有显著提升。
+
+### Criterion UDP
+
+命令：
+
+```sh
+cargo bench -p forward-client --bench udp_data_plane -- --quick
+```
+
+| Benchmark | Median | Throughput |
+| --- | ---: | ---: |
+| `udp_data_plane.single_flow_throughput/512B_round_trip` | 57.275 us | 17.46 K datagrams/s |
+| `udp_data_plane.single_flow_rtt` | 49.819 us | n/a |
+
+这次 UDP quick run 相对之前的本地 Criterion baseline 报了 throughput regression。
+这说明 release 前应该上固定硬件复测，不等于已经证明生产路径回退。
+
+### Operator API
+
+命令：
+
+```sh
+cargo bench -p forward-server --bench operator_api -- --quick
+```
+
+| Benchmark | Median |
+| --- | ---: |
+| `operator_api/post_v1_rules_validate_no_sni` | 28.463 us |
+| `operator_api/post_v1_rules_validate_with_sni` | 29.352 us |
+| `operator_api/get_v1_users` | 344.41 us |
+| `operator_api/get_v1_rules` | 28.601 us |
+| `operator_api/get_v1_users_me` | 32.424 us |
+
+### 真实进程 Loopback
+
+命令：
+
+```sh
+scripts/perf_loopback.py --seconds 3 --omit-seconds 1
+```
+
+结果：
+
+| Path | Throughput |
+| --- | ---: |
+| Direct `iperf3` loopback | 80,064.984 Mbit/s |
+| 通过 forward-rs uncapped rule | 36,751.910 Mbit/s |
+| forward-rs / direct loopback | 45.90% |
+| forward-rs 限制为 `1,048,576 B/s` | 8.394 Mbit/s |
+
+限流目标是 8.389 Mbit/s，实测落在 +10% 验收线内。
+uncapped 占比 18.04% → 45.90% 的提升来自下面 [近期优化](#近期优化)。
+
+## 解读
+
+forward-rs 是用户态 L4 forwarder。它 accept TCP 连接，dial target，然后通过 Tokio
+copy 字节。这让它比纯内核 NAT 做得多：控制面、RBAC、审计、owner QoS、metrics、
+SNI dispatch、PROXY protocol、规则生命周期。但代价也明确：路径会跨用户态，
+每条 flow 有更多工作。
+
+如果只追求同机原始转发，内核 NAT / nftables flowtables 应该是性能天花板。
+如果需求是“远端 client 注册 + 中央规则下发 + 多租户 RBAC + 可观测 + QoS”，
+forward-rs 才是这类问题的工具。拿它去和一条 DNAT 规则比纯吞吐，可以比，但
+这有点像拿瑞士军刀和一根针比扎洞速度，针当然快，废话。
+
+## 近期优化
+
+上面的数字反映 v0.11 hot-path 落地的三处调优。每一项都是
+byte-stable（不改语义、不改 wire format），未启用时回落到 v0.10 行为。
+
+| 改动 | 文件 | 效果 |
+| --- | --- | --- |
+| Uncapped TCP copy buffer 8 KiB → 64 KiB | `crates/forward-client/src/forwarder/proxy.rs` | `tokio::io::copy_bidirectional` → `copy_bidirectional_with_sizes(64 KiB, 64 KiB)`。bulk 转发 read/write 系统调用减少；每条热连接常驻内存 16 KiB → 128 KiB。 |
+| 集中式 `dial()` + `SO_SNDBUF` / `SO_RCVBUF` | `crates/forward-client/src/resolver/mod.rs` | 出向 TCP dial 走单一 helper：按地址族新建 `TcpSocket`，设置 `dial_send_buffer_bytes` / `dial_recv_buffer_bytes`（默认各 1 MiB），再 `connect`。loopback 收益小；高 BDP WAN 路径收益明显。best-effort，内核可能 clamp。 |
+| 限速路径 chunk: 固定 16 KiB → 动态 | `crates/forward-client/src/forwarder/rate_limit/copy.rs` | 单次 chunk = `clamp(tightest_cap_bps × 100 ms, 8 KiB, 64 KiB)`。高速 cap 享受快路径同等的 syscall 摊销；低速 cap 不会一次读大块再睡很久。10% 限速精度 gate（`t010_bandwidth_cap_shapes_to_target_rate_within_10pct`）依旧通过。 |
+
+测得的变化：
+
+* Criterion 1 MiB echo：~995 µs → ~575 µs（约 1.7× 吞吐）
+* Criterion 64 KiB echo：~115 µs → ~90 µs（约 1.3× 吞吐）
+* Criterion 1-byte 通过 proxy 的 RTT：45 µs → 46 µs（在噪声内）
+* 真实进程 loopback uncapped：14.2 Gbit/s → 36.8 Gbit/s
+  （direct loopback 18.0% → 45.9%）
+* 真实进程限制 1 MiB/s：8.388 Mbit/s → 8.394 Mbit/s
+  （仍在 +10% 验收线内）
+
+不变的：单连接最低延迟、回归 gate 行为、RBAC / 审计 / per-owner QoS
+语义、wire format、SQLite schema 范围。1 字节往返延迟在噪声内不变是因为
+`TCP_NODELAY` 仍在两端开启，更大的 copy buffer 由内核按需填充。
+
+后续待办（不在本次）：
+
+* Linux-only `splice(2)` 零拷贝快路径，仅覆盖 “无 preread / 无 PROXY
+  prelude / 无 bandwidth cap” 的流。需独立 feature flag，因为它会让数据面分叉。
+* `dial_send_buffer_bytes` / `dial_recv_buffer_bytes` 接到 CLI / 配置。
+  默认值合理；只有当运维上报真实链路被内核 clamp 时再暴露。
+
+## 常见转发方案对比
+
+| 维度 | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 性能预期 | 最高。内核路径，无用户态 copy。 | 最高。合格 flow 可绕开部分经典 forwarding path。 | 高性能用户态 proxy，事件循环成熟。 | 极高性能用户态 TCP proxy，连接处理成熟。 | 高性能但更重，面向 service mesh / xDS。 | 轻量用户态 redirector。 | 灵活诊断管道，不是托管式生产 proxy。 | 加密隧道，吞吐受 SSH crypto 影响。 |
+| TCP | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 |
+| UDP | 有 | 有 | 有 | 无通用 UDP 转发 | 有专门 UDP 场景 / 过滤器 | 有 | 有 | 无原生 UDP |
+| 动态远端规则下发 | 无内置控制面 | 无内置控制面 | reload/API 取决于版本和配置 | Runtime API 支持很多操作 | xDS 控制面 | 配置/reload 风格 | 无 | 按 session |
+| RBAC / 审计 / 指标 | 依赖外部系统 | 依赖外部系统 | 模块化 metrics，无 forward-rs 这种租户模型 | stats、ACL、stick tables 很强 | telemetry 和 policy 很强 | 极少 | 极少 | SSH auth/log |
+| QoS / rate limit | 通过 `tc` / nftables 生态做基础整形 | nftables / `tc`，不是 app-owner 维度 | `limit_conn` / `limit_rate` 类控制 | 丰富的连接/速率控制 | filters / overload manager | 极少 | 极少 | 极少 |
+| 适合场景 | 本机/本网络静态 NAT。 | 现代 Linux packet filtering / forwarding。 | 通用 TCP/UDP proxy。 | TCP 足够时的 L4/L7 负载均衡。 | service mesh 或 xDS 管理环境。 | 简单端口 redirect baseline。 | 实验和调试。 | 运维方便的加密隧道。 |
+
+公平测试不是“找几篇网上数字拼表”，而是：
+
+1. 同一台机器或同一组两机拓扑。
+2. 同一 target workload，TCP/UDP 都用 `iperf3`。
+3. 同样 duration、warm-up、socket buffer、CPU governor、MTU、kernel。
+4. 先测 direct baseline。
+5. 每次只启用一种转发实现。
+
+## 复现流程
+
+### 本机 smoke
+
+```sh
+# macOS
+brew install iperf3
+
+# Linux
+sudo apt-get update
+sudo apt-get install -y iperf3
+
+FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+scripts/perf_loopback.py --seconds 10 --omit-seconds 2 --json-out /tmp/forward-rs-perf.json
+```
+
+输出形状：
+
+```json
+{
+  "direct": { "mbps": 80064.984, "retransmits": null },
+  "forward_rs_uncapped": { "mbps": 36751.910, "retransmits": null },
+  "forward_rs_capped": {
+    "cap_bytes_per_sec": 1048576,
+    "mbps": 8.394,
+    "target_mbps": 8.389,
+    "within_plus_10pct": true
+  }
+}
+```
+
+### Criterion 回归
+
+```sh
+cargo bench -p forward-client --bench data_plane
+python3 scripts/bench_regression_gate.py --max-regression-pct 50
+
+cargo bench -p forward-client --bench udp_data_plane -- --quick
+cargo bench -p forward-server --bench operator_api -- --quick
+```
+
+### VPS
+
+SSH 凭证走线下或密码管理器，不要写进仓库。
+
+```sh
+ssh forward-bench@example-edge
+sudo apt-get update
+sudo apt-get install -y build-essential curl git iperf3 protobuf-compiler
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+git clone <repo-url> forward-rs
+cd forward-rs
+FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+scripts/perf_loopback.py --seconds 30 --omit-seconds 5 --json-out perf-vps-loopback.json
+```
+
+两机测试时，把 `forward-server` 放控制机，`forward-client` 与 `iperf3 -s` 放 edge /
+target 机，然后从第三台或控制机执行：
+
+```sh
+iperf3 -J -c <edge-listen-ip> -p <listen_port> -t 30 -O 5
+```
+
+同一轮里必须再直连 target 跑一次 `iperf3`，否则没有 direct baseline，数字就没法用。
+
+## 资料来源
+
+- Envoy performance FAQ 和 benchmark 建议：[envoyproxy.io docs](https://www.envoyproxy.io/docs/envoy/latest/faq/performance/how_to_benchmark_envoy)
+- HAProxy 管理与 runtime/statistics 文档：[HAProxy docs](https://docs.haproxy.org/)
+- NGINX stream proxy module：[nginx.org stream proxy docs](https://nginx.org/en/docs/stream/ngx_stream_proxy_module.html)
+- nftables flowtables：[nftables wiki](https://wiki.nftables.org/wiki-nftables/index.php/Flowtables)
+- iptables extensions 与 NAT targets：[man7 iptables-extensions](https://man7.org/linux/man-pages/man8/iptables-extensions.8.html)
+- rinetd 参考：[Debian rinetd man page](https://manpages.debian.org/unstable/rinetd/rinetd.8.en.html)
+- socat 手册：[Debian socat man page](https://manpages.debian.org/stable/socat)

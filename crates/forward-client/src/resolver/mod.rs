@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use forward_core::{Hostname, RuleId, Target};
 use thiserror::Error;
-use tokio::net::TcpStream;
+use tokio::net::{TcpSocket, TcpStream};
 use tracing::info;
 
 pub use cache::AnswerSource;
@@ -67,6 +67,17 @@ pub struct ResolverConfig {
     /// so US2 doesn't need a breaking API change).
     #[allow(dead_code)]
     pub max_concurrent_resolves: usize,
+    /// Outbound TCP `SO_SNDBUF` (bytes) requested on every dial.
+    /// `None` keeps the kernel default. Set on the connecting socket
+    /// before `connect`; the kernel may clamp the value (Linux:
+    /// `net.core.wmem_max`; macOS: `kern.ipc.maxsockbuf`). Best-
+    /// effort — failures are silently ignored. Bigger buffers help
+    /// high-BDP links; loopback / short-RTT paths see little gain.
+    pub dial_send_buffer_bytes: Option<u32>,
+    /// Outbound TCP `SO_RCVBUF` (bytes) requested on every dial.
+    /// Same semantics as `dial_send_buffer_bytes`. Linux clamp is
+    /// `net.core.rmem_max`.
+    pub dial_recv_buffer_bytes: Option<u32>,
 }
 
 impl Default for ResolverConfig {
@@ -78,6 +89,11 @@ impl Default for ResolverConfig {
             attempt_timeout: Duration::from_secs(3),
             negative_cache_retry: Duration::from_secs(3),
             max_concurrent_resolves: 64,
+            // 1 MiB conservative default — enough headroom for most
+            // WAN-to-target BDPs; small enough that the kernel ceiling
+            // (Linux ~4 MiB by default, macOS ~8 MiB) won't reject it.
+            dial_send_buffer_bytes: Some(1 << 20),
+            dial_recv_buffer_bytes: Some(1 << 20),
         }
     }
 }
@@ -211,6 +227,36 @@ impl<R: Resolve> LiveResolver<R> {
         }
     }
 
+    /// Single dial helper used for every outbound TCP connect issued
+    /// by the proxy hot path. Centralises:
+    ///
+    /// * IPv4/IPv6 socket family selection
+    /// * Best-effort `SO_SNDBUF` / `SO_RCVBUF` sizing from
+    ///   `ResolverConfig::dial_{send,recv}_buffer_bytes` — set
+    ///   BEFORE `connect` so the kernel can negotiate the larger
+    ///   window during the handshake. Failures are silently ignored
+    ///   because the kernel may clamp or reject (Linux ceiling
+    ///   `net.core.{r,w}mem_max`; macOS ceiling
+    ///   `kern.ipc.maxsockbuf`).
+    ///
+    /// Returns the same `io::Result<TcpStream>` shape that
+    /// `TcpStream::connect` would, so callers see no behaviour change
+    /// when both buffer fields are `None`.
+    async fn dial(&self, addr: SocketAddr) -> io::Result<TcpStream> {
+        let socket = if addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        if let Some(sz) = self.config.dial_send_buffer_bytes {
+            let _ = socket.set_send_buffer_size(sz);
+        }
+        if let Some(sz) = self.config.dial_recv_buffer_bytes {
+            let _ = socket.set_recv_buffer_size(sz);
+        }
+        socket.connect(addr).await
+    }
+
     /// Connect to `target:port`. For IP literals this skips the
     /// resolver entirely (T012 short-circuit). For DNS targets the
     /// cache is consulted; on miss the resolver is invoked (with
@@ -253,7 +299,8 @@ impl<R: Resolve> LiveResolver<R> {
         // `ConnectError::Dial` (not `AllAddrsUnreachable`) for parity
         // with the pre-refactor code path.
         if matches!(target, Target::Ip(_)) {
-            return TcpStream::connect(addrs[0])
+            return self
+                .dial(addrs[0])
                 .await
                 .map(|s| (s, source))
                 .map_err(ConnectError::Dial);
@@ -262,8 +309,7 @@ impl<R: Resolve> LiveResolver<R> {
         let mut last_err: Option<io::Error> = None;
         let tried = addrs.len();
         for addr in &addrs {
-            match tokio::time::timeout(self.config.attempt_timeout, TcpStream::connect(*addr)).await
-            {
+            match tokio::time::timeout(self.config.attempt_timeout, self.dial(*addr)).await {
                 Ok(Ok(stream)) => return Ok((stream, source)),
                 Ok(Err(e)) => {
                     last_err = Some(e);

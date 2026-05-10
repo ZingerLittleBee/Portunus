@@ -1,5 +1,5 @@
 {
   "title": "Get Started",
   "icon": "Rocket",
-  "pages": ["installation", "quickstart", "architecture"]
+  "pages": ["installation", "quickstart", "architecture", "../operations/performance"]
 }

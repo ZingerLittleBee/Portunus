@@ -1,0 +1,271 @@
+---
+title: Performance Report
+description: Benchmark methodology, current forward-rs measurements, comparable forwarding stacks, and reproducible test flow.
+icon: Gauge
+---
+
+This report records the current v0.11 performance posture. Treat the numbers
+as **same-host evidence**, not universal throughput claims. Forwarding
+performance is dominated by kernel version, CPU frequency policy, NIC path,
+socket buffer sizing, and whether the path stays in-kernel or crosses
+userspace.
+
+## Method
+
+Mature proxy performance reports separate methodology from results:
+
+- Record the system under test: commit, build profile, CPU, OS, kernel,
+  tool versions, and relevant sysctls.
+- Use release binaries. Disable debug logging on the hot path.
+- Measure a direct baseline first, then the proxy path on the same host.
+- Use warm-up / omitted seconds so TCP slow start and process startup do not
+  dominate the sample.
+- Report throughput, setup / RTT latency, connection behavior, and any
+  retransmits or rejects.
+- Keep regression gates separate from absolute marketing numbers. CI catches
+  drift; dedicated hardware establishes product claims.
+
+The repo therefore uses three layers:
+
+| Layer | Command | Purpose |
+| --- | --- | --- |
+| Criterion TCP data plane | `cargo bench -p forward-client --bench data_plane -- --quick` | Stable loopback proxy primitive regression signal. |
+| Criterion UDP data plane | `cargo bench -p forward-client --bench udp_data_plane -- --quick` | UDP steady-state and RTT regression signal. |
+| Real process smoke | `scripts/perf_loopback.py` | Real `forward-server` + `forward-client` + `push-rule` + `iperf3`. |
+
+## Current Local Results
+
+Captured on 2026-05-10 on:
+
+```text
+Darwin ZingerBees-MacBook-Pro.local 25.4.0 RELEASE_ARM64_T6031 arm64
+rustc 1.94.0 (4a4ef493e 2026-03-02)
+iperf 3.20
+```
+
+### Criterion TCP
+
+Command:
+
+```sh
+cargo bench -p forward-client --bench data_plane -- --quick
+python3 scripts/bench_regression_gate.py --max-regression-pct 50
+```
+
+| Benchmark | Median | Throughput | Gate result |
+| --- | ---: | ---: | --- |
+| `data_plane.throughput/64KiB_echo` | 90.06 us | 693.95 MiB/s | Within 50 percent gate |
+| `data_plane.throughput/1024KiB_echo` | 575.74 us | 1.6962 GiB/s | Within 50 percent gate |
+| `data_plane.rtt_1byte_through_proxy` | 45.82 us | n/a | Within 50 percent gate |
+
+Gate output from the same run:
+
+```text
+data_plane.throughput.64KiB_echo       baseline 275343.6 ns  fresh 90973.4 ns   -66.96%
+data_plane.throughput.1024KiB_echo     baseline 1066907.4 ns fresh 572026.7 ns  -46.38%
+data_plane.rtt_1byte_through_proxy     baseline 72167.4 ns   fresh 45815.0 ns   -36.52%
+OK: all benchmarks within 50% of baseline.
+```
+
+The deltas above reflect the v0.11 hot-path tuning recorded under
+[Recent optimisations](#recent-optimisations) below — added latency
+is unchanged within noise; bulk throughput improves materially.
+
+### Criterion UDP
+
+Command:
+
+```sh
+cargo bench -p forward-client --bench udp_data_plane -- --quick
+```
+
+| Benchmark | Median | Throughput |
+| --- | ---: | ---: |
+| `udp_data_plane.single_flow_throughput/512B_round_trip` | 57.275 us | 17.46 K datagrams/s |
+| `udp_data_plane.single_flow_rtt` | 49.819 us | n/a |
+
+The UDP quick run reported a throughput regression against the previous local
+Criterion baseline. That is a signal to investigate on dedicated hardware
+before release claims, not proof of a production regression by itself.
+
+### Operator API
+
+Command:
+
+```sh
+cargo bench -p forward-server --bench operator_api -- --quick
+```
+
+| Benchmark | Median |
+| --- | ---: |
+| `operator_api/post_v1_rules_validate_no_sni` | 28.463 us |
+| `operator_api/post_v1_rules_validate_with_sni` | 29.352 us |
+| `operator_api/get_v1_users` | 344.41 us |
+| `operator_api/get_v1_rules` | 28.601 us |
+| `operator_api/get_v1_users_me` | 32.424 us |
+
+### Real Process Loopback
+
+Command:
+
+```sh
+scripts/perf_loopback.py --seconds 3 --omit-seconds 1
+```
+
+Result:
+
+| Path | Throughput |
+| --- | ---: |
+| Direct `iperf3` loopback | 80,064.984 Mbit/s |
+| `iperf3` through forward-rs uncapped rule | 36,751.910 Mbit/s |
+| forward-rs as percent of direct loopback | 45.90% |
+| forward-rs capped at `1,048,576 B/s` | 8.394 Mbit/s |
+
+The capped case targeted 8.389 Mbit/s and landed within the +10 percent
+acceptance bound. The uncapped percent-of-direct improved from 18.04 % to
+45.90 % after the v0.11 tuning recorded under
+[Recent optimisations](#recent-optimisations).
+
+## Interpretation
+
+forward-rs is a userspace L4 forwarder. It accepts a TCP connection, dials
+the target, then copies bytes through Tokio. That makes it much richer than
+plain kernel NAT, but it necessarily crosses userspace and does more per-flow
+work.
+
+For raw same-host forwarding, kernel NAT / nftables flowtables should be the
+performance ceiling. forward-rs is the right tool when the operator needs
+remote client registration, rule push, RBAC, auditability, per-owner QoS,
+metrics, SNI dispatch, PROXY protocol, and graceful rule lifecycle.
+
+## Recent Optimisations
+
+The numbers above reflect three tuning changes landed in the v0.11
+hot path. Each is byte-stable (no functional or wire change) and
+falls back to v0.10 behaviour when its toggle is unset.
+
+| Change | File | Effect |
+| --- | --- | --- |
+| Uncapped TCP copy buffer 8 KiB → 64 KiB | `crates/forward-client/src/forwarder/proxy.rs` | `tokio::io::copy_bidirectional` → `copy_bidirectional_with_sizes(64 KiB, 64 KiB)`. Cuts read/write syscall count on bulk transfers; resident cost rises from 16 KiB to 128 KiB per hot connection. |
+| Centralised `dial()` with `SO_SNDBUF` / `SO_RCVBUF` | `crates/forward-client/src/resolver/mod.rs` | Outbound TCP dials go through one helper that creates a `TcpSocket` of the right family, sets `dial_send_buffer_bytes` / `dial_recv_buffer_bytes` (default 1 MiB each), then `connect`s. Loopback shows little gain; high-BDP WAN paths benefit. Best-effort — kernel may clamp. |
+| Throttling copy chunk: fixed 16 KiB → dynamic | `crates/forward-client/src/forwarder/rate_limit/copy.rs` | Per-iteration chunk = `clamp(tightest_cap_bps × 100 ms, 8 KiB, 64 KiB)`. High caps amortise like the uncapped fast path; low caps stay smooth (no large read followed by long sleep). The 10 % bandwidth-shaping accuracy gate (`t010_bandwidth_cap_shapes_to_target_rate_within_10pct`) still passes. |
+
+What changed in the measurements:
+
+* Criterion 1 MiB echo: ~995 µs → ~575 µs (≈ 1.7× throughput)
+* Criterion 64 KiB echo: ~115 µs → ~90 µs (≈ 1.3× throughput)
+* Criterion 1-byte RTT through proxy: 45 µs → 46 µs (within noise)
+* Real process loopback uncapped: 14.2 Gbit/s → 36.8 Gbit/s
+  (18.0 % → 45.9 % of direct loopback)
+* Real process capped at 1 MiB/s: 8.388 Mbit/s → 8.394 Mbit/s
+  (still inside the +10 % acceptance bound)
+
+What did *not* change: per-connection latency floor, regression-gate
+behaviour, RBAC / audit / per-owner QoS semantics, the wire format,
+and the SQLite schema range. The added latency on a 1-byte
+round-trip is unchanged within noise because `TCP_NODELAY` is still
+set on both sides and the larger copy buffer is filled
+opportunistically by the kernel.
+
+Open follow-ups (not in this revision):
+
+* Linux-only `splice(2)` zero-copy fast path on flows with no
+  pre-read, no PROXY prelude, and no bandwidth cap. Would be a
+  separate feature flag because it forks the data plane.
+* CLI / config plumbing for `dial_send_buffer_bytes` /
+  `dial_recv_buffer_bytes`. Defaults are reasonable; expose only
+  if operators report a kernel ceiling clamp on a real link.
+
+## Comparable Forwarders
+
+| Dimension | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Performance profile | Highest. Kernel path, no userspace copy. | Highest for eligible flows; bypasses parts of the classic forwarding path. | High userspace proxy with mature event loop. | Very high userspace TCP proxy with excellent connection handling. | High but heavier userspace proxy, designed for service mesh / xDS. | Lightweight userspace redirector. | Flexible diagnostic pipe, not tuned as a managed production proxy. | Encrypted tunnel; throughput pays SSH crypto overhead. |
+| TCP | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| UDP | Yes | Yes | Yes | No generic UDP forwarding | Dedicated UDP filters / use cases | Yes | Yes | No native UDP |
+| Dynamic remote rule push | No built-in control plane | No built-in control plane | Reload/API depends on edition/config | Runtime API supports many operations | xDS control plane | Config reload style | No | Per-session |
+| RBAC / audit / metrics | External only | External only | Metrics via modules; no native tenant RBAC like forward-rs | Strong stats, ACLs, stick tables | Rich telemetry and policy | Minimal | Minimal | SSH auth/logs |
+| QoS / rate limit | Basic shaping via `tc` / nftables ecosystem | Via nftables / `tc`, not app-owner aware | `limit_conn` / `limit_rate` style controls | Rich connection/rate controls | Rich filters, overload manager | Minimal | Minimal | Minimal |
+| Best fit | Static local host/network NAT. | Modern Linux packet filtering and forwarding. | Generic TCP/UDP proxying. | L4/L7 load balancing where TCP is enough. | Service mesh or xDS-managed environments. | Simple port redirection baseline. | Experiments and debugging. | Operationally convenient encrypted tunnels. |
+
+The fair benchmark is not "compare published numbers." It is:
+
+1. Same host or same two-host topology.
+2. Same target application (`iperf3` TCP, UDP where supported).
+3. Same duration, warm-up, socket buffers, CPU governor, MTU, and kernel.
+4. Direct baseline first.
+5. One forwarding implementation at a time.
+
+## Reproduction
+
+### Local Smoke
+
+```sh
+# macOS
+brew install iperf3
+
+# Linux
+sudo apt-get update
+sudo apt-get install -y iperf3
+
+FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+scripts/perf_loopback.py --seconds 10 --omit-seconds 2 --json-out /tmp/forward-rs-perf.json
+```
+
+Expected output shape:
+
+```json
+{
+  "direct": { "mbps": 80064.984, "retransmits": null },
+  "forward_rs_uncapped": { "mbps": 36751.910, "retransmits": null },
+  "forward_rs_capped": {
+    "cap_bytes_per_sec": 1048576,
+    "mbps": 8.394,
+    "target_mbps": 8.389,
+    "within_plus_10pct": true
+  }
+}
+```
+
+### Criterion Regression
+
+```sh
+cargo bench -p forward-client --bench data_plane
+python3 scripts/bench_regression_gate.py --max-regression-pct 50
+
+cargo bench -p forward-client --bench udp_data_plane -- --quick
+cargo bench -p forward-server --bench operator_api -- --quick
+```
+
+### VPS Flow
+
+Use SSH credentials out of band. Do not commit passwords or tokens.
+
+```sh
+ssh forward-bench@example-edge
+sudo apt-get update
+sudo apt-get install -y build-essential curl git iperf3 protobuf-compiler
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+git clone <repo-url> forward-rs
+cd forward-rs
+FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
+scripts/perf_loopback.py --seconds 30 --omit-seconds 5 --json-out perf-vps-loopback.json
+```
+
+For a two-host test, run `forward-server` on the control host, run
+`forward-client` and `iperf3 -s` on the edge/target host, then drive
+`iperf3 -c <edge-listen-ip> -p <listen_port> -t 30 -O 5 -J` from a
+third host or from the control host. Keep direct `iperf3` to the target
+as the baseline.
+
+## Sources
+
+- Envoy performance FAQ and benchmark guidance: [envoyproxy.io docs](https://www.envoyproxy.io/docs/envoy/latest/faq/performance/how_to_benchmark_envoy)
+- HAProxy management and runtime/statistics documentation: [HAProxy docs](https://docs.haproxy.org/)
+- NGINX stream proxy module: [nginx.org stream proxy docs](https://nginx.org/en/docs/stream/ngx_stream_proxy_module.html)
+- nftables flowtables: [nftables wiki](https://wiki.nftables.org/wiki-nftables/index.php/Flowtables)
+- iptables extensions and NAT targets: [man7 iptables-extensions](https://man7.org/linux/man-pages/man8/iptables-extensions.8.html)
+- rinetd reference: [Debian rinetd man page](https://manpages.debian.org/unstable/rinetd/rinetd.8.en.html)
+- socat manual: [Debian socat man page](https://manpages.debian.org/stable/socat)

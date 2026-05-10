@@ -18,6 +18,14 @@ use super::rate_limit::stats::RateLimitStatsAccumulator;
 use super::stats::RuleStats;
 use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
 
+/// Per-direction buffer size for the uncapped TCP fast path
+/// (`copy_bidirectional_with_sizes`). Tokio's default
+/// `copy_bidirectional` uses 8 KiB; we use 64 KiB to amortise
+/// per-chunk read/write overhead on bulk transfers. EOF /
+/// half-close semantics are unchanged. See the data-plane bench
+/// report for empirical numbers.
+const PROXY_COPY_BUF_SIZE: usize = 64 * 1024;
+
 /// Forward `inbound` to `target` (resolved via `resolver` for DNS
 /// targets; short-circuited to a direct connect for IP literals)
 /// until either side closes or the shutdown token fires. Returns
@@ -283,7 +291,15 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
                 )
                 .await
             } else {
-                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+                // 64 KiB per-direction buffer (see PROXY_COPY_BUF_SIZE).
+                // Per-connection resident cost: 2 * 64 KiB.
+                tokio::io::copy_bidirectional_with_sizes(
+                    &mut inbound,
+                    &mut outbound,
+                    PROXY_COPY_BUF_SIZE,
+                    PROXY_COPY_BUF_SIZE,
+                )
+                .await
             }
         } => {
             result

@@ -14,7 +14,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional_with_sizes};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 
@@ -58,7 +58,15 @@ async fn spawn_proxy(target: SocketAddr) -> SocketAddr {
                 if let Ok(mut outbound) = TcpStream::connect(target).await {
                     let _ = inbound.set_nodelay(true);
                     let _ = outbound.set_nodelay(true);
-                    let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
+                    // Mirror the production proxy: 64 KiB per direction
+                    // (see `forwarder::proxy::PROXY_COPY_BUF_SIZE`).
+                    let _ = copy_bidirectional_with_sizes(
+                        &mut inbound,
+                        &mut outbound,
+                        64 * 1024,
+                        64 * 1024,
+                    )
+                    .await;
                 }
             });
         }

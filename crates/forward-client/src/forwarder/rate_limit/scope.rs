@@ -280,6 +280,25 @@ impl RuleRateLimiter {
         self.bandwidth_in.is_some() || self.bandwidth_out.is_some()
     }
 
+    /// Configured token-fill rate (bytes/sec) for `direction`, or
+    /// `None` when that direction is uncapped. Stable for the
+    /// lifetime of this limiter — a hot-reload allocates a fresh
+    /// limiter via [`with_carryover`](Self::with_carryover) and
+    /// swaps the registry's `Arc`, so callers re-snapshot the
+    /// handle to see new caps.
+    ///
+    /// Used by the throttling copy loop to size each chunk to roughly
+    /// 100 ms of pacing budget so a low cap does not turn into a
+    /// large read followed by a long sleep.
+    #[must_use]
+    pub fn bandwidth_rate_per_sec(&self, direction: BandwidthDirection) -> Option<u64> {
+        let bucket = match direction {
+            BandwidthDirection::In => self.bandwidth_in.as_ref(),
+            BandwidthDirection::Out => self.bandwidth_out.as_ref(),
+        };
+        bucket.map(|b| b.rate_per_sec())
+    }
+
     /// Try to admit `n` bytes through a bandwidth bucket. Returns
     /// `Granted` immediately when the requested direction is
     /// uncapped.
@@ -452,6 +471,16 @@ impl OwnerRateLimitHandle {
             .map(|limiter| limiter.acquire_bandwidth(direction, bytes))
     }
 
+    /// Snapshot-and-forward of
+    /// [`RuleRateLimiter::bandwidth_rate_per_sec`]. Returns `None`
+    /// either when no owner limiter is installed or when the
+    /// requested direction has no bandwidth bucket.
+    #[must_use]
+    pub fn bandwidth_rate_per_sec(&self, direction: BandwidthDirection) -> Option<u64> {
+        self.snapshot()
+            .and_then(|limiter| limiter.bandwidth_rate_per_sec(direction))
+    }
+
     #[must_use]
     pub fn active_connections(&self) -> u64 {
         self.snapshot()
@@ -591,6 +620,16 @@ impl RuleRateLimitHandle {
     ) -> Option<BandwidthAcquire> {
         self.snapshot()
             .map(|limiter| limiter.acquire_bandwidth(direction, bytes))
+    }
+
+    /// Snapshot-and-forward of
+    /// [`RuleRateLimiter::bandwidth_rate_per_sec`] for the per-rule
+    /// limiter. Returns `None` when no rule limiter is installed or
+    /// when the requested direction has no bandwidth bucket.
+    #[must_use]
+    pub fn bandwidth_rate_per_sec(&self, direction: BandwidthDirection) -> Option<u64> {
+        self.snapshot()
+            .and_then(|limiter| limiter.bandwidth_rate_per_sec(direction))
     }
 
     #[must_use]
