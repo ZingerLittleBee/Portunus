@@ -174,7 +174,7 @@
     "bandwidthOutBurst": "Bandwidth out burst (bytes)",
     "newConnectionsBurst": "New connections burst",
     "burstDefault": "1 × rate (default)",
-    "burstHelp": "Bursts must be ≥ rate and ≤ 4 × rate."
+    "burstHelp": "Bursts must be between rate / 100 and rate × 60."
   },
   "rulesCapsCol": {
     "header": "Caps",

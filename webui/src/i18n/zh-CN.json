@@ -174,7 +174,7 @@
     "bandwidthOutBurst": "出站突发(字节)",
     "newConnectionsBurst": "新建连接突发",
     "burstDefault": "1 × 速率(默认)",
-    "burstHelp": "突发必须 ≥ 速率且 ≤ 4 × 速率。"
+    "burstHelp": "突发必须介于速率 / 100 和速率 × 60 之间。"
   },
   "rulesCapsCol": {
     "header": "上限",

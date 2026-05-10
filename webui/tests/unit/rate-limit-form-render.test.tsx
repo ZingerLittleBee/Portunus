@@ -46,6 +46,12 @@ describe("RateLimitForm", () => {
     expect(screen.getByLabelText(/New connections burst/i)).toBeDefined();
   });
 
+  it("describes the same burst range enforced by the API", () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByText(/Advanced \(burst overrides\)/i));
+    expect(screen.getByText("Bursts must be between rate / 100 and rate × 60.")).toBeDefined();
+  });
+
   it("auto-opens Advanced when prefilled state already carries a burst override", () => {
     // Editing a rule that already has overrides must not visually
     // drop them — the disclosure hydrates open from state, not from
