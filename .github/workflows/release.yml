@@ -21,6 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag_name: ${{ steps.version.outputs.tag_name }}
+      image_namespace: ${{ steps.version.outputs.image_namespace }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +39,7 @@ jobs:
           PY
           )"
           tag_name="v${version}"
+          image_namespace="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" != "${tag_name}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}; expected ${tag_name}." >&2
@@ -47,6 +49,7 @@ jobs:
           {
             echo "version=${version}"
             echo "tag_name=${tag_name}"
+            echo "image_namespace=${image_namespace}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Extract release notes from CHANGELOG.md
@@ -123,20 +126,12 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-            exe_suffix: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            archive: tar.gz
-            exe_suffix: ""
           - os: macos-14
             target: aarch64-apple-darwin
-            archive: tar.gz
-            exe_suffix: ""
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            exe_suffix: ".exe"
     steps:
       - uses: actions/checkout@v4
 
@@ -176,29 +171,104 @@ jobs:
           target="${{ matrix.target }}"
           archive_base="portunus-${version}-${target}"
           staging="dist/${archive_base}"
-          exe_suffix="${{ matrix.exe_suffix }}"
 
           mkdir -p "${staging}"
-          cp "target/${target}/release/forward-server${exe_suffix}" "${staging}/"
-          cp "target/${target}/release/forward-client${exe_suffix}" "${staging}/"
+          cp "target/${target}/release/forward-server" "${staging}/"
+          cp "target/${target}/release/forward-client" "${staging}/"
           cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
-
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            (cd dist && 7z a "${archive_base}.zip" "${archive_base}")
-          else
-            (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
-          fi
+          (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
       - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: dist/portunus-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          path: dist/portunus-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz
           retention-days: 1
+
+  docker:
+    name: docker images
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*-unknown-linux-gnu
+          path: dist
+          merge-multiple: true
+
+      - name: Prepare Docker build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          while read -r target arch
+          do
+            archive="dist/portunus-${version}-${target}.tar.gz"
+            extracted="$(mktemp -d)"
+
+            tar -xzf "${archive}" -C "${extracted}"
+            mkdir -p "docker-bin/${arch}"
+            cp "${extracted}/portunus-${version}-${target}/forward-server" "docker-bin/${arch}/"
+            cp "${extracted}/portunus-${version}-${target}/forward-client" "docker-bin/${arch}/"
+            chmod 0755 "docker-bin/${arch}/forward-server" "docker-bin/${arch}/forward-client"
+          done <<'EOF'
+          x86_64-unknown-linux-gnu amd64
+          aarch64-unknown-linux-gnu arm64
+          EOF
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ needs.metadata.outputs.image_namespace }}/portunus-server:${{ needs.metadata.outputs.version }}
+            ghcr.io/${{ needs.metadata.outputs.image_namespace }}/portunus-server:latest
+          labels: |
+            org.opencontainers.image.title=Portunus server
+            org.opencontainers.image.description=Portunus control-plane server
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+
+      - name: Build and push client image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.client
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ needs.metadata.outputs.image_namespace }}/portunus-client:${{ needs.metadata.outputs.version }}
+            ghcr.io/${{ needs.metadata.outputs.image_namespace }}/portunus-client:latest
+          labels: |
+            org.opencontainers.image.title=Portunus client
+            org.opencontainers.image.description=Portunus edge forwarding client
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
 
   publish:
     name: publish GitHub release
-    needs: [metadata, build]
+    needs: [metadata, build, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write

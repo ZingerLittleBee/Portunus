@@ -1,5 +1,6 @@
 # Rust / Cargo
 /target/
+docker-bin/
 **/*.rs.bk
 *.pdb
 
@@ -39,4 +40,3 @@ webui/node_modules/
 webui/playwright-report/
 webui/test-results/
 webui/.eslintcache
-

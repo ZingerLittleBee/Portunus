@@ -1,23 +1,12 @@
 # forward-server runtime image.
-# Builder produces a glibc binary; runtime is distroless/cc (glibc, no shell).
-# Build context expects to be the repo root: `docker build -f deploy/docker/Dockerfile.server .`
-
-FROM rust:1.88-bookworm AS builder
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        protobuf-compiler \
-        cmake \
-        perl && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-COPY . .
-RUN cargo build --release -p forward-server
+# Build context must provide prebuilt Linux binaries at:
+#   docker-bin/amd64/forward-server
+#   docker-bin/arm64/forward-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
-COPY --from=builder /src/target/release/forward-server /usr/local/bin/forward-server
+ARG TARGETARCH
+COPY docker-bin/${TARGETARCH}/forward-server /usr/local/bin/forward-server
 
 # /var/lib/forward holds tls cert/key (mode 0600) + tokens.json (mode 0600).
 # /etc/forward holds server.toml (read-only).

@@ -177,8 +177,9 @@ Production scaffolding lives under [`deploy/`](deploy):
   + `CapabilityBoundingSet=` etc.) plus an `install.sh` that creates the
   service users and lays out `/etc/forward/` + `/var/lib/forward/`.
 - [`deploy/docker/`](deploy/docker) — `Dockerfile.server` and
-  `Dockerfile.client` (multi-stage `rust:1.88` → `distroless/cc:nonroot`)
-  and a local-only `docker-compose.yml` for kicking the tires.
+  `Dockerfile.client` runtime images that copy prebuilt binaries into
+  `distroless/cc:nonroot`, plus a local-only `docker-compose.yml` for
+  kicking the tires.
 - [`deploy/server.toml.example`](deploy/server.toml.example) —
   documented sample config matching the systemd unit layout.
 

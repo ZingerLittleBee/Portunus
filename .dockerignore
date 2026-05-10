@@ -1,0 +1,8 @@
+*
+!docker-bin/
+!docker-bin/amd64/
+!docker-bin/amd64/forward-client
+!docker-bin/amd64/forward-server
+!docker-bin/arm64/
+!docker-bin/arm64/forward-client
+!docker-bin/arm64/forward-server

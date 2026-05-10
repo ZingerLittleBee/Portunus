@@ -1,22 +1,12 @@
-# forward-client runtime image. Same build pattern as the server.
-# Build context expects the repo root: `docker build -f deploy/docker/Dockerfile.client .`
-
-FROM rust:1.88-bookworm AS builder
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        protobuf-compiler \
-        cmake \
-        perl && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-COPY . .
-RUN cargo build --release -p forward-client
+# forward-client runtime image.
+# Build context must provide prebuilt Linux binaries at:
+#   docker-bin/amd64/forward-client
+#   docker-bin/arm64/forward-client
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
-COPY --from=builder /src/target/release/forward-client /usr/local/bin/forward-client
+ARG TARGETARCH
+COPY docker-bin/${TARGETARCH}/forward-client /usr/local/bin/forward-client
 
 # Bundle is mounted read-only at /etc/forward/client.bundle.json.
 # Forwarding rules pushed by the operator may bind any port the kernel allows;

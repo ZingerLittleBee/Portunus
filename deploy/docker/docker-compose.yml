@@ -1,22 +1,28 @@
 # Local-only "kick the tires" compose for Portunus.
 #
 # Usage:
-#   1. Build:    docker compose -f deploy/docker/docker-compose.yml build
-#   2. Start:    docker compose -f deploy/docker/docker-compose.yml up -d server
-#   3. Provision a client (writes bundle into shared volume):
+#   1. Build the binaries and stage them for the runtime-only Dockerfiles:
+#        cargo build --release -p forward-server -p forward-client
+#        arch="$(docker version --format '{{.Server.Arch}}')"
+#        mkdir -p "docker-bin/${arch}"
+#        cp target/release/forward-server target/release/forward-client "docker-bin/${arch}/"
+#   2. Build:    docker compose -f deploy/docker/docker-compose.yml build
+#   3. Start:    docker compose -f deploy/docker/docker-compose.yml up -d server
+#   4. Provision a client (writes bundle into shared volume):
 #        docker compose -f deploy/docker/docker-compose.yml \
 #          run --rm operator provision-client edge-01 \
 #          --out /shared/edge-01.bundle.json
 #      Then copy /shared/edge-01.bundle.json out of the server volume to give
 #      to the client (or mount the same volume into the client container).
-#   4. Start the client (with the bundle baked in or volume-mounted)
-#   5. Push a rule (8080 → echo:9000):
+#   5. Start the client:
+#        docker compose -f deploy/docker/docker-compose.yml \
+#          --profile client up -d client
+#   6. Push a rule (8080 → echo:9000):
 #        docker compose -f deploy/docker/docker-compose.yml \
 #          run --rm operator push-rule edge-01 8080 echo 9000
-#   6. Drive traffic from inside the network:
-#        docker compose -f deploy/docker/docker-compose.yml \
-#          run --rm --entrypoint sh client -c \
-#          'echo hello | nc -q1 client 8080'
+#   7. Drive traffic from inside the network:
+#        docker run --rm --network container:forward-client alpine:3.20 \
+#          sh -c 'apk add --no-cache netcat-openbsd >/dev/null && echo hello | nc -q1 127.0.0.1 8080'
 #
 # Notes:
 # - Operator HTTP (7080) and metrics (7081) are loopback-only by design.
@@ -55,6 +61,18 @@ services:
     network_mode: "service:server"
     entrypoint: ["/usr/local/bin/forward-server"]
     command: ["--config-dir", "/var/lib/forward", "--config", "/etc/forward/server.toml", "list-clients"]
+
+  client:
+    profiles: ["client"]
+    container_name: forward-client
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.client
+    image: portunus/client:dev
+    volumes:
+      - shared-bundles:/shared:ro
+    command: ["--bundle", "/shared/edge-01.bundle.json"]
+    restart: unless-stopped
 
   # Echo target: any TCP that gets bytes echoes them back. Used by the
   # quickstart push-rule example so you can curl/`nc` through a real rule
