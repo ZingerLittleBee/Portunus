@@ -3,7 +3,9 @@
   "pages": [
     "index",
     "---快速开始---",
-    "getting-started",
+    "getting-started/installation",
+    "getting-started/performance",
+    "getting-started/architecture",
     "---功能---",
     "features",
     "---参考---",

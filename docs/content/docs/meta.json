@@ -3,7 +3,9 @@
   "pages": [
     "index",
     "---Get Started---",
-    "getting-started",
+    "getting-started/installation",
+    "getting-started/performance",
+    "getting-started/architecture",
     "---Features---",
     "features",
     "---Reference---",
