@@ -47,16 +47,16 @@ forward-client --bundle ./edge-01.bundle.json
 When `--bundle` is omitted, the client searches in this order:
 
 1. `$FORWARD_CLIENT_BUNDLE`
-2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
-3. `$HOME/.config/forward-rs/client.bundle.json`
+2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
+3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
 
 If none resolve the client exits `1` listing every attempted path.
 
 ```sh
 # Drop the bundle in XDG config and just run the binary
-mkdir -p ~/.config/forward-rs
-mv edge-01.bundle.json ~/.config/forward-rs/client.bundle.json
+mkdir -p ~/.config/portunus
+mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
 forward-client
 ```
 

@@ -97,7 +97,7 @@ rule activates anywhere.
 
 ## Reject path: TCP accept-then-RST
 
-forward-rs **does not pause the listener** on a capped rule, because
+Portunus **does not pause the listener** on a capped rule, because
 v0.7 / v0.9 share listeners across rules — pausing would penalise
 sibling rules. Instead, capped rejects accept the connection, mark it
 with `SO_LINGER {l_onoff: 1, l_linger: 0}`, and close, producing a

@@ -1,6 +1,6 @@
 [Unit]
-Description=forward-rs control plane
-Documentation=https://github.com/ZingerLittleBee/forward-rs
+Description=Portunus control plane
+Documentation=https://github.com/ZingerLittleBee/Portunus
 After=network-online.target
 Wants=network-online.target
 

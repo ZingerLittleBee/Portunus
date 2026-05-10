@@ -18,7 +18,7 @@ fn forward_server_help_works() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("forward-rs control plane"));
+    assert!(stdout.contains("Portunus control plane"));
     assert!(stdout.contains("provision-client"));
 }
 
@@ -34,6 +34,6 @@ fn forward_client_help_works() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("forward-rs edge client"));
+    assert!(stdout.contains("Portunus edge client"));
     assert!(stdout.contains("--bundle"));
 }

@@ -183,7 +183,7 @@ This is a 6-crate Rust workspace + `webui/` Vite SPA. Paths are repo-root-relati
 - [X] T054 `Cargo.toml` workspace version bumped 0.7.0-dev → 0.7.0; `CHANGELOG.md` "## [Unreleased]" section sealed into "## [0.7.0] — 2026-05-08".
 - [X] T055 [P] `webui/package.json` version bumped 0.0.0 → 0.7.0.
 - [X] T056 Full test gate green: `cargo test --workspace --tests` (all suites passing), `cargo clippy --workspace --all-targets -- -D warnings` (clean), `cargo fmt --all --check` (clean). Web UI gates: `pnpm exec tsc --noEmit` (clean), `pnpm exec vite build` (builds, main bundle 102 KB gzipped — well under the 500 KB size-limit). `pnpm --filter webui test:e2e` requires `pnpm exec playwright install` first; the new `multi-target-rule-push.spec.ts` runs alongside the existing 006 e2e suite as an operator pre-release step.
-- [X] T057 Tagged `v0.7.0` (annotated, on commit 14b3522) and pushed `007-multi-target-failover` branch + tag to `origin` (https://github.com/ZingerLittleBee/forward-rs.git). PR available at https://github.com/ZingerLittleBee/forward-rs/pull/new/007-multi-target-failover.
+- [X] T057 Tagged `v0.7.0` (annotated, on commit 14b3522) and pushed `007-multi-target-failover` branch + tag to `origin` (https://github.com/ZingerLittleBee/Portunus.git). PR available at https://github.com/ZingerLittleBee/Portunus/pull/new/007-multi-target-failover.
 
 ---
 

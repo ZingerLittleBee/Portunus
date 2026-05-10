@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared types, errors, and config primitives for forward-rs."
+description = "Shared types, errors, and config primitives for Portunus."
 
 [lints]
 workspace = true

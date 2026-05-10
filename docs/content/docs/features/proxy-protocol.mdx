@@ -42,7 +42,7 @@ mix opt-in and opt-out backends.
 ## Peek-duration histogram (SNI-mode listeners only)
 
 When a listener runs in [SNI dispatch mode](/docs/features/tls-sni-routing),
-forward-rs records how long the ClientHello peek+parse takes:
+Portunus records how long the ClientHello peek+parse takes:
 
 ```
 forward_tls_client_hello_peek_duration_seconds_bucket{...}

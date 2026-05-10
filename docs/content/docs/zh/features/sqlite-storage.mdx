@@ -33,19 +33,19 @@ v0.8.0 起支持。把 Server 端所有持久 JSON 文件
 XDG 风格默认值：
 
 ```
-$XDG_CONFIG_HOME/forward-rs/   （或 ~/.config/forward-rs/）
+$XDG_CONFIG_HOME/portunus/   （或 ~/.config/portunus/）
   server.toml          （可选 —— 缺省时套用默认值）
   server.crt
   server.key
 
-$XDG_STATE_HOME/forward-rs/    （或 ~/.local/state/forward-rs/）
+$XDG_STATE_HOME/portunus/    （或 ~/.local/state/portunus/）
   state.db
   state.db-shm         （Server 运行时存在）
   state.db-wal         （存在 pending WAL 帧时存在）
 ```
 
 可用 `--config-dir` 与 `--data-dir` 覆写。生产部署通常使用
-`/etc/forward-rs/` 与 `/var/lib/forward-rs/`。
+`/etc/portunus/` 与 `/var/lib/portunus/`。
 
 ## 文件系统检查
 
@@ -117,8 +117,8 @@ cursor 的历史回滚。
 省略 `--bundle` 时按顺序查找：
 
 1. `$FORWARD_CLIENT_BUNDLE`
-2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
-3. `$HOME/.config/forward-rs/client.bundle.json`
+2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
+3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
 
 全部失败时退出 `1` 并把尝试过的全部路径打印出来。

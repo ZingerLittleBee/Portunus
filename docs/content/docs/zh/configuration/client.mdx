@@ -46,16 +46,16 @@ forward-client --bundle ./edge-01.bundle.json
 省略 `--bundle` 时按以下顺序查找：
 
 1. `$FORWARD_CLIENT_BUNDLE`
-2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
-3. `$HOME/.config/forward-rs/client.bundle.json`
+2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
+3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
 
 全部失败时退出 `1` 并把尝试过的全部路径打印出来。
 
 ```sh
 # 把 bundle 放进 XDG config，直接跑二进制
-mkdir -p ~/.config/forward-rs
-mv edge-01.bundle.json ~/.config/forward-rs/client.bundle.json
+mkdir -p ~/.config/portunus
+mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
 forward-client
 ```
 

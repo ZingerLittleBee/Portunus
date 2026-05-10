@@ -41,8 +41,8 @@ docker compose exec server forward-server bootstrap-superadmin --name ops
 
 | 宿主路径 | 容器路径 | 用途 |
 | --- | --- | --- |
-| `./forward-config/` | `/etc/forward-rs/` | TLS 材料、可选 `server.toml`、Client bundle |
-| `./forward-state/` | `/var/lib/forward-rs/` | `state.db` 与边车文件 |
+| `./forward-config/` | `/etc/portunus/` | TLS 材料、可选 `server.toml`、Client bundle |
+| `./forward-state/` | `/var/lib/portunus/` | `state.db` 与边车文件 |
 
 挂载：
 
@@ -51,8 +51,8 @@ docker run -d --name forward-server \
   -p 7443:7443 \
   -p 127.0.0.1:7080:7080 \
   -p 127.0.0.1:7081:7081 \
-  -v $(pwd)/forward-config:/etc/forward-rs \
-  -v $(pwd)/forward-state:/var/lib/forward-rs \
+  -v $(pwd)/forward-config:/etc/portunus \
+  -v $(pwd)/forward-state:/var/lib/portunus \
   forward-server:latest
 ```
 
@@ -66,7 +66,7 @@ docker run -d --name forward-server \
 - **文件系统分类检查** 在容器中同样会触发 —— 请确保 bind-mount 源是真正
   的本地文件系统（不要 tmpfs）。
 - **`forward-client`** 需要 bundle 落在
-  `/etc/forward-rs/client.bundle.json`（或 `FORWARD_CLIENT_BUNDLE`）。
+  `/etc/portunus/client.bundle.json`（或 `FORWARD_CLIENT_BUNDLE`）。
 
 ## 健康检查
 

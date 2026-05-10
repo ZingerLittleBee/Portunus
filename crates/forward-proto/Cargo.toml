@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Generated gRPC types for the forward-rs control plane (forward.v1)."
+description = "Generated gRPC types for the Portunus control plane (forward.v1)."
 
 [lints]
 workspace = true

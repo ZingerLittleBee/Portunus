@@ -1,4 +1,4 @@
-# Local-only "kick the tires" compose for forward-rs.
+# Local-only "kick the tires" compose for Portunus.
 #
 # Usage:
 #   1. Build:    docker compose -f deploy/docker/docker-compose.yml build
@@ -33,7 +33,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.server
-    image: forward-rs/server:dev
+    image: portunus/server:dev
     ports:
       - "7443:7443"
     volumes:
@@ -47,7 +47,7 @@ services:
   # data volume as the server.
   operator:
     profiles: ["cli"]
-    image: forward-rs/server:dev
+    image: portunus/server:dev
     volumes:
       - server-data:/var/lib/forward
       - server-config:/etc/forward

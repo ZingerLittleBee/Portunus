@@ -1,4 +1,4 @@
-# forward-rs server configuration (v0.7.0).
+# Portunus server configuration (v0.7.0).
 # Used by `forward-server --config /etc/forward/server.toml serve`.
 # Defaults match the deploy/systemd/forward-server.service layout.
 # Schema: see crates/forward-core/src/config.rs (ServerConfig).

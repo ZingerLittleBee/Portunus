@@ -87,13 +87,13 @@ files at `<config_dir>/server.crt` and `<config_dir>/server.key`. On first
 launch, if neither file exists, the server generates a self-signed cert
 (via `rcgen` 0.13) with a configurable CN and 10-year validity. Operator
 may replace either file with their own (e.g., from a corporate CA);
-forward-rs does not care, only that `server.key` corresponds to
+Portunus does not care, only that `server.key` corresponds to
 `server.crt`.
 
 **Rationale**:
 - The client pins by **leaf certificate fingerprint**, not chain. So
   whether the cert is self-signed or enterprise-issued is irrelevant to
-  forward-rs's trust model — pinning happens regardless.
+  Portunus's trust model — pinning happens regardless.
 - Persisting the cert means client-side fingerprint pins keep working
   across server restarts (FR-006a).
 - PEM is the format every Rust TLS lib already speaks.

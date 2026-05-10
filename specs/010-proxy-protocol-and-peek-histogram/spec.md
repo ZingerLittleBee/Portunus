@@ -17,18 +17,18 @@
 
 ### User Story 1 — Backends see the real client IP (Priority: P1)
 
-An operator runs forward-rs in front of a TLS service (typically port 443) and
+An operator runs Portunus in front of a TLS service (typically port 443) and
 fans out to multiple upstream backends with v0.9 SNI routing. Today, every
 backend's access log shows the forward-client's IP address as the client peer,
-because forward-rs is a transparent L4 proxy that opens its own TCP connection
+because Portunus is a transparent L4 proxy that opens its own TCP connection
 to the upstream. The operator wants the backend to see the **real end client's**
 IP address (and source port) so existing access logging, geo-IP, abuse
 analytics, and IP allow-lists keep working unchanged after introducing
-forward-rs.
+Portunus.
 
 **Why this priority**: This is the single most painful gap any v0.9 deployment
 hits on day one. Without it, every backend operator either has to instrument
-their app to read a custom header (which forward-rs cannot inject because it
+their app to read a custom header (which Portunus cannot inject because it
 never decrypts TLS) or accept that their access logs are useless. PROXY
 protocol is the universally accepted solution that nginx, HAProxy, Caddy,
 Traefik, Postgres, Redis, and many TCP services already understand.
@@ -156,7 +156,7 @@ with a PROXY header and B's does not.
   wildcard address such as `0.0.0.0` or `::`, the PROXY header must use
   the accepted socket's actual local IP address and port, not the
   configured wildcard bind address.
-- **Loopback / unix-style upstream targets**: forward-rs only supports
+- **Loopback / unix-style upstream targets**: Portunus only supports
   TCP/UDP targets; UNIX-domain sockets are not in scope. PROXY v2 has a
   UNIX address-family block; we will not emit it.
 - **Capability mismatch on hot reload**: a v0.10 forward-client connects,
@@ -248,7 +248,7 @@ with a PROXY header and B's does not.
 
 #### Cross-cutting invariants
 
-- **FR-016**: forward-rs MUST remain a pure L4 byte-passthrough — no
+- **FR-016**: Portunus MUST remain a pure L4 byte-passthrough — no
   feature in v0.10 may decrypt, terminate, parse, or re-encrypt TLS
   application data.
 - **FR-017**: The data-plane events emitted for PROXY-protocol failures
@@ -376,7 +376,7 @@ For traceability, the original feature description provided to
 > opt-in) + SNI peek-duration histogram. Theme: "Give v0.9 users the
 > missing pieces" — PROXY protocol so backends can see real client IPs;
 > peek-duration histogram to close the v0.9 observability gap (D12 /
-> NR-004). Hard invariants: forward-rs stays pure L4 byte-passthrough;
+> NR-004). Hard invariants: Portunus stays pure L4 byte-passthrough;
 > byte-stable for v0.9 callers that don't opt in; zero new workspace
 > deps; auth seam unchanged; data-plane events tracing-only (D13).
 > Scope (PROXY): per-target opt-in `Option<ProxyVersion ∈ {V1, V2}>`,

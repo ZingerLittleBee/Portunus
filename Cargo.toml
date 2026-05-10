@@ -6,8 +6,8 @@ members = ["crates/*"]
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/ZingerLittleBee/forward-rs"
-authors = ["forward-rs contributors"]
+repository = "https://github.com/ZingerLittleBee/Portunus"
+authors = ["Portunus contributors"]
 version = "0.11.0"
 
 [workspace.lints.rust]

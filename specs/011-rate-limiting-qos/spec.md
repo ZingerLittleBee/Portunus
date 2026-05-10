@@ -7,7 +7,7 @@
 
 ## Inputs
 
-> Connection rate limiting / QoS for forward-rs. Add per-rule and per-client
+> Connection rate limiting / QoS for Portunus. Add per-rule and per-client
 > caps on: (a) bandwidth (bytes per second, ingress/egress), (b)
 > packet/connection rate (new TCP connections per second, new UDP flows per
 > second), and (c) concurrent connection / flow count. Caps are configurable
@@ -35,7 +35,7 @@
 
 ### User Story 1 — Per-rule bandwidth and connection caps (Priority: P1)
 
-An operator owns a rule that exposes a backend service through forward-rs.
+An operator owns a rule that exposes a backend service through Portunus.
 Without caps, a noisy or runaway client can saturate the upstream link or
 exhaust the backend's connection budget, which is invisible to other rules
 sharing the same forward-client. The operator wants to attach explicit

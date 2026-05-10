@@ -90,7 +90,7 @@ REST 接口：`/v1/clients/{id}/owners/{owner_id}/rate-limit`。
 
 ## 拒绝路径：TCP accept-then-RST
 
-forward-rs **不会暂停 listener** 来拒绝被限流的规则，因为 v0.7 / v0.9 的
+Portunus **不会暂停 listener** 来拒绝被限流的规则，因为 v0.7 / v0.9 的
 listener 在多条规则间共享 —— 暂停会连累兄弟规则。被限流拒绝的连接会被
 accept、设置 `SO_LINGER {l_onoff: 1, l_linger: 0}`、然后 close，从而对
 客户端表现为干净的 RST。

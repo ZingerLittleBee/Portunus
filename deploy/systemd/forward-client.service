@@ -1,6 +1,6 @@
 [Unit]
-Description=forward-rs edge client
-Documentation=https://github.com/ZingerLittleBee/forward-rs
+Description=Portunus edge client
+Documentation=https://github.com/ZingerLittleBee/Portunus
 After=network-online.target
 Wants=network-online.target
 

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `forward-rs` will be documented in this file.
+All notable changes to `Portunus` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -105,7 +105,7 @@ columns on `rules` plus a new `rate_limit_owner` table).
 
 TLS SNI routing release (009). A single TCP listen port (typically
 443) can fan out to different upstream targets based on the TLS
-hostname in the client's ClientHello. forward-rs remains a pure L4
+hostname in the client's ClientHello. Portunus remains a pure L4
 byte-passthrough — never decrypts, terminates, or re-encrypts TLS.
 Implementation lives in the data plane on `forward-client` (peek +
 parse + route) and in additive control-plane fields on
@@ -197,7 +197,7 @@ UDP fast paths, wire protocol) and the auth seam are untouched.
   `crates/forward-server/migrations/` and is verified at startup.
 - **`--data-dir` flag** — separate from `--config-dir` so operators can
   move state to a dedicated volume. Defaults to
-  `$XDG_STATE_HOME/forward-rs` (or `$HOME/.local/state/forward-rs`) per
+  `$XDG_STATE_HOME/portunus` (or `$HOME/.local/state/portunus`) per
   FHS.
 - **`backup` subcommand** — `forward-server backup --out <PATH>` runs
   the SQLite Online Backup API (`rusqlite::backup::Backup`) so snapshots
@@ -226,8 +226,8 @@ UDP fast paths, wire protocol) and the auth seam are untouched.
   reports the count without mutating.
 - **`forward-client --bundle` is now optional (FR-020)** — when omitted
   the client searches `$FORWARD_CLIENT_BUNDLE` →
-  `$XDG_CONFIG_HOME/forward-rs/client.bundle.json` →
-  `$HOME/.config/forward-rs/client.bundle.json` →
+  `$XDG_CONFIG_HOME/portunus/client.bundle.json` →
+  `$HOME/.config/portunus/client.bundle.json` →
   `./client.bundle.json` and exits `1` listing every attempted path
   when none resolve.
 - **Web UI audit page** — adds a "Load earlier" button that pages
@@ -814,8 +814,8 @@ Both well under the 300 s SC-001 target.
 - Multi-user / RBAC (current design is single-operator with shell access
   to the server host).
 
-[0.5.0]: https://github.com/ZingerLittleBee/forward-rs/releases/tag/v0.5.0
-[0.4.0]: https://github.com/ZingerLittleBee/forward-rs/releases/tag/v0.4.0
-[0.3.0]: https://github.com/ZingerLittleBee/forward-rs/releases/tag/v0.3.0
-[0.2.0]: https://github.com/ZingerLittleBee/forward-rs/releases/tag/v0.2.0
-[0.1.0]: https://github.com/forward-rs/forward-rs/releases/tag/v0.1.0
+[0.5.0]: https://github.com/ZingerLittleBee/Portunus/releases/tag/v0.5.0
+[0.4.0]: https://github.com/ZingerLittleBee/Portunus/releases/tag/v0.4.0
+[0.3.0]: https://github.com/ZingerLittleBee/Portunus/releases/tag/v0.3.0
+[0.2.0]: https://github.com/ZingerLittleBee/Portunus/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Portunus/Portunus/releases/tag/v0.1.0

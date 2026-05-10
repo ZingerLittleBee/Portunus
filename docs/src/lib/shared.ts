@@ -1,9 +1,9 @@
-export const appName = 'forward-rs';
+export const appName = 'Portunus';
 export const docsRoute = '/docs';
 export const docsImageRoute = '/og/docs';
 
 export const gitConfig = {
   user: 'ZingerLittleBee',
-  repo: 'forward-rs',
+  repo: 'Portunus',
   branch: 'main',
 };

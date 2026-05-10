@@ -18,8 +18,8 @@ forward-client [--bundle <PATH>] [--shutdown-drain-timeout-secs <N>]
 省略 `--bundle` 时（v0.8 起），按以下顺序查找：
 
 1. `$FORWARD_CLIENT_BUNDLE`
-2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
-3. `$HOME/.config/forward-rs/client.bundle.json`
+2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
+3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
 
 全部失败时退出 `1` 并把尝试过的全部路径打印出来。

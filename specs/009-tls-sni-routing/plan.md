@@ -7,7 +7,7 @@
 
 v0.9 lets a single forward-client TCP listener fan out to different
 upstreams based on the TLS hostname (SNI) the client requests in its
-ClientHello. forward-rs stays a pure L4 byte-passthrough — never decrypts,
+ClientHello. Portunus stays a pure L4 byte-passthrough — never decrypts,
 terminates, or re-encrypts TLS. The implementation lives entirely in the
 data plane on `forward-client` (peek + parse + route) and in additive
 control-plane fields on `forward-server`; the auth seam, credential

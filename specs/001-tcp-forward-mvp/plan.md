@@ -5,7 +5,7 @@
 
 ## Summary
 
-The MVP delivers an end-to-end vertical slice of forward-rs: an operator runs a server, provisions clients (each gets a TLS fingerprint + bearer token bundle), starts client processes that connect over TLS, then pushes TCP forwarding rules and observes traffic. The architecture is a Rust workspace with five crates (`forward-proto`, `forward-core`, `forward-auth`, `forward-server`, `forward-client`) plus an end-to-end test crate. The control channel uses gRPC over TLS via Tonic with bidirectional streaming for server→client rule push and client→server stat reporting; per-client authentication is enforced by a Tonic interceptor that calls into a single `forward-auth` trait (FR-023's seam, so a future mTLS swap touches one crate). The data plane uses `tokio::io::copy_bidirectional` for zero-copy bidirectional proxying. Token store and TLS material are persisted as JSON / PEM files at operator-configurable paths (no SQL store in MVP). Structured logging is `tracing` with the JSON layer; a Prometheus-format metrics endpoint exposes per-rule counters (added beyond what the spec literally requires, to honour Constitution Principle IV — see Constitution Check).
+The MVP delivers an end-to-end vertical slice of Portunus: an operator runs a server, provisions clients (each gets a TLS fingerprint + bearer token bundle), starts client processes that connect over TLS, then pushes TCP forwarding rules and observes traffic. The architecture is a Rust workspace with five crates (`forward-proto`, `forward-core`, `forward-auth`, `forward-server`, `forward-client`) plus an end-to-end test crate. The control channel uses gRPC over TLS via Tonic with bidirectional streaming for server→client rule push and client→server stat reporting; per-client authentication is enforced by a Tonic interceptor that calls into a single `forward-auth` trait (FR-023's seam, so a future mTLS swap touches one crate). The data plane uses `tokio::io::copy_bidirectional` for zero-copy bidirectional proxying. Token store and TLS material are persisted as JSON / PEM files at operator-configurable paths (no SQL store in MVP). Structured logging is `tracing` with the JSON layer; a Prometheus-format metrics endpoint exposes per-rule counters (added beyond what the spec literally requires, to honour Constitution Principle IV — see Constitution Check).
 
 ## Technical Context
 
@@ -159,7 +159,7 @@ specs/001-tcp-forward-mvp/
 ### Source Code (repository root)
 
 ```text
-forward-rs/
+Portunus/
 ├── Cargo.toml                       # [workspace], members = [...]
 ├── proto/
 │   └── forward.proto                # Single source of truth for wire protocol

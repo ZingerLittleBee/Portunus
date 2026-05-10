@@ -4,7 +4,7 @@ Operator Web UI for `forward-server`. React + Vite + TypeScript SPA,
 embedded into the server binary at compile time via `rust-embed` and
 served on the existing operator HTTP listener at `/`.
 
-This package is part of the `forward-rs` monorepo (spec
+This package is part of the `Portunus` monorepo (spec
 `006-management-web-ui`). It is a build-time tool — the deployed
 binary has no runtime Node dependency.
 

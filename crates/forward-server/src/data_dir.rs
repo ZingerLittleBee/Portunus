@@ -7,8 +7,8 @@
 //!
 //! 1. `resolve(opt)` — turn an optional `--data-dir <PATH>` into a
 //!    concrete `PathBuf`, honouring `$STATE_DIRECTORY` (systemd) →
-//!    `$XDG_STATE_HOME/forward-rs` → `$HOME/.local/state/forward-rs` →
-//!    `./forward-rs.state`.
+//!    `$XDG_STATE_HOME/portunus` → `$HOME/.local/state/portunus` →
+//!    `./portunus.state`.
 //!
 //! 2. `probe_fs_class(path)` — refuse NFS / TMPFS / RAMFS so SQLite
 //!    never lands on a filesystem that cannot honour POSIX advisory
@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 /// Application name used in path-resolution defaults.
-const APP_NAME: &str = "forward-rs";
+const APP_NAME: &str = "portunus";
 
 /// Filesystem classes the data-dir is permitted to live on.
 ///
@@ -36,10 +36,10 @@ pub enum FsClass {
 /// Resolve the data-dir per FR-019. Resolution order, first hit wins:
 ///
 /// 1. The explicit CLI override (`--data-dir <PATH>`).
-/// 2. `$STATE_DIRECTORY` set by systemd's `StateDirectory=forward-rs`.
-/// 3. `$XDG_STATE_HOME/forward-rs`.
-/// 4. `$HOME/.local/state/forward-rs`.
-/// 5. `./forward-rs.state` (cwd fallback).
+/// 2. `$STATE_DIRECTORY` set by systemd's `StateDirectory=portunus`.
+/// 3. `$XDG_STATE_HOME/portunus`.
+/// 4. `$HOME/.local/state/portunus`.
+/// 5. `./portunus.state` (cwd fallback).
 #[must_use]
 pub fn resolve(opt: Option<PathBuf>) -> PathBuf {
     resolve_with_env(opt, |k| std::env::var(k).ok())
@@ -71,7 +71,7 @@ where
     {
         return PathBuf::from(home).join(".local/state").join(APP_NAME);
     }
-    PathBuf::from("./forward-rs.state")
+    PathBuf::from("./portunus.state")
 }
 
 /// Probe the filesystem class hosting `path`. Per R-008 the probe is
@@ -176,8 +176,8 @@ mod tests {
     #[test]
     fn state_directory_env_used_when_no_override() {
         assert_eq!(
-            resolve_with_env(None, env(&[("STATE_DIRECTORY", "/var/lib/forward-rs")])),
-            PathBuf::from("/var/lib/forward-rs")
+            resolve_with_env(None, env(&[("STATE_DIRECTORY", "/var/lib/portunus")])),
+            PathBuf::from("/var/lib/portunus")
         );
     }
 
@@ -185,7 +185,7 @@ mod tests {
     fn xdg_state_home_used_when_no_state_directory() {
         assert_eq!(
             resolve_with_env(None, env(&[("XDG_STATE_HOME", "/tmp/xdg")])),
-            PathBuf::from("/tmp/xdg/forward-rs")
+            PathBuf::from("/tmp/xdg/portunus")
         );
     }
 
@@ -193,7 +193,7 @@ mod tests {
     fn home_local_state_used_when_no_xdg() {
         assert_eq!(
             resolve_with_env(None, env(&[("HOME", "/tmp/home")])),
-            PathBuf::from("/tmp/home/.local/state/forward-rs")
+            PathBuf::from("/tmp/home/.local/state/portunus")
         );
     }
 
@@ -201,7 +201,7 @@ mod tests {
     fn cwd_fallback_when_no_env() {
         assert_eq!(
             resolve_with_env(None, env(&[])),
-            PathBuf::from("./forward-rs.state")
+            PathBuf::from("./portunus.state")
         );
     }
 
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(
             resolve_with_env(
                 Some(p.clone()),
-                env(&[("STATE_DIRECTORY", "/var/lib/forward-rs")])
+                env(&[("STATE_DIRECTORY", "/var/lib/portunus")])
             ),
             p
         );
@@ -224,11 +224,11 @@ mod tests {
             resolve_with_env(
                 None,
                 env(&[
-                    ("STATE_DIRECTORY", "/var/lib/forward-rs"),
+                    ("STATE_DIRECTORY", "/var/lib/portunus"),
                     ("XDG_STATE_HOME", "/tmp/xdg"),
                 ])
             ),
-            PathBuf::from("/var/lib/forward-rs")
+            PathBuf::from("/var/lib/portunus")
         );
     }
 
@@ -239,7 +239,7 @@ mod tests {
                 None,
                 env(&[("STATE_DIRECTORY", ""), ("XDG_STATE_HOME", "/tmp/xdg")])
             ),
-            PathBuf::from("/tmp/xdg/forward-rs")
+            PathBuf::from("/tmp/xdg/portunus")
         );
     }
 

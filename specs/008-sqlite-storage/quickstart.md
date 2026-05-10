@@ -14,11 +14,11 @@ Three audiences:
 
 ```bash
 # 0. Pick the standard FHS pair:
-#      /etc/forward-rs/        admin-edited config + TLS material
-#      /var/lib/forward-rs/    daemon-managed state.db
+#      /etc/portunus/        admin-edited config + TLS material
+#      /var/lib/portunus/    daemon-managed state.db
 
-sudo install -d -m 0700 -o forward-rs -g forward-rs /var/lib/forward-rs
-sudo install -d -m 0750 -o forward-rs -g forward-rs /etc/forward-rs
+sudo install -d -m 0700 -o portunus -g portunus /var/lib/portunus
+sudo install -d -m 0750 -o portunus -g portunus /etc/portunus
 ```
 
 A minimal systemd unit:
@@ -26,17 +26,17 @@ A minimal systemd unit:
 ```ini
 # /etc/systemd/system/forward-server.service
 [Unit]
-Description=forward-rs server
+Description=Portunus server
 After=network.target
 
 [Service]
-User=forward-rs
-Group=forward-rs
-StateDirectory=forward-rs
+User=portunus
+Group=portunus
+StateDirectory=portunus
 StateDirectoryMode=0700
 ExecStart=/usr/local/bin/forward-server serve \
-    --config-dir /etc/forward-rs \
-    --data-dir   /var/lib/forward-rs
+    --config-dir /etc/portunus \
+    --data-dir   /var/lib/portunus
 Restart=on-failure
 RestartSec=2
 
@@ -44,16 +44,16 @@ RestartSec=2
 WantedBy=multi-user.target
 ```
 
-`StateDirectory=forward-rs` is the systemd-native way: systemd
-auto-creates `/var/lib/forward-rs` with the right ownership and
-exposes `$STATE_DIRECTORY=/var/lib/forward-rs` to the process.
+`StateDirectory=portunus` is the systemd-native way: systemd
+auto-creates `/var/lib/portunus` with the right ownership and
+exposes `$STATE_DIRECTORY=/var/lib/portunus` to the process.
 
 Bootstrap the first superadmin (one-time):
 
 ```bash
-sudo -u forward-rs forward-server \
-    --config-dir /etc/forward-rs \
-    --data-dir   /var/lib/forward-rs \
+sudo -u portunus forward-server \
+    --config-dir /etc/portunus \
+    --data-dir   /var/lib/portunus \
     bootstrap-superadmin --name 'Initial admin'
 # Prints the freshly issued bearer token to stdout.
 # Save it — it is shown only once.
@@ -88,40 +88,40 @@ Defaults are XDG-aligned, so no flags needed:
 
 ./target/release/forward-server serve
 # Reads:
-#   $XDG_CONFIG_HOME/forward-rs   (or ~/.config/forward-rs)
-#   $XDG_STATE_HOME/forward-rs    (or ~/.local/state/forward-rs)
+#   $XDG_CONFIG_HOME/portunus   (or ~/.config/portunus)
+#   $XDG_STATE_HOME/portunus    (or ~/.local/state/portunus)
 ```
 
 Confirm path layout:
 
 ```bash
-ls -la ~/.local/state/forward-rs
+ls -la ~/.local/state/portunus
 # state.db
 # state.db-shm   (present while server is running)
 # state.db-wal   (present iff WAL frames pending)
 
-ls -la ~/.config/forward-rs
+ls -la ~/.config/portunus
 # server.toml         (optional — auto-generated from defaults if absent)
 # server.crt
 # server.key
 ```
 
-For a v0.7 dev install lurking in `~/.config/forward-rs` (or
+For a v0.7 dev install lurking in `~/.config/portunus` (or
 wherever `--config-dir` pointed):
 
 ```bash
 forward-server serve
 # Logs:
-#   event=startup.legacy_persistence_file_ignored path=~/.config/forward-rs/tokens.json
-#   event=startup.legacy_persistence_file_ignored path=~/.config/forward-rs/identity.json
-#   event=startup.legacy_persistence_file_ignored path=~/.config/forward-rs/rules.json
+#   event=startup.legacy_persistence_file_ignored path=~/.config/portunus/tokens.json
+#   event=startup.legacy_persistence_file_ignored path=~/.config/portunus/identity.json
+#   event=startup.legacy_persistence_file_ignored path=~/.config/portunus/rules.json
 # Server proceeds with empty state.db; bootstrap-superadmin is now needed.
 ```
 
 To clean up:
 
 ```bash
-rm ~/.config/forward-rs/{tokens,identity,rules}.json
+rm ~/.config/portunus/{tokens,identity,rules}.json
 forward-server reset --confirm    # also wipes state.db if present
 ```
 
@@ -178,8 +178,8 @@ forward-client --bundle ~/edge-1.bundle.json
 FORWARD_CLIENT_BUNDLE=~/edge-1.bundle.json forward-client
 
 # Drop the bundle into XDG config and let resolution find it
-mkdir -p ~/.config/forward-rs
-mv edge-1.bundle.json ~/.config/forward-rs/client.bundle.json
+mkdir -p ~/.config/portunus
+mv edge-1.bundle.json ~/.config/portunus/client.bundle.json
 forward-client
 ```
 

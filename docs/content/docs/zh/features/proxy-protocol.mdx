@@ -40,7 +40,7 @@ forward-server push-rule edge-01 443 \
 ## Peek 时长直方图（仅 SNI 模式 listener）
 
 当 listener 处于 [SNI 路由模式](/zh/docs/features/tls-sni-routing) 时，
-forward-rs 会记录 ClientHello peek + 解析所耗时间：
+Portunus 会记录 ClientHello peek + 解析所耗时间：
 
 ```
 forward_tls_client_hello_peek_duration_seconds_bucket{...}

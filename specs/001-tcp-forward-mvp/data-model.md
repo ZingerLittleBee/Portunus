@@ -105,7 +105,7 @@ target machine. Stored at `<output_dir>/<client_name>.bundle.json`:
 
 The operator copies this file (or its contents) to the target machine
 through whatever channel they trust (SSH, copy-paste, internal secret
-store). forward-rs is unopinionated about that channel.
+store). Portunus is unopinionated about that channel.
 
 ---
 

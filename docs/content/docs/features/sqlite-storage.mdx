@@ -35,19 +35,19 @@ audit ring buffer into one embedded SQLite database at
 XDG-aligned defaults:
 
 ```
-$XDG_CONFIG_HOME/forward-rs/   (or ~/.config/forward-rs/)
+$XDG_CONFIG_HOME/portunus/   (or ~/.config/portunus/)
   server.toml          (optional — defaults applied if absent)
   server.crt
   server.key
 
-$XDG_STATE_HOME/forward-rs/    (or ~/.local/state/forward-rs/)
+$XDG_STATE_HOME/portunus/    (or ~/.local/state/portunus/)
   state.db
   state.db-shm         (present while server running)
   state.db-wal         (present iff WAL frames pending)
 ```
 
 Override with `--config-dir` and `--data-dir`. Production deployments
-typically use `/etc/forward-rs/` and `/var/lib/forward-rs/`.
+typically use `/etc/portunus/` and `/var/lib/portunus/`.
 
 ## Filesystem checks
 
@@ -122,8 +122,8 @@ root unchanged — byte-stable.
 When `--bundle` is omitted the client searches in order:
 
 1. `$FORWARD_CLIENT_BUNDLE`
-2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
-3. `$HOME/.config/forward-rs/client.bundle.json`
+2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
+3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
 
 Exits `1` listing every attempted path when none resolve.

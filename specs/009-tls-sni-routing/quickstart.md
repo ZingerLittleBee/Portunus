@@ -33,8 +33,8 @@ Total wall-clock time: ~10 minutes.
 
 ```bash
 forward-server serve \
-    --data-dir /var/lib/forward-rs \
-    --config-dir /etc/forward-rs
+    --data-dir /var/lib/portunus \
+    --config-dir /etc/portunus
 ```
 
 On first boot you will see (among other lines):
@@ -54,7 +54,7 @@ column.
 
 ```bash
 forward-client run \
-    --bundle /etc/forward-rs/edge-01.bundle.json
+    --bundle /etc/portunus/edge-01.bundle.json
 ```
 
 Confirm the server logged the version:
@@ -124,7 +124,7 @@ openssl s_client -connect edge-01.public:443 -servername a.b.web.example.com -qu
 # ⇒ TCP reset; structured event `tls.sni_no_match` on the client
 ```
 
-Note that forward-rs **does not present a TLS certificate** — it
+Note that Portunus **does not present a TLS certificate** — it
 forwards bytes. `openssl s_client` will see whatever cert the upstream
 serves.
 

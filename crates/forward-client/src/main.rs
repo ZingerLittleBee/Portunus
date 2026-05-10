@@ -20,12 +20,12 @@ use crate::control::ReconnectConfig;
 use crate::shutdown::Shutdown;
 
 #[derive(Parser, Debug)]
-#[command(name = "forward-client", version, about = "forward-rs edge client")]
+#[command(name = "forward-client", version, about = "Portunus edge client")]
 struct Cli {
     /// Path to the `.bundle.json` produced by `forward-server provision-client`.
     /// When omitted, the resolver searches `$FORWARD_CLIENT_BUNDLE`,
-    /// `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`,
-    /// `$HOME/.config/forward-rs/client.bundle.json`, and
+    /// `$XDG_CONFIG_HOME/portunus/client.bundle.json`,
+    /// `$HOME/.config/portunus/client.bundle.json`, and
     /// `./client.bundle.json` (in that order).
     #[arg(long)]
     bundle: Option<PathBuf>,

@@ -1,4 +1,4 @@
-// forward-rs control-plane wire protocol — v1.1 additive overlay for
+// Portunus control-plane wire protocol — v1.1 additive overlay for
 // 002-port-range-forward.
 //
 // This file expresses the **delta** from spec 001's

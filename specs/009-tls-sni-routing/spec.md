@@ -3,7 +3,7 @@
 **Feature Branch**: `009-tls-sni-routing`
 **Created**: 2026-05-08
 **Status**: Draft
-**Input**: User description: "Add TLS Server Name Indication (SNI) based routing to forward-rs. A single TCP listen port (typically 443) can fan out to different upstream targets based on the TLS hostname in the client's ClientHello. forward-rs remains a pure L4 byte-passthrough — never decrypts, terminates, or re-encrypts TLS. Full design is in `specs/009-tls-sni-routing/design.md` (commits a556570 → 0142e43)."
+**Input**: User description: "Add TLS Server Name Indication (SNI) based routing to Portunus. A single TCP listen port (typically 443) can fan out to different upstream targets based on the TLS hostname in the client's ClientHello. Portunus remains a pure L4 byte-passthrough — never decrypts, terminates, or re-encrypts TLS. Full design is in `specs/009-tls-sni-routing/design.md` (commits a556570 → 0142e43)."
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -15,11 +15,11 @@ listen port (or live behind a separate IP). After this feature, the operator
 attaches each service to the same port and disambiguates them by the TLS
 hostname (`SNI`) the client requests, e.g. `api.example.com → api-backend`,
 `web.example.com → web-backend`. Forwarded bytes are still passed through
-unchanged — forward-rs does not terminate TLS.
+unchanged — Portunus does not terminate TLS.
 
 **Why this priority**: This is the single user-visible motivation for the
 feature. Without it, the operator either runs another tool in front of
-forward-rs or burns one port per service. Solving this delivers all the
+Portunus or burns one port per service. Solving this delivers all the
 business value of v0.9 on its own.
 
 **Independent Test**: Operator pushes two rules, both on TCP `:443`, with
@@ -138,7 +138,7 @@ byte-for-byte the same as it did under v0.7 / v0.8.
 constitution (V. byte-stable control plane). The feature must not impose
 overhead on rules that don't opt into SNI.
 
-**Independent Test**: A baseline forward-rs install is upgraded to v0.9.
+**Independent Test**: A baseline Portunus install is upgraded to v0.9.
 None of the existing rules carry an `sni_pattern`. Run the v0.7 / v0.8
 end-to-end test suite — every test passes unchanged. Capture a v0.7
 control-plane wire trace and replay it against v0.9 — byte-stable.
@@ -442,7 +442,7 @@ contains one event per failure case with enough fields for triage.
 
 ## Assumptions
 
-- **A-001**: The forward-rs deployment continues to be a pure L4 byte
+- **A-001**: The Portunus deployment continues to be a pure L4 byte
   passthrough; this feature does not introduce TLS termination,
   certificate handling, or any obligation to read past the ClientHello.
 - **A-002**: Operators submit Internationalised Domain Names already

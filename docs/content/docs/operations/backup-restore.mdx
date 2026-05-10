@@ -5,7 +5,7 @@ icon: Save
 ---
 
 Since v0.8 every persistent server-side artefact lives in
-`<data-dir>/state.db`. forward-rs ships matching backup, restore, and
+`<data-dir>/state.db`. Portunus ships matching backup, restore, and
 reset CLI subcommands.
 
 ## Backup
@@ -31,15 +31,15 @@ sqlite3 ~/forward-backup-2026-05-08.db \
 ## Cron schedule
 
 ```sh
-# /etc/cron.daily/forward-rs-backup
+# /etc/cron.daily/portunus-backup
 #!/bin/sh
 set -eu
-DEST=/var/backups/forward-rs/$(date +%F).db
+DEST=/var/backups/portunus/$(date +%F).db
 mkdir -p "$(dirname "$DEST")"
-sudo -u forward-rs forward-server \
-  --data-dir /var/lib/forward-rs \
+sudo -u portunus forward-server \
+  --data-dir /var/lib/portunus \
   backup --out "$DEST"
-find /var/backups/forward-rs -name '*.db' -mtime +30 -delete
+find /var/backups/portunus -name '*.db' -mtime +30 -delete
 ```
 
 ## Restore

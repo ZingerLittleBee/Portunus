@@ -21,9 +21,9 @@ This contract is the source of truth for every CLI test under
 
     Resolution order when omitted (first that resolves):
       1. $STATE_DIRECTORY                  (set by systemd's StateDirectory=)
-      2. $XDG_STATE_HOME/forward-rs
-      3. $HOME/.local/state/forward-rs
-      4. ./forward-rs.state
+      2. $XDG_STATE_HOME/portunus
+      3. $HOME/.local/state/portunus
+      4. ./portunus.state
 ```
 
 The flag MUST be accepted by every subcommand that opens the store
@@ -155,8 +155,8 @@ forward-client [--bundle <PATH>] [other v0.7 flags]
 
   --bundle <PATH>      Optional. Resolution order when omitted:
                          1. $FORWARD_CLIENT_BUNDLE
-                         2. $XDG_CONFIG_HOME/forward-rs/client.bundle.json
-                         3. $HOME/.config/forward-rs/client.bundle.json
+                         2. $XDG_CONFIG_HOME/portunus/client.bundle.json
+                         3. $HOME/.config/portunus/client.bundle.json
                          4. ./client.bundle.json
                        When none resolve, exits 1 listing the paths
                        attempted.

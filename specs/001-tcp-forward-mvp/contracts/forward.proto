@@ -1,4 +1,4 @@
-// forward-rs control-plane wire protocol — v1 (MVP).
+// Portunus control-plane wire protocol — v1 (MVP).
 //
 // This is the canonical contract. Any change to this file is a wire-protocol
 // change subject to Constitution Principle III (contract tests) and the

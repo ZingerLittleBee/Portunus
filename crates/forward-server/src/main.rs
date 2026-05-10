@@ -18,7 +18,7 @@ use forward_server::state::AppState;
 use forward_server::tls::ServerTlsMaterial;
 
 #[derive(Parser, Debug)]
-#[command(name = "forward-server", version, about = "forward-rs control plane")]
+#[command(name = "forward-server", version, about = "Portunus control plane")]
 struct Cli {
     /// Override the configuration directory (admin-edited config + TLS material).
     #[arg(long, global = true)]
@@ -26,8 +26,8 @@ struct Cli {
 
     /// Override the data directory (daemon-managed `state.db` and SQLite
     /// sidecars). Independent from `--config-dir`. When omitted, resolved
-    /// in order: $STATE_DIRECTORY → $XDG_STATE_HOME/forward-rs →
-    /// $HOME/.local/state/forward-rs → ./forward-rs.state. See
+    /// in order: $STATE_DIRECTORY → $XDG_STATE_HOME/portunus →
+    /// $HOME/.local/state/portunus → ./portunus.state. See
     /// specs/008-sqlite-storage/ FR-019.
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
@@ -767,12 +767,12 @@ fn resolve_config_dir(override_: Option<PathBuf>) -> PathBuf {
         return p;
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("forward-rs");
+        return PathBuf::from(xdg).join("portunus");
     }
     if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config/forward-rs");
+        return PathBuf::from(home).join(".config/portunus");
     }
-    PathBuf::from("./forward-rs.config")
+    PathBuf::from("./portunus.config")
 }
 
 /// Build a state suitable for *offline* operator commands (provision-client,

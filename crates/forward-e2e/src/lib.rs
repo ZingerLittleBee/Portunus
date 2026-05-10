@@ -1,4 +1,4 @@
-//! Workspace-level end-to-end / contract tests for forward-rs.
+//! Workspace-level end-to-end / contract tests for Portunus.
 //!
 //! This crate's `tests/` directory holds tests that span the binaries
 //! (`forward-server` + `forward-client`). Helper code that needs to be

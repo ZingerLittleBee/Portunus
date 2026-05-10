@@ -17,7 +17,7 @@ upstream targets based on the TLS hostname. The client:
 3. Forwards the connection to the matching rule's upstream.
 4. Replays the peek buffer to the upstream byte-for-byte.
 
-forward-rs **never** decrypts, terminates, or re-encrypts TLS — even
+Portunus **never** decrypts, terminates, or re-encrypts TLS — even
 in SNI mode.
 
 ## Push an SNI rule

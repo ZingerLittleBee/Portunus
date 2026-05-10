@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "forward-rs control-plane server binary."
+description = "Portunus control-plane server binary."
 build = "build.rs"
 
 [lints]

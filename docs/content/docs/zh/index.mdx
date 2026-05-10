@@ -1,10 +1,10 @@
 ---
-title: forward-rs
+title: Portunus
 description: 基于 Rust 数据面的远程 TCP / UDP 转发，提供中心控制面、RBAC、指标与 QoS。
 icon: BookOpen
 ---
 
-# forward-rs
+# Portunus
 
 面向真实运维场景的远程 TCP / UDP 转发。边缘 Client 运行在远端主机上，Server
 集中下发转发规则；数据面保持 L4 字节直通，同时补上 RBAC、指标、审计日志和
@@ -19,7 +19,7 @@ icon: BookOpen
 ## 性能
 
 大多数用户并不是要榨干本机 20 Gbit/s loopback 的极限吞吐，而是在有限带宽下
-稳定转发。实测 Linux 主机上，`forward-rs` 在 2.5 Gbit/s 以内与内核态转发基线
+稳定转发。实测 Linux 主机上，`Portunus` 在 2.5 Gbit/s 以内与内核态转发基线
 基本无差异；5-10 Gbit/s 仍然接近目标值，但建议在目标机器上复测；超过
 10 Gbit/s 后，用户态控制面带来的吞吐成本开始明显。
 
@@ -62,7 +62,7 @@ icon: BookOpen
 ## 适合什么场景
 
 当你需要集中管理远端监听端口、给不同用户分配可控范围、观察转发流量、或按 owner
-设置配额时，`forward-rs` 比一条静态本机转发规则更像一个可运维的系统。若场景
+设置配额时，`Portunus` 比一条静态本机转发规则更像一个可运维的系统。若场景
 只是单机上的单条固定规则，并且唯一目标是极限吞吐，内核态转发路径仍然更简单、
 更快。这里的关键是按你的目标带宽实测，而不是只看无上限 loopback 的极限值。
 

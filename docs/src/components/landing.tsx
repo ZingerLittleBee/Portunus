@@ -36,14 +36,14 @@ const meterSegments = [
 
 const copy = {
   en: {
-    title: "forward-rs",
+    title: "Portunus",
     headlineLead: "Forward ports,",
     headlineAccent: "without giving up control.",
     hero: "Run lightweight clients on the hosts that own your public ports. Push TCP and UDP forwarding rules from one server. Get permissions, rate limits, metrics, and audit out of the box, without reading, modifying, or decrypting the bytes that flow through.",
     primary: "Read the docs",
     secondary: "Performance report",
     proof: "Linux · Rust · single binary deploy",
-    mockTitle: "forward-rs / dashboard",
+    mockTitle: "Portunus / dashboard",
     mockBadge: "real-time",
     rulesHeading: "rules",
     metricsHeading: "throughput",
@@ -66,7 +66,7 @@ const copy = {
     statusActive: "ACTIVE",
     rangesTitle: "Performance you can plan around.",
     rangesIntro:
-      "In the measured Linux loopback run, forward-rs matched kernel-space forwarding through 2.5 Gbit/s, stayed close from 5 to 10 Gbit/s, and only showed visible userspace overhead beyond 10 Gbit/s.",
+      "In the measured Linux loopback run, Portunus matched kernel-space forwarding through 2.5 Gbit/s, stayed close from 5 to 10 Gbit/s, and only showed visible userspace overhead beyond 10 Gbit/s.",
     ranges: [
       [
         "100M – 2.5G",
@@ -127,14 +127,14 @@ const copy = {
     finalCta: "Open documentation",
   },
   zh: {
-    title: "forward-rs",
+    title: "Portunus",
     headlineLead: "转发端口——",
     headlineAccent: "但不放弃控制。",
     hero: "在拥有公网端口的主机上运行轻量 Client，从一个 Server 下发 TCP / UDP 转发规则。权限、限速、指标、审计开箱即用——业务流量不被读、不被改、不被解密。",
     primary: "阅读文档",
     secondary: "性能报告",
     proof: "Linux · Rust · 单二进制部署",
-    mockTitle: "forward-rs / 仪表盘",
+    mockTitle: "Portunus / 仪表盘",
     mockBadge: "实时",
     rulesHeading: "规则",
     metricsHeading: "吞吐",
@@ -157,7 +157,7 @@ const copy = {
     statusActive: "运行中",
     rangesTitle: "可以照着规划的性能。",
     rangesIntro:
-      "在 Linux loopback 实测中，forward-rs 到 2.5 Gbit/s 都与内核态转发持平；5–10 Gbit/s 仍接近内核基线；超过 10 Gbit/s 后才出现明显的用户态开销。",
+      "在 Linux loopback 实测中，Portunus 到 2.5 Gbit/s 都与内核态转发持平；5–10 Gbit/s 仍接近内核基线；超过 10 Gbit/s 后才出现明显的用户态开销。",
     ranges: [
       ["100M – 2.5G", "实测与内核基线没有可感知的差距。"],
       ["5G – 10G", "多数带宽套餐已经够用。"],
@@ -556,7 +556,7 @@ function Topology({ t }: { t: (typeof copy)["en"] | (typeof copy)["zh"] }) {
       viewBox="0 0 1000 320"
       className="w-full"
       role="img"
-      aria-label="forward-rs topology"
+      aria-label="Portunus topology"
     >
       <defs>
         <linearGradient id="fr-edge-control" x1="0" x2="1" y1="0" y2="0">

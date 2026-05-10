@@ -59,8 +59,8 @@ impl CredentialBundle {
 /// Resolution order (first existing file wins):
 /// 1. Explicit `--bundle <PATH>` argument (`override_path`).
 /// 2. `$FORWARD_CLIENT_BUNDLE` environment variable.
-/// 3. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`.
-/// 4. `$HOME/.config/forward-rs/client.bundle.json`.
+/// 3. `$XDG_CONFIG_HOME/portunus/client.bundle.json`.
+/// 4. `$HOME/.config/portunus/client.bundle.json`.
 /// 5. `./client.bundle.json` (current working directory).
 ///
 /// Returns the resolved path on success. On failure, returns the list of
@@ -117,7 +117,7 @@ where
     }
     if let Some(xdg) = env("XDG_CONFIG_HOME") {
         let p = PathBuf::from(xdg)
-            .join("forward-rs")
+            .join("portunus")
             .join("client.bundle.json");
         if p.is_file() {
             return Ok(p);
@@ -127,7 +127,7 @@ where
     if let Some(home) = env("HOME") {
         let p = PathBuf::from(home)
             .join(".config")
-            .join("forward-rs")
+            .join("portunus")
             .join("client.bundle.json");
         if p.is_file() {
             return Ok(p);
@@ -209,7 +209,7 @@ mod search_tests {
     fn xdg_config_home_resolves_when_present() {
         let dir = tempfile::TempDir::new().unwrap();
         let xdg = dir.path().to_path_buf();
-        let target = xdg.join("forward-rs").join("client.bundle.json");
+        let target = xdg.join("portunus").join("client.bundle.json");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, "{}").unwrap();
         let mut env = HashMap::new();
@@ -224,7 +224,7 @@ mod search_tests {
         let home = dir.path().to_path_buf();
         let target = home
             .join(".config")
-            .join("forward-rs")
+            .join("portunus")
             .join("client.bundle.json");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, "{}").unwrap();
@@ -241,14 +241,14 @@ mod search_tests {
         let env_target = env_dir.path().join("env.bundle.json");
         std::fs::write(&env_target, "{}").unwrap();
         let xdg_dir = tempfile::TempDir::new().unwrap();
-        let xdg_target = xdg_dir.path().join("forward-rs").join("client.bundle.json");
+        let xdg_target = xdg_dir.path().join("portunus").join("client.bundle.json");
         std::fs::create_dir_all(xdg_target.parent().unwrap()).unwrap();
         std::fs::write(&xdg_target, "{}").unwrap();
         let home_dir = tempfile::TempDir::new().unwrap();
         let home_target = home_dir
             .path()
             .join(".config")
-            .join("forward-rs")
+            .join("portunus")
             .join("client.bundle.json");
         std::fs::create_dir_all(home_target.parent().unwrap()).unwrap();
         std::fs::write(&home_target, "{}").unwrap();

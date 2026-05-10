@@ -1,10 +1,10 @@
 ---
-title: forward-rs
+title: Portunus
 description: Remote TCP and UDP forwarding with a Rust data plane, central control plane, RBAC, metrics, and QoS.
 icon: BookOpen
 ---
 
-# forward-rs
+# Portunus
 
 Remote TCP and UDP forwarding for teams that need more than a static port
 map. Run edge clients on remote hosts, push forwarding rules from a central
@@ -21,7 +21,7 @@ audit logs, and traffic caps.
 
 Most users are not trying to saturate a local 20 Gbit/s loopback path; they
 are running under a real bandwidth limit. On the measured Linux host,
-`forward-rs` was effectively indistinguishable from a kernel-space forwarding
+`Portunus` was effectively indistinguishable from a kernel-space forwarding
 baseline through 2.5 Gbit/s, stayed close around 5-10 Gbit/s, and only showed
 a clear gap once the offered load moved beyond 10 Gbit/s.
 
@@ -63,7 +63,7 @@ a clear gap once the offered load moved beyond 10 Gbit/s.
 
 ## Where it fits
 
-Use `forward-rs` when you need centrally managed edge listeners, tenant-aware
+Use `Portunus` when you need centrally managed edge listeners, tenant-aware
 access control, observability, or per-owner quotas around plain L4 forwarding.
 For a single static rule on one Linux host where only absolute peak throughput
 matters, kernel-space forwarding still has the simpler and faster execution

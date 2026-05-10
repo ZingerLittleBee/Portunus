@@ -7,9 +7,9 @@
 
 ## Goal
 
-Add Server Name Indication (SNI) based routing to forward-rs so a single TCP listen
+Add Server Name Indication (SNI) based routing to Portunus so a single TCP listen
 port (typically 443) can fan out to different upstream targets based on the TLS
-hostname the client sends in its `ClientHello`. forward-rs remains a pure L4
+hostname the client sends in its `ClientHello`. Portunus remains a pure L4
 byte-passthrough — never decrypts, terminates, or re-encrypts TLS.
 
 ## Non-Goals

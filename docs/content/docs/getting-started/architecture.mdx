@@ -4,7 +4,7 @@ description: How the control-plane server, edge clients, operator surface, and d
 icon: Network
 ---
 
-`forward-rs` is a two-process system with a strict separation between the
+`Portunus` is a two-process system with a strict separation between the
 **control plane** (rule push, auth, metrics rollup) and the **data plane**
 (byte forwarding). The two never share code paths, which is what lets the
 project guarantee data-plane stability across releases.
@@ -93,5 +93,5 @@ omits the new fields, and an older client talking to a newer server
 sees no behavioural change because the server gates pushes via a
 capability check.
 
-See [`CHANGELOG.md`](https://github.com/ZingerLittleBee/forward-rs/blob/main/CHANGELOG.md)
+See [`CHANGELOG.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/CHANGELOG.md)
 for the full release history.

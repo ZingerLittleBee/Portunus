@@ -44,8 +44,8 @@ unit:
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./forward-config/` | `/etc/forward-rs/` | TLS material, optional `server.toml`, client bundles |
-| `./forward-state/` | `/var/lib/forward-rs/` | `state.db` and sidecar files |
+| `./forward-config/` | `/etc/portunus/` | TLS material, optional `server.toml`, client bundles |
+| `./forward-state/` | `/var/lib/portunus/` | `state.db` and sidecar files |
 
 Mount with:
 
@@ -54,8 +54,8 @@ docker run -d --name forward-server \
   -p 7443:7443 \
   -p 127.0.0.1:7080:7080 \
   -p 127.0.0.1:7081:7081 \
-  -v $(pwd)/forward-config:/etc/forward-rs \
-  -v $(pwd)/forward-state:/var/lib/forward-rs \
+  -v $(pwd)/forward-config:/etc/portunus \
+  -v $(pwd)/forward-state:/var/lib/portunus \
   forward-server:latest
 ```
 
@@ -71,7 +71,7 @@ docker run -d --name forward-server \
 - **Filesystem class check** still fires inside containers — make sure
   your bind-mount source is a real local filesystem (not tmpfs).
 - **`forward-client`** needs the bundle present at
-  `/etc/forward-rs/client.bundle.json` (or `FORWARD_CLIENT_BUNDLE`).
+  `/etc/portunus/client.bundle.json` (or `FORWARD_CLIENT_BUNDLE`).
 
 ## Health checks
 

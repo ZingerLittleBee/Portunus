@@ -278,10 +278,11 @@ fn test_user_story_2_acceptance() {
     // Bytes flow through the listener.
     let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port)).expect("connect proxy");
     conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-    conn.write_all(b"forward-rs-hello").unwrap();
-    let mut buf = [0u8; 16];
+    const PAYLOAD: &[u8] = b"Portunus-hello";
+    conn.write_all(PAYLOAD).unwrap();
+    let mut buf = [0u8; PAYLOAD.len()];
     conn.read_exact(&mut buf).unwrap();
-    assert_eq!(&buf, b"forward-rs-hello");
+    assert_eq!(&buf, PAYLOAD);
 
     // ---- Scenario 2: 100 KB byte-equal transfer ----
     // (T041 covers the 100 MB version against the client lib directly.)

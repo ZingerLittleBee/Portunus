@@ -4,7 +4,7 @@
 
 The MVP persists three things on the server side: the token store, the TLS
 certificate, and the TLS private key. This document fixes their on-disk
-layout so future versions of forward-rs can reason about migration.
+layout so future versions of Portunus can reason about migration.
 
 ---
 
@@ -19,7 +19,7 @@ layout so future versions of forward-rs can reason about migration.
 ```
 
 `<config_dir>` defaults to:
-- `$XDG_CONFIG_HOME/forward-rs` if set, else `$HOME/.config/forward-rs` on Linux/macOS
+- `$XDG_CONFIG_HOME/portunus` if set, else `$HOME/.config/portunus` on Linux/macOS
 - overridable via `--config-dir <path>` flag on `forward-server`.
 
 The directory is created on first launch with mode `0700`.
@@ -81,7 +81,7 @@ keys).
 On first launch, if either file is absent, the server generates a fresh
 self-signed cert using `rcgen` 0.13:
 - ECDSA P-256 key.
-- CN: hostname of the server (or `forward-rs-server` if hostname lookup
+- CN: hostname of the server (or `portunus-server` if hostname lookup
   fails).
 - 10-year validity.
 - No SANs (pinning by leaf fingerprint makes name validation moot).
@@ -95,7 +95,7 @@ they will need re-provisioning (or the operator can update the bundle's
 
 ## server.toml
 
-Operator-managed; not written by forward-rs except by an explicit
+Operator-managed; not written by Portunus except by an explicit
 `forward-server init` command (out of MVP scope, but the file may be
 hand-written). See `data-model.md` `ServerConfig` for the field set.
 

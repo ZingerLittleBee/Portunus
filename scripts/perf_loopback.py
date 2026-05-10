@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run a reproducible local forward-rs performance smoke benchmark.
+"""Run a reproducible local Portunus performance smoke benchmark.
 
 The harness starts a real `forward-server`, a real `forward-client`, and
 `iperf3` on loopback. It measures:
 
 1. Direct iperf3 throughput to the target.
-2. Throughput through a pushed forward-rs TCP rule.
+2. Throughput through a pushed Portunus TCP rule.
 3. Optional ingress bandwidth-cap convergence through a second pushed rule.
 4. Optional Linux iptables REDIRECT throughput for an in-kernel baseline.
 
@@ -258,7 +258,7 @@ def main() -> int:
         "--offered-mbps",
         help=(
             "Comma-separated TCP application pacing rates to compare across "
-            "direct, forward-rs, and iptables paths, e.g. 100,500,1000."
+            "direct, Portunus, and iptables paths, e.g. 100,500,1000."
         ),
     )
     parser.add_argument(
@@ -308,7 +308,7 @@ def main() -> int:
     processes: list[subprocess.Popen[Any]] = []
     iptables_cleanup: list[str] | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="forward-rs-perf-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="portunus-perf-") as tmp:
             tmpdir = pathlib.Path(tmp)
             config_dir = tmpdir / "config"
             data_dir = tmpdir / "data"
@@ -421,8 +421,8 @@ def main() -> int:
                 "duration_seconds": args.seconds,
                 "omit_seconds": args.omit_seconds,
                 "direct": direct,
-                "forward_rs_uncapped": uncapped,
-                "forward_vs_direct_pct": pct(uncapped["mbps"], direct["mbps"]),
+                "portunus_uncapped": uncapped,
+                "portunus_vs_direct_pct": pct(uncapped["mbps"], direct["mbps"]),
                 "uncapped_rule_id": uncapped_rule,
             }
 
@@ -441,7 +441,7 @@ def main() -> int:
                 )
                 result["iptables_redirect"] = iptables
                 result["iptables_vs_direct_pct"] = pct(iptables["mbps"], direct["mbps"])
-                result["forward_vs_iptables_pct"] = pct(uncapped["mbps"], iptables["mbps"])
+                result["portunus_vs_iptables_pct"] = pct(uncapped["mbps"], iptables["mbps"])
 
             if offered_mbps:
                 matrix: list[dict[str, Any]] = []
@@ -474,13 +474,13 @@ def main() -> int:
                         {
                             "offered_mbps": offered,
                             "direct": direct_limited,
-                            "forward_rs_uncapped": forward_limited,
+                            "portunus_uncapped": forward_limited,
                             "iptables_redirect": iptables_limited,
-                            "forward_vs_direct_pct": pct(
+                            "portunus_vs_direct_pct": pct(
                                 forward_limited["mbps"],
                                 direct_limited["mbps"],
                             ),
-                            "forward_vs_iptables_pct": pct(
+                            "portunus_vs_iptables_pct": pct(
                                 forward_limited["mbps"],
                                 iptables_limited["mbps"],
                             ),
@@ -523,7 +523,7 @@ def main() -> int:
                     capped_omit,
                 )
                 target_mbps = args.cap_bytes_per_sec * 8 / 1_000_000
-                result["forward_rs_capped"] = {
+                result["portunus_capped"] = {
                     **capped,
                     "rule_id": capped_rule,
                     "cap_bytes_per_sec": args.cap_bytes_per_sec,

@@ -1,4 +1,4 @@
-//! Generated gRPC types for the forward-rs control plane.
+//! Generated gRPC types for the Portunus control plane.
 //!
 //! The wire schema is defined in `proto/forward.proto`. This crate exists so
 //! that the proto code-gen pipeline (driven by `tonic-prost-build`) lives

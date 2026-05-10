@@ -270,7 +270,7 @@ unit tests can fake the result.
   detect "lock not supported" from `errno`. Doesn't catch tmpfs
   (locking works, durability does not). Reject.
 - Skip the check, trust the operator — silent corruption when a
-  helpful sysadmin moves `/var/lib/forward-rs` onto NFS. Reject by
+  helpful sysadmin moves `/var/lib/portunus` onto NFS. Reject by
   edge-case requirement in spec.
 
 ---

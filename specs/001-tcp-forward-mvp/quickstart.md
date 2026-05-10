@@ -1,4 +1,4 @@
-# Quickstart — forward-rs MVP
+# Quickstart — Portunus MVP
 
 **Feature**: 001-tcp-forward-mvp
 **Audience**: an operator going from a fresh checkout to "100 MB streamed

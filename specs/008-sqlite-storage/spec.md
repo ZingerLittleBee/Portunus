@@ -10,8 +10,8 @@
 
 - Q: Audit write durability window on crash — what is the maximum bounded loss between durable persistence and a process kill? → A: Typical ≤ 100 ms; under sustained burst load ≤ 1 s.
 - Q: Backup compatibility policy across server versions? → A: Forward-compatible within the v0.x major — a backup produced by version X is restorable on any binary ≥ X via automatic schema migration on restore; older binaries refuse to read a newer backup.
-- Q: Where does the server's persistent data file live, and how is the location selected? → A: A new `--data-dir` flag (independent from `--config-dir`) with resolution `--data-dir > $STATE_DIRECTORY > $XDG_STATE_HOME/forward-rs > $HOME/.local/state/forward-rs > ./forward-rs.state`. Production deployments are documented to point this at `/var/lib/forward-rs/`, integrated with systemd's `StateDirectory=forward-rs`. The data file inside it is named `state.db` and is not operator-renameable. The data-dir MUST refuse to operate on filesystems that cannot honour POSIX file locking and `fsync` (notably NFS and tmpfs).
-- Q: Does the v0.8 work also adjust the client's `--bundle` flag, or stay strictly server-side? → A: The client gets one ergonomic addition: `--bundle` becomes optional with a documented search order (`--bundle > $FORWARD_CLIENT_BUNDLE > $XDG_CONFIG_HOME/forward-rs/client.bundle.json > $HOME/.config/forward-rs/client.bundle.json > ./client.bundle.json`). No new client-side persistent state is introduced; the client remains stateless to disk.
+- Q: Where does the server's persistent data file live, and how is the location selected? → A: A new `--data-dir` flag (independent from `--config-dir`) with resolution `--data-dir > $STATE_DIRECTORY > $XDG_STATE_HOME/portunus > $HOME/.local/state/portunus > ./portunus.state`. Production deployments are documented to point this at `/var/lib/portunus/`, integrated with systemd's `StateDirectory=portunus`. The data file inside it is named `state.db` and is not operator-renameable. The data-dir MUST refuse to operate on filesystems that cannot honour POSIX file locking and `fsync` (notably NFS and tmpfs).
+- Q: Does the v0.8 work also adjust the client's `--bundle` flag, or stay strictly server-side? → A: The client gets one ergonomic addition: `--bundle` becomes optional with a documented search order (`--bundle > $FORWARD_CLIENT_BUNDLE > $XDG_CONFIG_HOME/portunus/client.bundle.json > $HOME/.config/portunus/client.bundle.json > ./client.bundle.json`). No new client-side persistent state is introduced; the client remains stateless to disk.
 
 **Input**: User description: "v0.8: migrate all server-side persistent data
 from JSON files + in-memory ring to a single embedded local SQL data store;
@@ -201,7 +201,7 @@ caller would have received (default newest-first slice, default cap).
   does not exist, the server must create it with permissions that
   restrict access to the daemon user (no world or group read /
   write). When the daemon is started by systemd with
-  `StateDirectory=forward-rs`, systemd's pre-creation must be
+  `StateDirectory=portunus`, systemd's pre-creation must be
   honoured rather than overridden.
 - **Data file present but corrupt**: the server must refuse to start
   with a clear, actionable error message that points at the file
@@ -358,8 +358,8 @@ caller would have received (default newest-first slice, default cap).
   of `--config-dir`. When `--data-dir` is not passed, the server
   MUST resolve the location in this order, taking the first that
   resolves: (1) `$STATE_DIRECTORY` (set by systemd's
-  `StateDirectory=forward-rs`); (2) `$XDG_STATE_HOME/forward-rs`;
-  (3) `$HOME/.local/state/forward-rs`; (4) `./forward-rs.state` as
+  `StateDirectory=portunus`); (2) `$XDG_STATE_HOME/portunus`;
+  (3) `$HOME/.local/state/portunus`; (4) `./portunus.state` as
   the cwd fallback. The resolved directory MUST be created if it
   does not exist, with permissions that restrict access to the
   daemon user (no world or group access). The data file inside it
@@ -373,8 +373,8 @@ caller would have received (default newest-first slice, default cap).
   become optional. When `--bundle` is omitted, the client MUST
   resolve the bundle path in this order, taking the first that
   resolves to an existing readable file: (1) `$FORWARD_CLIENT_BUNDLE`
-  environment variable; (2) `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`;
-  (3) `$HOME/.config/forward-rs/client.bundle.json`;
+  environment variable; (2) `$XDG_CONFIG_HOME/portunus/client.bundle.json`;
+  (3) `$HOME/.config/portunus/client.bundle.json`;
   (4) `./client.bundle.json`. When none resolve, the client MUST
   exit with a clear, actionable error naming all attempted paths.
   No client-side persistent state is introduced by this feature;
@@ -457,13 +457,13 @@ caller would have received (default newest-first slice, default cap).
 - **Path conventions follow FHS / XDG**: the recommended deployment
   shape splits **admin-edited configuration** and **daemon-managed
   state** into two directories. For Linux system-service deployments
-  the documented pairing is `--config-dir /etc/forward-rs` (holding
+  the documented pairing is `--config-dir /etc/portunus` (holding
   `server.toml`, `server.crt`, `server.key`) and `--data-dir
-  /var/lib/forward-rs` (holding `state.db`). For developer / user
-  mode the same flags resolve to `$XDG_CONFIG_HOME/forward-rs` and
-  `$XDG_STATE_HOME/forward-rs` respectively. The deployment
+  /var/lib/portunus` (holding `state.db`). For developer / user
+  mode the same flags resolve to `$XDG_CONFIG_HOME/portunus` and
+  `$XDG_STATE_HOME/portunus` respectively. The deployment
   documentation provides a systemd unit example using
-  `StateDirectory=forward-rs` so operators do not have to manage
+  `StateDirectory=portunus` so operators do not have to manage
   `mkdir`, ownership, or mode bits themselves. This pairing matches
   the convention used by Grafana, Authelia, step-ca, Vaultwarden,
   Tailscale, mosquitto, syncthing, and other SQLite-backed daemons.

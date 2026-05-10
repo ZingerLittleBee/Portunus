@@ -1,4 +1,4 @@
-//! Shared primitives for `forward-rs`.
+//! Shared primitives for `Portunus`.
 //!
 //! This crate is intentionally small: error taxonomy, ID newtypes, certificate
 //! fingerprint helpers, and config-file loading. Authentication lives in

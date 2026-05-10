@@ -4,7 +4,7 @@ description: Wire-format invariants, capability gates, and the v0.7 → v0.8 fre
 icon: ArrowUp
 ---
 
-forward-rs has shipped 11 minor releases (v0.1 → v0.11). Wire-format
+Portunus has shipped 11 minor releases (v0.1 → v0.11). Wire-format
 changes are **additive only** — newer fields use proto3
 default-stripping so cross-version pairs degrade gracefully.
 
@@ -89,7 +89,7 @@ The data plane (gRPC client tokens, TCP/UDP forwarding) is
 ## Checking the schema version
 
 ```sh
-sqlite3 /var/lib/forward-rs/state.db \
+sqlite3 /var/lib/portunus/state.db \
     'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
 ```
 

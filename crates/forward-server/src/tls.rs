@@ -96,7 +96,7 @@ fn enforce_key_perms(_: &Path) -> Result<(), ForwardError> {
 fn generate_self_signed() -> Result<ServerTlsMaterial, ForwardError> {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    let hostname = hostname().unwrap_or_else(|| "forward-rs-server".to_string());
+    let hostname = hostname().unwrap_or_else(|| "portunus-server".to_string());
     let mut params = CertificateParams::default();
     params.not_before = time::OffsetDateTime::now_utc();
     params.not_after = params.not_before + time::Duration::days(365 * 10);

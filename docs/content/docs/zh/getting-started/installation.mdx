@@ -1,10 +1,10 @@
 ---
 title: 安装
-description: 60 秒完成 forward-rs 安装。从源码编译、拉取 Docker 镜像，或将二进制部署到 systemd。
+description: 60 秒完成 Portunus 安装。从源码编译、拉取 Docker 镜像，或将二进制部署到 systemd。
 icon: Download
 ---
 
-`forward-rs` 提供两个单文件二进制 —— `forward-server`（控制面）与
+`Portunus` 提供两个单文件二进制 —— `forward-server`（控制面）与
 `forward-client`（边缘）。请根据环境选择合适的安装方式。
 
 ## 前置条件
@@ -17,8 +17,8 @@ icon: Download
 ## 方式 1 — 从源码编译（推荐）
 
 ```sh
-git clone https://github.com/ZingerLittleBee/forward-rs.git
-cd forward-rs
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
 cargo build --release -p forward-server -p forward-client
 ```
 
@@ -61,9 +61,9 @@ docker build -t forward-client:latest -f deploy/docker/Dockerfile.client .
 cd deploy/systemd
 sudo ./install.sh
 # 创建：
-#   /etc/forward-rs/        管理员可编辑的配置 + TLS 证书
-#   /var/lib/forward-rs/    守护进程持有的 state.db
-#   forward-rs 系统用户
+#   /etc/portunus/        管理员可编辑的配置 + TLS 证书
+#   /var/lib/portunus/    守护进程持有的 state.db
+#   portunus 系统用户
 ```
 
 详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
@@ -75,7 +75,7 @@ forward-server --version
 forward-client --version
 ```
 
-两条命令都应输出 `forward-rs <version>`。
+两条命令应分别输出 `forward-server <version>` 与 `forward-client <version>`。
 
 ## 下一步
 

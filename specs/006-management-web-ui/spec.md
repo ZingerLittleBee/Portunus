@@ -3,7 +3,7 @@
 **Feature Branch**: `006-management-web-ui`
 **Created**: 2026-05-07
 **Status**: Draft
-**Input**: User description: "A management Web UI for forward-rs (the '管理页面' originally promised by the constitution under TODO(WEB_UI)). Single-page application that operators load in a browser to manage users, credentials, grants, forwarding rules, and connected clients without dropping into the CLI."
+**Input**: User description: "A management Web UI for Portunus (the '管理页面' originally promised by the constitution under TODO(WEB_UI)). Single-page application that operators load in a browser to manage users, credentials, grants, forwarding rules, and connected clients without dropping into the CLI."
 
 ## Clarifications
 
