@@ -1,0 +1,18 @@
+{
+  "title": "文档",
+  "pages": [
+    "index",
+    "---快速开始---",
+    "getting-started",
+    "---功能---",
+    "features",
+    "---参考---",
+    "configuration",
+    "cli",
+    "api",
+    "---运维---",
+    "deployment",
+    "observability",
+    "operations"
+  ]
+}

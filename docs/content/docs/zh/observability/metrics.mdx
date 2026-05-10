@@ -1,0 +1,106 @@
+---
+title: Prometheus 指标
+description: forward-rs 暴露的每一个 collector，附带基数预算说明。
+icon: BarChart3
+---
+
+`forward-server` 在 `metrics_listen`（默认 `127.0.0.1:7081`）暴露 Prometheus
+指标。该端点钉在 loopback —— 请用同主机的兄弟 Prometheus 或 sidecar 抓取。
+
+```sh
+curl -s http://127.0.0.1:7081/metrics
+```
+
+同一份载荷也可以从操作员 HTTP listener 的 `/v1/metrics` 拿到，**由超管 RBAC
+守门**。Web UI dashboard 读这条路径，从而不必跨 listener。
+
+## 基数预算
+
+每条规则的 collector **每条活规则一行**（标签 `{client, rule, owner}`）。
+逐端口与逐目标细节 **仅在请求中带 `?per_port=true` / `?per_target=true`
+时返回** —— 默认 `/metrics` 永不暴露。
+
+规则移除时对应的行随之回收。
+
+## Server 级
+
+```
+forward_clients_connected
+forward_auth_failures_total{reason}
+forward_operator_requests_total{outcome, reason}
+forward_audit_buffer_drops_total
+```
+
+`outcome` ∈ `{allow, deny}`；`reason` 在 allow 时为 `"ok"`，在 deny 时为
+`RbacError::code()` 的静态字符串（标签集有界）。
+
+## 每条规则 TCP
+
+```
+forward_rule_bytes_in_total{client, rule, owner}
+forward_rule_bytes_out_total{client, rule, owner}
+forward_rule_active_connections{client, rule, owner}
+forward_rule_dns_failures_total{client, rule, owner}
+forward_rule_target_failovers_total{client, rule}
+```
+
+## 每条规则 UDP
+
+```
+forward_rule_udp_datagrams_in_total{client, rule, owner}
+forward_rule_udp_datagrams_out_total{client, rule, owner}
+forward_rule_active_flows{client, rule, owner}
+forward_rule_flows_dropped_overflow_total{client, rule, owner}
+```
+
+## TLS SNI 路由（v0.9+）
+
+```
+forward_tls_sni_route_total{client, rule, owner, result}
+forward_tls_sni_listener_miss_total{client, port}
+forward_tls_sni_listener_parse_failures_total{client, port}
+forward_tls_sni_routes_active
+```
+
+`result` ∈ `{exact, wildcard, fallback, no_match}`。
+
+## SNI peek 直方图（v0.10+）
+
+```
+forward_tls_client_hello_peek_duration_seconds_bucket{client, port, le}
+forward_tls_client_hello_peek_duration_seconds_sum
+forward_tls_client_hello_peek_duration_seconds_count
+```
+
+最大有限桶为 3 s；超过 3 s 的观测值会让 `_count` 与 `le="+Inf"` 同步增长，
+但不会增加 `le="3"`。仅 SNI 模式 listener 暴露。
+
+## 限流（v0.11+）
+
+```
+forward_rate_limit_reject_total{client, rule, owner, reason}
+forward_rate_limit_throttle_seconds_total{client, rule, owner, direction}
+forward_rate_limit_active_connections{client, rule, owner}
+```
+
+拒绝原因：`conn_concurrent`、`conn_rate`、`udp_flow_rate`、
+`owner_concurrent`、`owner_conn_rate`、`owner_udp_flow_rate`。
+
+每条规则拒绝时 `owner` 标签 **为空**；每个所有者拒绝时该标签 **被填充**。
+
+## 常用查询
+
+```text
+# 最近 5 分钟入向字节/秒最大的 5 条规则
+topk(5, sum by (rule) (rate(forward_rule_bytes_in_total[5m])))
+
+# 每条规则的拒绝比例
+rate(forward_rate_limit_reject_total[5m]) /
+rate(forward_rule_active_connections[5m])
+
+# 每条规则的限流墙钟时长（按方向）
+rate(forward_rate_limit_throttle_seconds_total[5m])
+
+# 按原因聚合的认证失败
+sum by (reason) (rate(forward_auth_failures_total[5m]))
+```

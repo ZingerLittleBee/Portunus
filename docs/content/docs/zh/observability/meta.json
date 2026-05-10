@@ -1,0 +1,5 @@
+{
+  "title": "可观测性",
+  "icon": "Activity",
+  "pages": ["metrics", "audit-log", "logging"]
+}

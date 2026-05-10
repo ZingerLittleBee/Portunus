@@ -1,0 +1,90 @@
+---
+title: TLS SNI 路由
+description: 把单个 TCP 监听端口按 TLS 主机名扇出到不同上游。纯 L4 字节直通，绝不解密。
+icon: Lock
+---
+
+v0.9.0 起支持。基于 TLS ClientHello 中的 SNI 扩展进行路由，同时保持纯 L4
+字节直通。
+
+## 工作原理
+
+单个 TCP 监听端口（通常是 443）可以根据 TLS 主机名扇出到不同上游目标。
+Client：
+
+1. peek 出 ClientHello。
+2. 解析 SNI 扩展。
+3. 把连接转发到匹配规则的上游。
+4. 把 peek 缓冲区按字节回放到上游。
+
+forward-rs **绝不** 解密、终结或重新加密 TLS —— SNI 模式下也一样。
+
+## 推送 SNI 规则
+
+```sh
+# 精确主机
+forward-server push-rule edge-01 443 api.example.com:8443 \
+  --sni api.example.com
+
+# 单层通配符
+forward-server push-rule edge-01 443 web.example.com:8080 \
+  --sni '*.example.com'
+```
+
+多条规则可以共用同一个监听端口，靠不同的 SNI 选择器来区分。Client 的
+SNI 路由器会按 ClientHello 的 SNI 选出匹配的规则。
+
+## 仅 TLS 兜底
+
+在已经处于 SNI 模式的端口上推送 `sni_pattern = NULL` 的规则，可以兜底
+处理 SNI 缺失或不匹配的合法 TLS 连接：
+
+```sh
+forward-server push-rule edge-01 443 fallback.example.com:8080
+# （没有 --sni → 兜底）
+```
+
+如果不存在兜底规则，未匹配的连接 **会被丢弃，根本不会触达后端**。
+
+## 模式锁定
+
+`(client, listen_port)` 组的模式（旧的纯 TCP 还是 SNI 路由）一旦确定就
+固化下来。跨模式推送会被 HTTP 409 `conflict.legacy_to_sni_unsupported`
+拒绝。如需切换模式，请先移除该组现有规则。
+
+## 限制
+
+- **仅 TCP** —— UDP 规则不能携带 SNI 选择器
+  （`validation.sni_on_unsupported_rule`）。
+- **不支持端口范围规则**（同一错误码）。
+- **通配符仅支持单层** —— `*.example.com` 匹配 `api.example.com`，
+  但不匹配 `api.v2.example.com`。
+
+## Capability gate
+
+向 v0.8 或更早的 Client 推送带 `sni_pattern` 的规则，会在规则激活前返回
+HTTP 422 `sni_unsupported_by_client`。
+
+## 指标
+
+```
+forward_tls_sni_route_total{client,rule,owner,result}
+forward_tls_sni_listener_miss_total{client,port}
+forward_tls_sni_listener_parse_failures_total{client,port}
+forward_tls_sni_routes_active
+```
+
+`result` ∈ `{exact, wildcard, fallback, no_match}`。
+
+## Tracing 事件
+
+五类 `target = "tls_sni"` 的结构化事件：
+
+- `client_hello_timeout`
+- `client_hello_parse_failure`
+- `no_sni_fallback`
+- `sni_no_match`
+- `sni_route_success`
+
+按照审计隔离不变量（D13），数据面 SNI 事件 **不会** 进入 SQLite 操作员
+审计表。

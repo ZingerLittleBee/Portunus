@@ -1,0 +1,86 @@
+---
+title: 安装
+description: 60 秒完成 forward-rs 安装。从源码编译、拉取 Docker 镜像，或将二进制部署到 systemd。
+icon: Download
+---
+
+`forward-rs` 提供两个单文件二进制 —— `forward-server`（控制面）与
+`forward-client`（边缘）。请根据环境选择合适的安装方式。
+
+## 前置条件
+
+- **Rust 1.88+ 稳定版**（仅在从源码编译时需要）。`protoc` 已通过
+  `prost-build` 内联，无需额外安装。
+- 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
+- **Linux 或 macOS**。Linux 是生产支持目标。
+
+## 方式 1 — 从源码编译（推荐）
+
+```sh
+git clone https://github.com/ZingerLittleBee/forward-rs.git
+cd forward-rs
+cargo build --release -p forward-server -p forward-client
+```
+
+编译完成后会得到：
+
+```
+target/release/forward-server
+target/release/forward-client
+```
+
+将其拷贝到 `/usr/local/bin/`（或任意 `PATH` 路径）即可。
+
+<Callout type="info">
+  Release 配置使用 `lto = "thin"`、`codegen-units = 1`、`strip = "symbols"`。
+  在现代笔记本上一次干净编译大约耗时 3-5 分钟。
+</Callout>
+
+## 方式 2 — Docker
+
+仓库提供两份多阶段 Dockerfile，最终产物是
+`distroless/cc:nonroot` 运行镜像。
+
+```sh
+# Server
+docker build -t forward-server:latest -f deploy/docker/Dockerfile.server .
+
+# Client
+docker build -t forward-client:latest -f deploy/docker/Dockerfile.client .
+```
+
+`deploy/docker/docker-compose.yml` 是仅供本地试用的 compose 编排。
+
+## 方式 3 — systemd（生产环境）
+
+仓库的 `deploy/systemd/` 目录提供加固后的 systemd unit，预设了
+`User=`、`ProtectSystem=`、`CapabilityBoundingSet=` 等保护项，并附带
+`install.sh` 自动创建系统用户和 FHS 目录。
+
+```sh
+cd deploy/systemd
+sudo ./install.sh
+# 创建：
+#   /etc/forward-rs/        管理员可编辑的配置 + TLS 证书
+#   /var/lib/forward-rs/    守护进程持有的 state.db
+#   forward-rs 系统用户
+```
+
+详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
+
+## 验证安装
+
+```sh
+forward-server --version
+forward-client --version
+```
+
+两条命令都应输出 `forward-rs <version>`。
+
+## 下一步
+
+- **想立刻看到效果？** → [快速开始](/zh/docs/getting-started/quickstart)
+  会带你从 fresh checkout 到 "100 MB 数据通过转发规则" ——全程不到五分钟。
+- **准备上生产？** → [systemd 部署](/zh/docs/deployment/systemd) 或
+  [Docker 部署](/zh/docs/deployment/docker)。
+- **想先了解整体设计？** → [架构](/zh/docs/getting-started/architecture)。

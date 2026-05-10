@@ -1,0 +1,81 @@
+---
+title: 端口范围规则
+description: 用一条规则把一段连续监听端口映射到同偏移的目标端口段。
+icon: ListOrdered
+---
+
+v0.2.0 起支持。一条规则可以原子地绑定多个监听端口。
+
+## 工作原理
+
+端口范围规则把一段连续的监听端口映射到 **同偏移** 的目标端口段
+（指向同一个上游主机）。
+
+```
+监听 30000-30050  →  upstream.local:30000-30050
+                     ^ 每个端口转发到同偏移目标
+                       （30005 → upstream.local:30005，依此类推）
+```
+
+无论范围多大，范围规则在 `list-rules` 中只占 **一行**，在
+`/metrics` 中每个 collector 也只占 **一行**。如需逐端口的细节，请使用
+`--per-port`。
+
+## 推送一条范围规则
+
+```sh
+forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+# 原子地绑定 51 个端口
+```
+
+UDP 同样支持：
+
+```sh
+forward-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
+  --protocol udp
+```
+
+## 上限
+
+默认上限是 **每个范围 1024 个端口**，可在 `server.toml` 中调整：
+
+```toml
+# 一条端口范围规则最多可跨多少个端口。
+# 每个端口在 Client 上消耗一个 TCP listener（即一个 fd）。
+range_rule_max_ports = 1024
+```
+
+<Callout type="warn">
+  将该值调高的同时，必须在 Client 的 systemd unit 中相应调高 `LimitNOFILE`。
+  这条上限的存在就是为了防止操作员手抖把 Client 的 RLIMIT_NOFILE 撑爆。
+</Callout>
+
+## 逐端口统计
+
+```sh
+# CLI
+forward-server rule-stats <rule_id> --per-port
+
+# HTTP
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
+```
+
+逐端口字节计数仅在按需查询时返回。无论范围多大，Prometheus 指标基数预算
+仍是每条规则一行。
+
+## 冲突处理
+
+范围冲突沿用 v1 的 `port_in_use` 错误码，并在错误消息里指明冲突端口：
+
+```
+error: activation_failed: port_in_use (port 30005 already bound)
+```
+
+整段范围是原子的：只要范围内任意端口不可用，整条规则就会进入 `Failed`，
+一个端口都不会被绑定。
+
+## 已验证
+
+- 100 端口范围的推送墙钟：**约 18 ms**（Linux x86_64）。
+- 从空环境到三个采样端口完成回环测试：**约 0.93 s**。

@@ -1,0 +1,98 @@
+---
+title: 审计日志
+description: 每条操作员请求都发出一条结构化 allow/deny 事件。v0.8 起持久化到 SQLite。
+icon: ScrollText
+---
+
+每条 `/v1/*` 请求都恰好发出一条结构化 tracing 事件：
+
+- 成功：`event = "operator.allow"`（INFO）。
+- RBAC 拒绝：`event = "operator.deny"`（WARN）。
+
+每条记录携带 `actor`、`method`、`path`、`outcome`，拒绝时还包含
+`RbacError::code()` 原因。**原始 Bearer Token 永不进入审计代码路径** ——
+审计 emitter 只看到 verify 之后的 `OperatorIdentity`。
+
+## 持久化
+
+v0.8 起审计日志持久存储在 SQLite 的 `audit` 表。更早版本使用内存 ring（容量
+1000）—— SPA 的审计页面从那时起就一直在用新信封 API。
+
+## 读取日志
+
+### 实时查看（v0.7 形态，向后兼容）
+
+```sh
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/audit?limit=100&outcome=deny'
+# → AuditEntry 对象的 JSON 数组，最新在前
+```
+
+对 v0.7 调用方而言此路径字节稳定（无 `since`/`until`/`cursor`）。
+
+### 历史回滚（v0.8+ 信封）
+
+```sh
+# 最近 24 小时，分页
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/audit?since=2026-05-07T15:00:00Z&limit=50'
+# → {"entries":[...], "next_cursor":"abc123"}
+
+curl -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/audit?cursor=abc123&limit=50'
+# → 下一页
+```
+
+Web UI 审计页自动用信封 —— 操作员点击 "Load earlier" 即可沿 cursor 翻页。
+
+### 按 outcome 过滤
+
+```sh
+?outcome=allow
+?outcome=deny
+```
+
+Web UI 也提供前端 outcome 过滤，用于在已加载行间快速翻看。
+
+## Prune
+
+持久审计表的大小由 prune CLI 约束，不再受固定 ring 上限：
+
+```sh
+# 干跑
+forward-server audit prune --before 2026-05-01T00:00:00Z --dry-run
+
+# 真正 prune（BEGIN IMMEDIATE + PRAGMA incremental_vacuum）
+forward-server audit prune --before 2026-05-01T00:00:00Z
+```
+
+建议放进 cron daily / weekly。
+
+## 缓冲区溢出信号
+
+v0.6 路径的内存缓冲区溢出时会让计数器
+`forward_audit_buffer_drops_total` 累加。该指标仍保留以反映 v0.6 路径；在
+v0.8+ 持久存储下，正常运行不应出现 drop。
+
+## 不会被审计的内容
+
+审计日志只捕获 **操作员** 事件 —— 推规则、管用户等。数据面事件（已转发字节
+计数、限流拒绝、SNI 路由决策、DNS 失败）**仅在 tracing 中**，不进入审计
+ring，也不进 SQLite 审计表。这是 Constitution 上有意的不变量（D13）：
+
+- 审计表的大小随操作员活动增长，与流量解耦。
+- 数据面噪音不会淹没 RBAC 事件。
+- 按租户所有权来组织审计的原则得以保留。
+
+## 导出 JSON
+
+Web UI 审计页的 "Download as JSON" 按钮把当前可见行导出为 NDJSON 文件：
+
+```
+audit-2026-05-09.ndjson
+{"timestamp":"…","actor":"alice","method":"POST","path":"/v1/rules","outcome":"deny","reason":"port_outside_grant"}
+{"timestamp":"…",…}
+```
+
+文件 `head -1` 即一条完整的 `AuditEntry` JSON 对象 —— 可直接喂入 SIEM 或下游
+管道。

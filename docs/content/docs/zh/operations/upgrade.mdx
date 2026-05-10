@@ -1,0 +1,93 @@
+---
+title: 升级指南
+description: 线协议不变量、capability 守门、以及 v0.7 → v0.8 的全新启动惯例。
+icon: ArrowUp
+---
+
+forward-rs 已经发布了 11 个 minor 版本（v0.1 → v0.11）。线协议改动 **只增不删**
+—— 新字段使用 proto3 默认值剥离，跨版本组合会优雅退化。
+
+## 兼容矩阵
+
+| 组合 | 行为 |
+| --- | --- |
+| 新 server，旧 client | 新字段在发送时被剥离；server 用 capability 守门拒绝 client 无法处理的下发。 |
+| 旧 server，新 client | 新 client 透明省略新字段（proto3 默认值剥离）。表现与旧版 client 完全一致。 |
+| 双方同版本 | 完整功能面可用。 |
+
+## Capability 守门
+
+server **预先** 拒绝向不理解某项功能的对端 client 推送。规则不会在任何地方
+激活 —— 操作员收到 HTTP 422 + 一个具体码：
+
+| 码 | 触发条件 |
+| --- | --- |
+| `unsupported_protocol` | UDP 规则推给 v0.3 或更早的 client |
+| `multi_target_unsupported_by_client` | `targets[]` 推给 v0.6 或更早的 client |
+| `sni_unsupported_by_client` | `sni_pattern` 推给 v0.8 或更早的 client |
+| `rate_limit_unsupported_by_client` | `rate_limit` 推给 v0.10 或更早的 client |
+
+## 推荐升级顺序
+
+server 与 client 混版本时，**先升 server**。server 是守门人，新 server 配旧
+client 是安全的；旧 server 配新 client 看不到新功能，但其它行为正常。
+
+## v0.7 → v0.8（重新开始）
+
+这是项目历史上 **唯一一次** 算得上 "破坏性" 的升级 —— 而且也只是因为 v0.7
+从未真正进过生产。
+
+v0.8 把每个 JSON 文件（`tokens.json`、`identity.json`、`rules.json`）以及
+内存审计 ring 全部并入一个 SQLite 数据库
+`<data-dir>/state.db`。
+
+从写过 JSON 文件的 v0.7 部署 **没有迁移路径**。约定是用一个全新的
+`--data-dir`：
+
+```sh
+sudo systemctl stop forward-server
+sudo rm /var/lib/forward/tokens.json /var/lib/forward/identity.json
+forward-server reset --confirm
+forward-server bootstrap-superadmin --name 'Initial admin'
+sudo systemctl start forward-server
+```
+
+已下发的 client bundle（TLS 指纹固定）继续有效 —— 仅需重建操作员侧身份和
+规则定义。
+
+## v0.4 → v0.5（RBAC）
+
+操作员 API 引入 `Authorization: Bearer <token>` 强制。现有 CLI 脚本要么：
+
+```sh
+export FORWARD_OPERATOR_TOKEN=<token>
+```
+
+…要么用 `server.toml` 中的引导捷径：
+
+```toml
+operator_token = "<43-char URL-safe-base64 token>"
+```
+
+数据面（gRPC client token、TCP/UDP 转发）**字节相同** —— client 侧无须改动。
+
+## 降级注意
+
+- **v0.5 → v0.4**：`identity.json` 变成空壳；`operator_token` 被静默忽略；
+  auth-layer 不存在，每条操作员请求又回到未认证。RBAC 状态丢失（之后再升回
+  v0.5+ 需要重新 bootstrap）。转发规则与 `tokens.json` 保留。
+- **v0.8 → v0.7**：不支持。v0.7 写 JSON，v0.8 写 SQLite，没有自动降级路径。
+
+## 查询 schema 版本
+
+```sh
+sqlite3 /var/lib/forward-rs/state.db \
+    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
+```
+
+| 版本范围 | 对应二进制 |
+| --- | --- |
+| `[1, 1]` | v0.8 |
+| `[1, 2]` | v0.9（TLS SNI 路由） |
+| `[1, 3]` | v0.10（PROXY 协议） |
+| `[1, 4]` | v0.11（限流） |

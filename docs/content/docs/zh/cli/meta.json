@@ -1,0 +1,5 @@
+{
+  "title": "CLI 参考",
+  "icon": "Terminal",
+  "pages": ["forward-server", "forward-client"]
+}

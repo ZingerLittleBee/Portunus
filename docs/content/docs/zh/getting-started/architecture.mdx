@@ -1,0 +1,88 @@
+---
+title: 架构
+description: 控制面 Server、边缘 Client、操作员入口与数据面之间是如何协同工作的。
+icon: Network
+---
+
+`forward-rs` 是一个由两个进程组成的系统，**控制面**（规则下发、认证、指标聚合）
+和 **数据面**（字节转发）之间存在严格隔离。这两条路径不共享代码，这正是
+项目能够在每个版本之间保证数据面稳定的根本原因。
+
+## 组件
+
+```
+              ┌──────────────────────────────────────┐
+              │            forward-server            │
+              │                                      │
+   操作员 ────┤  • CLI 子命令                        │
+   (CLI/HTTP) │  • 操作员 HTTP API + Bearer 认证    │
+              │  • Web UI（loopback）               │
+              │  • RBAC：用户、凭据、Grant          │
+              │  • SQLite 状态存储                  │
+              │  • Prometheus /metrics              │
+              └──────────────┬───────────────────────┘
+                             │ gRPC / TLS-pinned
+                             │ （双向流）
+              ┌──────────────▼───────────────────────┐
+              │            forward-client            │
+              │                                      │
+   终端用户 ──▶ TCP accept 循环 / UDP recv_from 循环 │
+   流量        │                                      │
+              │  • 每条规则一个 Listener             │
+              │  • 多目标健康跟踪                    │
+              │  • 带缓存的 DNS 解析                 │
+              │  • 双向拷贝 / NAT 风格 UDP 流量解   │
+              │    复用                              │
+              └──────────────┬───────────────────────┘
+                             │ TCP / UDP
+                             ▼
+                       配置的上游目标
+```
+
+## 控制面
+
+- **TLS + Bearer Token** 认证。Server 在首次启动时自签一张叶证书；每个 Client
+  下发包都包含其 SHA-256 指纹，Client 在每次连接时校验该指纹。
+- **操作员 HTTP API** 监听在 `operator_http_listen`（默认 loopback）。
+  每一条 `/v1/*` 请求都需要 `Authorization: Bearer <token>`。
+- **gRPC 控制流** 监听在 `control_listen`。规则下发、统计上报、健康更新、
+  热更新事件都走 *每个 Client 一条* 的双向流。
+- **SQLite 状态** 存放于 `<data-dir>/state.db`（WAL 模式 + refinery 迁移）。
+  保存用户、凭据、Grant、多目标规则条目和审计日志。
+
+## 数据面
+
+- **TCP**：每条规则启动一个 `accept` 循环；每条连接用一对内核管道做双向
+  拷贝，用户态除内核 send/recv 窗口外不加任何缓冲。
+- **UDP**：每条规则启动一个 `recv_from` 循环；内核为每个
+  `(源地址, 源端口)` 对自动分配一个上游 socket，从而获得 NAT 风格的
+  回程隔离，**完全无须用户态流表跟踪**。
+- **DNS 目标**：首次连接时懒解析，按解析器返回的 TTL 缓存（夹紧到
+  `[5 s, 5 min]`），刷新失败时享有 30 秒的 stale-while-error 宽限。
+- **多目标故障切换**：每条规则 1..=8 个目标，按 priority 顺序选择；
+  被动健康检测（连续 3 次失败即切到 Failed）。
+- **TLS SNI 路由**：peek ClientHello、解析 SNI 扩展、按精确主机或
+  单层通配符路由 —— 全程不解密。
+- **限流**：带宽用 token bucket 限制；连接速率 / 并发用 accept-then-RST。
+
+## Constitution 不变量
+
+项目用一组小但严格的不变量约束所有版本：
+
+1. **单点认证缝（Single-seam auth）** —— 每条操作员请求都从一个 `auth_layer`
+   通过；不存在第二条认证路径。
+2. **数据面稳定** —— 除非 spec 显式要求改动，TCP / UDP 转发热路径在版本之间
+   字节相同。Criterion 基准在 ±25% 处守门。
+3. **Contracts before implementation** —— 每一次线协议或 HTTP API 改动都伴随
+   契约测试先于实现落地。
+4. **日志中无原始密钥** —— Redaction 层会清洗已知敏感字段名；审计 emitter
+   只能看到 verify 之后的身份信息。
+5. **Server 端强制** —— SPA 仅渲染 Server 返回的内容；RBAC 隔离绝不放在客户端。
+
+## 版本兼容
+
+线协议改动 **只增不删**。新增字段使用 proto3 默认值剥离，新版 Client 与旧版
+Server 通信时会自动剥掉新字段；旧版 Client 与新版 Server 通信时则因
+Server 的 capability gate 而看不到任何新行为。
+
+完整版本演进见 [`CHANGELOG.md`](https://github.com/ZingerLittleBee/forward-rs/blob/main/CHANGELOG.md)。
