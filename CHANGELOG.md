@@ -5,6 +5,53 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-05-10
+
+First stable release. Cuts the v0.x development line and freezes the
+wire / REST / SQLite-schema surfaces inherited from v0.11. No new
+data-plane features — the jump to 1.0 is a stability commitment, not a
+new specification round.
+
+### Added
+
+- **User documentation site** (`docs/`) — comprehensive user-facing
+  guide built on a Vite scaffold, covering install, RBAC, multi-target
+  failover, SNI routing, PROXY protocol, rate-limit / QoS, web UI, and
+  the operator HTTP API. Landing page surfaces feature highlights and
+  the v0.10 performance report.
+- **Documentation i18n** — Simplified Chinese translation of the full
+  documentation set, served under a `/$lang` URL prefix.
+- **Operator analysis scripts** (`analyze_commits.py`, `check_prs.py`,
+  `check_work_hours.py`) — filter commits and PRs by holidays and work
+  hours; intended for retrospectives and contributor reporting, not
+  shipped in the server binary.
+
+### Changed
+
+- **TCP copy buffer sizing** — `bidirectional_copy` buffers retuned
+  against the v0.10 perf harness; throughput report regenerated and
+  added to the docs site.
+
+### Fixed
+
+- **`forward-client` shutdown** — `run` futures now await the
+  cancellation token before returning, so `Drop` no longer races the
+  drain timeout. Regression tests cover forwarding behaviour past the
+  drain deadline.
+- **Rate-limit hot-update** — rule-cap mutations now reach the live
+  `Arc<RuleRateLimiter>` instead of stranding on the stale config snap-
+  shot; owner-quota mutations are propagated to all active rules under
+  that owner.
+- **Web UI rule state parsing** — payloads with optional fields parse
+  robustly across server versions; rule editor burst help copy now
+  matches the API validation envelope (`[rate/100, rate*60]`).
+
+### Versioning
+
+- Wire / REST / SQLite-schema range unchanged from v0.11
+  (schema-version `[1,4]`). v1.x will add fields additively per the
+  capability-gate discipline established in v0.5+.
+
 ## [0.11.0] — 2026-05-09
 
 ### Added (011-rate-limiting-qos)
