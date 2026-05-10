@@ -1,0 +1,254 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  metadata:
+    name: release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          cargo = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+          print(cargo["workspace"]["package"]["version"])
+          PY
+          )"
+          tag_name="v${version}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" != "${tag_name}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}; expected ${tag_name}." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag_name=${tag_name}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "${{ steps.version.outputs.version }}" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = sys.argv[1]
+          changelog = pathlib.Path("CHANGELOG.md").read_text()
+          heading = re.compile(rf"^## \[{re.escape(version)}\].*$", re.MULTILINE)
+          match = heading.search(changelog)
+          if match is None:
+              raise SystemExit(f"CHANGELOG.md has no section for version {version}")
+
+          next_heading = re.search(r"^## \[", changelog[match.end():], re.MULTILINE)
+          end = match.end() + next_heading.start() if next_heading else len(changelog)
+          notes = changelog[match.end():end].strip()
+          if not notes:
+              raise SystemExit(f"CHANGELOG.md section for version {version} is empty")
+
+          pathlib.Path("release-notes.md").write_text(notes + "\n")
+          PY
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 1
+
+  webui:
+    name: webui build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: webui/pnpm-lock.yaml
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm build
+        run: pnpm build
+
+      - name: Upload webui/dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+          retention-days: 1
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: [metadata, webui]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            exe_suffix: ""
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            exe_suffix: ""
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            exe_suffix: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            exe_suffix: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Download webui/dist
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+
+      - name: cargo build --release
+        shell: bash
+        run: cargo build --release -p forward-server -p forward-client --target "${{ matrix.target }}"
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          target="${{ matrix.target }}"
+          archive_base="portunus-${version}-${target}"
+          staging="dist/${archive_base}"
+          exe_suffix="${{ matrix.exe_suffix }}"
+
+          mkdir -p "${staging}"
+          cp "target/${target}/release/forward-server${exe_suffix}" "${staging}/"
+          cp "target/${target}/release/forward-client${exe_suffix}" "${staging}/"
+          cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            (cd dist && 7z a "${archive_base}.zip" "${archive_base}")
+          else
+            (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
+          fi
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/portunus-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          retention-days: 1
+
+  publish:
+    name: publish GitHub release
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: dist
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 portunus-* > "portunus-${{ needs.metadata.outputs.version }}-checksums.txt"
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag_name="${{ needs.metadata.outputs.tag_name }}"
+          version="${{ needs.metadata.outputs.version }}"
+          release_args=(
+            "${tag_name}"
+            --title "Portunus ${version}"
+            --notes-file dist/release-notes.md
+            --target "${GITHUB_SHA}"
+            --latest
+          )
+
+          if [[ "${version}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            release_args+=(--verify-tag)
+          fi
+
+          gh release create "${release_args[@]}" dist/portunus-*
