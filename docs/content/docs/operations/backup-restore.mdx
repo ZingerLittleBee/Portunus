@@ -82,8 +82,8 @@ Removes `state.db` plus the sidecar `state.db-wal` and `state.db-shm`.
 
 The reset CLI **refuses** to operate on a path whose first 16 bytes
 don't start with the SQLite header — protects against typo'd
-`--data-dir`. It does **not** wipe `--config-dir` (the TLS material
-and `server.toml` survive).
+`--data-dir`. It does **not** wipe the generated TLS material or
+optional `server.toml` in the same data-dir.
 
 ## Cross-host migration
 
@@ -99,5 +99,5 @@ and `server.toml` survive).
 - **Two `portunus-server serve` against the same data-dir** exit with
   `event=startup.store_in_use` (exit 75). Clustering is out of scope
   for the current release.
-- **`reset --confirm` does not wipe `--config-dir`** — only state.
-  Clear server.crt / server.key separately if you need to.
+- **`reset --confirm` does not wipe TLS material or `server.toml`** — only
+  SQLite state. Clear those files separately if you need to.

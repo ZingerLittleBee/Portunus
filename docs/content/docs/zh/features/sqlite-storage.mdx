@@ -30,22 +30,19 @@ v0.8.0 起支持。把 Server 端所有持久 JSON 文件
 
 ## 路径布局
 
-XDG 风格默认值：
+XDG 风格默认 data-dir：
 
 ```
-$XDG_CONFIG_HOME/portunus/   （或 ~/.config/portunus/）
-  server.toml          （可选 —— 缺省时套用默认值）
+$XDG_STATE_HOME/portunus/    （或 ~/.local/state/portunus/）
+  server.toml          （可选 —— 覆写内置默认值）
   server.crt
   server.key
-
-$XDG_STATE_HOME/portunus/    （或 ~/.local/state/portunus/）
   state.db
   state.db-shm         （Server 运行时存在）
   state.db-wal         （存在 pending WAL 帧时存在）
 ```
 
-可用 `--config-dir` 与 `--data-dir` 覆写。生产部署通常使用
-`/etc/portunus/` 与 `/var/lib/portunus/`。
+可用 `--data-dir` 覆写。生产部署通常使用 `/var/lib/portunus/`。
 
 ## 文件系统检查
 
@@ -86,8 +83,8 @@ portunus-server reset --confirm
 # 拒绝处理任何前 16 字节不是 SQLite header 的路径
 ```
 
-header 检查可保护 typo 错的 `--data-dir`。`reset` **不会** 清空
-`--config-dir`（server.crt / server.key 等保留）。
+header 检查可保护 typo 错的 `--data-dir`。`reset` **不会** 清空同目录中的
+server.crt / server.key / server.toml。
 
 ## 审计 prune
 

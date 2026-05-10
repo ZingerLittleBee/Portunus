@@ -1,11 +1,17 @@
 ---
 title: 安装
-description: 60 秒完成 Portunus 安装。推荐使用 Docker，也可使用 release 二进制或 systemd。
+description: 分别安装 Portunus Server 与 Client。推荐使用 Docker，也可使用 release 二进制或源码编译。
 icon: Download
 ---
 
-`Portunus` 提供两个单文件二进制 —— `portunus-server`（控制面）与
-`portunus-client`（边缘）。请根据环境选择合适的安装方式。
+`Portunus` 有两个运行角色：
+
+- `portunus-server` 运行在控制面主机上。Operator 连接它，它保存状态，并把规则
+  推送给已连接的 Client。
+- `portunus-client` 运行在每台边缘主机上。它连接回 Server，绑定转发端口并搬运流量。
+
+请把对应组件安装到承担该角色的主机上。真实部署通常是一台 Server 主机，加一台或
+多台 Client 主机。
 
 ## 前置条件
 
@@ -15,25 +21,113 @@ icon: Download
 - 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
 - **Linux 或 macOS**。Linux 是生产支持目标。
 
-## 方式 1 — Docker（推荐）
+## 安装 Server
 
-已发布镜像在 GitHub Container Registry：
+Server 推荐使用 Docker Compose 安装。在 Server 主机上创建 `compose.yaml`：
 
-```sh
-docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
-docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
+```yaml
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-data:
+    name: portunus-data
 ```
 
-生产环境建议固定版本 tag。`latest` 指向最新稳定版：
+启动：
 
 ```sh
-docker pull ghcr.io/zingerlittlebee/portunus-server:latest
-docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+docker compose up -d server
 ```
 
-卷、网络与容器内操作员命令见 [Docker 部署](/zh/docs/deployment/docker)。
+自动生成的 TLS 材料和 SQLite 状态放在 `portunus-data` 卷里。示例默认使用
+`:latest`；如果需要完全可复现的生产部署，请固定到具体版本 tag，例如 `:1.0.0`。
 
-## 方式 2 — Release 二进制
+如果需要非默认监听地址或其他覆写，再把可选 `server.toml` 放到
+`<data-dir>/server.toml`，例如 `./server.toml:/var/lib/portunus/server.toml:ro`。
+
+操作员命令、Client Compose、备份迁移和生产注意事项见
+[Docker 部署](/zh/docs/deployment/docker)。
+
+如果使用宿主机二进制，下载 Server 主机对应的 release 归档，解压后只安装
+`portunus-server`：
+
+```sh
+tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-server /usr/local/bin/
+```
+
+如果从源码编译：
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-server
+sudo install -m 0755 target/release/portunus-server /usr/local/bin/
+```
+
+在 Server 主机上验证：
+
+```sh
+portunus-server --version
+```
+
+## 安装 Client
+
+Client 也推荐使用 Docker Compose 安装。Server 配发 Client bundle 后，在边缘主机上
+创建 `compose.client.yaml`：
+
+```yaml
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    volumes:
+      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+    restart: unless-stopped
+```
+
+启动：
+
+```sh
+docker compose -f compose.client.yaml up -d
+```
+
+Client 推荐使用 `--network host`，因为转发监听端口是在后续 operator 推送规则时
+动态创建的。如果不用 host networking，需要显式发布每个转发监听端口。
+
+如果使用宿主机二进制，在边缘主机上从同格式 release 归档里只安装
+`portunus-client`：
+
+```sh
+tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /usr/local/bin/
+```
+
+如果从源码编译：
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-client
+sudo install -m 0755 target/release/portunus-client /usr/local/bin/
+```
+
+在 Client 主机上验证：
+
+```sh
+portunus-client --version
+```
+
+## Release 二进制
 
 按主机平台下载对应归档：
 
@@ -61,47 +155,21 @@ sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /us
 完整 release 页面：
 [`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0)。
 
-## 方式 3 — systemd
+## systemd
 
 ```sh
 cd deploy/systemd
 sudo ./install.sh
 # 创建：
-#   /etc/portunus/        管理员可编辑的配置 + TLS 证书
-#   /var/lib/portunus/    守护进程持有的 state.db
-#   portunus 系统用户
+#   /var/lib/portunus/    state.db + 自动生成的 TLS 材料 + 可选 server.toml
+#   /etc/portunus/        client bundle 目录
+#   portunus-server / portunus-client 系统用户
 ```
 
 unit 安装器假设 `portunus-server` 与 `portunus-client` 已经在宿主机上，
 通常来自上面的 release 归档。
 
 详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
-
-## 方式 4 — 从源码编译
-
-```sh
-git clone https://github.com/ZingerLittleBee/Portunus.git
-cd Portunus
-cargo build --release -p portunus-server -p portunus-client
-```
-
-编译完成后会得到：
-
-```
-target/release/portunus-server
-target/release/portunus-client
-```
-
-源码编译主要用于开发或自定义打包。
-
-## 验证安装
-
-```sh
-portunus-server --version
-portunus-client --version
-```
-
-两条命令应分别输出 `portunus-server <version>` 与 `portunus-client <version>`。
 
 ## 下一步
 

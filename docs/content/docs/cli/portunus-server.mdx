@@ -24,12 +24,11 @@ high-level map.
 | `bootstrap-superadmin --name <name>` | One-shot superadmin mint; bearer printed once |
 
 ```sh
-portunus-server --config-dir ./srv \
-  --control-listen 0.0.0.0:7443 \
-  --operator-http-listen 127.0.0.1:7080 \
-  --metrics-listen 127.0.0.1:7081 \
-  serve
+portunus-server --data-dir ./srv serve
 ```
+
+If you need non-default listeners or other overrides, place an optional
+`./srv/server.toml`.
 
 ## Clients
 

@@ -29,12 +29,17 @@ The release notes and performance baseline are in
 
 ## Install
 
-Docker is the recommended install path:
+Docker Compose is the recommended install path. Published images default to
+the newest stable release via `:latest`:
 
 ```sh
-docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
-docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
+docker pull ghcr.io/zingerlittlebee/portunus-server:latest
+docker pull ghcr.io/zingerlittlebee/portunus-client:latest
 ```
+
+Pin a release tag such as `:1.0.0` when you need a fully repeatable deploy.
+See the Docker Compose guide in
+[`docs/content/docs/deployment/docker.mdx`](docs/content/docs/deployment/docker.mdx).
 
 Release binaries are published at
 [`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0).
@@ -51,19 +56,19 @@ cargo build --release -p portunus-server -p portunus-client
 ## Basic flow
 
 ```sh
-# Host A — start the server (TLS material + token store auto-generated)
-./target/release/portunus-server --config-dir ./srv serve
+# Host A — start the server (state.db + TLS material auto-generated)
+./target/release/portunus-server --data-dir ./srv serve
 
 # Operator (Host A) — bootstrap the superadmin operator account (v0.5.0+).
 # Prints the bearer token EXACTLY ONCE — capture it now.
-./target/release/portunus-server --config-dir ./srv bootstrap-superadmin --name ops
+./target/release/portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 # →  superadmin user_id=_superadmin token=<paste-into-PORTUNUS_OPERATOR_TOKEN>
 
 # Every operator subcommand below reads PORTUNUS_OPERATOR_TOKEN from env.
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 
 # Operator — provision a forwarding client and copy the bundle
-./target/release/portunus-server --config-dir ./srv \
+./target/release/portunus-server --data-dir ./srv \
   provision-client edge-01 --out ./edge-01.bundle.json
 
 # Host B — start the client against the issued bundle
@@ -124,12 +129,13 @@ the resolver layer is short-circuited entirely.
 [`005-multi-user-rbac`](specs/005-multi-user-rbac/quickstart.md))
 
 The operator API is now bearer-authed (`Authorization: Bearer <token>`
-on every `/v1/*` request). State lives in `<config-dir>/identity.json`
-alongside the existing `tokens.json`. Two bootstrap paths:
+on every `/v1/*` request). Persistent state lives in
+`<data-dir>/state.db`, and the optional config override file is
+`<data-dir>/server.toml`. Two bootstrap paths:
 
 ```sh
 # Path A — interactive single-shot bootstrap (recommended).
-./target/release/portunus-server --config-dir ./srv bootstrap-superadmin --name ops
+./target/release/portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 # Path B — server.toml shortcut. Add this once, restart, then remove.
 #   operator_token = "<43-char URL-safe-base64 token>"
 ./target/release/portunus-server gen-token  # ← prints a fresh token to stdout
@@ -186,7 +192,7 @@ Production scaffolding lives under [`deploy/`](deploy):
 - [`deploy/systemd/`](deploy/systemd) — `portunus-server.service` and
   `portunus-client.service` with hardened defaults (`User=` + `ProtectSystem=`
   + `CapabilityBoundingSet=` etc.) plus an `install.sh` that creates the
-  service users and lays out `/etc/portunus/` + `/var/lib/portunus/`.
+  service users and lays out `/var/lib/portunus/` + `/etc/portunus/`.
 - [`deploy/docker/`](deploy/docker) — `Dockerfile.server` and
   `Dockerfile.client` runtime images that copy prebuilt binaries into
   `distroless/cc:nonroot`, plus a local-only `docker-compose.yml` for

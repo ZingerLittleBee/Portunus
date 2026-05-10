@@ -1,11 +1,18 @@
 ---
 title: Installation
-description: Install Portunus in 60 seconds with Docker, release binaries, or hardened systemd units.
+description: Install the Portunus server and client separately with Docker, release binaries, or source builds.
 icon: Download
 ---
 
-`Portunus` ships as two single binaries — `portunus-server` (control plane)
-and `portunus-client` (edge). Pick the option that matches your environment.
+`Portunus` has two runtime roles:
+
+- `portunus-server` runs on the control-plane host. Operators talk to it, it
+  stores state, and it pushes rules to connected clients.
+- `portunus-client` runs on each edge host. It connects back to the server,
+  binds forwarded ports, and moves traffic.
+
+Install them on the hosts that will run those roles. In a real deployment that
+usually means one server host and one or more client hosts.
 
 ## Prerequisites
 
@@ -16,27 +23,117 @@ and `portunus-client` (edge). Pick the option that matches your environment.
   one host with two terminals is enough.
 - **Linux or macOS**. Linux is the supported production target.
 
-## Option 1 — Docker (recommended)
+## Server install
 
-Published images are available from GitHub Container Registry:
+Docker Compose is the recommended server install path. Create
+`compose.yaml` on the server host:
 
-```sh
-docker pull ghcr.io/zingerlittlebee/portunus-server:1.0.0
-docker pull ghcr.io/zingerlittlebee/portunus-client:1.0.0
+```yaml
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-data:
+    name: portunus-data
 ```
 
-Use the version tag for production. `latest` tracks the newest published
-stable release:
+Start it:
 
 ```sh
-docker pull ghcr.io/zingerlittlebee/portunus-server:latest
-docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+docker compose up -d server
 ```
 
-See [Deploy with Docker](/en/docs/deployment/docker) for volumes, networking,
-and container-specific operator commands.
+Generated TLS material and SQLite state live in the `portunus-data` volume.
+The examples use `:latest` by default; pin a version tag such as `:1.0.0`
+when you need a fully repeatable production deploy.
 
-## Option 2 — Release binaries
+If you need non-default listeners or other overrides, place an optional
+`server.toml` at `<data-dir>/server.toml`, for example with
+`./server.toml:/var/lib/portunus/server.toml:ro`.
+
+See [Deploy with Docker](/en/docs/deployment/docker) for operator commands,
+client Compose, backup, migration, and production notes.
+
+For a host binary install, download the release archive for the server host,
+extract it, and install only `portunus-server`:
+
+```sh
+tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-server /usr/local/bin/
+```
+
+For a source build:
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-server
+sudo install -m 0755 target/release/portunus-server /usr/local/bin/
+```
+
+Verify on the server host:
+
+```sh
+portunus-server --version
+```
+
+## Client install
+
+Docker Compose is also the recommended client install path. After the server
+provisions a client bundle, create `compose.client.yaml` on the edge host:
+
+```yaml
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    volumes:
+      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+    restart: unless-stopped
+```
+
+Start it:
+
+```sh
+docker compose -f compose.client.yaml up -d
+```
+
+`--network host` is recommended for the client because forwarded listen ports
+are created later by operator rules. If you avoid host networking, publish each
+forwarded port explicitly.
+
+For a host binary install, use the same release archive format and install only
+`portunus-client` on the edge host:
+
+```sh
+tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /usr/local/bin/
+```
+
+For a source build:
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-client
+sudo install -m 0755 target/release/portunus-client /usr/local/bin/
+```
+
+Verify on the client host:
+
+```sh
+portunus-client --version
+```
+
+## Release binaries
 
 Download the archive that matches your host:
 
@@ -64,15 +161,15 @@ sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /us
 All release assets live at
 [`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0).
 
-## Option 3 — systemd
+## systemd
 
 ```sh
 cd deploy/systemd
 sudo ./install.sh
 # Creates:
-#   /etc/portunus/        admin-edited config + TLS material
-#   /var/lib/portunus/    daemon-managed state.db
-#   portunus system user
+#   /var/lib/portunus/    state.db + generated TLS material + optional server.toml
+#   /etc/portunus/        client bundle directory
+#   portunus-server / portunus-client system users
 ```
 
 The unit installer expects `portunus-server` and `portunus-client` to already
@@ -80,32 +177,6 @@ be on the host, usually copied from the release archive above.
 
 See [Deploying with systemd](/en/docs/deployment/systemd) for the full unit
 breakdown and hardening notes.
-
-## Option 4 — Build from source
-
-```sh
-git clone https://github.com/ZingerLittleBee/Portunus.git
-cd Portunus
-cargo build --release -p portunus-server -p portunus-client
-```
-
-You now have:
-
-```
-target/release/portunus-server
-target/release/portunus-client
-```
-
-Source builds are mainly for development or custom packaging.
-
-## Verify the install
-
-```sh
-portunus-server --version
-portunus-client --version
-```
-
-They should print `portunus-server <version>` and `portunus-client <version>`.
 
 ## Next steps
 

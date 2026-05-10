@@ -9,27 +9,28 @@ icon: Zap
 
 ## 0. 前置条件
 
-需要 [`portunus-server` 和 `portunus-client` 已安装](/zh/docs/getting-started/installation)
-并位于 `PATH`，外加两个终端（或两台主机）。
+需要两个终端（或两台主机）：
+
+- 主机 A：已安装 [`portunus-server`](/zh/docs/getting-started/installation#安装-server)，
+  并位于 `PATH`。
+- 主机 B：已安装 [`portunus-client`](/zh/docs/getting-started/installation#安装-client)，
+  并位于 `PATH`。
+
+如果是单机试用，就在本机同时安装两个二进制，把两个终端分别当作主机 A 和主机 B。
 
 ## 1. 启动 Server（主机 A）
 
 ```sh
 mkdir -p ./srv
-portunus-server --config-dir ./srv \
-  --control-listen 0.0.0.0:7443 \
-  --operator-http-listen 127.0.0.1:7080 \
-  --metrics-listen 127.0.0.1:7081 \
-  serve
+portunus-server --data-dir ./srv serve
 ```
 
 首次启动时，Server 会创建 `./srv/server.crt`、`./srv/server.key` 和空的
-`./srv/tokens.json`。日志为 JSON：
+`./srv/state.db`。日志为 JSON：
 
 ```json
 {"event":"tls.cert_generated","fingerprint_sha256":"…"}
-{"event":"control.listening","addr":"0.0.0.0:7443"}
-{"event":"operator_http.listening","addr":"127.0.0.1:7080"}
+{"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
 ```
 
 ## 2. 引导超管账户
@@ -37,7 +38,7 @@ portunus-server --config-dir ./srv \
 操作员 API 需要 Bearer 认证（v0.5.0 起）。一次性引导超管：
 
 ```sh
-portunus-server --config-dir ./srv bootstrap-superadmin --name ops
+portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 # → superadmin user_id=_superadmin token=<bearer>
 ```
 
@@ -54,8 +55,8 @@ export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 ## 3. 配发一个 Client
 
 ```sh
-portunus-server --config-dir ./srv \
-  provision-client edge-01 --out ./srv/edge-01.bundle.json
+portunus-server --data-dir ./srv \
+  provision-client edge-01 --out ./edge-01.bundle.json
 ```
 
 下发包（mode 0600）包含 Server 端点、固定的证书 SHA-256、以及该 Client 的
@@ -70,7 +71,7 @@ portunus-client --bundle ./edge-01.bundle.json
 数秒之内 Server 会输出 `client.connected`。验证：
 
 ```sh
-portunus-server --config-dir ./srv list-clients
+portunus-server --data-dir ./srv list-clients
 # NAME      CONNECTED   REMOTE              CONNECTED-AT
 # edge-01   yes         203.0.113.5:51234   2026-05-06T12:01:30Z
 ```

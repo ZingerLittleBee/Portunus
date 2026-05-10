@@ -4,8 +4,8 @@ description: server.toml 的所有配置项，包含取值范围和默认值。
 icon: ServerCog
 ---
 
-`portunus-server` 从 `--config-dir` 指定目录中的 `server.toml` 读取配置。
-仅使用默认值的最小配置也是合法的：下面每一项都可省略。
+`portunus-server` 会读取 `<data-dir>/server.toml` 这个可选文件。如果文件不存在，
+就使用内置默认值；如果文件存在，下面每一项都可省略，只覆写你关心的默认值。
 
 ## 监听器
 
@@ -34,20 +34,7 @@ tls_cert_path = "/var/lib/portunus/server.crt"
 tls_key_path  = "/var/lib/portunus/server.key"
 ```
 
-## 持久化
-
-```toml
-# Client 认证用的 Bearer Token 存储。
-# 首次 `provision-client` 时创建。Mode 0600。
-# Token 是 256-bit 随机；务必备份。
-token_store_path = "/var/lib/portunus/tokens.json"
-
-# 操作员侧身份存储（用户 / 凭据 / Grant）。
-# Mode 0600。原子写 JSON；可在多机间 rsync 做 HA。
-operator_store_path = "/var/lib/portunus/identity.json"
-```
-
-v0.8 起大部分状态搬入 `<data-dir>/state.db`（SQLite）。详见
+v0.8 起大部分持久状态搬入 `<data-dir>/state.db`（SQLite）。详见
 [SQLite 存储](/zh/docs/features/sqlite-storage)。
 
 ## 引导捷径
@@ -115,19 +102,13 @@ udp_max_flows_per_rule = 1024
 
 未来可能在 `[resolver]` 子表暴露上述项。
 
-## CLI 覆写
-
-监听地址也可以从 CLI 覆写：
+## 运行路径
 
 ```sh
-portunus-server --config-dir ./srv \
-  --control-listen 0.0.0.0:7443 \
-  --operator-http-listen 127.0.0.1:7080 \
-  --metrics-listen 127.0.0.1:7081 \
-  serve
+portunus-server --data-dir ./srv serve
 ```
 
-CLI 优先于 `server.toml`。
+这条命令会在存在 `./srv/server.toml` 时读取它，不存在时直接使用内置默认值。
 
 ## 示例：production-ready server.toml
 
@@ -136,11 +117,8 @@ control_listen        = "0.0.0.0:7443"
 operator_http_listen  = "127.0.0.1:7080"
 metrics_listen        = "127.0.0.1:7081"
 
-tls_cert_path         = "/etc/portunus/server.crt"
-tls_key_path          = "/etc/portunus/server.key"
-
-token_store_path      = "/var/lib/portunus/tokens.json"
-operator_store_path   = "/var/lib/portunus/identity.json"
+tls_cert_path         = "/var/lib/portunus/server.crt"
+tls_key_path          = "/var/lib/portunus/server.key"
 
 shutdown_drain_timeout_secs = 30
 log_format = "json"

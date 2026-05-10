@@ -4,9 +4,9 @@ description: Every setting in server.toml, with ranges and defaults.
 icon: ServerCog
 ---
 
-`portunus-server` reads its config from `server.toml` in the directory
-passed via `--config-dir`. A minimal config that uses only defaults is
-valid — every key below is optional.
+`portunus-server` reads an optional `server.toml` from `<data-dir>/server.toml`.
+If the file is absent, built-in defaults are used. If the file exists, every
+key below is optional and only overrides the defaults you specify.
 
 ## Listeners
 
@@ -36,20 +36,7 @@ tls_cert_path = "/var/lib/portunus/server.crt"
 tls_key_path  = "/var/lib/portunus/server.key"
 ```
 
-## Persistence
-
-```toml
-# Bearer-token store for client authentication.
-# Created on first `provision-client`. Mode 0600.
-# Tokens are 256-bit random secrets; keep this file backed up.
-token_store_path = "/var/lib/portunus/tokens.json"
-
-# Operator-side identity store (users / credentials / grants).
-# Mode 0600. Atomic-write JSON; safe to rsync across hosts.
-operator_store_path = "/var/lib/portunus/identity.json"
-```
-
-Since v0.8 most state lives in `<data-dir>/state.db` (SQLite). See
+Since v0.8 most persistent state lives in `<data-dir>/state.db` (SQLite). See
 [SQLite Storage](/en/docs/features/sqlite-storage).
 
 ## Bootstrap shortcut
@@ -119,19 +106,14 @@ The current release bakes the spec-fixed defaults into `ResolverConfig`
 
 A future release may expose these under a `[resolver]` table.
 
-## CLI overrides
-
-Every listen address is also overridable on the CLI:
+## Runtime path
 
 ```sh
-portunus-server --config-dir ./srv \
-  --control-listen 0.0.0.0:7443 \
-  --operator-http-listen 127.0.0.1:7080 \
-  --metrics-listen 127.0.0.1:7081 \
-  serve
+portunus-server --data-dir ./srv serve
 ```
 
-CLI flags take precedence over `server.toml`.
+That command reads `./srv/server.toml` if present, and otherwise uses the
+built-in defaults.
 
 ## Example: production-ready server.toml
 
@@ -140,11 +122,8 @@ control_listen        = "0.0.0.0:7443"
 operator_http_listen  = "127.0.0.1:7080"
 metrics_listen        = "127.0.0.1:7081"
 
-tls_cert_path         = "/etc/portunus/server.crt"
-tls_key_path          = "/etc/portunus/server.key"
-
-token_store_path      = "/var/lib/portunus/tokens.json"
-operator_store_path   = "/var/lib/portunus/identity.json"
+tls_cert_path         = "/var/lib/portunus/server.crt"
+tls_key_path          = "/var/lib/portunus/server.key"
 
 shutdown_drain_timeout_secs = 30
 log_format = "json"

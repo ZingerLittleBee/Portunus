@@ -17,10 +17,10 @@ sudo ./install.sh
 
 脚本会：
 
-- 创建系统用户（`portunus:portunus`）。
+- 创建服务用户（`portunus-server`、`portunus-client`）。
 - 按 FHS 铺好目录：
-  - `/etc/portunus/` —— 管理员编辑的配置 + TLS 材料（mode 0750）。
-  - `/var/lib/portunus/` —— 守护进程持有的 `state.db`（mode 0700）。
+  - `/var/lib/portunus/` —— `state.db`、自动生成的 TLS 材料、可选 `server.toml`（mode 0750）。
+  - `/etc/portunus/` —— client bundle 目录。
 - 安装 `portunus-server.service` 和 `portunus-client.service`。
 
 ## server.service
@@ -31,13 +31,12 @@ Description=Portunus server
 After=network.target
 
 [Service]
-User=portunus
-Group=portunus
+User=portunus-server
+Group=portunus-server
 StateDirectory=portunus
 StateDirectoryMode=0700
 ExecStart=/usr/local/bin/portunus-server serve \
-    --config-dir /etc/portunus \
-    --data-dir   /var/lib/portunus
+    --data-dir /var/lib/portunus
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=35
@@ -67,8 +66,8 @@ Description=Portunus client
 After=network.target
 
 [Service]
-User=portunus
-Group=portunus
+User=portunus-client
+Group=portunus-client
 ExecStart=/usr/local/bin/portunus-client \
     --bundle /etc/portunus/client.bundle.json
 Restart=on-failure
@@ -90,14 +89,13 @@ WantedBy=multi-user.target
 安装后：
 
 ```sh
-# 1. 生成 server 配置（或复制 deploy/server.toml.example）
-sudo cp deploy/server.toml.example /etc/portunus/server.toml
-sudo nano /etc/portunus/server.toml
+# 1. 可选：覆写默认值
+sudo cp deploy/server.toml.example /var/lib/portunus/server.toml
+sudo nano /var/lib/portunus/server.toml
 
 # 2. 引导超管（一次性，Token 仅打印一次）
-sudo -u portunus portunus-server \
-    --config-dir /etc/portunus \
-    --data-dir   /var/lib/portunus \
+sudo -u portunus-server portunus-server \
+    --data-dir /var/lib/portunus \
     bootstrap-superadmin --name 'Initial admin'
 
 # 3. 启用并启动 server
@@ -119,8 +117,8 @@ sudo systemctl enable --now portunus-client
 ## 烟雾测试
 
 ```sh
-curl -k -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
-     https://localhost:7443/v1/users/me
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     http://127.0.0.1:7080/v1/users/me
 ```
 
 ## 加固备注
@@ -140,7 +138,7 @@ curl -k -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
 set -eu
 DEST=/var/backups/portunus/$(date +%F).db
 mkdir -p "$(dirname "$DEST")"
-sudo -u portunus portunus-server \
+sudo -u portunus-server portunus-server \
   --data-dir /var/lib/portunus \
   backup --out "$DEST"
 find /var/backups/portunus -name '*.db' -mtime +30 -delete
