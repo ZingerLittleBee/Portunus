@@ -7,6 +7,7 @@ The harness starts a real `forward-server`, a real `forward-client`, and
 1. Direct iperf3 throughput to the target.
 2. Throughput through a pushed forward-rs TCP rule.
 3. Optional ingress bandwidth-cap convergence through a second pushed rule.
+4. Optional Linux iptables REDIRECT throughput for an in-kernel baseline.
 
 It intentionally uses only the Python standard library plus an installed
 `iperf3` binary so operators can copy the workflow to bare VPS hosts.
@@ -18,6 +19,7 @@ import argparse
 import json
 import os
 import pathlib
+import platform
 import shutil
 import socket
 import subprocess
@@ -40,6 +42,7 @@ class Ports:
     iperf_target: int
     uncapped_listen: int
     capped_listen: int
+    iptables_listen: int
 
 
 def free_port() -> int:
@@ -62,24 +65,49 @@ def wait_for_metrics(port: int, deadline_seconds: float = 10.0) -> None:
     raise RuntimeError(f"forward-server did not expose {url}: {last_error}")
 
 
+def tail_text(path: pathlib.Path, max_chars: int = 4000) -> str:
+    if not path.exists():
+        return "<missing log>"
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
+
+
 def check_output(cmd: list[str], env: dict[str, str]) -> str:
     return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT, text=True)
 
 
-def run_iperf3(iperf3: str, port: int, seconds: int, omit_seconds: int) -> dict[str, Any]:
+def check_output_best_effort(cmd: list[str], env: dict[str, str]) -> str:
+    try:
+        return check_output(cmd, env).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return f"unavailable ({exc})"
+
+
+def run_iperf3(
+    iperf3: str,
+    port: int,
+    seconds: int,
+    omit_seconds: int,
+    bitrate_mbps: int | None = None,
+) -> dict[str, Any]:
+    cmd = [
+        iperf3,
+        "-J",
+        "-c",
+        "127.0.0.1",
+        "-p",
+        str(port),
+        "-t",
+        str(seconds),
+        "-O",
+        str(omit_seconds),
+    ]
+    if bitrate_mbps is not None:
+        cmd.extend(["-b", f"{bitrate_mbps}M"])
     output = check_output(
-        [
-            iperf3,
-            "-J",
-            "-c",
-            "127.0.0.1",
-            "-p",
-            str(port),
-            "-t",
-            str(seconds),
-            "-O",
-            str(omit_seconds),
-        ],
+        cmd,
         os.environ.copy(),
     )
     data = json.loads(output)
@@ -91,12 +119,74 @@ def run_iperf3(iperf3: str, port: int, seconds: int, omit_seconds: int) -> dict[
     }
 
 
+def pct(numerator_mbps: float, denominator_mbps: float) -> float | None:
+    if denominator_mbps <= 0.0:
+        return None
+    return round(numerator_mbps / denominator_mbps * 100.0, 2)
+
+
 def start_iperf3_server(iperf3: str, port: int) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [iperf3, "-s", "-p", str(port), "-1"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
+
+
+def run_with_iperf_server(
+    iperf3: str,
+    target_port: int,
+    client_port: int,
+    seconds: int,
+    omit_seconds: int,
+    bitrate_mbps: int | None = None,
+) -> dict[str, Any]:
+    server = start_iperf3_server(iperf3, target_port)
+    try:
+        time.sleep(0.3)
+        result = run_iperf3(iperf3, client_port, seconds, omit_seconds, bitrate_mbps)
+        server.wait(timeout=seconds + 5)
+        return result
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            try:
+                server.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                server.kill()
+
+
+def iptables_cmd(iptables_bin: str) -> list[str]:
+    if os.geteuid() == 0:
+        return [iptables_bin]
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        raise RuntimeError("iptables baseline requires root or sudo")
+    return [sudo, "-n", iptables_bin]
+
+
+def iptables_redirect_rule(listen_port: int, target_port: int) -> list[str]:
+    # Local loopback clients traverse nat/OUTPUT, not PREROUTING.
+    return [
+        "-p",
+        "tcp",
+        "-d",
+        "127.0.0.1",
+        "--dport",
+        str(listen_port),
+        "-j",
+        "REDIRECT",
+        "--to-ports",
+        str(target_port),
+    ]
+
+
+def add_iptables_redirect(iptables_bin: str, listen_port: int, target_port: int) -> list[str]:
+    cmd_prefix = iptables_cmd(iptables_bin)
+    rule = iptables_redirect_rule(listen_port, target_port)
+    table_and_chain = ["-t", "nat", "OUTPUT"]
+    subprocess.check_call([*cmd_prefix, "-t", "nat", "-A", "OUTPUT", *rule])
+    return [*cmd_prefix, *table_and_chain[:2], "-D", table_and_chain[2], *rule]
 
 
 def write_config(config_dir: pathlib.Path, ports: Ports, token: str) -> None:
@@ -140,6 +230,18 @@ def build_release(server_bin: pathlib.Path, client_bin: pathlib.Path) -> None:
     )
 
 
+def parse_offered_mbps(raw: str | None) -> list[int]:
+    if raw is None or raw.strip() == "":
+        return []
+    out: list[int] = []
+    for part in raw.split(","):
+        value = int(part.strip())
+        if value <= 0:
+            raise ValueError("--offered-mbps values must be positive")
+        out.append(value)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=int, default=5)
@@ -152,13 +254,46 @@ def main() -> int:
     )
     parser.add_argument("--json-out", type=pathlib.Path)
     parser.add_argument("--iperf3", default=shutil.which("iperf3") or "iperf3")
-    parser.add_argument("--server-bin", type=pathlib.Path, default=ROOT / "target/release/forward-server")
-    parser.add_argument("--client-bin", type=pathlib.Path, default=ROOT / "target/release/forward-client")
+    parser.add_argument(
+        "--offered-mbps",
+        help=(
+            "Comma-separated TCP application pacing rates to compare across "
+            "direct, forward-rs, and iptables paths, e.g. 100,500,1000."
+        ),
+    )
+    parser.add_argument(
+        "--with-iptables",
+        action="store_true",
+        help="On Linux, also benchmark nat/OUTPUT REDIRECT as an in-kernel baseline.",
+    )
+    parser.add_argument("--iptables-bin", default=shutil.which("iptables") or "iptables")
+    parser.add_argument(
+        "--server-bin",
+        type=pathlib.Path,
+        default=ROOT / "target/release/forward-server",
+    )
+    parser.add_argument(
+        "--client-bin",
+        type=pathlib.Path,
+        default=ROOT / "target/release/forward-client",
+    )
     args = parser.parse_args()
+    offered_mbps = parse_offered_mbps(args.offered_mbps)
 
-    build_release(args.server_bin, args.client_bin)
     if not shutil.which(args.iperf3) and not pathlib.Path(args.iperf3).exists():
         raise SystemExit("iperf3 is required. Install it, or pass --iperf3 /path/to/iperf3.")
+    if args.with_iptables:
+        if platform.system() != "Linux":
+            raise SystemExit("--with-iptables is only supported on Linux.")
+        if not shutil.which(args.iptables_bin) and not pathlib.Path(args.iptables_bin).exists():
+            raise SystemExit(
+                "iptables is required for --with-iptables. "
+                "Install it, or pass --iptables-bin /path/to/iptables."
+            )
+    if offered_mbps and not args.with_iptables:
+        raise SystemExit("--offered-mbps requires --with-iptables.")
+
+    build_release(args.server_bin, args.client_bin)
 
     ports = Ports(
         control=free_port(),
@@ -167,9 +302,11 @@ def main() -> int:
         iperf_target=free_port(),
         uncapped_listen=free_port(),
         capped_listen=free_port(),
+        iptables_listen=free_port(),
     )
 
     processes: list[subprocess.Popen[Any]] = []
+    iptables_cleanup: list[str] | None = None
     try:
         with tempfile.TemporaryDirectory(prefix="forward-rs-perf-") as tmp:
             tmpdir = pathlib.Path(tmp)
@@ -214,12 +351,20 @@ def main() -> int:
                     f"127.0.0.1:{ports.control}",
                     "serve",
                 ],
-                stdout=subprocess.DEVNULL,
+                stdout=(tmpdir / "forward-server.log").open("wb"),
                 stderr=subprocess.STDOUT,
                 env=env,
             )
             processes.append(server)
-            wait_for_metrics(ports.metrics)
+            try:
+                wait_for_metrics(ports.metrics)
+            except RuntimeError as exc:
+                if server.poll() is not None:
+                    log_tail = tail_text(tmpdir / "forward-server.log")
+                    raise RuntimeError(
+                        f"{exc}\nforward-server exited with {server.returncode}; log tail:\n{log_tail}"
+                    ) from exc
+                raise
 
             client = subprocess.Popen(
                 [
@@ -229,20 +374,21 @@ def main() -> int:
                     "--stats-report-interval-secs",
                     "1",
                 ],
-                stdout=subprocess.DEVNULL,
+                stdout=(tmpdir / "forward-client.log").open("wb"),
                 stderr=subprocess.STDOUT,
                 env=env,
             )
             processes.append(client)
             time.sleep(1.5)
 
-            iperf_server = start_iperf3_server(args.iperf3, ports.iperf_target)
-            time.sleep(0.3)
-            direct = run_iperf3(args.iperf3, ports.iperf_target, args.seconds, args.omit_seconds)
-            iperf_server.wait(timeout=args.seconds + 5)
+            direct = run_with_iperf_server(
+                args.iperf3,
+                ports.iperf_target,
+                ports.iperf_target,
+                args.seconds,
+                args.omit_seconds,
+            )
 
-            iperf_server = start_iperf3_server(args.iperf3, ports.iperf_target)
-            time.sleep(0.3)
             uncapped_rule = check_output(
                 [
                     str(args.server_bin),
@@ -260,24 +406,93 @@ def main() -> int:
                 env,
             ).strip()
             time.sleep(0.8)
-            uncapped = run_iperf3(args.iperf3, ports.uncapped_listen, args.seconds, args.omit_seconds)
-            iperf_server.wait(timeout=args.seconds + 5)
+            uncapped = run_with_iperf_server(
+                args.iperf3,
+                ports.iperf_target,
+                ports.uncapped_listen,
+                args.seconds,
+                args.omit_seconds,
+            )
 
             result: dict[str, Any] = {
                 "host": check_output(["uname", "-a"], env).strip(),
-                "rustc": check_output(["rustc", "--version"], env).strip(),
-                "iperf3": check_output([args.iperf3, "--version"], env).splitlines()[0],
+                "rustc": check_output_best_effort(["rustc", "--version"], env),
+                "iperf3": check_output_best_effort([args.iperf3, "--version"], env).splitlines()[0],
                 "duration_seconds": args.seconds,
                 "omit_seconds": args.omit_seconds,
                 "direct": direct,
                 "forward_rs_uncapped": uncapped,
-                "forward_vs_direct_pct": round(uncapped["mbps"] / direct["mbps"] * 100.0, 2),
+                "forward_vs_direct_pct": pct(uncapped["mbps"], direct["mbps"]),
                 "uncapped_rule_id": uncapped_rule,
             }
 
+            if args.with_iptables:
+                iptables_cleanup = add_iptables_redirect(
+                    args.iptables_bin,
+                    ports.iptables_listen,
+                    ports.iperf_target,
+                )
+                iptables = run_with_iperf_server(
+                    args.iperf3,
+                    ports.iperf_target,
+                    ports.iptables_listen,
+                    args.seconds,
+                    args.omit_seconds,
+                )
+                result["iptables_redirect"] = iptables
+                result["iptables_vs_direct_pct"] = pct(iptables["mbps"], direct["mbps"])
+                result["forward_vs_iptables_pct"] = pct(uncapped["mbps"], iptables["mbps"])
+
+            if offered_mbps:
+                matrix: list[dict[str, Any]] = []
+                for offered in offered_mbps:
+                    direct_limited = run_with_iperf_server(
+                        args.iperf3,
+                        ports.iperf_target,
+                        ports.iperf_target,
+                        args.seconds,
+                        args.omit_seconds,
+                        offered,
+                    )
+                    forward_limited = run_with_iperf_server(
+                        args.iperf3,
+                        ports.iperf_target,
+                        ports.uncapped_listen,
+                        args.seconds,
+                        args.omit_seconds,
+                        offered,
+                    )
+                    iptables_limited = run_with_iperf_server(
+                        args.iperf3,
+                        ports.iperf_target,
+                        ports.iptables_listen,
+                        args.seconds,
+                        args.omit_seconds,
+                        offered,
+                    )
+                    matrix.append(
+                        {
+                            "offered_mbps": offered,
+                            "direct": direct_limited,
+                            "forward_rs_uncapped": forward_limited,
+                            "iptables_redirect": iptables_limited,
+                            "forward_vs_direct_pct": pct(
+                                forward_limited["mbps"],
+                                direct_limited["mbps"],
+                            ),
+                            "forward_vs_iptables_pct": pct(
+                                forward_limited["mbps"],
+                                iptables_limited["mbps"],
+                            ),
+                            "iptables_vs_direct_pct": pct(
+                                iptables_limited["mbps"],
+                                direct_limited["mbps"],
+                            ),
+                        }
+                    )
+                result["offered_mbps_matrix"] = matrix
+
             if args.cap_bytes_per_sec > 0:
-                iperf_server = start_iperf3_server(args.iperf3, ports.iperf_target)
-                time.sleep(0.3)
                 capped_rule = check_output(
                     [
                         str(args.server_bin),
@@ -298,8 +513,15 @@ def main() -> int:
                     env,
                 ).strip()
                 time.sleep(0.8)
-                capped = run_iperf3(args.iperf3, ports.capped_listen, max(args.seconds, 8), max(args.omit_seconds, 2))
-                iperf_server.wait(timeout=max(args.seconds, 8) + 5)
+                capped_seconds = max(args.seconds, 8)
+                capped_omit = max(args.omit_seconds, 2)
+                capped = run_with_iperf_server(
+                    args.iperf3,
+                    ports.iperf_target,
+                    ports.capped_listen,
+                    capped_seconds,
+                    capped_omit,
+                )
                 target_mbps = args.cap_bytes_per_sec * 8 / 1_000_000
                 result["forward_rs_capped"] = {
                     **capped,
@@ -314,6 +536,8 @@ def main() -> int:
                 args.json_out.write_text(rendered + "\n", encoding="utf-8")
             print(rendered)
     finally:
+        if iptables_cleanup is not None:
+            subprocess.run(iptables_cleanup, check=False)
         terminate_all(processes)
 
     return 0

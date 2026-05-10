@@ -1,34 +1,48 @@
 ---
-title: 介绍
-description: 一个用 Rust 编写的端口级 TCP / UDP 转发服务，包含控制面 Server、边缘 Client、操作员管理面。
+title: forward-rs
+description: 基于 Rust 数据面的远程 TCP / UDP 转发，提供中心控制面、RBAC、指标与 QoS。
 icon: BookOpen
 ---
 
-`forward-rs` 是一个用 Rust 编写的高性能端口转发服务。它由一个中心化的
-**控制面 Server** 和一个或多个 **边缘 Client** 组成：边缘 Client 在远端
-主机上绑定监听端口，并将 TCP / UDP 流量转发到指定的上游目标。
+# forward-rs
 
-操作员可以从 Server 端通过 CLI、HTTP API 或 Web UI 推送规则；每个边缘 Client
-通过一条 TLS 指纹固定 (TLS-pinned) 的双向 gRPC 流接收规则。每条规则的字节、
-连接、数据报指标每 5 秒上报一次，可通过 Prometheus 与操作员 API 查看。
+面向真实运维场景的远程 TCP / UDP 转发。边缘 Client 运行在远端主机上，Server
+集中下发转发规则；数据面保持 L4 字节直通，同时补上 RBAC、指标、审计日志和
+流量配额。
+
+<Cards>
+  <Card title="60 秒安装" href="/zh/docs/getting-started/installation" />
+  <Card title="阅读性能报告" href="/zh/docs/getting-started/performance" />
+  <Card title="查看架构说明" href="/zh/docs/getting-started/architecture" />
+</Cards>
 
 ## 性能
 
+大多数用户并不是要榨干本机 20 Gbit/s loopback 的极限吞吐，而是在有限带宽下
+稳定转发。实测 Linux 主机上，`forward-rs` 在 2.5 Gbit/s 以内与内核态转发基线
+基本无差异；5-10 Gbit/s 仍然接近目标值，但建议在目标机器上复测；超过
+10 Gbit/s 后，用户态控制面带来的吞吐成本开始明显。
+
+| 目标带宽 | 结论 |
+| --- | --- |
+| 100 Mbit/s - 2.5 Gbit/s | 实测与内核态转发没有有意义的差距。 |
+| 5-10 Gbit/s | 通常仍接近目标值，但上线前应该在目标机器复测。 |
+| 12.5 Gbit/s+ | 用户态转发的控制能力会开始换掉一部分极限吞吐。 |
+
 <Cards>
-  <Card title="性能报告" href="/zh/docs/operations/performance" />
+  <Card title="查看方法、原始数据与注意事项" href="/zh/docs/getting-started/performance" />
 </Cards>
 
-## 为什么选择 forward-rs？
+## 它提供什么
 
-- **单二进制**，零运行时依赖。内置 SQLite、嵌入式 Web UI、内置 TLS —— 拷贝
-  二进制即可运行。
-- 控制面采用 **TLS + Bearer Token** 认证。Client 通过预先嵌入到下发包中的
-  SHA-256 证书指纹 (pinning) 校验 Server 身份。
-- **多租户 RBAC**。可将每个用户限定到指定 Client、端口范围与协议；规则的
-  归属关系由 Server 端强制执行。
-- **L4 字节直通**。即使按 SNI 路由，也绝不解密、终结或重新加密 TLS。
-- **运维友好**。配额支持热更新、连接优雅 drain、审计日志、Prometheus
-  指标、结构化 JSON 日志、备份 / 恢复工具一应俱全。
+| 领域 | 能力 |
+| --- | --- |
+| 转发 | TCP / UDP 规则、端口范围、DNS 域名目标、多目标故障切换。 |
+| L4 路由 | TLS SNI 路由但不终结 TLS，可选 PROXY protocol。 |
+| 控制面 | CLI、操作员 HTTP API、内置 Web UI、基于 TLS 指纹固定的热更新规则流。 |
+| 多租户 | 按用户、Client、协议与端口范围做 RBAC，规则归属由 Server 强制执行。 |
+| QoS | 按规则或 owner 设置带宽、新连接速率、并发连接 / flow 上限。 |
+| 运维 | Prometheus 指标、结构化日志、审计记录、内置 SQLite、备份与恢复。 |
 
 ## 功能一览
 
@@ -44,6 +58,13 @@ icon: BookOpen
   <Card title="Web UI" href="/zh/docs/features/web-ui" />
   <Card title="SQLite 存储" href="/zh/docs/features/sqlite-storage" />
 </Cards>
+
+## 适合什么场景
+
+当你需要集中管理远端监听端口、给不同用户分配可控范围、观察转发流量、或按 owner
+设置配额时，`forward-rs` 比一条静态本机转发规则更像一个可运维的系统。若场景
+只是单机上的单条固定规则，并且唯一目标是极限吞吐，内核态转发路径仍然更简单、
+更快。这里的关键是按你的目标带宽实测，而不是只看无上限 loopback 的极限值。
 
 ## 快速链接
 

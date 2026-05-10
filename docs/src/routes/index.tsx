@@ -1,7 +1,10 @@
-import { createFileRoute, redirect } from '@tanstack/react-router';
+import { createFileRoute } from "@tanstack/react-router";
+import { LandingPage } from "@/components/landing";
 
-export const Route = createFileRoute('/')({
-  beforeLoad: () => {
-    throw redirect({ to: '/$lang', params: { lang: 'en' } });
-  },
+export const Route = createFileRoute("/")({
+  component: Home,
 });
+
+function Home() {
+  return <LandingPage locale="en" />;
+}

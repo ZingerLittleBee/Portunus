@@ -121,10 +121,107 @@ Result:
 | forward-rs as percent of direct loopback | 45.90% |
 | forward-rs capped at `1,048,576 B/s` | 8.394 Mbit/s |
 
+This local capture was taken on macOS, so it does **not** include the
+Linux-only iptables baseline.
+
+`forward-rs as percent of direct loopback` is only:
+
+```text
+forward_rs_uncapped / direct_iperf3_loopback * 100
+```
+
+It is not an iptables comparison. On Linux, add `--with-iptables` to run a
+same-host `iptables -t nat OUTPUT ... REDIRECT` baseline alongside the
+forward-rs rule. That adds:
+
+| Field | Meaning |
+| --- | --- |
+| `iptables_redirect` | `iperf3` through an in-kernel loopback port redirect. |
+| `iptables_vs_direct_pct` | `iptables_redirect / direct * 100`. |
+| `forward_vs_iptables_pct` | `forward_rs_uncapped / iptables_redirect * 100`. |
+
 The capped case targeted 8.389 Mbit/s and landed within the +10 percent
 acceptance bound. The uncapped percent-of-direct improved from 18.04 % to
 45.90 % after the v0.11 tuning recorded under
 [Recent optimisations](#recent-optimisations).
+
+### Linux iptables Baseline
+
+Captured on 2026-05-10 on:
+
+```text
+Linux 69-201-77-68 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64
+rustc 1.95.0 (59807616e 2026-04-14)
+iperf 3.18
+```
+
+Command:
+
+```sh
+TMPDIR=/root scripts/perf_loopback.py --seconds 10 --omit-seconds 2 \
+  --with-iptables --iptables-bin /usr/sbin/iptables
+```
+
+`TMPDIR=/root` was required on this host because `/tmp` is `tmpfs`, and
+`forward-server` intentionally refuses tmpfs-backed TLS / persistence state.
+The iptables rule was cleaned up after the run; `iptables -t nat -S OUTPUT`
+returned only the default `-P OUTPUT ACCEPT` policy.
+
+| Path | Throughput | vs direct | vs iptables | Retransmits |
+| --- | ---: | ---: | ---: | ---: |
+| Direct `iperf3` loopback | 18,362-18,770 Mbit/s | 100.00% | 98-100% | 0 |
+| `iptables` `nat/OUTPUT REDIRECT` | 18,429-19,190 Mbit/s | 100-102% | 100.00% | 0 |
+| `iperf3` through forward-rs uncapped rule | 7,273-9,844 Mbit/s | 39-53% | 39-53% | 0-21 |
+| forward-rs capped at `1,048,576 B/s` | 8.387 Mbit/s | n/a | n/a | 0 |
+
+The capped case targeted 8.389 Mbit/s and landed within the +10 percent
+acceptance bound. The uncapped maximum is intentionally reported as a range:
+at this speed the measurement is dominated by scheduler noise, TCP pacing,
+and userspace-copy CPU placement. A single run from this host produced
+7,531.560 Mbit/s (39.25% of iptables), but repeat runs landed between
+7,273 and 9,844 Mbit/s. Use the offered-load sweep below for operator-facing
+capacity guidance; it is more relevant to finite WAN links than raw loopback
+maximums.
+
+#### Offered-Load Sweep
+
+The table below uses `iperf3 -b <rate>` TCP application pacing to answer the
+operator question that matters more than raw loopback maximums: "at my WAN
+speed, does the proxy path matter?"
+
+Command shape:
+
+```sh
+TMPDIR=/root scripts/perf_loopback.py --seconds 5 --omit-seconds 1 \
+  --with-iptables --offered-mbps 100,500,1000,2500,5000,7500,10000,12500,15000,18000,20000 \
+  --iptables-bin /usr/sbin/iptables
+```
+
+| Offered load | Direct | iptables REDIRECT | forward-rs | forward-rs vs iptables | Interpretation |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 100 Mbit/s | 100.012 | 100.007 | 99.999 | 99.99% | No meaningful difference. |
+| 500 Mbit/s | 499.986 | 500.011 | 500.138 | 100.03% | No meaningful difference. |
+| 1 Gbit/s | 999.850 | 999.737 | 999.694 | 100.00% | No meaningful difference. |
+| 2.5 Gbit/s | 2,499.613 | 2,499.853 | 2,499.678 | 99.99% | No meaningful difference. |
+| 5 Gbit/s | 4,999.610 | 4,999.626 | 5,351.013 | 107.03% | At target; short-run pacing noise dominates. |
+| 7.5 Gbit/s | 7,471.440 | 7,499.448 | 8,172.746 | 108.98% | At target; short-run pacing noise dominates. |
+| 10 Gbit/s | 10,035.228 | 9,999.445 | 9,422.687 | 94.23% | Small visible gap, still close to target. |
+| 12.5 Gbit/s | 12,753.687 | 13,198.878 | 6,528.820 | 49.46% | Gap opens; forward-rs is CPU/userspace-copy limited. |
+| 15 Gbit/s | 15,482.215 | 16,335.550 | 7,836.651 | 47.97% | Clear gap. |
+| 18 Gbit/s | 18,228.201 | 17,948.877 | 7,919.914 | 44.12% | Clear gap. |
+| 20 Gbit/s | 18,600.141 | 18,265.199 | 6,105.970 | 33.43% | Beyond this host's forward-rs comfortable range. |
+
+Read this as bands, not a universal threshold:
+
+- **≤ 2.5 Gbit/s**: forward-rs and iptables are effectively identical on this
+  host. If an operator's WAN/VPS port is 100M, 500M, 1G, or 2.5G, the
+  forwarding choice is unlikely to be the bottleneck.
+- **5-10 Gbit/s**: forward-rs is near the requested rate, but the host is
+  approaching the point where userspace copy cost can show up. Treat this as
+  the "measure on your box" zone.
+- **≥ 12.5 Gbit/s**: iptables stays near the offered load while forward-rs
+  saturates much earlier. In this range the richer control plane has a real
+  throughput cost.
 
 ## Interpretation
 
@@ -210,6 +307,10 @@ sudo apt-get install -y iperf3
 
 FORWARD_SKIP_WEBUI=1 cargo build --release -p forward-server -p forward-client
 scripts/perf_loopback.py --seconds 10 --omit-seconds 2 --json-out /tmp/forward-rs-perf.json
+
+# Linux-only, requires root or passwordless sudo for iptables.
+scripts/perf_loopback.py --seconds 10 --omit-seconds 2 --with-iptables \
+  --json-out /tmp/forward-rs-perf.json
 ```
 
 Expected output shape:
@@ -218,12 +319,23 @@ Expected output shape:
 {
   "direct": { "mbps": 80064.984, "retransmits": null },
   "forward_rs_uncapped": { "mbps": 36751.910, "retransmits": null },
+  "forward_vs_direct_pct": 45.9,
   "forward_rs_capped": {
     "cap_bytes_per_sec": 1048576,
     "mbps": 8.394,
     "target_mbps": 8.389,
     "within_plus_10pct": true
   }
+}
+```
+
+With `--with-iptables` on Linux, the JSON also includes:
+
+```json
+{
+  "iptables_redirect": { "mbps": 0.0, "retransmits": null },
+  "iptables_vs_direct_pct": 0.0,
+  "forward_vs_iptables_pct": 0.0
 }
 ```
 

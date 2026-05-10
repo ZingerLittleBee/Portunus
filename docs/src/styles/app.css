@@ -1,6 +1,6 @@
-@import 'tailwindcss';
-@import 'fumadocs-ui/css/neutral.css';
-@import 'fumadocs-ui/css/preset.css';
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
 
 html {
   scrollbar-gutter: stable;
@@ -9,4 +9,174 @@ html {
 html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
+}
+
+.fr-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+}
+
+.fr-brand-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  background: currentColor;
+  mask: url("/waypoints.svg") center / contain no-repeat;
+  -webkit-mask: url("/waypoints.svg") center / contain no-repeat;
+}
+
+/* ─────────────────────────  Landing page chrome  ───────────────────────── */
+
+.fr-landing {
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* Subtle dot-grid background — Vercel-style hero pattern. */
+.fr-dotgrid {
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.07) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+  mask-image: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    #000 30%,
+    transparent 80%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    #000 30%,
+    transparent 80%
+  );
+}
+
+/* Gradient text on the headline accent word. */
+.fr-gradient-text {
+  background: linear-gradient(120deg, #c8f36f 0%, #7ee8e1 50%, #00d2ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Eyebrow pill — bordered chip that holds the proof line. */
+.fr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.4rem 0.85rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(6px);
+}
+
+/* Primary CTA — accent fill, dark text, Vercel-style sharp button. */
+.fr-cta-primary {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1.1rem;
+  border-radius: 0.5rem;
+  background: #fff;
+  color: #000;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  transition:
+    background 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.2) inset;
+}
+
+.fr-cta-primary:hover {
+  background: #ededed;
+  transform: translateY(-1px);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.2) inset,
+    0 8px 24px -8px rgba(200, 243, 111, 0.25);
+}
+
+/* Secondary CTA — bordered ghost button. */
+.fr-cta-secondary {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1.1rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.fr-cta-secondary:hover {
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateY(-1px);
+}
+
+/* Hero entrance animations (preserved from previous design). */
+.fr-hero-copy {
+  animation: fr-rise 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.fr-product-plane {
+  animation: fr-rise 720ms 120ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Performance row hover treatment. */
+.fr-metric-row {
+  transition:
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.fr-metric-row:hover {
+  border-color: rgba(200, 243, 111, 0.55);
+  transform: translateX(4px);
+}
+
+@keyframes fr-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fr-hero-copy,
+  .fr-product-plane {
+    animation: none;
+  }
+
+  .fr-metric-row {
+    transition: none;
+  }
+
+  .fr-cta-primary,
+  .fr-cta-secondary {
+    transition: none;
+  }
 }
