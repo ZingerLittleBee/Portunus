@@ -1,0 +1,58 @@
+---
+title: PROXY Protocol & Peek Histogram
+description: Per-target PROXY v1/v2 prelude so backends see the original client IP, plus a SNI peek-duration histogram.
+icon: Shield
+---
+
+Available since v0.10.0. Two additions:
+
+1. Per-target **PROXY-protocol** prelude (v1 text or v2 binary).
+2. A SNI ClientHello **peek-duration histogram** for SNI-mode listeners.
+
+## PROXY protocol
+
+When a backend opts in via `proxy_protocol = "v1"` or `"v2"`, the client
+emits a PROXY header **before** any payload bytes from the original
+connection. The backend can then observe the original client's
+`(src_addr, src_port, dst_addr, dst_port)`.
+
+Per-target opt-in means a single rule can mix PROXY-aware and
+PROXY-unaware backends:
+
+```sh
+forward-server push-rule edge-01 443 \
+  --target backend-a.local:8080@1 --target-proxy-protocol a:v2 \
+  --target backend-b.local:8080@2
+# backend-a sees the v2 binary header; backend-b sees the legacy byte stream
+```
+
+(Exact CLI flag syntax may vary — check `forward-server push-rule --help`.)
+
+## Modes
+
+| Mode | Description |
+| --- | --- |
+| `v1` | Human-readable text header (e.g. `PROXY TCP4 1.2.3.4 5.6.7.8 12345 80\r\n`) |
+| `v2` | 16-byte binary header per the PROXY-protocol v2 spec |
+| absent (default) | No prelude — legacy byte stream |
+
+The choice is **per-target**, not per-rule, so multi-target rules can
+mix opt-in and opt-out backends.
+
+## Peek-duration histogram (SNI-mode listeners only)
+
+When a listener runs in [SNI dispatch mode](/docs/features/tls-sni-routing),
+forward-rs records how long the ClientHello peek+parse takes:
+
+```
+forward_tls_client_hello_peek_duration_seconds_bucket{...}
+forward_tls_client_hello_peek_duration_seconds_sum
+forward_tls_client_hello_peek_duration_seconds_count
+```
+
+Buckets follow Prometheus convention with finite boundaries up to
+**3 seconds**; observations above the 3 s boundary increment `_count`
+and `le="+Inf"` without bumping `le="3"`.
+
+The histogram does **not** exist for legacy plain-TCP listeners — no
+peek happens there.

@@ -1,0 +1,94 @@
+---
+title: Deploy with Docker
+description: Multi-stage rust:1.88 → distroless/cc:nonroot images, plus a local-only docker-compose for trials.
+icon: Container
+---
+
+The repo ships two Dockerfiles under `deploy/docker/`. Both build with
+a multi-stage `rust:1.88` builder and produce minimal
+`distroless/cc:nonroot` runtime images.
+
+## Build
+
+```sh
+# Server
+docker build -t forward-server:latest \
+  -f deploy/docker/Dockerfile.server .
+
+# Client
+docker build -t forward-client:latest \
+  -f deploy/docker/Dockerfile.client .
+```
+
+## Local trial: docker-compose
+
+```sh
+cd deploy/docker
+docker compose up
+```
+
+The compose file is **local-only** — meant for kicking the tires, not
+for production. It wires a single server + client with loopback paths
+so you can immediately:
+
+```sh
+docker compose exec server forward-server bootstrap-superadmin --name ops
+```
+
+…and start pushing rules from inside the server container.
+
+## Volumes & paths
+
+The default container layout follows the FHS pattern from the systemd
+unit:
+
+| Host path | Container path | Purpose |
+| --- | --- | --- |
+| `./forward-config/` | `/etc/forward-rs/` | TLS material, optional `server.toml`, client bundles |
+| `./forward-state/` | `/var/lib/forward-rs/` | `state.db` and sidecar files |
+
+Mount with:
+
+```sh
+docker run -d --name forward-server \
+  -p 7443:7443 \
+  -p 127.0.0.1:7080:7080 \
+  -p 127.0.0.1:7081:7081 \
+  -v $(pwd)/forward-config:/etc/forward-rs \
+  -v $(pwd)/forward-state:/var/lib/forward-rs \
+  forward-server:latest
+```
+
+## Considerations
+
+- **Distroless runtime** has no shell. Use `docker compose exec` only
+  if your compose file specifies an exec'able binary; for ad-hoc
+  inspection, use a sibling container with `--volumes-from` or pull
+  artefacts to the host.
+- **Loopback bind for the operator API** is enforced inside the
+  container; expose it to your workstation via SSH tunnel or run the
+  operator CLI inside the container.
+- **Filesystem class check** still fires inside containers — make sure
+  your bind-mount source is a real local filesystem (not tmpfs).
+- **`forward-client`** needs the bundle present at
+  `/etc/forward-rs/client.bundle.json` (or `FORWARD_CLIENT_BUNDLE`).
+
+## Health checks
+
+A simple `HEALTHCHECK` for the server:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["forward-server", "list-clients"]
+```
+
+(This requires `FORWARD_OPERATOR_TOKEN` to be in the container's
+environment; set it via the orchestrator's secret system.)
+
+## Networking notes
+
+- The control-plane listener (`7443`) is the only port that **must**
+  be exposed for cross-host clients.
+- The operator HTTP listener (`7080`) and metrics listener (`7081`)
+  should remain on loopback inside the container; expose them via
+  reverse proxy + auth or SSH tunnel as needed.

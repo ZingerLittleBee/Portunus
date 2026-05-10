@@ -1,0 +1,170 @@
+---
+title: Troubleshooting
+description: Common failure modes, error codes, and the structured log lines that reveal them.
+icon: Stethoscope
+---
+
+Most failures surface as a structured log line **plus** a specific
+exit code or HTTP status. The combination uniquely identifies the
+cause.
+
+## Client cannot connect
+
+### `control.tls_pinned_mismatch`
+
+```json
+{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+```
+
+The server's leaf certificate fingerprint does not match the bundle's
+`server_cert_sha256`. **The client exits non-zero** and the server logs
+nothing (the TLS handshake never completed).
+
+**Fix**: re-issue the bundle with `provision-client` after the server's
+cert was regenerated, or restore the original `server.crt` + `server.key`
+on the server.
+
+### `auth.failure { reason: "token_revoked" }`
+
+```sh
+forward-server revoke edge-01
+# ↓
+# Server log: client.disconnected reason=token_revoked
+# Restarted client log: auth.failure reason=token_revoked
+```
+
+**Fix**: re-issue a bundle (`provision-client`) and replace the file on
+the edge host.
+
+### Connect refused / network unreachable
+
+Check `control_listen` on the server matches what the bundle's
+`server_endpoint` says, and confirm a firewall isn't dropping
+`tcp/7443`.
+
+## Rule activation fails
+
+### `port_in_use`
+
+```sh
+forward-server push-rule edge-01 18080 10.0.0.5:8080
+# exit 6: activation_failed: port_in_use
+```
+
+Something on the client (another rule, an unrelated process, a kernel
+TIME_WAIT lingering on a low port) holds the listen port.
+
+**Fix**: pick a free port, or `remove-rule` the holder + retry. There
+is **no auto-retry** — failed rules block port reuse until removed
+(deliberate Q4 lifecycle decision).
+
+### `client_not_connected`
+
+```sh
+forward-server push-rule edge-01 18080 …
+# exit 4: client_not_connected
+```
+
+The client lost its gRPC stream. Rules persist server-side; the server
+re-pushes on reconnect. Confirm with:
+
+```sh
+forward-server list-clients
+```
+
+## RBAC denials
+
+| Code | Cause |
+| --- | --- |
+| `unauthenticated` | Missing or invalid bearer |
+| `not_owner` | Authenticated but caller doesn't own the resource |
+| `client_not_granted` | Caller has no grant covering the requested client |
+| `port_outside_grant` | Listen port outside any single grant |
+| `protocol_not_granted` | Protocol (TCP/UDP) not enabled in a grant |
+
+Read [RBAC](/docs/features/rbac) for the closed-set matching rules.
+
+## Capability gates
+
+| Code | Cause |
+| --- | --- |
+| `unsupported_protocol` | UDP rule pushed to a pre-v0.4 client |
+| `multi_target_unsupported_by_client` | `targets[]` pushed to a pre-v0.7 client |
+| `sni_unsupported_by_client` | `sni_pattern` pushed to a pre-v0.9 client |
+| `rate_limit_unsupported_by_client` | `rate_limit` pushed to a pre-v0.11 client |
+| `conflict.legacy_to_sni_unsupported` | Mixing legacy plain-TCP with SNI on the same `(client, port)` |
+
+## Server startup failures
+
+### `startup.unsupported_filesystem`
+
+`--data-dir` is on NFS, tmpfs, or ramfs. Move it to a local writable
+filesystem.
+
+### `startup.store_in_use` (exit 75)
+
+Another `forward-server serve` already holds the database. Find and
+stop the rogue process; clustering is out of scope.
+
+### `startup.schema_version_too_new` (exit 78)
+
+Running an older binary against a newer DB schema (e.g. after
+restoring a v0.11 backup on a v0.10 binary). Either keep the older
+backup or run the newer binary version.
+
+### `bootstrap_required` (HTTP 503)
+
+Server has no superadmin yet. Run:
+
+```sh
+forward-server bootstrap-superadmin --name 'Initial admin'
+```
+
+…or set `operator_token` in `server.toml` and restart once.
+
+## Performance complaints
+
+### "Throughput regressed after upgrading"
+
+Run the criterion bench to compare:
+
+```sh
+cargo bench -p forward-client --bench data_plane
+```
+
+The CI regression gate
+(`.github/workflows/bench.yml` →
+`scripts/bench_regression_gate.py`) fails if any benchmark median is
+>25% slower than the v0.1.0 baseline. If you suspect a regression,
+bisect with `git bisect run cargo bench …`.
+
+### "Connections drop under sustained UDP load"
+
+Check `forward_rule_flows_dropped_overflow_total`. If non-zero, raise
+`udp_max_flows_per_rule` in `server.toml` (and `LimitNOFILE` on the
+client systemd unit).
+
+### "TLS handshakes seem slow on SNI-mode listeners"
+
+Inspect the peek histogram:
+
+```text
+histogram_quantile(0.99,
+  rate(forward_tls_client_hello_peek_duration_seconds_bucket[5m]))
+```
+
+A long tail (close to 3 s) usually means clients are sending
+ClientHellos in dribs and drabs over a slow network — not a
+forward-rs issue.
+
+## Where to file bugs
+
+GitHub issues: https://github.com/ZingerLittleBee/forward-rs/issues
+
+Include:
+
+- Output of `forward-server --version` and `forward-client --version`.
+- Relevant structured-log lines (the JSON event names alone usually
+  identify the failure mode).
+- Operator command + the exact error.
+- For data-plane issues, the rule definition and traffic shape.

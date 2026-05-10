@@ -1,0 +1,86 @@
+---
+title: UDP Forwarding
+description: NAT-style UDP forwarding with kernel-allocated upstream sockets per source flow.
+icon: Send
+---
+
+Available since v0.4.0. UDP rules coexist with TCP rules on the same
+listen port — the kernel demuxes by protocol.
+
+## How it works
+
+Each UDP rule binds a single `recv_from` loop on the client. For every
+unique end-user `(source-addr, source-port)` pair the kernel allocates a
+fresh upstream `UdpSocket` (one per flow), giving NAT-style return-path
+isolation **without any userspace flow tracking**.
+
+The kernel's source-port selection demuxes replies for free, so the
+proxy never has to track return-paths in userspace.
+
+## Push a UDP rule
+
+```sh
+forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+```
+
+UDP and TCP rules can share the same listen port:
+
+```sh
+forward-server push-rule edge-01 6000 upstream.local:9999                # TCP
+forward-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
+```
+
+## Tunables
+
+Both knobs live in `server.toml` and propagate to the client via the
+Welcome message:
+
+```toml
+# Idle window before a per-flow upstream socket is reaped.
+# Range: 30..=300. Default: 60.
+udp_flow_idle_secs = 60
+
+# Per-rule cap on simultaneous live UDP flows.
+# Range: 1..=65535. Default: 1024.
+udp_max_flows_per_rule = 1024
+```
+
+When sustained churn from many distinct source ports exceeds the cap,
+overflow drops increment `forward_rule_flows_dropped_overflow_total`.
+Existing flows are **never** evicted to make room — idle eviction
+handles steady-state shrinkage.
+
+<Callout type="info">
+  Raise `udp_max_flows_per_rule` alongside `LimitNOFILE` in the systemd
+  unit if your traffic legitimately needs more concurrent end-user sources.
+</Callout>
+
+## Range + DNS support
+
+UDP works with [port-range rules](/docs/features/port-range) (each port in
+the range gets its own listener task with an independent flow table) and
+with [DNS-name targets](/docs/features/dns-targets) (resolver cache and
+single-flight semantics carry over verbatim).
+
+## Metrics
+
+```
+forward_rule_udp_datagrams_in_total{client,rule,owner}
+forward_rule_udp_datagrams_out_total{client,rule,owner}
+forward_rule_active_flows{client,rule,owner}
+forward_rule_flows_dropped_overflow_total{client,rule,owner}
+```
+
+`rule-stats` adds a `protocol` field plus the UDP-specific counters.
+
+## Capability gate
+
+Pushing a UDP rule against a v0.3.0-or-earlier client returns
+`unsupported_protocol` (HTTP 422 / exit 3). Upgrade the client first.
+
+## Verified performance
+
+- ~78,000 datagrams/s through the proxy on a developer-class macOS host
+  (criterion bench `udp_data_plane.single_flow_throughput`).
+- Per-flow isolation under 1000 concurrent source ports — zero misroutes
+  in stress test `test_udp_us1_thousand_source_isolation`.

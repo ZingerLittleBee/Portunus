@@ -1,0 +1,130 @@
+---
+title: Multi-user RBAC
+description: Bearer-token operator API with users, credentials, and per-tenant grants scoped to clients, port ranges, and protocols.
+icon: Users
+---
+
+Available since v0.5.0. Replaces the single-operator model with a
+proper RBAC layer above the unchanged data plane.
+
+## Concepts
+
+- **User** — id (lower-snake `[a-z][a-z0-9_-]{0,31}`), role
+  (`superadmin` / `user`), display name, optional `disabled` flag.
+  Reserved `_`-prefix is rejected via the public constructor.
+- **Credential** — a bearer token tied to a user. `blake3`-hashed at
+  rest; raw token visible only at issuance / rotation. Carries an
+  optional label, status (`active` / `revoked`), and `last_used_at`.
+- **Grant** — per-user authorisation triple `{client, listen-port range,
+  protocol set}`. `client` is either a named `ClientName` or wildcard
+  `"*"`.
+
+## Bootstrap
+
+Two paths — pick one:
+
+### Path A — interactive single-shot (recommended)
+
+```sh
+forward-server --config-dir ./srv bootstrap-superadmin --name ops
+# → superadmin user_id=_superadmin token=<paste-into-FORWARD_OPERATOR_TOKEN>
+```
+
+The bearer prints **exactly once**. Idempotent — refuses to bootstrap
+twice with non-zero exit.
+
+### Path B — server.toml shortcut
+
+```toml
+operator_token = "<43-char URL-safe-base64 token>"
+```
+
+On first start with no superadmin present, the server auto-mints a
+reserved `_legacy` superadmin keyed to that token. Idempotent — leave
+the line in across restarts.
+
+Generate a token out-of-band:
+
+```sh
+forward-server gen-token
+# → 43-char URL-safe-base64
+```
+
+## Add a constrained tenant
+
+```sh
+forward-server user-add alice --display-name Alice
+forward-server credential-issue alice --label laptop
+# → bearer token printed once, store securely
+
+forward-server grant-add --user-id alice --client edge-01 \
+  --listen-port-start 30000 --listen-port-end 30050 \
+  --protocols tcp,udp
+```
+
+Now alice can `push-rule` only on `edge-01`, only on ports
+`30000..=30050`, only TCP or UDP.
+
+## Closed-set matching
+
+A single grant must cover the **entire** requested listen range — rules
+straddling two grants are rejected. Outside the envelope, alice gets
+HTTP 403 with one of:
+
+- `client_not_granted`
+- `port_outside_grant`
+- `protocol_not_granted`
+
+A `--client *` grant matches any client. A grant whose
+`--listen-port-end` equals `--listen-port-start` is a single-port grant.
+
+## Self-service rotation
+
+A user can rotate their own credential without superadmin help:
+
+```sh
+FORWARD_OPERATOR_TOKEN=<alice's old token> \
+  forward-server credential-rotate alice <credential_id>
+# → new bearer printed once; old bearer 401s on next request
+```
+
+## Read-side filtering
+
+`GET /v1/rules` projects only the caller's owned rules to non-superadmin
+users. Superadmin gets `?owner=<user_id>` to filter by owner. Every
+rule response carries an `owner` field stamped at push time.
+
+## Audit log
+
+Every operator request emits one structured `event = "operator.allow"`
+(INFO) or `"operator.deny"` (WARN) line carrying `actor`, `method`,
+`path`, `outcome`, and (on deny) the `RbacError::code()` reason.
+
+**Raw bearer tokens never reach the audit code path** — the audit
+emitter takes only the post-verify `OperatorIdentity`.
+
+## CLI surface
+
+| Command | Purpose |
+| --- | --- |
+| `user-add` / `user-list` / `user-get` / `user-remove` | Manage users |
+| `credential-issue` / `credential-list` / `credential-revoke` / `credential-rotate` | Manage credentials |
+| `grant-add` / `grant-list` / `grant-revoke` | Manage grants |
+
+All take the operator token from `FORWARD_OPERATOR_TOKEN`
+(exit 4 if missing).
+
+## SIGHUP reload
+
+On `SIGHUP` the operator-store reloads `identity.json` (or the SQLite
+state, since v0.8) from disk. On validation failure the prior in-memory
+snapshot is kept; one structured log line is emitted either way.
+
+## Cascade ordering
+
+On user removal or grant revocation, identity flush commits **first**,
+then dependent rules are removed. A crash mid-cascade leaves a coherent
+identity state.
+
+**Last-superadmin protection** refuses the removal that would orphan
+the cluster.

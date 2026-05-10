@@ -1,0 +1,146 @@
+---
+title: Operator HTTP API
+description: The /v1 surface served on operator_http_listen. Loopback by default, bearer-authed, RBAC-gated.
+icon: Code
+---
+
+`forward-server` exposes its operator surface as an HTTP API on
+`operator_http_listen` (loopback by default). Every `/v1/*` request
+requires `Authorization: Bearer <token>`.
+
+## Authentication
+
+```http
+GET /v1/clients
+Host: 127.0.0.1:7080
+Authorization: Bearer T006-quickstart-token
+```
+
+Responses on missing / invalid bearer:
+
+| Status | Body | Cause |
+| --- | --- | --- |
+| `401 unauthenticated` | `{"error":"unauthenticated"}` | Header missing or token invalid |
+| `403 not_owner` | `{"error":"not_owner"}` | Authenticated, but caller does not own the resource |
+| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/docs/features/rbac)) |
+| `503 bootstrap_required` | Server has no superadmin yet — run `bootstrap-superadmin` |
+
+## Endpoints by area
+
+### Self
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/users/me` | `{ user_id, role, display_name }` for the caller (used by SPA AuthGate) |
+
+### Clients
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/v1/clients` | Provision a client; response carries the bundle |
+| `GET` | `/v1/clients` | List clients; superadmin sees all |
+| `DELETE` | `/v1/clients/{name}` | Revoke + disconnect |
+
+### Rules
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/v1/rules` | Push a rule (single-target, multi-target, port-range, with caps, with SNI) |
+| `GET` | `/v1/rules` | List rules; non-superadmin sees only owned rules |
+| `GET` | `/v1/rules?owner=<user_id>` | Superadmin filter |
+| `GET` | `/v1/rules/{id}/stats` | Aggregate stats |
+| `GET` | `/v1/rules/{id}/stats?per_port=true` | Per-port detail (range rules) |
+| `GET` | `/v1/rules/{id}/stats?per_target=true` | Per-target detail (multi-target rules) |
+| `GET` | `/v1/rules/{id}/stats/stream` | SSE stream, 5-second cadence (v0.6+) |
+| `DELETE` | `/v1/rules/{id}` | Drain + remove |
+
+### Users
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/v1/users` | Add user (superadmin) |
+| `GET` | `/v1/users` | List users (superadmin) |
+| `GET` | `/v1/users/{id}` | User detail |
+| `DELETE` | `/v1/users/{id}` | Cascading remove (superadmin) |
+
+### Credentials
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/v1/users/{id}/credentials` | Issue a credential |
+| `GET` | `/v1/users/{id}/credentials` | List |
+| `DELETE` | `/v1/users/{id}/credentials/{cred_id}` | Revoke |
+| `POST` | `/v1/users/{id}/credentials/{cred_id}/rotate` | Rotate (self or superadmin) |
+
+### Grants
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/v1/grants` | Add grant (superadmin) |
+| `GET` | `/v1/grants` | List grants (superadmin) |
+| `DELETE` | `/v1/grants/{id}` | Cascading revoke |
+
+### Rate limiting (v0.11+)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `PUT` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | Set per-owner envelope |
+| `GET` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | Read envelope |
+| `DELETE` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | Remove envelope |
+
+### Audit (v0.6+)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/audit?limit=N&outcome=allow\|deny` | v0.7-shape JSON array (back-compat) |
+| `GET` | `/v1/audit?since=<RFC3339>&until=<RFC3339>&cursor=<base64>&limit=N` | v0.8 envelope `{entries, next_cursor?, count}` |
+
+### Metrics (v0.6+)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/metrics` | RBAC-gated mirror of the standalone `/metrics`; superadmin only |
+
+The standalone scraper-facing endpoint at `metrics_listen:7081/metrics`
+is unchanged (Prometheus continues scraping without bearer).
+
+## Status code semantics
+
+| Code | Meaning |
+| --- | --- |
+| `200` | Success (read) |
+| `201` | Resource created |
+| `204` | Success, no body |
+| `400` | Validation error |
+| `401` | `unauthenticated` |
+| `403` | RBAC denial |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. `conflict.legacy_to_sni_unsupported`) |
+| `422` | Capability gate (e.g. `multi_target_unsupported_by_client`, `sni_unsupported_by_client`, `rate_limit_unsupported_by_client`) |
+| `503` | `bootstrap_required` |
+
+The full code → exit-code → HTTP-status mapping is frozen at v1; see
+the per-spec contract docs in
+[`specs/*/contracts/operator-api.md`](https://github.com/ZingerLittleBee/forward-rs/tree/main/specs).
+
+## Example: push a rule with caps
+
+```sh
+curl -sS -X POST http://127.0.0.1:7080/v1/rules \
+  -H "Authorization: Bearer $FORWARD_OPERATOR_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client": "edge-01",
+    "listen_port": 8443,
+    "targets": [
+      {"host": "primary.local", "port": 443, "priority": 1},
+      {"host": "backup.local",  "port": 443, "priority": 2}
+    ],
+    "protocol": "tcp",
+    "sni_pattern": "*.example.com",
+    "rate_limit": {
+      "bandwidth_in_bps": 1048576,
+      "concurrent_connections": 1000
+    }
+  }'
+```

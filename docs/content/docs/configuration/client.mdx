@@ -1,0 +1,114 @@
+---
+title: Client Configuration
+description: How forward-client picks up its bundle, and what env vars influence behaviour.
+icon: Cog
+---
+
+`forward-client` is configured almost entirely from the **bundle** that
+the server emits via `provision-client`. There is no `client.toml`.
+
+## The bundle
+
+```json
+{
+  "version": 1,
+  "client_name": "edge-01",
+  "server_endpoint": "host-A.example.com:7443",
+  "server_cert_sha256": "f5e7c2a1...",
+  "token": "<bearer>"
+}
+```
+
+Generated on the server:
+
+```sh
+forward-server provision-client edge-01 --out ./edge-01.bundle.json
+```
+
+File mode is `0600`. Transfer it to the edge host over a trusted
+channel (`scp`, `rsync`, secrets manager, etc.).
+
+<Callout type="warn">
+  Edit `server_endpoint` if the address Host B reaches the server on
+  differs from what the server advertised by default. The default is
+  the hostname returned by the server, which may need adjustment.
+</Callout>
+
+## Run the client
+
+### Explicit `--bundle`
+
+```sh
+forward-client --bundle ./edge-01.bundle.json
+```
+
+### Bundle resolution (since v0.8)
+
+When `--bundle` is omitted, the client searches in this order:
+
+1. `$FORWARD_CLIENT_BUNDLE`
+2. `$XDG_CONFIG_HOME/forward-rs/client.bundle.json`
+3. `$HOME/.config/forward-rs/client.bundle.json`
+4. `./client.bundle.json`
+
+If none resolve the client exits `1` listing every attempted path.
+
+```sh
+# Drop the bundle in XDG config and just run the binary
+mkdir -p ~/.config/forward-rs
+mv edge-01.bundle.json ~/.config/forward-rs/client.bundle.json
+forward-client
+```
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--bundle <PATH>` | Explicit bundle path (overrides resolution chain) |
+| `--shutdown-drain-timeout-secs <N>` | How long in-flight forwarded connections drain on SIGTERM (default 30) |
+
+Run `forward-client --help` for the current full surface.
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `FORWARD_CLIENT_BUNDLE` | Bundle path lookup (highest precedence in resolution chain) |
+| `RUST_LOG` | Standard `tracing-subscriber` env-filter |
+
+## TLS pinning
+
+The client validates the server certificate by **SHA-256 fingerprint**
+(`server_cert_sha256` from the bundle), not by CA chain. This is the
+core security guarantee — even if the server's IP / DNS is hijacked,
+the wrong cert is rejected before any token leaves the client.
+
+A mismatch logs:
+
+```json
+{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+```
+
+…and the client exits non-zero. The server logs **nothing** because the
+TLS handshake never completed.
+
+## Resource limits
+
+For UDP-heavy or wide port-range deployments, raise `LimitNOFILE`:
+
+```ini
+# /etc/systemd/system/forward-client.service
+[Service]
+LimitNOFILE=65535
+```
+
+The default is fine for typical TCP rule fleets.
+
+## Connection model
+
+The client maintains a **single bidirectional gRPC stream** to the
+server, with automatic reconnect on disconnect. Rules pushed to a
+disconnected client are **rejected** at the server with
+`client_not_connected` (HTTP 4xx). They are not queued — the operator
+re-pushes after the client reconnects, or relies on the server's
+re-push on reconnection (rules persist server-side).

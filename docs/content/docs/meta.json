@@ -1,0 +1,18 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "---Get Started---",
+    "getting-started",
+    "---Features---",
+    "features",
+    "---Reference---",
+    "configuration",
+    "cli",
+    "api",
+    "---Operations---",
+    "deployment",
+    "observability",
+    "operations"
+  ]
+}

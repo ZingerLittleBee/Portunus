@@ -1,0 +1,111 @@
+---
+title: Web UI
+description: Single-page React dashboard embedded into the server binary. Login, manage rules, watch live stats, browse the audit log.
+icon: LayoutDashboard
+---
+
+Available since v0.6.0. The UI is embedded into `forward-server` via
+`rust-embed` and served at the existing operator HTTP listener's root
+path `/`. **There is no runtime Node dependency on the deployment host.**
+
+## Open it
+
+`forward-server` ships with the SPA bundled. Open the operator HTTP
+listener address in a modern browser:
+
+```
+http://127.0.0.1:7080/
+```
+
+Supported browsers: Chrome / Firefox / Safari / Edge — latest two
+releases.
+
+## Login
+
+The login page asks for your operator bearer token. Paste it and click
+"Sign in".
+
+- The token is stored in `sessionStorage` only — flushed on browser close.
+- It is **never** stored in `localStorage` or cookies.
+- Every `/v1/*` request flows through the same `auth_layer` middleware
+  the CLI uses.
+
+## What you get
+
+| Section | Notes |
+| --- | --- |
+| **Dashboard** | Connected clients, active rules, top metrics |
+| **Users** | (superadmin) Add/list users; issue credentials; track grants |
+| **Credentials** | Self-service rotation for the logged-in user |
+| **Grants** | (superadmin) RBAC grant management |
+| **Rules** | Push, list, remove. Per-rule live stats over SSE (5 s cadence; falls back to polling if SSE blocked) |
+| **Clients** | List and inspect connected `forward-client` instances |
+| **Audit log** | (superadmin) Filter by outcome, paginate via cursor, export NDJSON |
+| **Metrics** | (superadmin) Raw `/metrics` payload behind RBAC |
+| **Settings** | Theme + language toggles |
+
+## Per-rule live stats
+
+The rule detail page subscribes to
+`GET /v1/rules/{id}/stats/stream` — an SSE channel pushing one
+`RuleStatsSnapshot` event every 5 seconds. Subscribers cost
+`O(rules)`, not `O(rules × subscribers)`. Slow consumers receive
+`Lagged` and are logged once per minute per rule.
+
+## Multi-target rules
+
+The rule detail Targets section shows health badges (Healthy /
+Degraded / Failed), last-failure / last-success timestamps, and
+per-target byte counters that update on the SSE cadence.
+
+## Rate limiting & QoS
+
+The rule editor gains a "Quality of service" section. Burst overrides
+are folded behind an "Advanced" disclosure. The rules table gains a
+compact `Caps` column. The client detail page gains an `Owner quotas`
+tab for managing per-owner envelopes.
+
+## Themes & i18n
+
+- **Themes**: light / dark / `prefers-color-scheme`.
+- **Languages**: English + 简体中文 (toggle in Settings; remembered
+  across reloads).
+
+A coverage unit test fails CI if a translation key drifts between
+bundles.
+
+## Loopback by default
+
+The operator HTTP listener is loopback-pinned at startup. Remote access
+stays an operator concern:
+
+- **SSH-tunnel** `127.0.0.1:7080` from your workstation, or
+- Sit the listener behind a **reverse proxy** that adds its own auth.
+
+## Token-leak safeguards
+
+- `sessionStorage` only — never `localStorage` or cookies.
+- Bearer never appears in the URL, query string, or `Referer` header.
+- Bearer never reaches the DOM (audit checklist verifies zero matches
+  for the first 8 chars).
+
+## Build
+
+The SPA lives at `webui/`. Release pipelines run:
+
+```sh
+cd webui
+pnpm install --frozen-lockfile
+pnpm build      # vite build + size-limit gate (gzipped ≤ 500 KB)
+cd ..
+cargo build --release -p forward-server
+```
+
+Backend-only iteration:
+
+```sh
+FORWARD_SKIP_WEBUI=1 cargo build -p forward-server
+# Compiles a UI-less stub so rust-embed always has something to embed.
+```
+
+Release pipelines never set this env var.
