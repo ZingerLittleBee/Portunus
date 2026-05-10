@@ -746,6 +746,21 @@ impl ServerRuleStore {
         self.inner.read().await.rules.get(&id).cloned()
     }
 
+    /// Update only the per-rule rate-limit envelope in place. Used by
+    /// the operator hot-update path (`PUT /v1/rules/{id}`), which keeps
+    /// rule identity and listener shape unchanged while the data plane
+    /// swaps limiter state under the same rule id.
+    pub async fn update_rate_limit(
+        &self,
+        id: RuleId,
+        rate_limit: Option<forward_core::RateLimit>,
+    ) -> Result<Rule, RuleStoreError> {
+        let mut guard = self.inner.write().await;
+        let rule = guard.rules.get_mut(&id).ok_or(RuleStoreError::NotFound)?;
+        rule.rate_limit = rate_limit;
+        Ok(rule.clone())
+    }
+
     pub async fn hydrate(&self, rules: Vec<Rule>) {
         let mut guard = self.inner.write().await;
         let mut max_id = self.next_id.load(Ordering::Relaxed);

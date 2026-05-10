@@ -1190,6 +1190,111 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
     Ok(removed)
 }
 
+/// Hot-update the per-rule rate-limit envelope in place. Keeps the same
+/// rule id and listener shape; only the QoS envelope changes.
+pub async fn update_rule_rate_limit(
+    state: &AppState,
+    rule_id: RuleId,
+    rate_limit: Option<forward_core::RateLimit>,
+    ack_timeout: Duration,
+) -> Result<Rule, OperatorError> {
+    let existing = state
+        .rules
+        .get(rule_id)
+        .await
+        .ok_or(OperatorError::RuleNotFound)?;
+    let client_name = existing.client_name.clone();
+    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+        return Err(OperatorError::ClientNotConnected(client_name));
+    };
+
+    let updated = state.rules.update_rate_limit(rule_id, rate_limit).await?;
+    state
+        .rule_store
+        .upsert_rule(&updated)
+        .map_err(|e| OperatorError::ActivationFailed(format!("persist_rule: {e}")))?;
+
+    let request_id = RequestId::new().to_string();
+    let (tx, rx) = oneshot::channel();
+    {
+        let mut guard = waiters.lock().await;
+        guard.insert(request_id.clone(), tx);
+    }
+
+    let proto_targets: Vec<forward_proto::v1::Target> = updated
+        .targets
+        .iter()
+        .map(|t| forward_proto::v1::Target {
+            host: t.host.clone(),
+            port: u32::from(t.port),
+            priority: t.priority,
+            proxy_protocol: t.proxy_protocol.map(|mode| match mode {
+                forward_core::ProxyProtocolVersion::V1 => {
+                    forward_proto::v1::ProxyProtocolVersion::V1 as i32
+                }
+                forward_core::ProxyProtocolVersion::V2 => {
+                    forward_proto::v1::ProxyProtocolVersion::V2 as i32
+                }
+            }),
+        })
+        .collect();
+    let first = updated
+        .targets_view()
+        .into_iter()
+        .next()
+        .ok_or_else(|| OperatorError::ActivationFailed("missing_target".to_string()))?;
+    let listen = updated.listen_range();
+    let update = ServerMessage {
+        payload: Some(server_message::Payload::RuleUpdate(RuleUpdate {
+            request_id: request_id.clone(),
+            action: RuleAction::Push as i32,
+            rule: Some(ProtoRule {
+                rule_id: updated.id.0,
+                listen_port: u32::from(listen.start()),
+                target_host: updated.target_host.clone(),
+                target_port: u32::from(first.port),
+                protocol: match updated.protocol {
+                    Protocol::Tcp => ProtoProto::Tcp as i32,
+                    Protocol::Udp => ProtoProto::Udp as i32,
+                },
+                listen_port_end: if listen.len() > 1 {
+                    u32::from(listen.end())
+                } else {
+                    0
+                },
+                target_port_end: updated.target_port_end.map_or(0, u32::from),
+                prefer_ipv6: updated.prefer_ipv6,
+                targets: proto_targets,
+                health_check_interval_secs: updated.health_check_interval_secs.unwrap_or(0),
+                sni_pattern: updated.sni_pattern.clone(),
+                rate_limit: updated
+                    .rate_limit
+                    .as_ref()
+                    .map(crate::grpc::service::rate_limit_to_proto),
+                owner_id: Some(updated.owner_user_id.to_string()),
+            }),
+        })),
+    };
+    if outbound.send(Ok(update)).await.is_err() {
+        let mut guard = waiters.lock().await;
+        guard.remove(&request_id);
+        return Err(OperatorError::ClientNotConnected(client_name));
+    }
+
+    match tokio::time::timeout(ack_timeout, rx).await {
+        Ok(Ok(_status)) => state
+            .rules
+            .get(rule_id)
+            .await
+            .ok_or(OperatorError::RuleNotFound),
+        Ok(Err(_)) | Err(_) => {
+            let mut guard = waiters.lock().await;
+            guard.remove(&request_id);
+            Err(OperatorError::AckTimeout)
+        }
+    }
+}
+
 /// `rule-stats <rule_id>` (FR-024). Returns the latest cached snapshot fed by
 /// the client's `StatsReport` stream. Returns `RuleNotFound` if either the rule
 /// store has no record of this id OR no `StatsReport` has arrived yet.

@@ -331,7 +331,7 @@ pub enum LayeredAcquire {
 /// byte-stable hot path is preserved when both are `None`).
 pub fn try_acquire_layered(
     owner: Option<&Arc<OwnerRateLimitHandle>>,
-    rule: Option<&Arc<RuleRateLimiter>>,
+    rule: Option<&Arc<RuleRateLimitHandle>>,
     is_udp_first_packet: bool,
 ) -> LayeredAcquire {
     let owner_guard = if let Some(o) = owner {
@@ -346,15 +346,16 @@ pub fn try_acquire_layered(
         None
     };
     let rule_guard = if let Some(r) = rule {
-        match r.try_acquire(CapScope::Rule, is_udp_first_packet) {
-            ConnectionAcquire::Granted(g) => Some(g),
-            ConnectionAcquire::Rejected(reason) => {
+        match r.try_acquire(is_udp_first_packet) {
+            Some(ConnectionAcquire::Granted(g)) => Some(g),
+            Some(ConnectionAcquire::Rejected(reason)) => {
                 // The local `owner_guard` (if any) drops here —
                 // releasing the owner-scope slot we just claimed.
                 // Without this branch, a rule-side reject would
                 // strand the owner gauge above the live count.
                 return LayeredAcquire::RuleRejected(reason);
             }
+            None => None,
         }
     } else {
         None
@@ -450,6 +451,12 @@ impl OwnerRateLimitHandle {
         self.snapshot()
             .map(|limiter| limiter.acquire_bandwidth(direction, bytes))
     }
+
+    #[must_use]
+    pub fn active_connections(&self) -> u64 {
+        self.snapshot()
+            .map_or(0, |limiter| limiter.active_connections())
+    }
 }
 
 /// Per-owner data-plane limiter — same shape as [`RuleRateLimiter`]
@@ -537,6 +544,59 @@ impl RateLimitScopeManager {
     #[allow(dead_code)] // tests + future operator-debug surface
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// Dynamic view over the current per-rule limiter for one rule id.
+///
+/// Rules stay live across rate-limit updates, so a connection cannot
+/// hold a one-time `Arc<RuleRateLimiter>` snapshot and expect later
+/// `PUT /v1/rules/{id}` mutations to affect it. Instead the forwarder
+/// keeps this lightweight handle and snapshots the current limiter from
+/// the process-lifetime registry on each admission / bandwidth acquire.
+#[derive(Debug)]
+pub struct RuleRateLimitHandle {
+    rule_id: RuleId,
+    scope: Arc<RateLimitScopeManager>,
+}
+
+impl RuleRateLimitHandle {
+    #[must_use]
+    pub fn new(rule_id: RuleId, scope: Arc<RateLimitScopeManager>) -> Self {
+        Self { rule_id, scope }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Option<Arc<RuleRateLimiter>> {
+        self.scope.get(self.rule_id)
+    }
+
+    #[must_use]
+    pub fn has_bandwidth_cap(&self) -> bool {
+        self.snapshot()
+            .is_some_and(|limiter| limiter.has_bandwidth_cap())
+    }
+
+    #[must_use]
+    pub fn try_acquire(&self, is_udp_first_packet: bool) -> Option<ConnectionAcquire> {
+        self.snapshot()
+            .map(|limiter| limiter.try_acquire(CapScope::Rule, is_udp_first_packet))
+    }
+
+    #[must_use]
+    pub fn acquire_bandwidth(
+        &self,
+        direction: BandwidthDirection,
+        bytes: u64,
+    ) -> Option<BandwidthAcquire> {
+        self.snapshot()
+            .map(|limiter| limiter.acquire_bandwidth(direction, bytes))
+    }
+
+    #[must_use]
+    pub fn active_connections(&self) -> u64 {
+        self.snapshot()
+            .map_or(0, |limiter| limiter.active_connections())
     }
 }
 
@@ -1177,6 +1237,12 @@ mod tests {
         Arc::new(OwnerRateLimitHandle::new(owner, mgr))
     }
 
+    fn rule_handle_with(rule_id: RuleId, rl: RateLimit) -> Arc<RuleRateLimitHandle> {
+        let mgr = Arc::new(RateLimitScopeManager::new());
+        mgr.install(rule_id, Some(&rl));
+        Arc::new(RuleRateLimitHandle::new(rule_id, mgr))
+    }
+
     #[tokio::test(start_paused = true)]
     async fn t030_owner_handle_observes_updates_after_rule_activation() {
         let mgr = Arc::new(OwnerRateLimitScopeManager::new());
@@ -1214,10 +1280,13 @@ mod tests {
             concurrent_connections: Some(1),
             ..Default::default()
         });
-        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
-            concurrent_connections: Some(10),
-            ..Default::default()
-        }));
+        let rule = rule_handle_with(
+            RuleId(1),
+            RateLimit {
+                concurrent_connections: Some(10),
+                ..Default::default()
+            },
+        );
         // Saturate the owner cap.
         let _hold = owner.try_acquire(false).expect("owner limiter installed");
         match _hold {
@@ -1247,14 +1316,18 @@ mod tests {
             concurrent_connections: Some(5),
             ..Default::default()
         });
-        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
-            concurrent_connections: Some(1),
-            ..Default::default()
-        }));
+        let rule = rule_handle_with(
+            RuleId(2),
+            RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            },
+        );
         // Saturate the rule cap via a direct (non-layered) acquire.
-        let _rule_hold = match rule.try_acquire(CapScope::Rule, false) {
-            ConnectionAcquire::Granted(g) => g,
-            ConnectionAcquire::Rejected(_) => panic!("first rule acquire admits"),
+        let _rule_hold = match rule.try_acquire(false) {
+            Some(ConnectionAcquire::Granted(g)) => g,
+            Some(ConnectionAcquire::Rejected(_)) => panic!("first rule acquire admits"),
+            None => panic!("rule limiter missing"),
         };
         let owner_before = owner
             .snapshot()
@@ -1285,10 +1358,13 @@ mod tests {
             concurrent_connections: Some(2),
             ..Default::default()
         });
-        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
-            concurrent_connections: Some(2),
-            ..Default::default()
-        }));
+        let rule = rule_handle_with(
+            RuleId(3),
+            RateLimit {
+                concurrent_connections: Some(2),
+                ..Default::default()
+            },
+        );
         let (og, rg) = match try_acquire_layered(Some(&owner), Some(&rule), false) {
             LayeredAcquire::Granted {
                 owner_guard,

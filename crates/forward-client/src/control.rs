@@ -227,6 +227,8 @@ pub async fn run_with_reconnect(
     // so a stale entry would be overwritten on the next push.
     let owner_rate_limit_scope =
         Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
+    let rule_rate_limit_scope =
+        Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
     // 011-rate-limiting-qos T032: per-owner stats registry parallels
     // the limiter registry. Aggregation across rules sharing the same
     // owner happens here — multiple rules call `get_or_create` for
@@ -251,6 +253,7 @@ pub async fn run_with_reconnect(
                 pump(
                     session,
                     Arc::clone(&resolver),
+                    Arc::clone(&rule_rate_limit_scope),
                     Arc::clone(&owner_rate_limit_scope),
                     Arc::clone(&owner_rate_limit_stats_registry),
                     &cancel,
@@ -319,16 +322,16 @@ struct RuleSlot {
     /// keeps proto3 default-stripping semantics so v0.10 readers see
     /// an unchanged byte stream (T005).
     rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
-    /// 011-rate-limiting-qos (T019): the limiter holding the
-    /// `active_connections` gauge. The stats drainer mirrors the gauge
-    /// onto the accumulator before each report so the wire snapshot
-    /// reflects the limiter's source-of-truth count.
-    rate_limit_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
+    /// 011-rate-limiting-qos: dynamic per-rule limiter handle. The
+    /// stats drainer snapshots the current limiter so hot-reload swaps
+    /// are reflected in later reports.
+    rate_limit_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
 }
 
 async fn pump(
     mut session: LiveSession,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
+    rule_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::RateLimitScopeManager>,
     owner_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
     owner_rate_limit_stats: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
     cancel: &CancellationToken,
@@ -354,7 +357,7 @@ async fn pump(
             () = cancel.cancelled() => break,
             msg = session.inbound.next() => match msg {
                 Some(Ok(server_msg)) => {
-                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &owner_rate_limit_scope, &owner_rate_limit_stats, &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
+                    handle_server_message(server_msg, &mut rules, &mut port_groups, Arc::clone(&resolver), &rule_rate_limit_scope, &owner_rate_limit_scope, &owner_rate_limit_stats, &status_tx, drain_timeout, udp_max_flows, udp_flow_idle_secs);
                 }
                 Some(Err(status)) => {
                     warn!(event = "control.stream_error", error = %status);
@@ -401,6 +404,7 @@ fn handle_server_message(
     rules: &mut HashMap<RuleId, RuleSlot>,
     port_groups: &mut PortGroupManager,
     resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
+    rule_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::RateLimitScopeManager>,
     owner_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
     owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
@@ -434,15 +438,38 @@ fn handle_server_message(
         return;
     };
     let rule_id = RuleId(rule.rule_id);
+    let incoming_rate_limit = rule
+        .rate_limit
+        .as_ref()
+        .map(|envelope| forward_core::RateLimit {
+            bandwidth_in_bps: envelope.bandwidth_in_bps,
+            bandwidth_out_bps: envelope.bandwidth_out_bps,
+            new_connections_per_sec: envelope.new_connections_per_sec,
+            concurrent_connections: envelope.concurrent_connections,
+            bandwidth_in_burst: envelope.bandwidth_in_burst,
+            bandwidth_out_burst: envelope.bandwidth_out_burst,
+            new_connections_burst: envelope.new_connections_burst,
+        });
 
     match action {
         RuleAction::Push => {
-            if rules.contains_key(&rule_id) {
-                warn!(
-                    event = "control.rule_push_duplicate",
-                    request_id = %request_id,
-                    rule_id = %rule_id,
-                );
+            if let Some(slot) = rules.get_mut(&rule_id) {
+                rule_rate_limit_scope.update(rule_id, incoming_rate_limit.as_ref());
+                slot.push_request_id = request_id;
+                slot.rate_limit_limiter = incoming_rate_limit.as_ref().map(|_| {
+                    Arc::new(
+                        crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
+                            rule_id,
+                            Arc::clone(rule_rate_limit_scope),
+                        ),
+                    )
+                });
+                if slot.rate_limit_stats.is_none() && incoming_rate_limit.is_some() {
+                    slot.rate_limit_stats = Some(Arc::new(
+                        crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                    ));
+                }
+                let _ = status_tx.try_send(RuleStatusEvent::Activated { rule_id });
                 return;
             }
             let listen_port = u16::try_from(rule.listen_port).unwrap_or(0);
@@ -628,29 +655,21 @@ fn handle_server_message(
             // `None` for uncapped rules so the no-cap fast path is a
             // null check on each accept; capped rules pay one Arc
             // clone per spawned accept loop.
-            let (rate_limit_limiter, rate_limit_stats) = match rule.rate_limit.as_ref() {
-                Some(envelope) => {
-                    let core_envelope = forward_core::RateLimit {
-                        bandwidth_in_bps: envelope.bandwidth_in_bps,
-                        bandwidth_out_bps: envelope.bandwidth_out_bps,
-                        new_connections_per_sec: envelope.new_connections_per_sec,
-                        concurrent_connections: envelope.concurrent_connections,
-                        bandwidth_in_burst: envelope.bandwidth_in_burst,
-                        bandwidth_out_burst: envelope.bandwidth_out_burst,
-                        new_connections_burst: envelope.new_connections_burst,
-                    };
-                    let limiter = std::sync::Arc::new(
-                        crate::forwarder::rate_limit::scope::RuleRateLimiter::from_envelope(
-                            &core_envelope,
-                        ),
-                    );
-                    let acc = std::sync::Arc::new(
-                        crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
-                    );
-                    (Some(limiter), Some(acc))
-                }
-                None => (None, None),
-            };
+            let rate_limit_envelope = incoming_rate_limit.clone();
+            rule_rate_limit_scope.install(rule_id, rate_limit_envelope.as_ref());
+            let rate_limit_limiter = rate_limit_envelope.as_ref().map(|_| {
+                Arc::new(
+                    crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
+                        rule_id,
+                        Arc::clone(rule_rate_limit_scope),
+                    ),
+                )
+            });
+            let rate_limit_stats = rate_limit_envelope.as_ref().map(|_| {
+                std::sync::Arc::new(
+                    crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                )
+            });
             // 011-rate-limiting-qos T031: build this rule's dynamic
             // per-owner limiter handle. The handle snapshots the
             // current owner limiter from the process-lifetime registry

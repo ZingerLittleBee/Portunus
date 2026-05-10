@@ -113,11 +113,11 @@ pub struct ClientRule {
     /// plain-TCP path. Lowercased + grammar-validated by the server
     /// before reaching the client (operator-api.md §1.2).
     pub sni_pattern: Option<String>,
-    /// 011-rate-limiting-qos (T019): per-rule data-plane limiter built
-    /// from the wire `Rule.rate_limit` envelope. `None` for uncapped
-    /// rules — the no-cap fast path observes a null check and falls
-    /// through to the byte-identical v0.10 forwarding path.
-    pub rate_limit: Option<Arc<rate_limit::scope::RuleRateLimiter>>,
+    /// 011-rate-limiting-qos: dynamic per-rule data-plane limiter
+    /// handle. Rules stay live across cap updates, so the forwarder
+    /// snapshots the current limiter from the process-lifetime
+    /// registry on each admission / bandwidth acquire.
+    pub rate_limit: Option<Arc<rate_limit::scope::RuleRateLimitHandle>>,
     /// 011-rate-limiting-qos (T022): per-rule rate-limit stats
     /// accumulator. Constructed alongside `rate_limit` in control.rs;
     /// `None` for uncapped rules. Drained into `RuleStats.rate_limit`
@@ -365,7 +365,7 @@ async fn accept_loop<R: Resolve + 'static>(
     // 011-rate-limiting-qos T019: per-rule cap envelope. `None` keeps
     // the byte-identical v0.10 path (no extra atomic loads, no extra
     // allocations).
-    rate_limiter: Option<Arc<rate_limit::scope::RuleRateLimiter>>,
+    rate_limiter: Option<Arc<rate_limit::scope::RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
     // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
     // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
@@ -872,6 +872,15 @@ mod tests {
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
         }
+    }
+
+    fn rule_handle_for(
+        rule_id: RuleId,
+        rl: forward_core::RateLimit,
+    ) -> Arc<rate_limit::scope::RuleRateLimitHandle> {
+        let scope = Arc::new(rate_limit::scope::RateLimitScopeManager::new());
+        scope.install(rule_id, Some(&rl));
+        Arc::new(rate_limit::scope::RuleRateLimitHandle::new(rule_id, scope))
     }
 
     fn multi_target_rule(rule_id: u64, port: u16, target: std::net::SocketAddr) -> ClientRule {
@@ -1890,7 +1899,7 @@ mod tests {
         let stats_acc = Arc::new(RateLimitStatsAccumulator::new());
 
         let mut rule = single_rule(101, port, echo);
-        rule.rate_limit = Some(Arc::clone(&limiter));
+        rule.rate_limit = Some(rule_handle_for(RuleId(101), envelope.clone()));
         rule.rate_limit_stats = Some(Arc::clone(&stats_acc));
 
         let task = tokio::spawn(async move {
@@ -2045,7 +2054,13 @@ mod tests {
         let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
 
         let mut rule = single_rule(202, port, echo);
-        rule.rate_limit = Some(Arc::clone(&rule_limiter));
+        rule.rate_limit = Some(rule_handle_for(
+            RuleId(202),
+            forward_core::RateLimit {
+                concurrent_connections: Some(5),
+                ..Default::default()
+            },
+        ));
         rule.rate_limit_stats = Some(Arc::clone(&rule_stats));
         rule.owner_rate_limit = Some(Arc::clone(&owner_limiter));
         rule.owner_rate_limit_stats = Some(Arc::clone(&owner_stats));

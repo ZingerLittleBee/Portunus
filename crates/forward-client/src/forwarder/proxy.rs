@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::proxy_protocol::{self, ProxyProtocolPrelude};
-use super::rate_limit::scope::{OwnerRateLimitHandle, RuleRateLimiter};
+use super::rate_limit::scope::{OwnerRateLimitHandle, RuleRateLimitHandle};
 use super::rate_limit::stats::RateLimitStatsAccumulator;
 use super::stats::RuleStats;
 use crate::resolver::{AnswerSource, ConnectError, LiveResolver, Resolve, ResolveFailReason};
@@ -56,7 +56,7 @@ pub async fn proxy<R: Resolve>(
     // 011-rate-limiting-qos T020: per-rule bandwidth limiter +
     // accumulator. None on uncapped rules — the proxy stays on the
     // byte-identical v0.10 `tokio::io::copy_bidirectional` fast path.
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
     // accumulator. Consulted alongside `rate_limit` in the throttling
@@ -102,7 +102,7 @@ pub async fn proxy_with_preread<R: Resolve>(
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -143,7 +143,7 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     shutdown: CancellationToken,
     stats: Option<Arc<RuleStats>>,
     listen_port: u16,
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -265,11 +265,14 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
                 // owner has a bandwidth cap we still pass a fresh
                 // no-cap RuleRateLimiter so the inner loop can call
                 // `acquire_bandwidth` on it as a no-op short-circuit.
-                let rule_for_copy = rate_limit
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(RuleRateLimiter::from_envelope(
-                        &forward_core::RateLimit::default(),
-                    )));
+                let rule_for_copy = rate_limit.clone().unwrap_or_else(|| {
+                    let scope = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+                    scope.install(
+                        forward_core::RuleId(0),
+                        Some(&forward_core::RateLimit::default()),
+                    );
+                    Arc::new(RuleRateLimitHandle::new(forward_core::RuleId(0), scope))
+                });
                 super::rate_limit::copy::copy_bidirectional_with_rate_limit(
                     &mut inbound,
                     &mut outbound,

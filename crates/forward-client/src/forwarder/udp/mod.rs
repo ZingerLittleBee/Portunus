@@ -37,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::forwarder::rate_limit::scope::{
-    ActiveGuard, LayeredAcquire, OwnerRateLimitHandle, RuleRateLimiter, try_acquire_layered,
+    ActiveGuard, LayeredAcquire, OwnerRateLimitHandle, RuleRateLimitHandle, try_acquire_layered,
 };
 use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
@@ -73,7 +73,7 @@ pub async fn run_listener_multi_target<R: Resolve + 'static>(
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
     cancel: CancellationToken,
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -163,7 +163,7 @@ async fn handle_inbound_multi_target<R: Resolve>(
     flow_table: Arc<UdpFlowTable>,
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -368,7 +368,7 @@ fn acquire_first_packet(
     rule_id: RuleId,
     listen_port: u16,
     source: SocketAddr,
-    rate_limit: Option<&Arc<RuleRateLimiter>>,
+    rate_limit: Option<&Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<&RateLimitStatsAccumulator>,
     owner_rate_limit: Option<&Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<&RateLimitStatsAccumulator>,
@@ -444,7 +444,7 @@ pub async fn run_listener<R: Resolve + 'static>(
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
     cancel: CancellationToken,
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -535,7 +535,7 @@ async fn handle_inbound<R: Resolve>(
     flow_table: Arc<UdpFlowTable>,
     stats: Arc<RuleStats>,
     resolver: Arc<LiveResolver<R>>,
-    rate_limit: Option<Arc<RuleRateLimiter>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -1033,7 +1033,6 @@ mod tests {
     /// `RejectReason::UdpFlowRate`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn t021_udp_flow_rate_drops_second_new_source() {
-        use crate::forwarder::rate_limit::scope::RuleRateLimiter;
         use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         use forward_core::{RateLimit, RejectReason};
 
@@ -1046,10 +1045,17 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_run = cancel.clone();
         let stats_run = Arc::clone(&stats);
-        let limiter = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
-            new_connections_per_sec: Some(1),
-            ..Default::default()
-        }));
+        let rule_mgr = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        rule_mgr.install(
+            RuleId(800),
+            Some(&RateLimit {
+                new_connections_per_sec: Some(1),
+                ..Default::default()
+            }),
+        );
+        let limiter = Arc::new(
+            crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(RuleId(800), rule_mgr),
+        );
         let rl_stats = Arc::new(RateLimitStatsAccumulator::new());
         let task_limiter = Arc::clone(&limiter);
         let task_rl_stats = Arc::clone(&rl_stats);
@@ -1116,7 +1122,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn t030_owner_cap_binds_before_rule_cap_on_udp_first_packet() {
         use crate::forwarder::rate_limit::scope::{
-            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager, RuleRateLimiter,
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager, RuleRateLimitHandle,
         };
         use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         use forward_core::{RateLimit, RejectReason};
@@ -1129,10 +1135,15 @@ mod tests {
         // Rule allows 5 new flows/sec, owner allows 1 — owner is the
         // binding ceiling. The first source admits, the second rejects
         // under OwnerUdpFlowRate.
-        let rule_limiter = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
-            new_connections_per_sec: Some(5),
-            ..Default::default()
-        }));
+        let rule_mgr = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        rule_mgr.install(
+            RuleId(801),
+            Some(&RateLimit {
+                new_connections_per_sec: Some(5),
+                ..Default::default()
+            }),
+        );
+        let rule_limiter = Arc::new(RuleRateLimitHandle::new(RuleId(801), rule_mgr));
         let rule_stats = Arc::new(RateLimitStatsAccumulator::new());
         let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
         let owner_id = OwnerId::new("alice");

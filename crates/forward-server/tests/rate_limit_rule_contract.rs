@@ -199,6 +199,16 @@ fn push(bearer: &str, body: serde_json::Value) -> Request<Body> {
         .expect("build request")
 }
 
+fn put_rule(rule_id: u64, bearer: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/rules/{rule_id}"))
+        .header("content-type", "application/json")
+        .header("Authorization", format!("Bearer {bearer}"))
+        .body(Body::from(serde_json::to_vec(&body).expect("body")))
+        .expect("build request")
+}
+
 async fn response_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = to_bytes(resp.into_body(), 16384).await.expect("body bytes");
     serde_json::from_slice(&bytes).expect("body must be JSON")
@@ -552,4 +562,57 @@ async fn uncapped_rule_emits_owner_id_when_owner_cap_exists() {
         .and_then(|r| r.owner_id.clone())
         .expect("owner_id must be present when owner cap exists");
     assert_eq!(owner_id, "alice");
+}
+
+#[tokio::test]
+async fn update_rule_rate_limit_persists_and_echoes_in_response() {
+    let f = build_fixture();
+    let _updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+
+    let create = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": CLIENT,
+                "listen_port": 30040,
+                "protocol": "tcp",
+                "targets": [{"host": "127.0.0.1", "port": 9040}],
+                "rate_limit": {
+                    "bandwidth_in_bps": 1_048_576u64,
+                    "bandwidth_out_bps": 1_048_576u64
+                }
+            }),
+        ))
+        .await
+        .expect("create");
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created = response_json(create).await;
+    let rule_id = created["rule_id"].as_u64().expect("rule_id");
+
+    let update = f
+        .router
+        .clone()
+        .oneshot(put_rule(
+            rule_id,
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": CLIENT,
+                "listen_port": 30040,
+                "protocol": "tcp",
+                "targets": [{"host": "127.0.0.1", "port": 9040}],
+                "rate_limit": {
+                    "bandwidth_in_bps": 102400u64,
+                    "bandwidth_out_bps": 102400u64
+                }
+            }),
+        ))
+        .await
+        .expect("update");
+    assert_eq!(update.status(), StatusCode::OK);
+    let body = response_json(update).await;
+    assert_eq!(body["rule_id"], rule_id);
+    assert_eq!(body["rate_limit"]["bandwidth_in_bps"], 102400);
+    assert_eq!(body["rate_limit"]["bandwidth_out_bps"], 102400);
 }

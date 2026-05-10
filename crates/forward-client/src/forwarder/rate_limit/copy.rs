@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::scope::{BandwidthAcquire, BandwidthDirection, OwnerRateLimitHandle, RuleRateLimiter};
+use super::scope::{
+    BandwidthAcquire, BandwidthDirection, OwnerRateLimitHandle, RuleRateLimitHandle,
+};
 use super::stats::RateLimitStatsAccumulator;
 
 /// Chunk size for the half-loops. Matches the default
@@ -43,7 +45,7 @@ const CHUNK: usize = 16 * 1024;
 pub async fn copy_bidirectional_with_rate_limit<A, B>(
     inbound: &mut A,
     outbound: &mut B,
-    limiter: Arc<RuleRateLimiter>,
+    limiter: Arc<RuleRateLimitHandle>,
     stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_limiter: Option<Arc<OwnerRateLimitHandle>>,
     owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
@@ -95,7 +97,7 @@ async fn copy_with_cap<R, W>(
     reader: &mut R,
     writer: &mut W,
     direction: BandwidthDirection,
-    limiter: &RuleRateLimiter,
+    limiter: &RuleRateLimitHandle,
     stats: Option<&RateLimitStatsAccumulator>,
     // T030: per-owner bucket consulted BEFORE the per-rule bucket on
     // every chunk (FR-013). Effective throughput is the lesser of
@@ -143,8 +145,8 @@ where
         }
         loop {
             match limiter.acquire_bandwidth(direction, n as u64) {
-                BandwidthAcquire::Granted => break,
-                BandwidthAcquire::Throttled { deficit } => {
+                Some(BandwidthAcquire::Granted) | None => break,
+                Some(BandwidthAcquire::Throttled { deficit }) => {
                     if let Some(s) = stats {
                         let micros = u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
                         s.record_throttle(direction, micros);
@@ -161,14 +163,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forwarder::rate_limit::scope::RuleRateLimiter;
     use forward_core::RateLimit;
     use std::time::Duration;
     use tokio::io::duplex;
     use tokio::time::Instant;
 
-    fn limiter_for(rl: RateLimit) -> Arc<RuleRateLimiter> {
-        Arc::new(RuleRateLimiter::from_envelope(&rl))
+    fn limiter_for(rl: RateLimit) -> Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle> {
+        let scope = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        scope.install(forward_core::RuleId(1), Some(&rl));
+        Arc::new(
+            crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
+                forward_core::RuleId(1),
+                scope,
+            ),
+        )
     }
 
     fn owner_handle_for(

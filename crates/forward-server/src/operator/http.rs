@@ -33,7 +33,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/clients", get(get_clients).post(post_clients))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/rules", get(get_rules).post(post_rules))
-        .route("/v1/rules/{rule_id}", delete(delete_rule))
+        .route(
+            "/v1/rules/{rule_id}",
+            delete(delete_rule).put(put_rule),
+        )
         .route("/v1/rules/{rule_id}/stats", get(get_rule_stats))
         // 006-management-web-ui T025: SSE live stats stream.
         .route(
@@ -1002,6 +1005,108 @@ async fn delete_rule(
     }
     cli::remove_rule(&state, RuleId(rule_id)).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn put_rule(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    Path(rule_id): Path<u64>,
+    Json(body): Json<PushRuleBody>,
+) -> Result<Json<PushRuleResponse>, ApiError> {
+    let existing = state.rules.get(RuleId(rule_id)).await.ok_or(ApiError::new(
+        StatusCode::NOT_FOUND,
+        "rule_not_found",
+        "rule_not_found",
+    ))?;
+    crate::operator::rbac::enforce_read(&identity, &existing.owner_user_id)?;
+
+    let has_legacy = body.target_host.is_some() || body.target_port.is_some();
+    let has_new = body.targets.is_some();
+    if has_legacy && has_new {
+        return Err(OperatorError::RuleShapeConflict.into());
+    }
+    if !has_legacy && !has_new {
+        return Err(OperatorError::RuleShapeMissing.into());
+    }
+    if body.listen_port_end.is_some() != body.target_port_end.is_some() {
+        return Err(OperatorError::RangeInvalid(
+            "mismatched_range: listen_port_end and target_port_end must be present together".into(),
+        )
+        .into());
+    }
+    let listen =
+        build_range(body.listen_port, body.listen_port_end).map_err(OperatorError::RangeInvalid)?;
+    let rate_limit = parse_rate_limit_body(body.rate_limit.as_ref())?;
+    let existing_listen = existing.listen_range();
+    if body.client != existing.client_name.as_str()
+        || !body
+            .protocol
+            .eq_ignore_ascii_case(existing.protocol.as_str())
+        || listen != existing_listen
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "validation.rule_update_shape_mismatch",
+            "PUT /v1/rules/{id} only supports rate_limit hot-updates; client/listen/protocol must stay unchanged",
+        ));
+    }
+    if has_legacy {
+        let target_host = body.target_host.as_deref().unwrap_or_default();
+        let target_port = body.target_port.unwrap_or_default();
+        if target_host != existing.target_host || target_port != existing.target_port {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "validation.rule_update_shape_mismatch",
+                "PUT /v1/rules/{id} only supports rate_limit hot-updates; target must stay unchanged",
+            ));
+        }
+        if rate_limit.is_some() {
+            return Err(OperatorError::RateLimitValidation {
+                code: "validation.rate_limit_on_legacy_shape",
+                message:
+                    "rate_limit requires the `targets[]` request shape; legacy `target_host`/`target_port` is not supported"
+                        .into(),
+            }
+            .into());
+        }
+    } else {
+        let typed = body.targets.as_deref().expect("has_new true");
+        let same_targets = typed.len() == existing.targets_view().len()
+            && typed
+                .iter()
+                .zip(existing.targets_view())
+                .all(|(incoming, current)| {
+                    incoming.host == current.host
+                        && incoming.port == current.port
+                        && incoming.priority.unwrap_or(0) == current.priority
+                });
+        if !same_targets {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "validation.rule_update_shape_mismatch",
+                "PUT /v1/rules/{id} only supports rate_limit hot-updates; targets must stay unchanged",
+            ));
+        }
+    }
+
+    let updated =
+        cli::update_rule_rate_limit(&state, RuleId(rule_id), rate_limit, DEFAULT_ACK_TIMEOUT)
+            .await?;
+    Ok(Json(PushRuleResponse {
+        rule_id: updated.id.0,
+        status: match &updated.state {
+            crate::rules::RuleState::Pending => "Pending".to_string(),
+            crate::rules::RuleState::Active => "Active".to_string(),
+            crate::rules::RuleState::Failed { reason } => format!("Failed:{reason}"),
+            crate::rules::RuleState::Removed => "Removed".to_string(),
+        },
+        target_host: updated.target_host.clone(),
+        prefer_ipv6: updated.prefer_ipv6.unwrap_or(false),
+        protocol: updated.protocol.as_str().to_string(),
+        owner: updated.owner_user_id.to_string(),
+        sni_pattern: updated.sni_pattern.clone(),
+        rate_limit: updated.rate_limit.clone(),
+    }))
 }
 
 async fn get_rules(

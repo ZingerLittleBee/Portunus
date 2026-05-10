@@ -218,7 +218,7 @@ async fn accept_loop<R: Resolve + 'static>(
     stats: Arc<RuleStats>,
     // 011-rate-limiting-qos T019: per-rule cap envelope. None keeps
     // the byte-identical v0.7 path.
-    rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
+    rate_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     // 011-rate-limiting-qos T030: per-owner cap envelope. Consulted
     // BEFORE the per-rule layer (FR-013) and emits owner-prefixed
@@ -351,7 +351,7 @@ async fn handle_connection<R: Resolve>(
     // accumulator. None for uncapped or
     // connection-only-capped rules — the multi-target path keeps the
     // byte-stable v0.7 `tokio::io::copy_bidirectional` behaviour.
-    rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimiter>>,
+    rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
     rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     // 011-rate-limiting-qos T030: per-owner bandwidth limiter +
     // accumulator. None when the owner has no bandwidth caps.
@@ -422,13 +422,19 @@ async fn handle_connection<R: Resolve>(
         }
         result = async {
             if rule_has_bw || owner_has_bw {
-                let rule_for_copy = rate_limit
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(
-                        crate::forwarder::rate_limit::scope::RuleRateLimiter::from_envelope(
-                            &forward_core::RateLimit::default(),
-                        )
-                    ));
+                let rule_for_copy = rate_limit.clone().unwrap_or_else(|| {
+                    let scope =
+                        Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+                    scope.install(
+                        rule_id,
+                        Some(&forward_core::RateLimit::default()),
+                    );
+                    Arc::new(
+                        crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
+                            rule_id, scope,
+                        ),
+                    )
+                });
                 crate::forwarder::rate_limit::copy::copy_bidirectional_with_rate_limit(
                     &mut inbound,
                     &mut outbound,
