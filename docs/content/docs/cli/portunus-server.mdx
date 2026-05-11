@@ -11,6 +11,9 @@ loopback HTTP API, so they require `PORTUNUS_OPERATOR_TOKEN` to be set.
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 ```
 
+Since v1.1.0, Web UI login uses local passwords and server-side session cookies.
+`PORTUNUS_OPERATOR_TOKEN` is still for API/CLI automation only.
+
 Run `portunus-server --help` (or `portunus-server <subcommand> --help`)
 for the current authoritative flag surface — the tables below are a
 high-level map.
@@ -21,7 +24,8 @@ high-level map.
 | --- | --- |
 | `serve` | Start the control plane (gRPC + operator HTTP + metrics) |
 | `gen-token` | Print a fresh URL-safe-base64 token to stdout |
-| `bootstrap-superadmin --name <name>` | One-shot superadmin mint; bearer printed once |
+| `bootstrap-superadmin --name <name>` | Legacy one-shot superadmin API token mint; bearer printed once |
+| `onboarding-token` | Offline rotation of the first-run setup token for an unbootstrapped store |
 
 ```sh
 portunus-server --data-dir ./srv serve
@@ -29,6 +33,11 @@ portunus-server --data-dir ./srv serve
 
 If you need non-default listeners or other overrides, place an optional
 `./srv/server.toml`.
+
+For normal first-run setup, start `serve` and use the setup token printed by the
+running server to complete Web UI onboarding. `onboarding-token` opens the store
+directly and `serve` rotates the token again on start, so it is mainly useful
+for offline maintenance and tests.
 
 ## Clients
 
@@ -63,6 +72,20 @@ If you need non-default listeners or other overrides, place an optional
 | `user-list` | List users |
 | `user-get <id>` | Show user details |
 | `user-remove <id>` | Remove user (cascades grants + rules) |
+| `reset-password <user_id> [--temporary] [--password-stdin] [--keep-api-tokens]` | Local password recovery against the data dir |
+
+`reset-password` opens the SQLite store directly. Stop `serve` first if it is
+running against the same `--data-dir`.
+
+```sh
+portunus-server --data-dir /var/lib/portunus \
+  reset-password _superadmin --temporary
+```
+
+Without `--temporary`, the command prompts twice without echo. `--password-stdin`
+reads the new password from the first stdin line for automation. By default,
+password reset revokes Web sessions and active API tokens for that user; use
+`--keep-api-tokens` only when you are sure the reset is not incident response.
 
 ## Credentials
 
@@ -112,6 +135,7 @@ Pre-flight rejects an empty `set` envelope with exit 3 +
 | 3 | Pre-flight validation (e.g. `validation.rate_limit_no_caps_provided`) |
 | 4 | `PORTUNUS_OPERATOR_TOKEN` missing |
 | 6 | Activation failed (e.g. `port_in_use`) |
+| 8 | User not found for local password recovery |
 | 75 | Store in use by another process |
 | 78 | Schema-version too new (downgrade attempt) |
 

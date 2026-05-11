@@ -82,6 +82,16 @@ published only on the server host loopback interface as
 `http://127.0.0.1:7080/`. The client control-plane listener remains reachable
 on `0.0.0.0:7443`.
 
+For first-run onboarding, read the setup token from the running server logs:
+
+```sh
+docker compose logs server | grep 'Portunus onboarding setup token'
+```
+
+Open `http://127.0.0.1:7080/`, paste the setup token, and create the first
+`superadmin` password. The token expires after 30 minutes and is rotated every
+time the server starts while onboarding is incomplete.
+
 If you need overrides, mount an optional `server.toml` into the same data dir:
 
 ```yaml
@@ -100,19 +110,34 @@ named volume. `docker compose run` overrides the service `command`, so each
 invocation can run a different subcommand:
 
 ```sh
-docker compose run --rm operator bootstrap-superadmin --name ops
-```
-
-Capture the printed token and pass it to later operator commands:
-
-```sh
 docker compose run --rm \
   -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
   operator list-clients
 ```
 
+Most operator commands use the HTTP API and require an API token. After Web
+onboarding, create one from the Web UI Credentials page and pass it as
+`PORTUNUS_OPERATOR_TOKEN`:
+
+```sh
+docker compose run --rm \
+  -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
+  operator provision-client edge-01 --out /tmp/edge-01.bundle.json
+```
+
 Use the same pattern for commands such as `provision-client`, `push-rule`, and
 `revoke-client`.
+
+Local break-glass commands (`reset-password`, `onboarding-token`) open the
+SQLite store directly, so stop `server` first. `onboarding-token` is mainly an
+offline maintenance command; a later `serve` start rotates the setup token
+again, so browser onboarding normally uses the token printed by `server` logs.
+
+```sh
+docker compose stop server
+docker compose run --rm operator reset-password _superadmin --temporary
+docker compose up -d server
+```
 
 ## Client compose
 
@@ -194,9 +219,9 @@ from a newer host distribution into these images; that can produce
 - **Distroless runtime** has no shell. Use `docker compose run --rm operator`
   for Portunus CLI commands, or use a temporary sidecar container for file
   inspection.
-- **Loopback bind for the operator API** is enforced inside the
-  container; run the operator CLI through the Compose sidecar or expose it via
-  an SSH tunnel when needed.
+- **Operator API / Web UI exposure** is a two-step decision: the process binds
+  `0.0.0.0:7080` inside the container so Docker can publish it, while the sample
+  maps that port to host loopback only.
 - **Filesystem class check** still fires inside containers — make sure
   the Docker volume backend is persistent local storage.
 - **`portunus-client`** needs the bundle present at
@@ -208,7 +233,7 @@ A simple `HEALTHCHECK` for the server:
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD ["portunus-server", "--data-dir", "/var/lib/portunus", "list-clients"]
+  CMD ["portunus-server", "list-clients"]
 ```
 
 (This requires `PORTUNUS_OPERATOR_TOKEN` to be in the container's

@@ -11,6 +11,9 @@ icon: Terminal
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 ```
 
+v1.1.0 起，Web UI 登录使用本地密码和服务端 session cookie。
+`PORTUNUS_OPERATOR_TOKEN` 仍只用于 API/CLI 自动化。
+
 请以 `portunus-server --help`（或 `portunus-server <subcommand> --help`）
 为权威；下表是分类速查。
 
@@ -20,13 +23,18 @@ export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 | --- | --- |
 | `serve` | 启动控制面（gRPC + 操作员 HTTP + metrics） |
 | `gen-token` | 输出一段新的 URL-safe-base64 Token |
-| `bootstrap-superadmin --name <name>` | 一次性签出超管，Bearer 仅打印一次 |
+| `bootstrap-superadmin --name <name>` | 旧的一次性超管 API Token 签发，Bearer 仅打印一次 |
+| `onboarding-token` | 对未初始化 store 离线轮换首次 setup token |
 
 ```sh
 portunus-server --data-dir ./srv serve
 ```
 
 如果需要非默认监听地址或其他覆写，请放一个可选 `./srv/server.toml`。
+
+正常首次设置时，启动 `serve`，使用正在运行的 server 打印的 setup token 完成
+Web UI onboarding。`onboarding-token` 会直接打开 store，而且 `serve` 启动时会再次
+轮换 token，所以它主要用于离线维护和测试。
 
 ## Client
 
@@ -61,6 +69,19 @@ portunus-server --data-dir ./srv serve
 | `user-list` | 列出用户 |
 | `user-get <id>` | 查看用户 |
 | `user-remove <id>` | 删除用户（级联删除其 Grant 和规则） |
+| `reset-password <user_id> [--temporary] [--password-stdin] [--keep-api-tokens]` | 直接针对 data dir 的本地密码恢复 |
+
+`reset-password` 会直接打开 SQLite store。如果 `serve` 正在使用同一个
+`--data-dir`，请先停止它。
+
+```sh
+portunus-server --data-dir /var/lib/portunus \
+  reset-password _superadmin --temporary
+```
+
+不带 `--temporary` 时，命令会无回显提示输入两次密码。`--password-stdin` 从 stdin
+第一行读取新密码，便于自动化。默认情况下，密码重置会撤销该用户的 Web 会话和
+活跃 API Token；只有在确定不是安全事件时才使用 `--keep-api-tokens`。
 
 ## 凭据
 
@@ -110,6 +131,7 @@ portunus-server --data-dir ./srv serve
 | 3 | 预校验（如 `validation.rate_limit_no_caps_provided`） |
 | 4 | 缺少 `PORTUNUS_OPERATOR_TOKEN` |
 | 6 | 激活失败（如 `port_in_use`） |
+| 8 | 本地密码恢复目标用户不存在 |
 | 75 | 存储被另一进程占用 |
 | 78 | schema 比当前二进制还新（试图降级） |
 

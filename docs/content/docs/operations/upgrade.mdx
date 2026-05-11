@@ -52,17 +52,17 @@ files. The expectation is a fresh `--data-dir`:
 sudo systemctl stop portunus-server
 sudo rm /var/lib/portunus/tokens.json /var/lib/portunus/identity.json
 portunus-server reset --confirm
-portunus-server bootstrap-superadmin --name 'Initial admin'
 sudo systemctl start portunus-server
 ```
 
-Existing client bundles (TLS-pinned) survive — only the operator-side
-identity and the rule definitions need re-creating.
+After the server starts, complete first-run Web onboarding with the setup token
+printed in the server logs. Existing client bundles (TLS-pinned) survive — only
+the operator-side identity and the rule definitions need re-creating.
 
 ## v0.4 → v0.5 (RBAC)
 
-The operator API gained `Authorization: Bearer <token>` requirement.
-Existing CLI scripts need either:
+The operator API gained `Authorization: Bearer <token>` requirement. Existing
+CLI scripts need either:
 
 ```sh
 export PORTUNUS_OPERATOR_TOKEN=<token>
@@ -76,6 +76,14 @@ operator_token = "<43-char URL-safe-base64 token>"
 
 The data plane (gRPC client tokens, TCP/UDP forwarding) is
 **byte-identical** — no client-side changes required.
+
+## v1.0 → v1.1 (local Web passwords)
+
+The Web UI moved from browser-entered bearer tokens to local user ID/password
+login with server-side `portunus_session` cookies. Existing API bearer tokens
+continue to work for CLI and automation. Existing users are not assigned
+passwords automatically; a `superadmin` should create or reset local passwords
+from the Web UI, or use local `reset-password` while the server is stopped.
 
 ## Downgrade caveats
 

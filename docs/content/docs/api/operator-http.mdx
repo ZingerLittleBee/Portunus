@@ -1,14 +1,28 @@
 ---
 title: Operator HTTP API
-description: The /v1 surface served on operator_http_listen. Loopback by default, bearer-authed, RBAC-gated.
+description: The /v1 surface served on operator_http_listen. Loopback by default, session-or-bearer authenticated, RBAC-gated.
 icon: Code
 ---
 
 `portunus-server` exposes its operator surface as an HTTP API on
-`operator_http_listen` (loopback by default). Every `/v1/*` request
-requires `Authorization: Bearer <token>`.
+`operator_http_listen` (loopback by default). Most `/v1/*` requests require
+either a Web session cookie or an API bearer token.
 
 ## Authentication
+
+Web UI users authenticate through local password login:
+
+```http
+POST /v1/auth/login
+Host: 127.0.0.1:7080
+Content-Type: application/json
+
+{"user_id":"admin","password":"correct horse battery staple"}
+```
+
+Successful login returns `{"password_change_required": false}` and sets an
+`HttpOnly` `portunus_session` cookie. API clients and CLI automation continue
+to use bearer credentials:
 
 ```http
 GET /v1/clients
@@ -16,22 +30,40 @@ Host: 127.0.0.1:7080
 Authorization: Bearer T006-quickstart-token
 ```
 
-Responses on missing / invalid bearer:
+Cookie-authenticated mutating requests (`POST`, `PUT`, `PATCH`, `DELETE`) must
+include an exact same-origin `Origin` header, `X-Portunus-CSRF: 1`, and JSON
+content type when a body is present. Bearer-token requests do not need the CSRF
+header.
+
+Responses on missing / invalid authentication:
 
 | Status | Body | Cause |
 | --- | --- | --- |
-| `401 unauthenticated` | `{"error":"unauthenticated"}` | Header missing or token invalid |
+| `401 unauthenticated` | `{"error":"unauthenticated"}` | Missing / invalid bearer or Web session |
 | `403 not_owner` | `{"error":"not_owner"}` | Authenticated, but caller does not own the resource |
+| `403 password_change_required` | `{"error":"password_change_required"}` | Web session must change a temporary password first |
 | `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/en/docs/features/rbac)) |
-| `503 bootstrap_required` | Server has no superadmin yet — run `bootstrap-superadmin` |
+| `403 csrf_*` | Cookie-authenticated write failed CSRF checks |
+| `429 rate_limited` | Too many login, onboarding, or password-reset attempts |
+| `503 bootstrap_required` | Server has no superadmin yet — complete Web onboarding |
 
 ## Endpoints by area
+
+### Auth
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/auth/status` | Public status: `{ onboarding_required }` |
+| `POST` | `/v1/auth/onboarding` | Public first-admin creation; requires setup token while no active `superadmin` exists |
+| `POST` | `/v1/auth/login` | Public local password login; sets `portunus_session` |
+| `POST` | `/v1/auth/logout` | Session logout; requires session cookie and CSRF headers |
 
 ### Self
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/v1/users/me` | `{ user_id, role, display_name }` for the caller (used by SPA AuthGate) |
+| `POST` | `/v1/users/me/password` | Change own password; body includes `current_password`, `new_password`, `new_password_confirm` |
 
 ### Clients
 
@@ -58,10 +90,11 @@ Responses on missing / invalid bearer:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/v1/users` | Add user (superadmin) |
+| `POST` | `/v1/users` | Add user (superadmin); accepts optional `initial_password` and `password_change_required` |
 | `GET` | `/v1/users` | List users (superadmin) |
 | `GET` | `/v1/users/{id}` | User detail |
 | `DELETE` | `/v1/users/{id}` | Cascading remove (superadmin) |
+| `POST` | `/v1/users/{id}/password` | Reset user password (superadmin); revokes sessions and API tokens by default |
 
 ### Credentials
 
@@ -113,10 +146,11 @@ is unchanged (Prometheus continues scraping without bearer).
 | `204` | Success, no body |
 | `400` | Validation error |
 | `401` | `unauthenticated` |
-| `403` | RBAC denial |
+| `403` | RBAC denial, CSRF denial, or `password_change_required` |
 | `404` | Resource not found |
 | `409` | Conflict (e.g. `conflict.legacy_to_sni_unsupported`) |
 | `422` | Capability gate (e.g. `multi_target_unsupported_by_client`, `sni_unsupported_by_client`, `rate_limit_unsupported_by_client`) |
+| `429` | Authentication throttle |
 | `503` | `bootstrap_required` |
 
 The full code → exit-code → HTTP-status mapping is frozen at v1; see

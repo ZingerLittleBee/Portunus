@@ -1,6 +1,6 @@
 ---
 title: Multi-user RBAC
-description: Bearer-token operator API with users, credentials, and per-tenant grants scoped to clients, port ranges, and protocols.
+description: Users, local Web passwords, API credentials, and per-tenant grants scoped to clients, port ranges, and protocols.
 icon: Users
 ---
 
@@ -12,18 +12,30 @@ proper RBAC layer above the unchanged data plane.
 - **User** — id (lower-snake `[a-z][a-z0-9_-]{0,31}`), role
   (`superadmin` / `user`), display name, optional `disabled` flag.
   Reserved `_`-prefix is rejected via the public constructor.
-- **Credential** — a bearer token tied to a user. `blake3`-hashed at
+- **Password** — since v1.1.0, Web UI login uses a local password hashed in
+  PHC/Argon2id format. Admins create users manually and can require a password
+  change on first login.
+- **Credential** — a bearer API token tied to a user. `blake3`-hashed at
   rest; raw token visible only at issuance / rotation. Carries an
   optional label, status (`active` / `revoked`), and `last_used_at`.
 - **Grant** — per-user authorisation triple `{client, listen-port range,
   protocol set}`. `client` is either a named `ClientName` or wildcard
   `"*"`.
 
-## Bootstrap
+## First admin
 
-Two paths — pick one:
+Since v1.1.0, a fresh store is initialized through the Web UI:
 
-### Path A — interactive single-shot (recommended)
+1. Start `portunus-server serve`.
+2. Read the one-time setup token from the server log / stderr.
+3. Open the Web UI and create the first `superadmin` with a local password.
+
+The setup token expires after 30 minutes. If onboarding is not completed, each
+server process start rotates the token and invalidates the previous one. After
+the first active `superadmin` exists, onboarding stays closed.
+
+The older bearer bootstrap paths remain available for automation and upgrade
+compatibility:
 
 ```sh
 portunus-server --data-dir ./srv bootstrap-superadmin --name ops
@@ -50,6 +62,9 @@ portunus-server gen-token
 # → 43-char URL-safe-base64
 ```
 
+These paths create API-token access, not a browser password. For the Web UI,
+prefer the onboarding flow.
+
 ## Add a constrained tenant
 
 ```sh
@@ -65,6 +80,10 @@ portunus-server grant-add --user-id alice --client edge-01 \
 Now alice can `push-rule` only on `edge-01`, only on ports
 `30000..=30050`, only TCP or UDP.
 
+In the Web UI, a `superadmin` can create the same user with an initial password
+and force-change flag. Public self-registration is intentionally not supported,
+because grants are operator-managed.
+
 ## Closed-set matching
 
 A single grant must cover the **entire** requested listen range — rules
@@ -78,7 +97,7 @@ HTTP 403 with one of:
 A `--client *` grant matches any client. A grant whose
 `--listen-port-end` equals `--listen-port-start` is a single-port grant.
 
-## Self-service rotation
+## API token rotation
 
 A user can rotate their own credential without superadmin help:
 
@@ -103,11 +122,34 @@ Every operator request emits one structured `event = "operator.allow"`
 **Raw bearer tokens never reach the audit code path** — the audit
 emitter takes only the post-verify `OperatorIdentity`.
 
+Password-reset audit entries use `action = "operator.password_reset"` and record
+actor, target user, outcome, and whether Web sessions / API tokens were
+revoked. Raw passwords, temporary passwords, setup tokens, and bearer tokens are
+never written to audit.
+
+## Password recovery
+
+Normal users do not self-reset through a public "forgot password" form. A
+`superadmin` resets passwords from the Web UI. Resetting revokes Web sessions
+and revokes API tokens by default unless the admin explicitly keeps them.
+
+If the last `superadmin` loses the password, stop the server and run the local
+break-glass command on the host that owns the data dir:
+
+```sh
+portunus-server --data-dir /var/lib/portunus reset-password _superadmin --temporary
+```
+
+The command prints a temporary password once and requires a password change at
+next Web login. It never creates a new `superadmin` and there is no remote reset
+backdoor.
+
 ## CLI surface
 
 | Command | Purpose |
 | --- | --- |
 | `user-add` / `user-list` / `user-get` / `user-remove` | Manage users |
+| `reset-password <user_id>` | Local password recovery against the data dir |
 | `credential-issue` / `credential-list` / `credential-revoke` / `credential-rotate` | Manage credentials |
 | `grant-add` / `grant-list` / `grant-revoke` | Manage grants |
 

@@ -94,26 +94,32 @@ After install:
 sudo cp deploy/server.toml.example /var/lib/portunus/server.toml
 sudo nano /var/lib/portunus/server.toml
 
-# 2. Bootstrap the superadmin (one-time, prints token once)
-sudo -u portunus-server portunus-server \
-    --data-dir /var/lib/portunus \
-    bootstrap-superadmin --name 'Initial admin'
-
-# 3. Enable and start the server
+# 2. Enable and start the server
 sudo systemctl enable --now portunus-server
 sudo systemctl status portunus-server
 
-# 4. Provision the first client
+# 3. Read the setup token printed by serve
+sudo journalctl -u portunus-server -n 100 --no-pager \
+  | grep 'Portunus onboarding setup token'
+
+# 4. Open http://127.0.0.1:7080/ over SSH tunnel or local browser,
+#    paste the setup token, and create the first superadmin password.
+
+# 5. Create an API token from the Web UI Credentials page, then provision
+#    the first client with the CLI.
 export PORTUNUS_OPERATOR_TOKEN=<paste-token>
 portunus-server provision-client edge-01 \
   --out /tmp/edge-01.bundle.json
 
-# 5. Move the bundle to the edge host (scp / rsync), drop into
+# 6. Move the bundle to the edge host (scp / rsync), drop into
 #    /etc/portunus/client.bundle.json there, mode 0600.
 
-# 6. Enable the client unit on the edge host
+# 7. Enable the client unit on the edge host
 sudo systemctl enable --now portunus-client
 ```
+
+The setup token expires after 30 minutes and rotates on every server start until
+onboarding completes.
 
 ## Smoke check
 
@@ -121,6 +127,23 @@ sudo systemctl enable --now portunus-client
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/users/me
 ```
+
+## Password recovery
+
+If the last `superadmin` forgets the Web password, stop the service, reset the
+existing account locally, then start the service again:
+
+```sh
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus \
+  reset-password _superadmin --temporary
+sudo systemctl start portunus-server
+```
+
+The command prints the temporary password once and requires a password change
+after login. It opens the SQLite store directly, so do not run it while
+`portunus-server.service` is active.
 
 ## Hardening notes
 

@@ -17,7 +17,8 @@ control_listen = "0.0.0.0:7443"
 
 # Operator HTTP API + Web UI. Defaults to loopback.
 # Bind 0.0.0.0 only when container port publishing or a trusted reverse proxy
-# needs it. Every /v1/* request still requires Authorization: Bearer <token>.
+# needs it. Protected /v1 routes still require a Web session cookie or
+# Authorization: Bearer <token>.
 operator_http_listen = "127.0.0.1:7080"
 
 # Optional public origin used for CSRF Origin validation and, in v1.1+,
@@ -56,7 +57,7 @@ Since v0.8 most persistent state lives in `<data-dir>/state.db` (SQLite). See
 ## Bootstrap shortcut
 
 ```toml
-# One-shot bootstrap shortcut for the operator superadmin.
+# Legacy one-shot bootstrap shortcut for an operator API superadmin.
 # When set AND the identity store has NO superadmin yet, the server
 # auto-mints the reserved `_legacy` superadmin with this exact token
 # on first start. After bootstrap, leave the line in (silently
@@ -68,6 +69,10 @@ Generate a token: `portunus-server gen-token`.
 
 Alternative: `portunus-server bootstrap-superadmin --name ops` prints
 a fresh bearer once.
+
+For normal v1.1+ Web UI setup, prefer first-run onboarding with the setup token
+printed by `serve`. `operator_token` creates API-token access, not a browser
+password.
 
 ## Drain & logging
 

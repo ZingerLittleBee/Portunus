@@ -16,7 +16,7 @@ project guarantee data-plane stability across releases.
               │            portunus-server            │
               │                                      │
    Operator ──┤  • CLI subcommands                   │
-   (CLI/HTTP) │  • Operator HTTP API + bearer auth   │
+   (CLI/HTTP) │  • Operator HTTP API + Web sessions  │
               │  • Web UI (loopback)                 │
               │  • RBAC: users, credentials, grants  │
               │  • SQLite state store                │
@@ -42,11 +42,12 @@ project guarantee data-plane stability across releases.
 
 ## Control plane
 
-- **TLS + bearer-token** authentication. The server generates a self-signed
-  leaf cert on first run; every client bundle includes the SHA-256
-  fingerprint, which the client pins on every connect.
+- **TLS-pinned client authentication**. The server generates a self-signed leaf
+  cert on first run; every client bundle includes the SHA-256 fingerprint,
+  which the client pins on every connect.
 - **Operator HTTP API** on `operator_http_listen` (loopback by default).
-  Every `/v1/*` request requires `Authorization: Bearer <token>`.
+  Protected routes accept either Web session cookies or
+  `Authorization: Bearer <token>` API credentials.
 - **gRPC control stream** on `control_listen`. Rule pushes, stats reports,
   health updates, hot-reload events all flow over a single bidirectional
   stream per client.

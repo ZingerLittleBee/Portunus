@@ -20,39 +20,41 @@ You need two terminals (or two hosts):
 For a one-machine trial, install both binaries locally and treat the two
 terminals as Host A and Host B.
 
-## 1. Start the server (Host A)
+## 1. Bootstrap an API operator (Host A)
 
 ```sh
 mkdir -p ./srv
-portunus-server --data-dir ./srv serve
-```
-
-On first launch the server creates `./srv/server.crt`, `./srv/server.key`,
-and `./srv/state.db`. Logs are JSON lines:
-
-```json
-{"event":"tls.cert_generated","fingerprint_sha256":"…"}
-{"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
-```
-
-## 2. Bootstrap the superadmin operator
-
-The operator API is bearer-authed (v0.5.0+). Mint a superadmin once:
-
-```sh
 portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 # → superadmin user_id=_superadmin token=<bearer>
 ```
 
 <Callout type="warn">
-  The bearer is printed **exactly once**. Capture it now.
+  This is the legacy API-token bootstrap path for a raw CLI walkthrough. For
+  browser-first setup, start `serve` and complete Web UI onboarding with the
+  setup token printed by the running server.
 </Callout>
+
+The bearer is printed **exactly once**. Capture it now:
 
 ```sh
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 ```
 
 Every operator subcommand below reads `PORTUNUS_OPERATOR_TOKEN` from env.
+
+## 2. Start the server (Host A)
+
+```sh
+portunus-server --data-dir ./srv serve
+```
+
+On first server launch the server creates `./srv/server.crt`,
+`./srv/server.key`, and any missing sidecar state. Logs are JSON lines:
+
+```json
+{"event":"tls.cert_generated","fingerprint_sha256":"…"}
+{"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
+```
 
 ## 3. Provision a forwarding client
 

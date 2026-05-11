@@ -76,11 +76,12 @@ portunus-server list-clients
 
 | Code | Cause |
 | --- | --- |
-| `unauthenticated` | Missing or invalid bearer |
+| `unauthenticated` | Missing or invalid bearer API token / Web session |
 | `not_owner` | Authenticated but caller doesn't own the resource |
 | `client_not_granted` | Caller has no grant covering the requested client |
 | `port_outside_grant` | Listen port outside any single grant |
 | `protocol_not_granted` | Protocol (TCP/UDP) not enabled in a grant |
+| `password_change_required` | Web session is limited until the user changes a temporary password |
 
 Read [RBAC](/en/docs/features/rbac) for the closed-set matching rules.
 
@@ -114,13 +115,46 @@ backup or run the newer binary version.
 
 ### `bootstrap_required` (HTTP 503)
 
-Server has no superadmin yet. Run:
+Server has no active superadmin yet. Since v1.1.0, start `serve`, read the setup
+token from stderr / logs, then open the Web UI and create the first
+`superadmin`:
 
 ```sh
-portunus-server bootstrap-superadmin --name 'Initial admin'
+journalctl -u portunus-server -n 100 --no-pager \
+  | grep 'Portunus onboarding setup token'
 ```
 
-…or set `operator_token` in `server.toml` and restart once.
+The setup token expires after 30 minutes and rotates on every server start while
+onboarding is incomplete. If a `superadmin` already exists, onboarding does not
+reopen; use the password recovery flow below.
+
+For legacy automation, `bootstrap-superadmin` or `operator_token` in
+`server.toml` can still create API-token access, but those paths do not create a
+Web password.
+
+## Web login and password recovery
+
+### `rate_limited`
+
+Login, onboarding, and password-reset attempts are rate-limited by subject and
+remote IP. Wait for the lockout to expire before retrying. Repeated guessing is
+supposed to be boring.
+
+### Last `superadmin` forgot the password
+
+Stop the server process, reset the existing account locally, then restart:
+
+```sh
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus \
+  reset-password _superadmin --temporary
+sudo systemctl start portunus-server
+```
+
+The command prints `temporary_password=...` once, revokes Web sessions, revokes
+API tokens by default, and marks the account as requiring a password change.
+There is no remote "forgot password" endpoint for this case.
 
 ## Performance complaints
 

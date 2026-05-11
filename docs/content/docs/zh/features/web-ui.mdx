@@ -20,11 +20,20 @@ http://127.0.0.1:7080/
 
 ## 登录
 
-登录页要求输入操作员 Bearer Token。粘贴并 "Sign in"。
+v1.1.0 起，Web UI 使用本地用户 ID + 密码登录。首次启动时，如果还没有任何
+启用的 `superadmin`，Server 会把 setup token 打到 stderr，并且在 SQLite
+里只保存它的哈希。打开 Web UI，输入这个 setup token，然后创建第一个
+`superadmin`。
 
-- Token 仅存于 `sessionStorage`，浏览器关闭即清空。
-- **绝不** 写入 `localStorage` 或 cookie。
-- 每条 `/v1/*` 请求都走与 CLI 相同的 `auth_layer` 中间件。
+- setup token 30 分钟后过期。
+- 如果 onboarding 还没完成，每次 server 进程启动都会轮换 setup token，旧
+  token 立即失效。
+- Web 登录会创建 `HttpOnly` 的 `portunus_session` cookie。SPA 不会把登录密钥
+  写入 `sessionStorage` 或 `localStorage`。
+- 用户由管理员手动创建，可设置初始密码。不支持公开自助注册。
+
+API Bearer Token 仍然存在，但它和 Web 登录是两套东西。CLI 和自动化使用 API
+Token（`PORTUNUS_OPERATOR_TOKEN`）；浏览器使用密码登录。
 
 ## 你能做什么
 
@@ -80,11 +89,26 @@ CI 中有覆盖率单元测试 —— 翻译键在两个语言包之间不一致
 - 从工作站 **SSH 隧道** 到 `127.0.0.1:7080`，或
 - 把 listener 放在带自有认证的 **反向代理** 后面。
 
-## 防 Token 泄漏
+## 防密钥泄漏
 
-- 仅 `sessionStorage` —— 永不进 `localStorage` / cookie。
-- Bearer 永不出现在 URL、查询串或 `Referer` 头里。
-- Bearer 永不进入 DOM（审计 checklist 验证：搜索 Bearer 前 8 个字符为 0 命中）。
+- Web 登录密钥不会写入浏览器存储。
+- session cookie 使用 `HttpOnly`、`SameSite=Lax`，启用 TLS 时带 `Secure`。
+- API Token 和临时密码只在一次性 reveal 对话框中显示，不会放进 URL。
+
+## 密码恢复
+
+普通用户没有公开的 "forgot password" 自助入口。由 `superadmin` 在用户详情页
+重置密码。重置会撤销该用户的 Web 会话，并默认撤销 API Token；只有管理员明确
+勾选保留时才会保留 API Token。
+
+如果最后一个 `superadmin` 忘记密码，只能本地恢复：
+
+```sh
+portunus-server --data-dir /var/lib/portunus reset-password _superadmin --temporary
+```
+
+该命令只打印一次临时密码，并标记账户下次登录必须修改密码。没有远程后门重置
+接口。
 
 ## 构建
 

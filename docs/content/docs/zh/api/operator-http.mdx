@@ -1,13 +1,27 @@
 ---
 title: 操作员 HTTP API
-description: 暴露在 operator_http_listen 上的 /v1 API。默认 loopback、Bearer 认证、RBAC 守门。
+description: 暴露在 operator_http_listen 上的 /v1 API。默认 loopback、session 或 Bearer 认证、RBAC 守门。
 icon: Code
 ---
 
 `portunus-server` 把操作员侧 API 暴露为 `operator_http_listen` 上的 HTTP API
-（默认 loopback）。每条 `/v1/*` 请求都需要 `Authorization: Bearer <token>`。
+（默认 loopback）。大多数 `/v1/*` 请求需要 Web session cookie 或 API Bearer
+Token。
 
 ## 认证
+
+Web UI 用户通过本地密码登录：
+
+```http
+POST /v1/auth/login
+Host: 127.0.0.1:7080
+Content-Type: application/json
+
+{"user_id":"admin","password":"correct horse battery staple"}
+```
+
+成功登录会返回 `{"password_change_required": false}`，并设置 `HttpOnly`
+`portunus_session` cookie。API 客户端和 CLI 自动化继续使用 Bearer 凭据：
 
 ```http
 GET /v1/clients
@@ -15,22 +29,39 @@ Host: 127.0.0.1:7080
 Authorization: Bearer T006-quickstart-token
 ```
 
-Bearer 缺失或非法时的响应：
+使用 cookie 认证的写请求（`POST`、`PUT`、`PATCH`、`DELETE`）必须带精确同源
+`Origin`、`X-Portunus-CSRF: 1`，并且有 body 时使用 JSON content type。Bearer
+Token 请求不需要 CSRF 头。
+
+认证缺失或非法时的响应：
 
 | 状态 | Body | 原因 |
 | --- | --- | --- |
-| `401 unauthenticated` | `{"error":"unauthenticated"}` | 缺 header 或 Token 非法 |
+| `401 unauthenticated` | `{"error":"unauthenticated"}` | 缺少或非法 Bearer / Web session |
 | `403 not_owner` | `{"error":"not_owner"}` | 已认证，但调用方不拥有该资源 |
+| `403 password_change_required` | `{"error":"password_change_required"}` | Web session 必须先修改临时密码 |
 | `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC 信封拒绝（见 [RBAC](/zh/docs/features/rbac)） |
-| `503 bootstrap_required` | Server 还没有任何超管 —— 跑 `bootstrap-superadmin` |
+| `403 csrf_*` | cookie 认证写请求未通过 CSRF 检查 |
+| `429 rate_limited` | 登录、onboarding 或密码重置尝试过多 |
+| `503 bootstrap_required` | Server 还没有任何超管 —— 完成 Web onboarding |
 
 ## 按区域分组的端点
+
+### Auth
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/auth/status` | 公开状态：`{ onboarding_required }` |
+| `POST` | `/v1/auth/onboarding` | 公开首次管理员创建；无启用 `superadmin` 时需要 setup token |
+| `POST` | `/v1/auth/login` | 公开本地密码登录；设置 `portunus_session` |
+| `POST` | `/v1/auth/logout` | session 登出；需要 session cookie 和 CSRF 头 |
 
 ### Self
 
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
 | `GET` | `/v1/users/me` | 调用方自身的 `{ user_id, role, display_name }`（SPA AuthGate 使用） |
+| `POST` | `/v1/users/me/password` | 修改自己的密码；body 包含 `current_password`、`new_password`、`new_password_confirm` |
 
 ### Clients
 
@@ -57,10 +88,11 @@ Bearer 缺失或非法时的响应：
 
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
-| `POST` | `/v1/users` | 添加用户（超管） |
+| `POST` | `/v1/users` | 添加用户（超管）；可带 `initial_password` 与 `password_change_required` |
 | `GET` | `/v1/users` | 列出用户（超管） |
 | `GET` | `/v1/users/{id}` | 用户详情 |
 | `DELETE` | `/v1/users/{id}` | 级联删除（超管） |
+| `POST` | `/v1/users/{id}/password` | 重置用户密码（超管）；默认撤销 sessions 和 API Token |
 
 ### Credentials
 
@@ -111,10 +143,11 @@ Bearer 缺失或非法时的响应：
 | `204` | 成功，无 body |
 | `400` | 校验错误 |
 | `401` | `unauthenticated` |
-| `403` | RBAC 拒绝 |
+| `403` | RBAC 拒绝、CSRF 拒绝或 `password_change_required` |
 | `404` | 资源不存在 |
 | `409` | 冲突（如 `conflict.legacy_to_sni_unsupported`） |
 | `422` | Capability 守门（如 `multi_target_unsupported_by_client`、`sni_unsupported_by_client`、`rate_limit_unsupported_by_client`） |
+| `429` | 认证限流 |
 | `503` | `bootstrap_required` |
 
 完整 code → exit-code → HTTP-status 映射在 v1 冻结；详见每个 spec 的契约文档

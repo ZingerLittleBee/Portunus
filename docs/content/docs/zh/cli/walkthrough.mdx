@@ -18,39 +18,41 @@ icon: Zap
 
 如果是单机试用，就在本机同时安装两个二进制，把两个终端分别当作主机 A 和主机 B。
 
-## 1. 启动 Server（主机 A）
+## 1. 引导 API 操作员（主机 A）
 
 ```sh
 mkdir -p ./srv
-portunus-server --data-dir ./srv serve
-```
-
-首次启动时，Server 会创建 `./srv/server.crt`、`./srv/server.key` 和空的
-`./srv/state.db`。日志为 JSON：
-
-```json
-{"event":"tls.cert_generated","fingerprint_sha256":"…"}
-{"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
-```
-
-## 2. 引导超管账户
-
-操作员 API 需要 Bearer 认证（v0.5.0 起）。一次性引导超管：
-
-```sh
 portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 # → superadmin user_id=_superadmin token=<bearer>
 ```
 
 <Callout type="warn">
-  Bearer Token **只会输出一次**，请立即妥善保存。
+  这是原始 CLI 跑通示例用的旧 API Token bootstrap 路径。如果是浏览器优先的
+  正常安装，请启动 `serve`，然后用正在运行的 server 打印的 setup token 完成
+  Web UI onboarding。
 </Callout>
+
+Bearer Token **只会输出一次**，请立即保存：
 
 ```sh
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 ```
 
 下文所有操作员子命令都从环境变量 `PORTUNUS_OPERATOR_TOKEN` 读取 Token。
+
+## 2. 启动 Server（主机 A）
+
+```sh
+portunus-server --data-dir ./srv serve
+```
+
+Server 首次启动时会创建 `./srv/server.crt`、`./srv/server.key` 和缺失的周边
+状态。日志为 JSON：
+
+```json
+{"event":"tls.cert_generated","fingerprint_sha256":"…"}
+{"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
+```
 
 ## 3. 配发一个 Client
 

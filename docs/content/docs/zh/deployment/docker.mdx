@@ -80,6 +80,16 @@ Web UI 和 operator API 在容器内绑定 `0.0.0.0:7080`，但只发布到 Serv
 loopback：`http://127.0.0.1:7080/`；Client 控制面 listener 仍然监听
 `0.0.0.0:7443`。
 
+首次 onboarding 时，从正在运行的 server 日志读取 setup token：
+
+```sh
+docker compose logs server | grep 'Portunus onboarding setup token'
+```
+
+打开 `http://127.0.0.1:7080/`，粘贴 setup token，并创建第一个 `superadmin`
+密码。token 30 分钟后过期；只要 onboarding 还没完成，每次 server 启动都会
+重新轮换 token。
+
 如果需要覆写默认值，再把可选 `server.toml` 挂进同一个 data-dir：
 
 ```yaml
@@ -97,18 +107,32 @@ services:
 服务里的 `command`，所以每次可以执行不同子命令：
 
 ```sh
-docker compose run --rm operator bootstrap-superadmin --name ops
-```
-
-保存打印出来的 token，后续命令通过环境变量传入：
-
-```sh
 docker compose run --rm \
   -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
   operator list-clients
 ```
 
+大多数操作员命令走 HTTP API，需要 API Token。Web onboarding 完成后，在 Web UI
+的 Credentials 页面创建一个 API Token，再用 `PORTUNUS_OPERATOR_TOKEN` 传给 CLI：
+
+```sh
+docker compose run --rm \
+  -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
+  operator provision-client edge-01 --out /tmp/edge-01.bundle.json
+```
+
 `provision-client`、`push-rule`、`revoke-client` 等命令也使用同样模式。
+
+本地 break-glass 命令（`reset-password`、`onboarding-token`）会直接打开
+SQLite store，因此要先停止 `server`。`onboarding-token` 主要用于离线维护；后续
+启动 `serve` 时还会再次轮换 setup token，所以浏览器 onboarding 通常使用
+`server` 日志里打印的 token。
+
+```sh
+docker compose stop server
+docker compose run --rm operator reset-password _superadmin --temporary
+docker compose up -d server
+```
 
 ## Client Compose
 
@@ -198,7 +222,7 @@ server 的最小 `HEALTHCHECK`：
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD ["portunus-server", "--data-dir", "/var/lib/portunus", "list-clients"]
+  CMD ["portunus-server", "list-clients"]
 ```
 
 （这需要容器环境中存在 `PORTUNUS_OPERATOR_TOKEN`；请通过编排系统的 secrets

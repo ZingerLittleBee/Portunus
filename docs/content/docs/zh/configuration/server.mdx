@@ -16,7 +16,8 @@ control_listen = "0.0.0.0:7443"
 
 # 操作员 HTTP API + Web UI。默认使用 loopback。
 # 只有容器端口发布或可信反向代理需要时才绑定 0.0.0.0。
-# 每条 /v1/* 请求仍然需要 Authorization: Bearer <token>。
+# 受保护的 /v1 路由仍然需要 Web session cookie 或
+# Authorization: Bearer <token>。
 operator_http_listen = "127.0.0.1:7080"
 
 # 可选的公开 Origin，用于 CSRF Origin 校验；在 v1.1+ 中也用于决定
@@ -53,7 +54,7 @@ v0.8 起大部分持久状态搬入 `<data-dir>/state.db`（SQLite）。详见
 ## 引导捷径
 
 ```toml
-# 操作员超管的一次性引导捷径（FR-006）。
+# 操作员 API 超管的旧一次性引导捷径（FR-006）。
 # 当身份存储里还没有任何超管时，Server 会用此 Token 自动签出
 # 保留账号 `_legacy` 超管。引导后保留此行（一旦有超管就被忽略）
 # 或删除均可。
@@ -63,6 +64,9 @@ operator_token = "<43-char URL-safe-base64 token>"
 生成 Token：`portunus-server gen-token`。
 
 或：`portunus-server bootstrap-superadmin --name ops` 一次性打印新 Bearer。
+
+v1.1+ 的正常 Web UI 设置推荐使用 `serve` 打印的 setup token 完成首次
+onboarding。`operator_token` 创建的是 API Token 访问，不是浏览器密码。
 
 ## Drain 与日志
 
