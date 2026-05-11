@@ -320,10 +320,9 @@ impl SqliteOperatorStore {
         session_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<WebSession>, IdentityStoreError> {
-        let row = self
-            .store
-            .with_conn(|c| {
-                let row = c
+        self.store
+            .with_write_tx(|tx| {
+                let row = tx
                     .query_row(
                         "SELECT user_id, created_at, last_seen_at, absolute_expires_at, revoked_at, remote_addr, user_agent \
                          FROM web_sessions WHERE session_hash = ?",
@@ -332,32 +331,45 @@ impl SqliteOperatorStore {
                     )
                     .optional()
                     .map_err(map_rusqlite)?;
-                Ok(row)
+
+                let Some((mut session, revoked_at)) = row else {
+                    return Ok(None);
+                };
+
+                if revoked_at.is_some()
+                    || sessions::session_is_expired(
+                        session.last_seen_at,
+                        session.absolute_expires_at,
+                        now,
+                    )
+                {
+                    return Ok(None);
+                }
+
+                tx.execute(
+                    "UPDATE web_sessions SET last_seen_at = ? \
+                     WHERE session_hash = ? AND revoked_at IS NULL",
+                    params![now.to_rfc3339(), session_hash],
+                )
+                .map_err(map_rusqlite)?;
+                session.last_seen_at = now;
+
+                Ok(Some(session))
             })
-            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))?;
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
 
-        let Some((mut session, revoked_at)) = row else {
-            return Ok(None);
-        };
-
-        if revoked_at.is_some()
-            || sessions::session_is_expired(session.last_seen_at, session.absolute_expires_at, now)
-        {
-            return Ok(None);
-        }
-
-        let updated_last_seen = now.to_rfc3339();
-        let _ = self.store.with_write_tx(|tx| {
-            tx.execute(
-                "UPDATE web_sessions SET last_seen_at = ? WHERE session_hash = ? AND revoked_at IS NULL",
-                params![updated_last_seen, session_hash],
-            )
-            .map_err(map_rusqlite)?;
-            Ok(())
-        });
-        session.last_seen_at = now;
-
-        Ok(Some(session))
+    #[cfg(test)]
+    fn delete_web_session_for_test(&self, session_hash: &str) -> Result<usize, IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "DELETE FROM web_sessions WHERE session_hash = ?",
+                    params![session_hash],
+                )
+                .map_err(map_rusqlite)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
     }
 
     #[allow(dead_code)]
@@ -1503,6 +1515,36 @@ mod tests {
     }
 
     #[test]
+    fn web_session_verify_persists_last_seen_refresh() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("refresh-secret");
+        let created_at = fixed_ts();
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let refreshed_at = created_at + chrono::Duration::hours(7);
+        let refreshed = s.verify_web_session(&hash, refreshed_at).unwrap().unwrap();
+        assert_eq!(refreshed.last_seen_at, refreshed_at);
+
+        let still_valid_after_original_idle_deadline = created_at + chrono::Duration::hours(14);
+        assert!(
+            s.verify_web_session(&hash, still_valid_after_original_idle_deadline)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn web_session_absolute_expired_returns_none() {
         let (_d, s) = fresh();
         let alice_id = UserId::from_str("alice").unwrap();
@@ -1523,6 +1565,28 @@ mod tests {
 
         let now = absolute_expires_at + chrono::Duration::seconds(1);
         assert!(s.verify_web_session(&hash, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn web_session_missing_after_delete_returns_none() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("delete-secret");
+        let created_at = fixed_ts();
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(s.delete_web_session_for_test(&hash).unwrap(), 1);
+        assert!(s.verify_web_session(&hash, created_at).unwrap().is_none());
     }
 
     #[test]
