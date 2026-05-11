@@ -20,6 +20,7 @@ pub(crate) mod passwords;
 pub mod per_port_stats;
 pub mod rbac;
 pub mod rule_cli;
+pub(crate) mod sessions;
 pub mod stats_stream;
 pub mod users;
 pub mod users_me;
