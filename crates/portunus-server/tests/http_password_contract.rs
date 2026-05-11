@@ -161,7 +161,7 @@ async fn login_cookie(router: &axum::Router, user_id: &str, password: &str) -> S
         ))
         .await
         .expect("login");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(resp.status(), StatusCode::OK);
     resp.headers()
         .get(header::SET_COOKIE)
         .expect("set-cookie")

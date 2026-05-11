@@ -56,6 +56,11 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub password_change_required: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SelfPasswordRequest {
     pub current_password: String,
@@ -151,7 +156,14 @@ pub async fn post_auth_login(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<LoginRequest>,
-) -> Result<(StatusCode, [(header::HeaderName, String); 1]), ApiError> {
+) -> Result<
+    (
+        StatusCode,
+        [(header::HeaderName, String); 1],
+        Json<LoginResponse>,
+    ),
+    ApiError,
+> {
     let now = Utc::now();
     let remote_ip = remote_addr.ip().to_string();
     let throttle_subject = login_throttle_subject(&body.user_id);
@@ -178,13 +190,19 @@ pub async fn post_auth_login(
     );
 
     match outcome {
-        Ok(cookie) => {
+        Ok(login) => {
             let _ = state.operator_store.clear_login_attempts(
                 &throttle_subject,
                 &remote_ip,
                 AuthThrottleAction::Login,
             );
-            Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
+            Ok((
+                StatusCode::OK,
+                [(header::SET_COOKIE, login.cookie)],
+                Json(LoginResponse {
+                    password_change_required: login.password_change_required,
+                }),
+            ))
         }
         Err(err) => {
             let _ = state.operator_store.record_login_attempt_failure(
@@ -346,7 +364,7 @@ fn authenticate_login(
     remote_addr: String,
     user_agent: Option<String>,
     secure_cookie: bool,
-) -> Result<String, ApiError> {
+) -> Result<AuthenticatedLogin, ApiError> {
     let user_id = UserId::from_str(&body.user_id).map_err(|_| invalid_login())?;
     let user = state
         .operator_store
@@ -375,7 +393,15 @@ fn authenticate_login(
             user_agent,
         )
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
-    Ok(session_cookie(&secret, secure_cookie))
+    Ok(AuthenticatedLogin {
+        cookie: session_cookie(&secret, secure_cookie),
+        password_change_required: password_state.password_change_required,
+    })
+}
+
+struct AuthenticatedLogin {
+    cookie: String,
+    password_change_required: bool,
 }
 
 fn reset_user_password(

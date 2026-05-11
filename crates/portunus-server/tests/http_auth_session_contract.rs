@@ -16,6 +16,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery staple";
+const TEMPORARY_PASSWORD: &str = "temporary correct horse battery staple";
 
 fn build_router(
     secure_cookie: bool,
@@ -115,7 +116,7 @@ async fn login_cookie(router: &axum::Router, user_id: &str) -> String {
         .oneshot(login_req(user_id, PASSWORD, "127.0.0.1:12000", None))
         .await
         .expect("login");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(resp.status(), StatusCode::OK);
     cookie_pair(
         resp.headers()
             .get(header::SET_COOKIE)
@@ -227,19 +228,22 @@ async fn login_sets_http_only_session_cookie() {
         .oneshot(login_req("admin", PASSWORD, "127.0.0.1:12000", None))
         .await
         .expect("login");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(resp.status(), StatusCode::OK);
     let cookie = resp
         .headers()
         .get(header::SET_COOKIE)
         .expect("set-cookie")
         .to_str()
-        .expect("cookie string");
+        .expect("cookie string")
+        .to_string();
     assert!(cookie.contains("portunus_session="));
     assert!(cookie.contains("Path=/"));
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Lax"));
     assert!(cookie.contains("Max-Age=604800"));
     assert!(!cookie.contains("Secure"));
+    let body = body_json(resp).await;
+    assert_eq!(body["password_change_required"], false);
 
     let secret = cookie
         .split(';')
@@ -270,7 +274,7 @@ async fn login_sets_secure_cookie_when_configured() {
         .oneshot(login_req("admin", PASSWORD, "127.0.0.1:12000", None))
         .await
         .expect("login");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(resp.status(), StatusCode::OK);
     let cookie = resp
         .headers()
         .get(header::SET_COOKIE)
@@ -278,6 +282,104 @@ async fn login_sets_secure_cookie_when_configured() {
         .to_str()
         .expect("cookie string");
     assert!(cookie.contains("Secure"));
+}
+
+#[tokio::test]
+async fn temporary_password_login_is_limited_until_password_change() {
+    let (router, _operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let admin_cookie = login_cookie(&router, "admin").await;
+
+    let reset = router
+        .clone()
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users/admin/password",
+            json!({
+                "new_password": TEMPORARY_PASSWORD,
+                "temporary_password": true,
+                "keep_api_tokens": true,
+            }),
+            Some(&admin_cookie),
+            None,
+            true,
+            Some("http://127.0.0.1:7080"),
+        ))
+        .await
+        .expect("admin password reset");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let login = router
+        .clone()
+        .oneshot(login_req(
+            "admin",
+            TEMPORARY_PASSWORD,
+            "127.0.0.1:12000",
+            None,
+        ))
+        .await
+        .expect("temporary login");
+    assert_eq!(login.status(), StatusCode::OK);
+    let temporary_cookie = cookie_pair(
+        login
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("set-cookie")
+            .to_str()
+            .expect("cookie string"),
+    );
+    let login_body = body_json(login).await;
+    assert_eq!(login_body["password_change_required"], true);
+
+    let blocked = router
+        .clone()
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users",
+            json!({"user_id": "alice", "display_name": "Alice"}),
+            Some(&temporary_cookie),
+            None,
+            true,
+            Some("http://127.0.0.1:7080"),
+        ))
+        .await
+        .expect("blocked post users");
+    assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+    let blocked_body = body_json(blocked).await;
+    assert_eq!(blocked_body["error"]["code"], "password_change_required");
+
+    let changed = router
+        .clone()
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users/me/password",
+            json!({
+                "current_password": TEMPORARY_PASSWORD,
+                "new_password": PASSWORD,
+                "new_password_confirm": PASSWORD,
+            }),
+            Some(&temporary_cookie),
+            None,
+            true,
+            Some("http://127.0.0.1:7080"),
+        ))
+        .await
+        .expect("self password change");
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+
+    let allowed = router
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users",
+            json!({"user_id": "alice", "display_name": "Alice"}),
+            Some(&temporary_cookie),
+            None,
+            true,
+            Some("http://127.0.0.1:7080"),
+        ))
+        .await
+        .expect("post users after password change");
+    assert_eq!(allowed.status(), StatusCode::CREATED);
 }
 
 #[tokio::test]

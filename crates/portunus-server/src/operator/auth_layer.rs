@@ -117,6 +117,35 @@ pub async fn auth_middleware(
         return csrf_error_response(e);
     }
 
+    if auth_method == AuthMethod::Cookie
+        && !password_change_route_allowed(&method, &path)
+        && password_change_required(&state, &identity)
+    {
+        bump_request(&state, "deny", "password_change_required");
+        warn!(
+            event = "operator.deny",
+            actor = %identity.user_id,
+            method = %method,
+            path = %path,
+            outcome = "deny",
+            reason = "password_change_required",
+            auth_method = auth_method.as_str(),
+        );
+        record_deny(
+            &state,
+            identity.user_id.as_str(),
+            Some(identity.role),
+            &method,
+            &path,
+            "password_change_required",
+        );
+        return json_error_response(
+            StatusCode::FORBIDDEN,
+            "password_change_required",
+            "password change required",
+        );
+    }
+
     // Audit-log success and inject identity into request extensions.
     bump_request(&state, "allow", "ok");
     info!(
@@ -329,6 +358,33 @@ fn csrf_error_response(error: csrf::CsrfError) -> Response {
         }),
     )
         .into_response()
+}
+
+fn json_error_response(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorBodyInner {
+                code: code.to_string(),
+                message: message.to_string(),
+            },
+        }),
+    )
+        .into_response()
+}
+
+fn password_change_route_allowed(method: &Method, path: &str) -> bool {
+    (method == Method::GET && path == "/v1/users/me")
+        || (method == Method::POST && path == "/v1/users/me/password")
+}
+
+fn password_change_required(state: &AppState, identity: &OperatorIdentity) -> bool {
+    state
+        .operator_store
+        .password_state(&identity.user_id)
+        .ok()
+        .flatten()
+        .is_some_and(|password| password.password_change_required)
 }
 
 /// Public so handlers can map `RbacError` from `enforce_push` /
