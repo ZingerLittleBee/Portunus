@@ -276,6 +276,21 @@ async fn disabled_and_missing_password_users_fail_generically() {
 }
 
 #[tokio::test]
+async fn unknown_user_fails_generically() {
+    let (router, _operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+
+    let resp = router
+        .oneshot(login_req("missing", PASSWORD, "127.0.0.1:12000", None))
+        .await
+        .expect("login");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "invalid_login");
+}
+
+#[tokio::test]
 async fn login_throttle_keys_by_ip_not_ephemeral_port() {
     let (router, _operator_store, store, _dir) = build_router(false);
     create_password_user(&router, &store, "admin").await;
@@ -310,15 +325,19 @@ async fn login_throttle_keys_by_ip_not_ephemeral_port() {
 
 #[tokio::test]
 async fn login_ignores_bearer_authorization_without_correct_body() {
-    let (router, _operator_store, store, _dir) = build_router(false);
+    let (router, operator_store, store, _dir) = build_router(false);
     create_password_user(&router, &store, "admin").await;
+    let admin_id = "admin".parse::<UserId>().expect("admin user id");
+    let (_credential, api_token) = operator_store
+        .issue_credential(&admin_id, Some("api".into()))
+        .expect("issue api credential");
 
     let resp = router
         .oneshot(login_req(
             "admin",
             "wrong horse battery staple",
             "127.0.0.1:12000",
-            Some("Bearer not-a-login-password"),
+            Some(&format!("Bearer {api_token}")),
         ))
         .await
         .expect("login");
