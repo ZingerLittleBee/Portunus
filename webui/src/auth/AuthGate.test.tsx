@@ -146,6 +146,24 @@ describe("local password auth UI", () => {
     expect(qc.getQueryData(["clients"])).toBeUndefined();
   });
 
+  it("clears cached identity when a non-identity request returns 401", async () => {
+    mockFetch({
+      "/v1/auth/status": { body: { onboarding_required: false } },
+      "/v1/users/me": {
+        body: { user_id: "admin", role: "superadmin", display_name: "Administrator" },
+      },
+      "/v1/clients": { status: 401, body: { error: { code: "unauthenticated" } } },
+      "/v1/rules": { body: [] },
+      "/v1/metrics": { body: {} },
+    });
+    const { qc } = renderApp("/");
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("User ID")).toBeDefined();
+    });
+    expect(qc.getQueryData(["users", "me"])).toBeUndefined();
+  });
+
   it("shows the required password-change step after temporary-password login", async () => {
     const { LoginPage } = await import("@/auth/LoginPage");
     mockFetch({

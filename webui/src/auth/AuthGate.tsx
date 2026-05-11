@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Navigate, useLocation } from "react-router-dom";
 
@@ -26,13 +26,20 @@ interface AuthGateProps {
 export function AuthGate({ role, children }: AuthGateProps) {
   const queryClient = useQueryClient();
   const location = useLocation();
+  const [sessionInvalidated, setSessionInvalidated] = useState(false);
 
   useEffect(() => {
-    const onUnauth = () => {
+    const onUnauth = (event: Event) => {
       clearLegacyToken();
-      queryClient.removeQueries({
-        predicate: (query) => !isMeQueryKey(query.queryKey),
-      });
+      const unauthPath = (event as CustomEvent<{ path?: string }>).detail?.path;
+      if (unauthPath === "/v1/users/me") {
+        queryClient.removeQueries({
+          predicate: (query) => !isMeQueryKey(query.queryKey),
+        });
+        return;
+      }
+      queryClient.clear();
+      setSessionInvalidated(true);
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauth);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauth);
@@ -41,9 +48,15 @@ export function AuthGate({ role, children }: AuthGateProps) {
   const { data: identity, isLoading, isError } = useQuery({
     queryKey: ME_QUERY_KEY,
     queryFn: fetchIdentity,
+    enabled: !sessionInvalidated,
     retry: false,
     staleTime: 60_000,
   });
+
+  if (sessionInvalidated) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?reason=session_expired&next=${next}`} replace />;
+  }
 
   if (isLoading || (!identity && !isError)) {
     return (

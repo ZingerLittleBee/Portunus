@@ -19,6 +19,10 @@ export class ApiError extends Error {
 
 export const UNAUTHORIZED_EVENT = "auth:unauthorized";
 
+function emitUnauthorized(path: string): void {
+  window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT, { detail: { path } }));
+}
+
 interface ServerErrorBody {
   error?: { code?: string; message?: string };
 }
@@ -45,9 +49,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   const res = await fetch(path, { ...init, headers, credentials: "same-origin" });
 
-  if (res.status === 401) {
-    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
-  }
+  if (res.status === 401) emitUnauthorized(path);
 
   if (res.status === 204) return undefined as T;
 
@@ -78,7 +80,7 @@ export async function apiFetchText(path: string, init: RequestInit = {}): Promis
   const headers = csrfAwareHeaders(init, "text/plain");
 
   const res = await fetch(path, { ...init, headers, credentials: "same-origin" });
-  if (res.status === 401) window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+  if (res.status === 401) emitUnauthorized(path);
   if (!res.ok) {
     throw new ApiError(res.status, `http_${res.status}`, res.statusText);
   }
@@ -146,7 +148,7 @@ export function streamSse<T>(
     }
 
     if (res.status === 401) {
-      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+      emitUnauthorized(path);
       aborted = true;
       return;
     }
