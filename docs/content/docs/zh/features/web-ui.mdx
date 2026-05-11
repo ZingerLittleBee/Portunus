@@ -72,9 +72,10 @@ CI 中有覆盖率单元测试 —— 翻译键在两个语言包之间不一致
 
 ![设置页中的主题与语言切换。](../../../../src/screenshots/webui-settings.png)
 
-## 默认 loopback
+## 监听地址
 
-操作员 HTTP listener 在启动时被钉在 loopback。远程访问由操作员负责：
+操作员 HTTP listener 默认使用 loopback。容器或可信反向代理场景可以设置
+`operator_http_listen = "0.0.0.0:7080"`，再显式发布端口。远程访问由操作员负责：
 
 - 从工作站 **SSH 隧道** 到 `127.0.0.1:7080`，或
 - 把 listener 放在带自有认证的 **反向代理** 后面。

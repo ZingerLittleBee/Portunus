@@ -14,9 +14,9 @@ icon: ServerCog
 # 跨主机部署绑 0.0.0.0；或绑到具体网卡（如 "10.0.0.5:7443"）。
 control_listen = "0.0.0.0:7443"
 
-# 操作员 HTTP API + Web UI。默认必须保留 loopback。
-# 每条 /v1/* 请求都需要 Authorization: Bearer <token>，
-# loopback 是纵深防御，不是唯一闸门。
+# 操作员 HTTP API + Web UI。默认使用 loopback。
+# 只有容器端口发布或可信反向代理需要时才绑定 0.0.0.0。
+# 每条 /v1/* 请求仍然需要 Authorization: Bearer <token>。
 operator_http_listen = "127.0.0.1:7080"
 
 # Prometheus /metrics 端点。同样的 loopback 约束。

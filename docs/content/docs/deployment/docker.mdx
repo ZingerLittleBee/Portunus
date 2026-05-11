@@ -25,16 +25,24 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    network_mode: host
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
     restart: unless-stopped
 
   operator:
     profiles:
       - cli
     image: ghcr.io/zingerlittlebee/portunus-server:latest
-    network_mode: host
+    network_mode: "service:server"
     volumes:
       - portunus-data:/var/lib/portunus
     entrypoint:
@@ -69,9 +77,10 @@ docker compose up -d server
 The named volume keeps generated TLS material, the SQLite database, and other
 daemon-owned state under `/var/lib/portunus`. If
 `/var/lib/portunus/server.toml` is absent, the server uses built-in defaults.
-Host networking keeps the Web UI and operator API on the server host's
-loopback interface at `http://127.0.0.1:7080/`, while the client control-plane
-listener remains reachable on `0.0.0.0:7443`.
+The Web UI and operator API bind to `0.0.0.0:7080` inside the container and are
+published only on the server host loopback interface as
+`http://127.0.0.1:7080/`. The client control-plane listener remains reachable
+on `0.0.0.0:7443`.
 
 If you need overrides, mount an optional `server.toml` into the same data dir:
 
@@ -209,6 +218,7 @@ environment; set it via the orchestrator's secret system.)
 
 - The control-plane listener (`7443`) is the only port that **must**
   be exposed for cross-host clients.
-- The operator HTTP listener (`7080`) and metrics listener (`7081`)
-  should remain on loopback inside the container; expose them via
-  reverse proxy + auth or SSH tunnel as needed.
+- The operator HTTP listener (`7080`) binds to `0.0.0.0` inside the container
+  so Docker can publish it, but the sample maps it to host loopback only:
+  `127.0.0.1:7080:7080`.
+- The metrics listener (`7081`) remains loopback-only.

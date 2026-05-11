@@ -1,5 +1,6 @@
 //! `portunus-server` binary entry point.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -40,7 +41,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Cmd {
     /// Run the long-lived server (gRPC + operator HTTP + metrics).
-    Serve,
+    Serve {
+        /// Override operator HTTP API + Web UI bind address.
+        #[arg(long)]
+        operator_http_listen: Option<SocketAddr>,
+    },
     /// Provision a new client and write its credential bundle.
     ProvisionClient {
         name: String,
@@ -413,10 +418,13 @@ fn run(cli: Cli) -> Result<(), u8> {
     let data_dir = portunus_server::data_dir::resolve(cli.data_dir.clone());
 
     match cli.cmd {
-        Cmd::Serve => {
+        Cmd::Serve {
+            operator_http_listen,
+        } => {
             let opts = serve::ServeOptions {
                 data_dir: data_dir.clone(),
                 advertised_endpoint: cli.advertised_endpoint.clone(),
+                operator_http_listen,
             };
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -807,4 +815,32 @@ fn init_tracing() {
         .with(json_layer)
         .with(RedactionLayer::new())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_accepts_operator_http_listen_override() {
+        let cli = Cli::try_parse_from([
+            "portunus-server",
+            "serve",
+            "--operator-http-listen",
+            "0.0.0.0:7080",
+        ])
+        .expect("serve should accept operator HTTP bind override");
+
+        match cli.cmd {
+            Cmd::Serve {
+                operator_http_listen,
+            } => {
+                assert_eq!(
+                    operator_http_listen.expect("override present").to_string(),
+                    "0.0.0.0:7080"
+                );
+            }
+            other => panic!("expected serve command, got {other:?}"),
+        }
+    }
 }

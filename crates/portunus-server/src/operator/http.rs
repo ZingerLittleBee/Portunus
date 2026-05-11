@@ -1,7 +1,7 @@
-//! Loopback HTTP API mirroring the CLI surface (operator-api.md).
+//! Operator HTTP API mirroring the CLI surface (operator-api.md).
 //!
-//! Authorisation is local UNIX shell access on the server host (FR-022).
-//! The bind address MUST be loopback; we assert that at server startup.
+//! Every `/v1/*` route is bearer-token authenticated and RBAC-gated. The bind
+//! address defaults to loopback, but operators may expose it explicitly.
 
 use axum::{
     Extension, Json, Router,
@@ -1378,10 +1378,9 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[tokio::test]
-    async fn binds_loopback_only() {
+    async fn loopback_bind_is_valid() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
-        // Per FR-022: operator HTTP must bind to loopback only.
         assert!(addr.ip().is_loopback(), "got {addr}");
     }
 

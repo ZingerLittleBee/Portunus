@@ -37,10 +37,13 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.server
     image: portunus/server:dev
-    network_mode: host
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
     volumes:
       - server-data:/var/lib/portunus
       - shared-bundles:/shared
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
     restart: unless-stopped
 
   # One-shot operator: same image, override the entrypoint command.
@@ -52,7 +55,7 @@ services:
     volumes:
       - server-data:/var/lib/portunus
       - shared-bundles:/shared
-    network_mode: host
+    network_mode: "service:server"
     entrypoint: ["/usr/local/bin/portunus-server"]
     command: ["--data-dir", "/var/lib/portunus", "list-clients"]
 

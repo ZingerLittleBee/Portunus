@@ -24,16 +24,24 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    network_mode: host
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
     restart: unless-stopped
 
   operator:
     profiles:
       - cli
     image: ghcr.io/zingerlittlebee/portunus-server:latest
-    network_mode: host
+    network_mode: "service:server"
     volumes:
       - portunus-data:/var/lib/portunus
     entrypoint:
@@ -68,8 +76,8 @@ docker compose up -d server
 named volume 只保存自动生成的 TLS 材料、SQLite 数据库和其他守护进程持有的
 状态，路径是 `/var/lib/portunus`。如果 `/var/lib/portunus/server.toml`
 不存在，Server 就使用内置默认值。
-host networking 会把 Web UI 和 operator API 保持在 Server 主机的 loopback 上：
-`http://127.0.0.1:7080/`；Client 控制面 listener 仍然监听
+Web UI 和 operator API 在容器内绑定 `0.0.0.0:7080`，但只发布到 Server 主机的
+loopback：`http://127.0.0.1:7080/`；Client 控制面 listener 仍然监听
 `0.0.0.0:7443`。
 
 如果需要覆写默认值，再把可选 `server.toml` 挂进同一个 data-dir：
@@ -177,8 +185,8 @@ docker compose -f deploy/docker/docker-compose.yml build
 
 - **Distroless 运行时没有 shell**。Portunus CLI 命令走
   `docker compose run --rm operator`；文件排查可以使用临时 sidecar 容器。
-- **操作员 API 的 loopback 绑定** 在容器内强制。要从工作站访问，请用 Compose
-  sidecar 调 CLI，或按需走 SSH 隧道。
+- **操作员 API / Web UI** 在容器内绑定 `0.0.0.0:7080`，这样 Docker 能发布端口；
+  示例只把它映射到宿主机 loopback：`127.0.0.1:7080:7080`。
 - **文件系统分类检查** 在容器中同样会触发 —— 请确保 bind-mount 源是真正
   持久化的本地存储。
 - **`portunus-client`** 需要 bundle 落在
@@ -200,5 +208,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 - 跨主机连接 Client 时，控制面 listener（`7443`）是 **唯一必须暴露** 的
   端口。
-- 操作员 HTTP listener（`7080`）与 metrics listener（`7081`）应在容器内
-  保持 loopback；按需通过反向代理 + 认证或 SSH 隧道暴露。
+- 操作员 HTTP listener（`7080`）在容器内绑定 `0.0.0.0` 以便 Docker 发布端口；
+  示例只发布到宿主机 loopback。
+- metrics listener（`7081`）仍然保持 loopback-only。

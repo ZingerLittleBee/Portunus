@@ -82,10 +82,11 @@ bundles.
 
 ![Settings page with theme and language controls.](../../../src/screenshots/webui-settings-en.png)
 
-## Loopback by default
+## Bind address
 
-The operator HTTP listener is loopback-pinned at startup. Remote access
-stays an operator concern:
+The operator HTTP listener defaults to loopback. For containers or trusted
+reverse proxies, set `operator_http_listen = "0.0.0.0:7080"` and publish the
+port intentionally. Remote access stays an operator concern:
 
 - **SSH-tunnel** `127.0.0.1:7080` from your workstation, or
 - Sit the listener behind a **reverse proxy** that adds its own auth.

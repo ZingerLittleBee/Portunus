@@ -15,9 +15,9 @@ key below is optional and only overrides the defaults you specify.
 # Bind to 0.0.0.0 for cross-host clients, or to a specific interface.
 control_listen = "0.0.0.0:7443"
 
-# Operator HTTP API + Web UI. MUST stay on loopback by default.
-# Every /v1/* request also requires Authorization: Bearer <token>,
-# so the loopback bind is defence-in-depth.
+# Operator HTTP API + Web UI. Defaults to loopback.
+# Bind 0.0.0.0 only when container port publishing or a trusted reverse proxy
+# needs it. Every /v1/* request still requires Authorization: Bearer <token>.
 operator_http_listen = "127.0.0.1:7080"
 
 # Prometheus /metrics endpoint. Same loopback constraint.
