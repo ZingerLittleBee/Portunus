@@ -28,6 +28,13 @@ pub struct SqliteOperatorStore {
     store: Arc<Store>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct PasswordState {
+    pub hash: String,
+    pub password_change_required: bool,
+}
+
 impl std::fmt::Debug for SqliteOperatorStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteOperatorStore")
@@ -182,6 +189,74 @@ impl SqliteOperatorStore {
                 Ok(n as usize)
             })
             .unwrap_or(0)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_password_hash(
+        &self,
+        user_id: &UserId,
+        hash: &str,
+        password_change_required: bool,
+    ) -> Result<(), IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                let changed = tx
+                    .execute(
+                        "UPDATE users SET password_hash = ?, password_change_required = ? \
+                         WHERE user_id = ?",
+                        params![hash, i32::from(password_change_required), user_id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?;
+                if changed == 0 {
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
+                }
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn password_state(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Option<PasswordState>, IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        self.store
+            .with_conn(|c| {
+                let row = c
+                    .query_row(
+                        "SELECT password_hash, password_change_required \
+                         FROM users WHERE user_id = ?",
+                        params![user_id.as_str()],
+                        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i32>(1)? != 0)),
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                match row {
+                    None => Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    }),
+                    Some((None, _)) => Ok(None),
+                    Some((Some(hash), password_change_required)) => Ok(Some(PasswordState {
+                        hash,
+                        password_change_required,
+                    })),
+                }
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
     }
 
     // ---------------- atomic bootstrap paths ----------------
@@ -1132,6 +1207,41 @@ mod tests {
         assert_eq!(s.count_superadmins(), 0);
         s.add_user(superadmin()).unwrap();
         assert_eq!(s.count_superadmins(), 1);
+    }
+
+    #[test]
+    fn password_hash_round_trips_without_exposing_in_user_view() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+
+        s.set_password_hash(&alice_id, "$argon2id$fake", true)
+            .unwrap();
+        let state = s.password_state(&alice_id).unwrap().unwrap();
+        assert_eq!(state.hash, "$argon2id$fake");
+        assert!(state.password_change_required);
+
+        let public_user = s.get_user(&alice_id).unwrap();
+        assert_eq!(public_user.id, alice_id);
+        assert_eq!(s.list_users(), vec![public_user]);
+    }
+
+    #[test]
+    fn password_state_distinguishes_unset_from_missing_user() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+
+        assert_eq!(s.password_state(&alice_id).unwrap(), None);
+
+        let missing = UserId::from_str("missing").unwrap();
+        let err = s.password_state(&missing).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+
+        let err = s
+            .set_password_hash(&missing, "$argon2id$fake", false)
+            .unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
     }
 
     #[test]
