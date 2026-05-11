@@ -47,12 +47,21 @@ fn build_router() -> (
 }
 
 fn req(method: Method, uri: &str, body: serde_json::Value) -> Request<Body> {
+    req_from(method, uri, body, "127.0.0.1:12345")
+}
+
+fn req_from(
+    method: Method,
+    uri: &str,
+    body: serde_json::Value,
+    remote_addr: &str,
+) -> Request<Body> {
     let body_bytes = serde_json::to_vec(&body).expect("body");
     let mut builder = Request::builder().method(method.as_str()).uri(uri);
     if method == Method::GET {
         let mut request = builder.body(Body::empty()).expect("request");
         request.extensions_mut().insert(ConnectInfo(
-            "127.0.0.1:12345"
+            remote_addr
                 .parse::<std::net::SocketAddr>()
                 .expect("socket addr"),
         ));
@@ -63,7 +72,7 @@ fn req(method: Method, uri: &str, body: serde_json::Value) -> Request<Body> {
         .header("content-length", body_bytes.len().to_string());
     let mut request = builder.body(Body::from(body_bytes)).expect("request");
     request.extensions_mut().insert(ConnectInfo(
-        "127.0.0.1:12345"
+        remote_addr
             .parse::<std::net::SocketAddr>()
             .expect("socket addr"),
     ));
@@ -73,6 +82,28 @@ fn req(method: Method, uri: &str, body: serde_json::Value) -> Request<Body> {
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = to_bytes(resp.into_body(), 16 * 1024).await.expect("body");
     serde_json::from_slice(&bytes).expect("json")
+}
+
+async fn invalid_onboarding_attempt(
+    router: &axum::Router,
+    remote_addr: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(req_from(
+            Method::POST,
+            "/v1/auth/onboarding",
+            json!({
+                "user_id": "alice",
+                "display_name": "Alice",
+                "password": "correct horse battery staple",
+                "password_confirm": "correct horse battery staple",
+                "setup_token": "definitely-wrong"
+            }),
+            remote_addr,
+        ))
+        .await
+        .expect("oneshot")
 }
 
 fn seed_setup_token(store: &portunus_server::store::Store, raw: &str) {
@@ -147,6 +178,21 @@ async fn post_onboarding_requires_valid_setup_token() {
     assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
     let invalid_body = body_json(invalid).await;
     assert_eq!(invalid_body["error"]["code"], "setup_token_invalid");
+}
+
+#[tokio::test]
+async fn onboarding_throttle_keys_by_ip_not_ephemeral_port() {
+    let (router, _operator_store, _sqlite_store, _dir) = build_router();
+
+    for port in 12000..12005 {
+        let resp = invalid_onboarding_attempt(&router, &format!("127.0.0.1:{port}")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let locked = invalid_onboarding_attempt(&router, "127.0.0.1:13000").await;
+    assert_eq!(locked.status(), StatusCode::TOO_MANY_REQUESTS);
+    let locked_body = body_json(locked).await;
+    assert_eq!(locked_body["error"]["code"], "rate_limited");
 }
 
 #[tokio::test]

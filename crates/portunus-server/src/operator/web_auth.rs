@@ -59,7 +59,7 @@ pub async fn post_auth_onboarding(
     if state.operator_store.has_any_superadmin() {
         return Err(already_bootstrapped());
     }
-    let remote_addr = remote_addr.to_string();
+    let remote_addr = remote_addr.ip().to_string();
     let throttle_subject = onboarding_throttle_subject(body.setup_token.as_deref());
     reject_if_throttled(&state, throttle_subject, &remote_addr, now)?;
 
