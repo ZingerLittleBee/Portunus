@@ -20,9 +20,22 @@ control_listen = "0.0.0.0:7443"
 # needs it. Every /v1/* request still requires Authorization: Bearer <token>.
 operator_http_listen = "127.0.0.1:7080"
 
+# Optional public origin used for CSRF Origin validation and whether
+# operator session cookies get the Secure attribute.
+# Set this when the UI is reached through a reverse proxy / public hostname.
+# Must start with http:// or https:// and MUST NOT end with a trailing slash.
+# Origin only, no path, query, or fragment.
+# operator_http_public_origin = "https://ops.example.com"
+
 # Prometheus /metrics endpoint. Same loopback constraint.
 metrics_listen = "127.0.0.1:7081"
 ```
+
+If `operator_http_public_origin` is unset, Portunus falls back to
+`http://<operator_http_listen>`, which is fine for direct local access. When
+the browser sees a different public hostname than the bind address, set this
+explicitly or CSRF Origin checks and cookie security decisions will be based on
+the wrong origin.
 
 ## TLS material
 
@@ -120,6 +133,7 @@ built-in defaults.
 ```toml
 control_listen        = "0.0.0.0:7443"
 operator_http_listen  = "127.0.0.1:7080"
+operator_http_public_origin = "https://ops.example.com"
 metrics_listen        = "127.0.0.1:7081"
 
 tls_cert_path         = "/var/lib/portunus/server.crt"

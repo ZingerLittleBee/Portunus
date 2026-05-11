@@ -19,9 +19,21 @@ control_listen = "0.0.0.0:7443"
 # 每条 /v1/* 请求仍然需要 Authorization: Bearer <token>。
 operator_http_listen = "127.0.0.1:7080"
 
+# 可选的公开 Origin，用于 CSRF Origin 校验，以及决定
+# operator session cookie 是否带 Secure 属性。
+# 当 UI 通过反向代理或公网域名访问时应显式设置它。
+# 必须以 http:// 或 https:// 开头，且结尾不能带 /。
+# 这里只能填 origin，不能带 path、query 或 fragment。
+# operator_http_public_origin = "https://ops.example.com"
+
 # Prometheus /metrics 端点。同样的 loopback 约束。
 metrics_listen = "127.0.0.1:7081"
 ```
+
+如果未设置 `operator_http_public_origin`，Portunus 会退回到
+`http://<operator_http_listen>`，这对本机直连访问没问题。但如果浏览器看到的
+公网主机名和实际 bind 地址不同，就必须显式配置，否则 CSRF Origin 校验和
+cookie Secure 判定都会基于错误的 Origin。
 
 ## TLS 证书
 
@@ -115,6 +127,7 @@ portunus-server --data-dir ./srv serve
 ```toml
 control_listen        = "0.0.0.0:7443"
 operator_http_listen  = "127.0.0.1:7080"
+operator_http_public_origin = "https://ops.example.com"
 metrics_listen        = "127.0.0.1:7081"
 
 tls_cert_path         = "/var/lib/portunus/server.crt"
