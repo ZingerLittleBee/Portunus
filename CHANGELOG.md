@@ -5,6 +5,73 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-05-11
+
+Adds local password authentication for the operator Web UI. The data
+plane and bearer-token operator CLI are unchanged; this release is
+purely additive on the operator surface so existing bearer-only
+automations keep working byte-for-byte.
+
+### Added
+
+- **Local password authentication** — operators can now sign in to the
+  Web UI with a username + password instead of pasting a bearer token.
+  Backed by Argon2 password hashing, a new SQLite schema for password
+  state, and forced first-login password changes. Bearer tokens remain
+  the canonical machine credential for the operator HTTP API.
+- **Web session cookies** — successful UI logins mint a server-stored
+  session cookie; the operator API accepts either a bearer header or a
+  valid session cookie, with bearer taking precedence when both are
+  present.
+- **First-run onboarding flow** — `portunus-server serve` prints a
+  rotating setup token (30 min TTL, regenerated each start until
+  onboarding completes). The Web UI accepts that token to create the
+  first superadmin account and password.
+- **Login throttling** — failed login attempts and onboarding-token
+  attempts are rate-limited per subject / client IP with burst-aware
+  lockout windows.
+- **Operator public origin config** — new `operator_public_origin`
+  setting lets the server validate `Origin` / `Host` on cookie-bearing
+  requests when the Web UI is fronted by a reverse proxy.
+- **Local auth recovery CLI** — `reset-password`, `onboarding-token`
+  and related break-glass subcommands open the SQLite store directly
+  for offline recovery while the server is stopped.
+- **Password management UI** — Web UI surfaces password change, forced
+  reset, and per-user password state alongside the existing
+  Credentials page.
+
+### Changed
+
+- **Web UI API client** uses cookie sessions by default and falls back
+  to bearer when no session is present; identity is cleared
+  client-side on session expiry instead of silently 401'ing.
+- **Operator API auth layer** rejects malformed session cookies before
+  falling through to bearer validation, so a tampered cookie no longer
+  shadows a valid bearer header.
+
+### Fixed
+
+- **Docker server image** rebuilt against a glibc compatible with the
+  distroless runtime, fixing the `GLIBC_2.38 not found` startup crash
+  reported in #1.
+- **Docker compose** now publishes the Web UI port so the operator
+  loopback listener is reachable from the host.
+- **Web session verification race** — concurrent verify + rotate on
+  the same session no longer briefly returns 401.
+- **Password reset audit trail** preserves the actor/subject/reason
+  fields end-to-end through the reset path.
+- **Onboarding throttle** keys on client IP rather than the (always
+  empty) subject, so a single attacker IP cannot brute-force the setup
+  token by rotating subjects.
+
+### Versioning
+
+- Wire / REST / SQLite-schema surfaces from v1.0.0 are unchanged for
+  data-plane consumers. The operator HTTP surface gains the
+  password / onboarding / session endpoints additively; pre-v1.1
+  clients that only send `Authorization: Bearer` continue to work
+  without modification.
+
 ## [1.0.0] — 2026-05-10
 
 First stable release. Cuts the v0.x development line and freezes the
