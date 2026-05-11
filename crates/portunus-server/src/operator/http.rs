@@ -63,9 +63,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Mounted BEFORE `/v1/users/{user_id}` so axum's path matcher
         // routes `/v1/users/me` here and never to `get_user("me")`.
         .route("/v1/users/me", get(users_me::get_users_me))
+        .route("/v1/users/me/password", post(web_auth::post_self_password))
         .route(
             "/v1/users/{user_id}",
             get(users::get_user).delete(users::delete_user),
+        )
+        .route(
+            "/v1/users/{user_id}/password",
+            post(web_auth::post_user_password),
         )
         .route(
             "/v1/users/{user_id}/credentials",

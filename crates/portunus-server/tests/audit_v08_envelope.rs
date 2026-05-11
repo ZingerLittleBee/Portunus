@@ -84,6 +84,10 @@ async fn seed(state: &Arc<AppState>, n: usize) {
                 AuditOutcome::Deny
             },
             reason: None,
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
         });
     }
     // Allow the durable writer to flush.

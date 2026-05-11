@@ -61,6 +61,10 @@ impl Store {
                     path,
                     outcome,
                     reason,
+                    action: None,
+                    resource_kind: None,
+                    resource_value: None,
+                    details: None,
                 })
             };
             let iter = if let Some(o) = outcome_filter {
@@ -166,6 +170,10 @@ impl Store {
                         path,
                         outcome,
                         reason,
+                        action: None,
+                        resource_kind: None,
+                        resource_value: None,
+                        details: None,
                     },
                 ))
             };

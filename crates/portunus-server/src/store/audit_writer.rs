@@ -184,11 +184,21 @@ fn flush(store: &Store, batch: &mut Vec<AuditEntry>, lag: &Gauge) {
             )
             .map_err(map_rusqlite)?;
         for entry in batch.iter() {
-            let action = format!("{} {}", entry.method, entry.path);
-            let details = serde_json::json!({
+            let action = entry
+                .action
+                .clone()
+                .unwrap_or_else(|| format!("{} {}", entry.method, entry.path));
+            let mut details = serde_json::json!({
                 "role": entry.role,
                 "reason": entry.reason,
             });
+            if let Some(extra) = entry.details.as_ref()
+                && let (Some(base), Some(extra)) = (details.as_object_mut(), extra.as_object())
+            {
+                for (key, value) in extra {
+                    base.insert(key.clone(), value.clone());
+                }
+            }
             stmt.execute(rusqlite::params![
                 entry.timestamp.to_rfc3339(),
                 if entry.actor.is_empty() {
@@ -198,8 +208,8 @@ fn flush(store: &Store, batch: &mut Vec<AuditEntry>, lag: &Gauge) {
                 },
                 entry.outcome.as_str(),
                 action,
-                None::<&str>,
-                None::<&str>,
+                entry.resource_kind.as_deref(),
+                entry.resource_value.as_deref(),
                 "",
                 details.to_string(),
             ])
@@ -269,6 +279,10 @@ mod tests {
             path: "/v1/users".into(),
             outcome: AuditOutcome::Allow,
             reason: None,
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
         }
     }
 

@@ -35,6 +35,7 @@ use chrono::{DateTime, Utc};
 use portunus_auth::OperatorRole;
 use prometheus::IntCounter;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Maximum entries retained in the audit ring. Spec
 /// `data-model.md` § AuditRing.
@@ -85,6 +86,16 @@ pub struct AuditEntry {
     /// `None` on allow, `RbacError::code()` on deny.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Stable event/action name for non-request audit events. Request
+    /// auth rows leave this absent and derive action from `method path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Clone, Default)]
@@ -222,6 +233,10 @@ mod tests {
                 AuditOutcome::Allow => None,
                 AuditOutcome::Deny => Some("port_outside_grant".to_string()),
             },
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
         }
     }
 

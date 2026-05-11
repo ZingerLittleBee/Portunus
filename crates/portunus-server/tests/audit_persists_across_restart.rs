@@ -40,6 +40,10 @@ fn entry(actor: &str, outcome: AuditOutcome, path: &str) -> AuditEntry {
             AuditOutcome::Allow => None,
             AuditOutcome::Deny => Some("port_outside_grant".into()),
         },
+        action: None,
+        resource_kind: None,
+        resource_value: None,
+        details: None,
     }
 }
 

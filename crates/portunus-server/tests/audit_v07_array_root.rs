@@ -87,6 +87,10 @@ async fn v07_callers_get_array_root_with_v07_field_set() {
             } else {
                 Some("not granted".into())
             },
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
         });
     }
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -136,6 +140,10 @@ async fn v07_outcome_filter_narrows_array() {
         path: "/v1/users".into(),
         outcome: AuditOutcome::Allow,
         reason: None,
+        action: None,
+        resource_kind: None,
+        resource_value: None,
+        details: None,
     });
     state.audit.push(AuditEntry {
         timestamp: chrono::Utc::now(),
@@ -145,6 +153,10 @@ async fn v07_outcome_filter_narrows_array() {
         path: "/v1/users/foo".into(),
         outcome: AuditOutcome::Deny,
         reason: Some("forbidden".into()),
+        action: None,
+        resource_kind: None,
+        resource_value: None,
+        details: None,
     });
     tokio::time::sleep(Duration::from_millis(250)).await;
 

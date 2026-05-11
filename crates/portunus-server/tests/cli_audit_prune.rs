@@ -51,6 +51,10 @@ async fn seed_rows(data: &TempDir, base: chrono::DateTime<chrono::Utc>, n: usize
             path: "/v1/audit".into(),
             outcome: AuditOutcome::Allow,
             reason: None,
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
         });
     }
     // Flush window — durable writer batches every ~250ms.

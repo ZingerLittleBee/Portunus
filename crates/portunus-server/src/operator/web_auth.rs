@@ -5,15 +5,18 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::{
-    Json,
+    Extension, Json,
     body::Body,
-    extract::{ConnectInfo, Request, State},
+    extract::{ConnectInfo, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
 };
 use chrono::Utc;
-use portunus_auth::{OperatorAuthenticator, OperatorRole, RbacError, User, UserId};
+use portunus_auth::{
+    OperatorAuthenticator, OperatorIdentity, OperatorRole, RbacError, User, UserId,
+};
 use serde::{Deserialize, Serialize};
 
+use crate::operator::audit::{AuditEntry, AuditOutcome};
 use crate::operator::http::ApiError;
 use crate::operator::passwords::{PasswordError, hash_password, verify_password};
 use crate::operator::sessions;
@@ -51,6 +54,32 @@ pub struct OnboardingResponse {
 pub struct LoginRequest {
     pub user_id: String,
     pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SelfPasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+    pub new_password_confirm: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminPasswordResetRequest {
+    #[serde(default)]
+    pub new_password: Option<String>,
+    #[serde(default)]
+    pub temporary_password: Option<bool>,
+    #[serde(default)]
+    pub keep_api_tokens: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasswordResetResponse {
+    pub user_id: String,
+    pub sessions_revoked: usize,
+    pub api_tokens_revoked: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_password: Option<String>,
 }
 
 pub async fn get_auth_status(State(state): State<Arc<AppState>>) -> Json<AuthStatusResponse> {
@@ -163,6 +192,71 @@ pub async fn post_auth_login(
                 &remote_ip,
                 AuthThrottleAction::Login,
                 now,
+            );
+            Err(err)
+        }
+    }
+}
+
+pub async fn post_self_password(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    Json(body): Json<SelfPasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    if body.new_password != body.new_password_confirm {
+        return Err(password_mismatch());
+    }
+    let current = state
+        .operator_store
+        .password_state(&identity.user_id)
+        .map_err(|_| invalid_login())?
+        .ok_or_else(invalid_login)?;
+    verify_password(&body.current_password, &current.hash).map_err(|_| invalid_login())?;
+    let new_hash = hash_password(&body.new_password).map_err(password_error)?;
+    state
+        .operator_store
+        .reset_password_state(&identity.user_id, &new_hash, false, false, false)
+        .map_err(api_store)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn post_user_password(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Path(user_id): Path<String>,
+    Json(body): Json<AdminPasswordResetRequest>,
+) -> Result<(StatusCode, Json<PasswordResetResponse>), ApiError> {
+    if identity.role != OperatorRole::Superadmin {
+        return Err(ApiError::from(RbacError::RoleRequired));
+    }
+    let target = UserId::from_str(&user_id).map_err(ApiError::from)?;
+    let remote_ip = remote_addr.ip().to_string();
+    let throttle_subject = target.as_str().to_string();
+    reject_if_throttled(
+        &state,
+        &throttle_subject,
+        &remote_ip,
+        AuthThrottleAction::PasswordReset,
+        Utc::now(),
+    )?;
+
+    let outcome = reset_user_password(&state, &identity, &target, &body);
+    match outcome {
+        Ok(resp) => {
+            let _ = state.operator_store.clear_login_attempts(
+                &throttle_subject,
+                &remote_ip,
+                AuthThrottleAction::PasswordReset,
+            );
+            Ok((StatusCode::OK, Json(resp)))
+        }
+        Err(err) => {
+            let _ = state.operator_store.record_login_attempt_failure(
+                &throttle_subject,
+                &remote_ip,
+                AuthThrottleAction::PasswordReset,
+                Utc::now(),
             );
             Err(err)
         }
@@ -284,6 +378,59 @@ fn authenticate_login(
     Ok(session_cookie(&secret, secure_cookie))
 }
 
+fn reset_user_password(
+    state: &AppState,
+    actor: &OperatorIdentity,
+    target: &UserId,
+    body: &AdminPasswordResetRequest,
+) -> Result<PasswordResetResponse, ApiError> {
+    let generated = body.new_password.is_none();
+    let new_password = body
+        .new_password
+        .clone()
+        .unwrap_or_else(portunus_auth::token::generate_token);
+    let password_change_required = body.temporary_password.unwrap_or(generated);
+    let revoke_api_tokens = body.keep_api_tokens != Some(true);
+    let new_hash = hash_password(&new_password).map_err(password_error)?;
+    let summary = state
+        .operator_store
+        .reset_password_state(
+            target,
+            &new_hash,
+            password_change_required,
+            true,
+            revoke_api_tokens,
+        )
+        .map_err(api_store)?;
+
+    let response = PasswordResetResponse {
+        user_id: target.as_str().to_string(),
+        sessions_revoked: summary.sessions_revoked,
+        api_tokens_revoked: summary.api_tokens_revoked,
+        temporary_password: generated.then_some(new_password),
+    };
+    state.audit.push(AuditEntry {
+        timestamp: Utc::now(),
+        actor: actor.user_id.as_str().to_string(),
+        role: Some(actor.role),
+        method: "POST".into(),
+        path: format!("/v1/users/{}/password", target.as_str()),
+        outcome: AuditOutcome::Allow,
+        reason: None,
+        action: Some("operator.password_reset".into()),
+        resource_kind: Some("user".into()),
+        resource_value: Some(target.as_str().to_string()),
+        details: Some(serde_json::json!({
+            "sessions_revoked": response.sessions_revoked,
+            "api_tokens_revoked": response.api_tokens_revoked,
+            "temporary_password_generated": generated,
+            "password_change_required": password_change_required,
+            "api_tokens_kept": !revoke_api_tokens,
+        })),
+    });
+    Ok(response)
+}
+
 fn reject_if_throttled(
     state: &AppState,
     subject: &str,
@@ -348,6 +495,21 @@ fn invalid_login() -> ApiError {
         "invalid_login",
         "invalid username or password",
     )
+}
+
+fn password_mismatch() -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "password_mismatch",
+        "password confirmation does not match",
+    )
+}
+
+fn api_store(e: portunus_auth::IdentityStoreError) -> ApiError {
+    if let Some(rbac) = e.as_rbac() {
+        return ApiError::from(rbac);
+    }
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
 }
 
 fn csrf_error(error: csrf::CsrfError) -> ApiError {

@@ -203,6 +203,10 @@ fn record_allow(state: &AppState, actor: &str, role: OperatorRole, method: &Meth
         path: path.to_string(),
         outcome: AuditOutcome::Allow,
         reason: None,
+        action: None,
+        resource_kind: None,
+        resource_value: None,
+        details: None,
     });
 }
 
@@ -226,6 +230,10 @@ fn record_deny(
         path: path.to_string(),
         outcome: AuditOutcome::Deny,
         reason: Some(reason.to_string()),
+        action: None,
+        resource_kind: None,
+        resource_value: None,
+        details: None,
     });
 }
 

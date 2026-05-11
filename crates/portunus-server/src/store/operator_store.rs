@@ -51,6 +51,12 @@ pub(crate) struct WebSession {
     pub user_agent: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PasswordResetSummary {
+    pub sessions_revoked: usize,
+    pub api_tokens_revoked: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OnboardingError {
     AlreadyBootstrapped,
@@ -238,6 +244,67 @@ impl SqliteOperatorStore {
                     });
                 }
                 Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    pub(crate) fn reset_password_state(
+        &self,
+        user_id: &UserId,
+        hash: &str,
+        password_change_required: bool,
+        revoke_sessions: bool,
+        revoke_api_tokens: bool,
+    ) -> Result<PasswordResetSummary, IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        let now = Utc::now().to_rfc3339();
+        self.store
+            .with_write_tx(|tx| {
+                if !user_exists(tx, user_id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
+                }
+                tx.execute(
+                    "UPDATE users SET password_hash = ?, password_change_required = ? \
+                     WHERE user_id = ?",
+                    params![hash, i32::from(password_change_required), user_id.as_str()],
+                )
+                .map_err(map_rusqlite)?;
+
+                let sessions_revoked = if revoke_sessions {
+                    tx.execute(
+                        "UPDATE web_sessions \
+                         SET revoked_at = COALESCE(revoked_at, ?) \
+                         WHERE user_id = ? AND revoked_at IS NULL",
+                        params![now, user_id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?
+                } else {
+                    0
+                };
+
+                let api_tokens_revoked = if revoke_api_tokens {
+                    tx.execute(
+                        "UPDATE credentials \
+                         SET status = 'revoked', revoked_at = ? \
+                         WHERE user_id = ? AND status = 'active'",
+                        params![now, user_id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?
+                } else {
+                    0
+                };
+
+                Ok(PasswordResetSummary {
+                    sessions_revoked,
+                    api_tokens_revoked,
+                })
             })
             .map_err(|e| match e {
                 StoreError::Conflict { detail } if detail == "user_not_found" => {
