@@ -1,11 +1,9 @@
 /// Typed fetch wrapper used by every TanStack Query hook.
 ///
-/// - Injects `Authorization: Bearer <token>` from the token store.
+/// - Sends same-origin cookies for local password sessions.
 /// - Throws a tagged `ApiError` on non-2xx so hooks can branch on status.
 /// - Emits a global `auth:unauthorized` event on 401 so the AuthGate can
 ///   clear the cache and bounce back to the login screen.
-
-import { getToken } from "@/auth/token-store";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -25,16 +23,27 @@ interface ServerErrorBody {
   error?: { code?: string; message?: string };
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+function isStateChangingMethod(method: string): boolean {
+  return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
+}
+
+function csrfAwareHeaders(init: RequestInit, accept: string): Headers {
   const headers = new Headers(init.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  headers.set("Accept", "application/json");
+  const method = (init.method ?? "GET").toUpperCase();
+  if (isStateChangingMethod(method) && !headers.has("X-Portunus-CSRF")) {
+    headers.set("X-Portunus-CSRF", "1");
+  }
+  headers.set("Accept", accept);
+  return headers;
+}
 
-  const res = await fetch(path, { ...init, headers, credentials: "omit" });
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = csrfAwareHeaders(init, "application/json");
+
+  const res = await fetch(path, { ...init, headers, credentials: "same-origin" });
 
   if (res.status === 401) {
     window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
@@ -66,12 +75,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
 /// Helper for endpoints returning raw `text/plain` (e.g. `/metrics`).
 export async function apiFetchText(path: string, init: RequestInit = {}): Promise<string> {
-  const headers = new Headers(init.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  headers.set("Accept", "text/plain");
+  const headers = csrfAwareHeaders(init, "text/plain");
 
-  const res = await fetch(path, { ...init, headers, credentials: "omit" });
+  const res = await fetch(path, { ...init, headers, credentials: "same-origin" });
   if (res.status === 401) window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
   if (!res.ok) {
     throw new ApiError(res.status, `http_${res.status}`, res.statusText);
@@ -79,11 +85,9 @@ export async function apiFetchText(path: string, init: RequestInit = {}): Promis
   return res.text();
 }
 
-/// Native EventSource cannot send custom headers (no Authorization),
-/// so we encode the bearer in the URL via a trusted side-channel: the
-/// browser's same-origin fetch is fine, but EventSource is not. We
-/// fall back to a manual ReadableStream-based reader that DOES send
-/// the Authorization header. Browsers route this exactly like fetch.
+/// Native EventSource has limited header/control support, so use a
+/// manual ReadableStream-based reader. Browser cookies flow through
+/// same-origin fetch and auth failures still emit the global 401 event.
 ///
 /// Returns a `close()` function the caller invokes to cancel the
 /// stream. Reconnects with exponential backoff (1s → 30s) on transport
@@ -125,8 +129,6 @@ export function streamSse<T>(
     if (aborted) return;
     pending = new AbortController();
     const headers = new Headers();
-    const token = getToken();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
     headers.set("Accept", "text/event-stream");
 
     let res: Response;
@@ -135,7 +137,7 @@ export function streamSse<T>(
         method: "GET",
         headers,
         signal: pending.signal,
-        credentials: "omit",
+        credentials: "same-origin",
       });
     } catch (err) {
       options.onError?.(err);
