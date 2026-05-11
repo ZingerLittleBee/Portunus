@@ -26,6 +26,7 @@ pub mod stats_stream;
 pub(crate) mod throttle;
 pub mod users;
 pub mod users_me;
+pub(crate) mod web_auth;
 pub mod webui;
 
 use serde::Serialize;

@@ -51,6 +51,14 @@ pub(crate) struct WebSession {
     pub user_agent: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnboardingError {
+    AlreadyBootstrapped,
+    InvalidSetupToken,
+    UserAlreadyExists(UserId),
+    Store(String),
+}
+
 impl std::fmt::Debug for SqliteOperatorStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteOperatorStore")
@@ -672,6 +680,78 @@ impl SqliteOperatorStore {
                     IdentityStoreError::UserAlreadyExists(UserId::reserved("_legacy"))
                 }
                 other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    pub(crate) fn onboard_first_superadmin(
+        &self,
+        user: User,
+        password_hash: &str,
+        setup_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), OnboardingError> {
+        if user.role != OperatorRole::Superadmin {
+            return Err(OnboardingError::Store(
+                "onboard_first_superadmin requires a superadmin user".into(),
+            ));
+        }
+        let user_for_err = user.id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                let active_superadmins: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM users WHERE role = 'superadmin' AND disabled = 0",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                if active_superadmins > 0 {
+                    return Err(StoreError::Conflict {
+                        detail: "already_bootstrapped".into(),
+                    });
+                }
+
+                let setup = tx
+                    .query_row(
+                        "SELECT token_hash, expires_at FROM onboarding_setup WHERE id = 1",
+                        [],
+                        row_to_setup_token_record,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                if !setup.is_some_and(|record| record.verify(setup_token, now)) {
+                    return Err(StoreError::Conflict {
+                        detail: "setup_token_invalid".into(),
+                    });
+                }
+
+                if user_exists(tx, &user.id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_already_exists".into(),
+                    });
+                }
+                insert_user(tx, &user)?;
+                tx.execute(
+                    "UPDATE users SET password_hash = ?, password_change_required = 0 \
+                     WHERE user_id = ?",
+                    params![password_hash, user.id.as_str()],
+                )
+                .map_err(map_rusqlite)?;
+                tx.execute("DELETE FROM onboarding_setup WHERE id = 1", [])
+                    .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "already_bootstrapped" => {
+                    OnboardingError::AlreadyBootstrapped
+                }
+                StoreError::Conflict { detail } if detail == "setup_token_invalid" => {
+                    OnboardingError::InvalidSetupToken
+                }
+                StoreError::Conflict { detail } if detail == "user_already_exists" => {
+                    OnboardingError::UserAlreadyExists(user_for_err)
+                }
+                other => OnboardingError::Store(other.to_string()),
             })
     }
 

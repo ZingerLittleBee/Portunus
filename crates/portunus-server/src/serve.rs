@@ -267,9 +267,12 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         http::router(Arc::clone(&state)).fallback(crate::operator::webui::serve_webui);
     let http_shutdown = shutdown.token();
     let http_task = tokio::spawn(async move {
-        let res = axum::serve(http_listener, operator_router)
-            .with_graceful_shutdown(async move { http_shutdown.cancelled().await })
-            .await;
+        let res = axum::serve(
+            http_listener,
+            operator_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { http_shutdown.cancelled().await })
+        .await;
         if let Err(e) = res {
             error!(event = "server.operator_http_failed", error = %e);
         }

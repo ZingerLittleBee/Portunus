@@ -1,7 +1,9 @@
 //! Operator HTTP API mirroring the CLI surface (operator-api.md).
 //!
-//! Every `/v1/*` route is bearer-token authenticated and RBAC-gated. The bind
-//! address defaults to loopback, but operators may expose it explicitly.
+//! Every protected `/v1/*` route is bearer-token authenticated and RBAC-gated.
+//! `/v1/auth/status` and `/v1/auth/onboarding` stay outside that layer for
+//! first-run setup. The bind address defaults to loopback, but operators may
+//! expose it explicitly.
 
 use axum::{
     Extension, Json, Router,
@@ -28,8 +30,11 @@ use crate::state::AppState;
 const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn router(state: Arc<AppState>) -> Router {
-    use crate::operator::{audit_http, credentials, grants, stats_stream, users, users_me};
-    Router::new()
+    use crate::operator::{
+        audit_http, credentials, grants, stats_stream, users, users_me, web_auth,
+    };
+
+    let protected = Router::new()
         .route("/v1/clients", get(get_clients).post(post_clients))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/rules", get(get_rules).post(post_rules))
@@ -93,7 +98,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
-        .route_layer(from_fn_with_state(state.clone(), auth_middleware))
+        .route_layer(from_fn_with_state(state.clone(), auth_middleware));
+
+    Router::new()
+        .route("/v1/auth/status", get(web_auth::get_auth_status))
+        .route("/v1/auth/onboarding", post(web_auth::post_auth_onboarding))
+        .merge(protected)
         .with_state(state)
 }
 
