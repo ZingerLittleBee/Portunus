@@ -117,33 +117,60 @@ pub async fn auth_middleware(
         return csrf_error_response(e);
     }
 
-    if auth_method == AuthMethod::Cookie
-        && !password_change_route_allowed(&method, &path)
-        && password_change_required(&state, &identity)
-    {
-        bump_request(&state, "deny", "password_change_required");
-        warn!(
-            event = "operator.deny",
-            actor = %identity.user_id,
-            method = %method,
-            path = %path,
-            outcome = "deny",
-            reason = "password_change_required",
-            auth_method = auth_method.as_str(),
-        );
-        record_deny(
-            &state,
-            identity.user_id.as_str(),
-            Some(identity.role),
-            &method,
-            &path,
-            "password_change_required",
-        );
-        return json_error_response(
-            StatusCode::FORBIDDEN,
-            "password_change_required",
-            "password change required",
-        );
+    if auth_method == AuthMethod::Cookie && !password_change_route_allowed(&method, &path) {
+        match password_change_required(&state, &identity) {
+            Ok(true) => {
+                bump_request(&state, "deny", "password_change_required");
+                warn!(
+                    event = "operator.deny",
+                    actor = %identity.user_id,
+                    method = %method,
+                    path = %path,
+                    outcome = "deny",
+                    reason = "password_change_required",
+                    auth_method = auth_method.as_str(),
+                );
+                record_deny(
+                    &state,
+                    identity.user_id.as_str(),
+                    Some(identity.role),
+                    &method,
+                    &path,
+                    "password_change_required",
+                );
+                return json_error_response(
+                    StatusCode::FORBIDDEN,
+                    "password_change_required",
+                    "password change required",
+                );
+            }
+            Ok(false) => {}
+            Err(()) => {
+                bump_request(&state, "deny", "password_state_unavailable");
+                warn!(
+                    event = "operator.deny",
+                    actor = %identity.user_id,
+                    method = %method,
+                    path = %path,
+                    outcome = "deny",
+                    reason = "password_state_unavailable",
+                    auth_method = auth_method.as_str(),
+                );
+                record_deny(
+                    &state,
+                    identity.user_id.as_str(),
+                    Some(identity.role),
+                    &method,
+                    &path,
+                    "password_state_unavailable",
+                );
+                return json_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "password state unavailable",
+                );
+            }
+        }
     }
 
     // Audit-log success and inject identity into request extensions.
@@ -378,13 +405,12 @@ fn password_change_route_allowed(method: &Method, path: &str) -> bool {
         || (method == Method::POST && path == "/v1/users/me/password")
 }
 
-fn password_change_required(state: &AppState, identity: &OperatorIdentity) -> bool {
+fn password_change_required(state: &AppState, identity: &OperatorIdentity) -> Result<bool, ()> {
     state
         .operator_store
         .password_state(&identity.user_id)
-        .ok()
-        .flatten()
-        .is_some_and(|password| password.password_change_required)
+        .map(|password| password.is_some_and(|password| password.password_change_required))
+        .map_err(|_| ())
 }
 
 /// Public so handlers can map `RbacError` from `enforce_push` /
