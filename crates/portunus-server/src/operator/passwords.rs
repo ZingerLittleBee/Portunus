@@ -11,6 +11,7 @@ use thiserror::Error;
 
 pub(crate) const MIN_PASSWORD_CHARS: usize = 12;
 pub(crate) const MAX_PASSWORD_BYTES: usize = 1024;
+const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$cG9ydHVudXMtZHVtbXktc2FsdA$0bMqlHsXSdateykKevh676adQ5f8L3wxbQcLHs5HFK8";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum PasswordError {
@@ -50,6 +51,10 @@ pub(crate) fn verify_password(password: &str, encoded: &str) -> Result<(), Passw
         .map_err(|_| PasswordError::Invalid)
 }
 
+pub(crate) fn verify_dummy_password_for_timing(password: &str) {
+    let _ = verify_password(password, DUMMY_PASSWORD_HASH);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +90,13 @@ mod tests {
             PasswordError::Invalid
         );
         assert!(hash.starts_with("$argon2"));
+    }
+
+    #[test]
+    fn dummy_password_hash_runs_argon2_verification() {
+        assert_eq!(
+            verify_password("wrong horse battery staple", DUMMY_PASSWORD_HASH).unwrap_err(),
+            PasswordError::Invalid
+        );
     }
 }

@@ -3,6 +3,7 @@
 use chrono::{DateTime, Duration, Utc};
 
 pub(crate) const LOCK_AFTER_FAILURES: u32 = 5;
+pub(crate) const FAILURE_WINDOW_SECONDS: i64 = 15 * 60;
 pub(crate) const LOCKOUT_SECONDS: i64 = 60;
 pub(crate) const MAX_LOCKOUT_SECONDS: i64 = 15 * 60;
 #[allow(dead_code)]
@@ -37,10 +38,13 @@ pub(crate) struct ThrottleDecision {
 
 impl ThrottleDecision {
     pub(crate) fn record_failure(&mut self, now: DateTime<Utc>) {
-        if self
+        let lockout_expired = self
             .locked_until
-            .is_some_and(|locked_until| locked_until <= now)
-        {
+            .is_some_and(|locked_until| locked_until <= now);
+        let failure_window_expired = self.last_failed_at.is_some_and(|last_failed_at| {
+            last_failed_at + Duration::seconds(FAILURE_WINDOW_SECONDS) <= now
+        });
+        if lockout_expired || failure_window_expired {
             *self = Self::default();
         }
 
@@ -120,6 +124,25 @@ mod tests {
         assert_eq!(state.failures, 1);
         assert_eq!(state.first_failed_at, Some(after_lockout));
         assert_eq!(state.last_failed_at, Some(after_lockout));
+        assert_eq!(state.locked_until, None);
+    }
+
+    #[test]
+    fn failures_outside_window_start_new_burst() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 11, 9, 30, 0).unwrap();
+        let mut state = ThrottleDecision::default();
+        state.record_failure(now);
+        state.record_failure(now + Duration::seconds(FAILURE_WINDOW_SECONDS + 1));
+
+        assert_eq!(state.failures, 1);
+        assert_eq!(
+            state.first_failed_at,
+            Some(now + Duration::seconds(FAILURE_WINDOW_SECONDS + 1))
+        );
+        assert_eq!(
+            state.last_failed_at,
+            Some(now + Duration::seconds(FAILURE_WINDOW_SECONDS + 1))
+        );
         assert_eq!(state.locked_until, None);
     }
 }

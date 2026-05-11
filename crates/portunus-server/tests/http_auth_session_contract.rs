@@ -636,6 +636,17 @@ async fn logout_requires_csrf_and_revokes_session() {
     let (router, _operator_store, store, _dir) = build_router(false);
     create_password_user(&router, &store, "admin").await;
     let cookie = login_cookie(&router, "admin").await;
+    let original_last_seen = (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+    store
+        .with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE web_sessions SET last_seen_at = ?",
+                rusqlite::params![original_last_seen],
+            )
+            .map_err(portunus_server::store::map_rusqlite)?;
+            Ok(())
+        })
+        .expect("set last_seen_at");
 
     let missing_csrf = router
         .clone()
@@ -651,6 +662,15 @@ async fn logout_requires_csrf_and_revokes_session() {
         .await
         .expect("logout");
     assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+    let last_seen_after_reject: String = store
+        .with_conn(|conn| {
+            conn.query_row("SELECT last_seen_at FROM web_sessions", [], |row| {
+                row.get(0)
+            })
+            .map_err(portunus_server::store::map_rusqlite)
+        })
+        .expect("query last_seen_at");
+    assert_eq!(last_seen_after_reject, original_last_seen);
 
     let logout = router
         .clone()

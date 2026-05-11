@@ -2327,6 +2327,47 @@ mod tests {
     }
 
     #[test]
+    fn login_attempt_failures_expire_after_window() {
+        let (_d, s) = fresh();
+        let subject = "alice";
+        let remote_addr = "127.0.0.1";
+        let now = fixed_ts();
+        let after_window =
+            now + chrono::Duration::seconds(crate::operator::throttle::FAILURE_WINDOW_SECONDS + 1);
+
+        s.record_login_attempt_failure(
+            subject,
+            remote_addr,
+            crate::operator::throttle::AuthThrottleAction::Login,
+            now,
+        )
+        .unwrap();
+        let state = s
+            .record_login_attempt_failure(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_window,
+            )
+            .unwrap();
+
+        assert_eq!(state.failures, 1);
+        assert_eq!(state.first_failed_at, Some(after_window));
+        assert_eq!(state.last_failed_at, Some(after_window));
+        assert_eq!(state.locked_until, None);
+
+        let persisted = s
+            .login_attempt_state(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_window,
+            )
+            .unwrap();
+        assert_eq!(persisted, state);
+    }
+
+    #[test]
     fn login_attempt_unknown_subject_round_trip() {
         let (_d, s) = fresh();
         let now = fixed_ts();

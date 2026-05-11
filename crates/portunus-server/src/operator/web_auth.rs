@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::operator::audit::{AuditEntry, AuditOutcome};
 use crate::operator::http::ApiError;
-use crate::operator::passwords::{PasswordError, hash_password, verify_password};
+use crate::operator::passwords::{
+    PasswordError, hash_password, verify_dummy_password_for_timing, verify_password,
+};
 use crate::operator::sessions;
 use crate::operator::throttle::{AuthThrottleAction, UNKNOWN_AUTH_SUBJECT};
 use crate::operator::user_ids::parse_stored_user_id;
@@ -294,6 +296,7 @@ pub async fn post_auth_logout(
                 "missing session cookie",
             )
         })?;
+    csrf::verify(&req, &state.operator_http_public_origin).map_err(csrf_error)?;
     auth_layer::verify_session_secret(&state, secret).map_err(|_| {
         ApiError::new(
             StatusCode::UNAUTHORIZED,
@@ -301,7 +304,6 @@ pub async fn post_auth_logout(
             "invalid or revoked session",
         )
     })?;
-    csrf::verify(&req, &state.operator_http_public_origin).map_err(csrf_error)?;
     let session_hash = sessions::hash_session_secret(secret);
     state
         .operator_store
@@ -366,19 +368,26 @@ fn authenticate_login(
     user_agent: Option<String>,
     secure_cookie: bool,
 ) -> Result<AuthenticatedLogin, ApiError> {
-    let user_id = parse_stored_user_id(&body.user_id).map_err(|_| invalid_login())?;
-    let user = state
-        .operator_store
-        .get_user(&user_id)
-        .ok_or_else(invalid_login)?;
+    let Ok(user_id) = parse_stored_user_id(&body.user_id) else {
+        verify_dummy_password_for_timing(&body.password);
+        return Err(invalid_login());
+    };
+    let Some(user) = state.operator_store.get_user(&user_id) else {
+        verify_dummy_password_for_timing(&body.password);
+        return Err(invalid_login());
+    };
     if user.disabled {
+        verify_dummy_password_for_timing(&body.password);
         return Err(invalid_login());
     }
-    let password_state = state
+    let Some(password_state) = state
         .operator_store
         .password_state(&user_id)
         .map_err(|_| invalid_login())?
-        .ok_or_else(invalid_login)?;
+    else {
+        verify_dummy_password_for_timing(&body.password);
+        return Err(invalid_login());
+    };
     verify_password(&body.password, &password_state.hash).map_err(|_| invalid_login())?;
 
     let secret = sessions::generate_session_secret();
