@@ -104,6 +104,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/auth/status", get(web_auth::get_auth_status))
         .route("/v1/auth/onboarding", post(web_auth::post_auth_onboarding))
         .route("/v1/auth/login", post(web_auth::post_auth_login))
+        .route("/v1/auth/logout", post(web_auth::post_auth_logout))
         .merge(protected)
         .with_state(state)
 }

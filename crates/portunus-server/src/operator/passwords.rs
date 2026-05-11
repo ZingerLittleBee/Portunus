@@ -1,8 +1,7 @@
 //! Local-password hashing and policy.
 //!
-//! The HTTP/auth tasks wire these helpers in after the storage and
-//! session primitives land. Keep the module internal until then.
-#![allow(dead_code)]
+//! The HTTP/auth tasks wire these helpers into local-password login,
+//! onboarding, and reset flows.
 
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,

@@ -101,6 +101,71 @@ fn login_req(
     request
 }
 
+fn cookie_pair(set_cookie: &str) -> String {
+    set_cookie
+        .split(';')
+        .next()
+        .expect("cookie pair")
+        .to_string()
+}
+
+async fn login_cookie(router: &axum::Router, user_id: &str) -> String {
+    let resp = router
+        .clone()
+        .oneshot(login_req(user_id, PASSWORD, "127.0.0.1:12000", None))
+        .await
+        .expect("login");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    cookie_pair(
+        resp.headers()
+            .get(header::SET_COOKIE)
+            .expect("set-cookie")
+            .to_str()
+            .expect("cookie string"),
+    )
+}
+
+fn authed_req(
+    method: Method,
+    uri: &str,
+    body: serde_json::Value,
+    cookie: Option<&str>,
+    bearer: Option<&str>,
+    csrf: bool,
+    origin: Option<&str>,
+) -> Request<Body> {
+    let body_bytes = serde_json::to_vec(&body).expect("body");
+    let mut builder = Request::builder().method(method.as_str()).uri(uri);
+    if method != Method::GET {
+        builder = builder
+            .header("content-type", "application/json")
+            .header("content-length", body_bytes.len().to_string());
+    }
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    if let Some(bearer) = bearer {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+    }
+    if csrf {
+        builder = builder.header("x-portunus-csrf", "1");
+    }
+    if let Some(origin) = origin {
+        builder = builder.header(header::ORIGIN, origin);
+    }
+    let mut request = if method == Method::GET {
+        builder.body(Body::empty()).expect("request")
+    } else {
+        builder.body(Body::from(body_bytes)).expect("request")
+    };
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:12000"
+            .parse::<std::net::SocketAddr>()
+            .expect("socket addr"),
+    ));
+    request
+}
+
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = to_bytes(resp.into_body(), 16 * 1024).await.expect("body");
     serde_json::from_slice(&bytes).expect("json")
@@ -343,4 +408,155 @@ async fn login_ignores_bearer_authorization_without_correct_body() {
         .expect("login");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert!(resp.headers().get(header::SET_COOKIE).is_none());
+}
+
+#[tokio::test]
+async fn users_me_accepts_session_cookie() {
+    let (router, _operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let cookie = login_cookie(&router, "admin").await;
+
+    let resp = router
+        .oneshot(authed_req(
+            Method::GET,
+            "/v1/users/me",
+            json!(null),
+            Some(&cookie),
+            None,
+            false,
+            None,
+        ))
+        .await
+        .expect("users me");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["user_id"], "admin");
+}
+
+#[tokio::test]
+async fn cookie_post_without_csrf_is_rejected() {
+    let (router, _operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let cookie = login_cookie(&router, "admin").await;
+
+    let resp = router
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users",
+            json!({"user_id": "alice", "display_name": "Alice"}),
+            Some(&cookie),
+            None,
+            false,
+            None,
+        ))
+        .await
+        .expect("post users");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "csrf_origin_required");
+}
+
+#[tokio::test]
+async fn bearer_post_does_not_need_csrf() {
+    let (router, operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let admin_id = "admin".parse::<UserId>().expect("admin user id");
+    let (_credential, api_token) = operator_store
+        .issue_credential(&admin_id, Some("api".into()))
+        .expect("issue api credential");
+
+    let resp = router
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users",
+            json!({"user_id": "alice", "display_name": "Alice"}),
+            None,
+            Some(&api_token),
+            false,
+            None,
+        ))
+        .await
+        .expect("post users");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn cookie_post_rejects_mismatched_origin() {
+    let (router, _operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let cookie = login_cookie(&router, "admin").await;
+
+    let resp = router
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/users",
+            json!({"user_id": "alice", "display_name": "Alice"}),
+            Some(&cookie),
+            None,
+            true,
+            Some("http://evil.example"),
+        ))
+        .await
+        .expect("post users");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "csrf_origin_mismatch");
+}
+
+#[tokio::test]
+async fn logout_requires_csrf_and_revokes_session() {
+    let (router, _operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let cookie = login_cookie(&router, "admin").await;
+
+    let missing_csrf = router
+        .clone()
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/auth/logout",
+            json!(null),
+            Some(&cookie),
+            None,
+            false,
+            None,
+        ))
+        .await
+        .expect("logout");
+    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+
+    let logout = router
+        .clone()
+        .oneshot(authed_req(
+            Method::POST,
+            "/v1/auth/logout",
+            json!(null),
+            Some(&cookie),
+            None,
+            true,
+            Some("http://127.0.0.1:7080"),
+        ))
+        .await
+        .expect("logout");
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+    let expired = logout
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("expired cookie")
+        .to_str()
+        .expect("cookie string");
+    assert!(expired.contains("Max-Age=0"));
+
+    let after = router
+        .oneshot(authed_req(
+            Method::GET,
+            "/v1/users/me",
+            json!(null),
+            Some(&cookie),
+            None,
+            false,
+            None,
+        ))
+        .await
+        .expect("users me");
+    assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
 }

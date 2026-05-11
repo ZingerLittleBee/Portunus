@@ -28,11 +28,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::Utc;
-use portunus_auth::{OperatorRole, RbacError};
+use portunus_auth::{OperatorIdentity, OperatorRole, RbacError};
 use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::operator::audit::{AuditEntry, AuditOutcome};
+use crate::operator::{csrf, sessions};
 use crate::state::AppState;
 
 /// Axum middleware fn: authenticate + inject identity + audit-log.
@@ -74,31 +75,8 @@ pub async fn auth_middleware(
         );
     }
 
-    // 2. Extract the bearer token.
-    let token = match extract_bearer(&req) {
-        Ok(t) => t,
-        Err(reason) => {
-            bump_request(&state, "deny", reason.code());
-            warn!(
-                event = "operator.deny",
-                actor = "_anonymous",
-                method = %method,
-                path = %path,
-                outcome = "deny",
-                reason = reason.code(),
-            );
-            record_deny(&state, "_anonymous", None, &method, &path, reason.code());
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                reason,
-                "missing or malformed Authorization header",
-            );
-        }
-    };
-
-    // 3. Verify against the store.
-    let identity = match state.operator_auth.verify(&token) {
-        Ok(id) => id,
+    let (identity, auth_method) = match authenticate_request(&state, &req) {
+        Ok(auth) => auth,
         Err(e) => {
             let status = http_status_for(&e);
             bump_request(&state, "deny", e.code());
@@ -111,11 +89,35 @@ pub async fn auth_middleware(
                 reason = e.code(),
             );
             record_deny(&state, "_anonymous", None, &method, &path, e.code());
-            return error_response(status, e, "invalid or revoked credential");
+            return error_response(status, e, "missing or invalid operator authentication");
         }
     };
 
-    // 4. Audit-log success and inject identity into request extensions.
+    if auth_method == AuthMethod::Cookie
+        && let Err(e) = csrf::verify(&req, &state.operator_http_public_origin)
+    {
+        bump_request(&state, "deny", e.code());
+        warn!(
+            event = "operator.deny",
+            actor = %identity.user_id,
+            method = %method,
+            path = %path,
+            outcome = "deny",
+            reason = e.code(),
+            auth_method = auth_method.as_str(),
+        );
+        record_deny(
+            &state,
+            identity.user_id.as_str(),
+            Some(identity.role),
+            &method,
+            &path,
+            e.code(),
+        );
+        return csrf_error_response(e);
+    }
+
+    // Audit-log success and inject identity into request extensions.
     bump_request(&state, "allow", "ok");
     info!(
         event = "operator.allow",
@@ -124,6 +126,7 @@ pub async fn auth_middleware(
         method = %method,
         path = %path,
         outcome = "allow",
+        auth_method = auth_method.as_str(),
     );
     record_allow(
         &state,
@@ -135,6 +138,59 @@ pub async fn auth_middleware(
     req.extensions_mut().insert(identity);
 
     next.run(req).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthMethod {
+    Cookie,
+    Bearer,
+}
+
+impl AuthMethod {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cookie => "cookie",
+            Self::Bearer => "bearer",
+        }
+    }
+}
+
+fn authenticate_request(
+    state: &AppState,
+    req: &Request<Body>,
+) -> Result<(OperatorIdentity, AuthMethod), RbacError> {
+    if let Some(secret) = sessions::cookie_value(req.headers(), sessions::SESSION_COOKIE)
+        && let Ok(identity) = verify_session_secret(state, secret)
+    {
+        return Ok((identity, AuthMethod::Cookie));
+    }
+
+    let token = extract_bearer(req)?;
+    let identity = state.operator_auth.verify(&token)?;
+    Ok((identity, AuthMethod::Bearer))
+}
+
+pub(crate) fn verify_session_secret(
+    state: &AppState,
+    secret: &str,
+) -> Result<OperatorIdentity, RbacError> {
+    let session_hash = sessions::hash_session_secret(secret);
+    let session = state
+        .operator_store
+        .verify_web_session(&session_hash, Utc::now())
+        .map_err(|_| RbacError::CredentialInvalid)?
+        .ok_or(RbacError::CredentialInvalid)?;
+    let user = state
+        .operator_store
+        .get_user(&session.user_id)
+        .ok_or(RbacError::CredentialInvalid)?;
+    if user.disabled {
+        return Err(RbacError::UserDisabled);
+    }
+    Ok(OperatorIdentity {
+        user_id: user.id,
+        role: user.role,
+    })
 }
 
 /// 006-management-web-ui T010: push an `allow` row into the ring.
@@ -249,6 +305,19 @@ fn error_response(status: StatusCode, code: RbacError, message: &str) -> Respons
             error: ErrorBodyInner {
                 code: code.code().to_string(),
                 message: message.to_string(),
+            },
+        }),
+    )
+        .into_response()
+}
+
+fn csrf_error_response(error: csrf::CsrfError) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorBody {
+            error: ErrorBodyInner {
+                code: error.code().to_string(),
+                message: "csrf verification failed".to_string(),
             },
         }),
     )

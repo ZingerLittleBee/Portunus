@@ -11,6 +11,7 @@ pub mod auth_layer;
 pub mod bootstrap;
 pub mod cli;
 pub mod credentials;
+pub(crate) mod csrf;
 pub mod grants;
 pub mod http;
 pub mod identity_cli;

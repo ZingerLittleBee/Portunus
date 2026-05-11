@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    body::Body,
+    extract::{ConnectInfo, Request, State},
     http::{HeaderMap, StatusCode, header},
 };
 use chrono::Utc;
@@ -17,6 +18,7 @@ use crate::operator::http::ApiError;
 use crate::operator::passwords::{PasswordError, hash_password, verify_password};
 use crate::operator::sessions;
 use crate::operator::throttle::{AuthThrottleAction, UNKNOWN_AUTH_SUBJECT};
+use crate::operator::{auth_layer, csrf};
 use crate::state::AppState;
 use crate::store::operator_store::OnboardingError;
 
@@ -167,6 +169,40 @@ pub async fn post_auth_login(
     }
 }
 
+pub async fn post_auth_logout(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+) -> Result<(StatusCode, [(header::HeaderName, String); 1]), ApiError> {
+    let secret =
+        sessions::cookie_value(req.headers(), sessions::SESSION_COOKIE).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "missing session cookie",
+            )
+        })?;
+    auth_layer::verify_session_secret(&state, secret).map_err(|_| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "credential_invalid",
+            "invalid or revoked session",
+        )
+    })?;
+    csrf::verify(&req, &state.operator_http_public_origin).map_err(csrf_error)?;
+    let session_hash = sessions::hash_session_secret(secret);
+    state
+        .operator_store
+        .revoke_web_session(&session_hash)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(
+            header::SET_COOKIE,
+            expired_session_cookie(state.operator_http_cookie_secure),
+        )],
+    ))
+}
+
 fn verify_setup_token_for_hashing<'a>(
     state: &AppState,
     setup_token: Option<&'a str>,
@@ -295,11 +331,30 @@ fn session_cookie(secret: &str, secure: bool) -> String {
     cookie
 }
 
+fn expired_session_cookie(secure: bool) -> String {
+    let mut cookie = format!(
+        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+        sessions::SESSION_COOKIE,
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
 fn invalid_login() -> ApiError {
     ApiError::new(
         StatusCode::UNAUTHORIZED,
         "invalid_login",
         "invalid username or password",
+    )
+}
+
+fn csrf_error(error: csrf::CsrfError) -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        error.code(),
+        "csrf verification failed",
     )
 }
 

@@ -1,9 +1,8 @@
 //! Web UI session token helpers.
 //!
-//! HTTP cookie endpoints land after the store primitives, so this module
-//! is intentionally test-used for a few commits.
-#![allow(dead_code)]
+//! Shared by login, logout, and the session-aware auth middleware.
 
+use axum::http::{HeaderMap, header};
 use chrono::{DateTime, Duration, Utc};
 use portunus_auth::token::{generate_token, hash_token};
 use portunus_core::fingerprint;
@@ -20,6 +19,15 @@ pub(crate) fn generate_session_secret() -> String {
 #[must_use]
 pub(crate) fn hash_session_secret(secret: &str) -> String {
     fingerprint::hex(&hash_token(secret))
+}
+
+#[must_use]
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookie.split(';').find_map(|part| {
+        let (key, value) = part.trim().split_once('=')?;
+        (key == name).then_some(value)
+    })
 }
 
 #[must_use]
