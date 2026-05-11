@@ -22,6 +22,7 @@ pub mod rbac;
 pub mod rule_cli;
 pub(crate) mod sessions;
 pub mod stats_stream;
+pub(crate) mod throttle;
 pub mod users;
 pub mod users_me;
 pub mod webui;

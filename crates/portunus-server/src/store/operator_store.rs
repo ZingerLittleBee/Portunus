@@ -21,7 +21,10 @@ use portunus_auth::{
 use portunus_core::{ClientName, fingerprint};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::operator::sessions;
+use crate::operator::{
+    sessions,
+    throttle::{AuthThrottleAction, ThrottleDecision},
+};
 use crate::store::{Store, StoreError, map_rusqlite};
 
 #[derive(Clone)]
@@ -439,6 +442,100 @@ impl SqliteOperatorStore {
                     )
                     .map_err(map_rusqlite)?;
                 Ok(deleted)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn login_attempt_state(
+        &self,
+        subject: &str,
+        remote_addr: &str,
+        action: AuthThrottleAction,
+        now: DateTime<Utc>,
+    ) -> Result<ThrottleDecision, IdentityStoreError> {
+        self.store
+            .with_conn(|c| {
+                let row = c
+                    .query_row(
+                        "SELECT failures, first_failed_at, last_failed_at, locked_until \
+                         FROM login_attempts \
+                         WHERE subject = ? AND remote_addr = ? AND action = ?",
+                        params![subject, remote_addr, action.as_db_str()],
+                        row_to_login_attempt,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                Ok(row.unwrap_or_default().effective_at(now))
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_login_attempt_failure(
+        &self,
+        subject: &str,
+        remote_addr: &str,
+        action: AuthThrottleAction,
+        now: DateTime<Utc>,
+    ) -> Result<ThrottleDecision, IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                let mut state = tx
+                    .query_row(
+                        "SELECT failures, first_failed_at, last_failed_at, locked_until \
+                         FROM login_attempts \
+                         WHERE subject = ? AND remote_addr = ? AND action = ?",
+                        params![subject, remote_addr, action.as_db_str()],
+                        row_to_login_attempt,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?
+                    .unwrap_or_default();
+                state.record_failure(now);
+
+                tx.execute(
+                    "INSERT INTO login_attempts \
+                        (subject, remote_addr, action, failures, first_failed_at, last_failed_at, locked_until) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(subject, remote_addr, action) DO UPDATE SET \
+                        failures = excluded.failures, \
+                        first_failed_at = excluded.first_failed_at, \
+                        last_failed_at = excluded.last_failed_at, \
+                        locked_until = excluded.locked_until",
+                    params![
+                        subject,
+                        remote_addr,
+                        action.as_db_str(),
+                        i64::from(state.failures),
+                        state.first_failed_at.map(|ts| ts.to_rfc3339()),
+                        state.last_failed_at.map(|ts| ts.to_rfc3339()),
+                        state.locked_until.map(|ts| ts.to_rfc3339()),
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+
+                Ok(state)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear_login_attempts(
+        &self,
+        subject: &str,
+        remote_addr: &str,
+        action: AuthThrottleAction,
+    ) -> Result<(), IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "DELETE FROM login_attempts \
+                     WHERE subject = ? AND remote_addr = ? AND action = ?",
+                    params![subject, remote_addr, action.as_db_str()],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
             })
             .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
     }
@@ -1095,6 +1192,37 @@ fn row_to_web_session_record(r: &Row<'_>) -> rusqlite::Result<(WebSession, Optio
     ))
 }
 
+fn row_to_login_attempt(r: &Row<'_>) -> rusqlite::Result<ThrottleDecision> {
+    let failures = r.get::<_, i64>(0)?;
+    let first_failed_at: Option<String> = r.get(1)?;
+    let last_failed_at: Option<String> = r.get(2)?;
+    let locked_until: Option<String> = r.get(3)?;
+
+    let failures = u32::try_from(failures).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad failures count: {e}"),
+            )),
+        )
+    })?;
+
+    Ok(ThrottleDecision {
+        failures,
+        first_failed_at: first_failed_at
+            .map(|ts| parse_ts_rusqlite(&ts, 1))
+            .transpose()?,
+        last_failed_at: last_failed_at
+            .map(|ts| parse_ts_rusqlite(&ts, 2))
+            .transpose()?,
+        locked_until: locked_until
+            .map(|ts| parse_ts_rusqlite(&ts, 3))
+            .transpose()?,
+    })
+}
+
 fn parse_user_id(s: &str, col: usize) -> rusqlite::Result<UserId> {
     if s.starts_with('_') {
         Ok(UserId::reserved(s))
@@ -1717,6 +1845,162 @@ mod tests {
 
         let err = s.revoke_web_sessions_for_user(&missing).unwrap_err();
         assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn login_attempt_failures_persist_lockout() {
+        let (_d, s) = fresh();
+        let subject = "alice";
+        let remote_addr = "127.0.0.1";
+        let now = fixed_ts();
+
+        for offset in 0..crate::operator::throttle::LOCK_AFTER_FAILURES {
+            s.record_login_attempt_failure(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now + chrono::Duration::seconds(i64::from(offset)),
+            )
+            .unwrap();
+        }
+
+        let state = s
+            .login_attempt_state(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            state.failures,
+            crate::operator::throttle::LOCK_AFTER_FAILURES
+        );
+        assert!(state.locked_until.is_some());
+    }
+
+    #[test]
+    fn login_attempt_success_clear_removes_lockout() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        s.record_login_attempt_failure(
+            "alice",
+            "127.0.0.1",
+            crate::operator::throttle::AuthThrottleAction::Login,
+            now,
+        )
+        .unwrap();
+        s.clear_login_attempts(
+            "alice",
+            "127.0.0.1",
+            crate::operator::throttle::AuthThrottleAction::Login,
+        )
+        .unwrap();
+
+        let state = s
+            .login_attempt_state(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            crate::operator::throttle::ThrottleDecision::default()
+        );
+    }
+
+    #[test]
+    fn login_attempt_unknown_subject_round_trip() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        let state = s
+            .record_login_attempt_failure(
+                crate::operator::throttle::UNKNOWN_AUTH_SUBJECT,
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+
+        assert_eq!(state.failures, 1);
+        let persisted = s
+            .login_attempt_state(
+                crate::operator::throttle::UNKNOWN_AUTH_SUBJECT,
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        assert_eq!(persisted.failures, 1);
+    }
+
+    #[test]
+    fn login_attempt_buckets_are_independent_by_remote_and_action() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        for offset in 0..crate::operator::throttle::LOCK_AFTER_FAILURES {
+            s.record_login_attempt_failure(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now + chrono::Duration::seconds(i64::from(offset)),
+            )
+            .unwrap();
+        }
+        s.record_login_attempt_failure(
+            "alice",
+            "10.0.0.5",
+            crate::operator::throttle::AuthThrottleAction::Login,
+            now,
+        )
+        .unwrap();
+        s.record_login_attempt_failure(
+            "alice",
+            "127.0.0.1",
+            crate::operator::throttle::AuthThrottleAction::PasswordReset,
+            now,
+        )
+        .unwrap();
+
+        let login_local = s
+            .login_attempt_state(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        let login_remote = s
+            .login_attempt_state(
+                "alice",
+                "10.0.0.5",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        let reset_local = s
+            .login_attempt_state(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::PasswordReset,
+                now,
+            )
+            .unwrap();
+
+        assert_eq!(
+            login_local.failures,
+            crate::operator::throttle::LOCK_AFTER_FAILURES
+        );
+        assert!(login_local.locked_until.is_some());
+        assert_eq!(login_remote.failures, 1);
+        assert!(login_remote.locked_until.is_none());
+        assert_eq!(reset_local.failures, 1);
+        assert!(reset_local.locked_until.is_none());
     }
 
     #[test]
