@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 const SUPERADMIN_TOKEN: &str = "T026-super";
 
-fn build_router() -> (axum::Router, TempDir) {
+fn build_router_with_store() -> (axum::Router, TempDir, Arc<portunus_server::store::Store>) {
     let dir = TempDir::new().expect("tempdir");
     let sqlite_store =
         std::sync::Arc::new(portunus_server::store::Store::open(dir.path()).unwrap());
@@ -45,7 +45,12 @@ fn build_router() -> (axum::Router, TempDir) {
         )
         .expect("AppState"),
     );
-    (http::router(state), dir)
+    (http::router(state), dir, sqlite_store)
+}
+
+fn build_router() -> (axum::Router, TempDir) {
+    let (router, dir, _store) = build_router_with_store();
+    (router, dir)
 }
 
 fn req(method: &str, uri: &str, bearer: &str, body: serde_json::Value) -> Request<Body> {
@@ -94,6 +99,55 @@ async fn post_users_happy_path_creates_user() {
     let v = body_json(resp).await;
     let arr = v.as_array().expect("array");
     assert_eq!(arr.len(), 2);
+}
+
+#[tokio::test]
+async fn post_users_accepts_initial_password_without_issuing_api_token() {
+    let (router, _dir, store) = build_router_with_store();
+    let resp = router
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({
+                "user_id": "alice",
+                "display_name": "Alice",
+                "initial_password": "correct horse battery staple",
+                "password_change_required": true
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let (password_hash, password_change_required, credential_count): (Option<String>, i64, i64) =
+        store
+            .with_conn(|conn| {
+                let password = conn
+                    .query_row(
+                        "SELECT password_hash, password_change_required FROM users WHERE user_id = 'alice'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(portunus_server::store::map_rusqlite)?;
+                let credential_count = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM credentials WHERE user_id = 'alice'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(portunus_server::store::map_rusqlite)?;
+                Ok((password.0, password.1, credential_count))
+            })
+            .expect("query user password");
+    assert!(
+        password_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("$argon2"))
+    );
+    assert_eq!(password_change_required, 1);
+    assert_eq!(credential_count, 0);
 }
 
 #[tokio::test]

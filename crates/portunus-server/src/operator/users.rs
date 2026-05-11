@@ -24,6 +24,7 @@ use tracing::info;
 
 use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
+use crate::operator::passwords::hash_password;
 use crate::operator::rbac;
 use crate::state::AppState;
 use portunus_auth::IdentityStoreError;
@@ -54,6 +55,10 @@ pub struct CreateUserBody {
     /// "superadmin" or "user". Defaults to "user" if absent.
     #[serde(default = "default_role")]
     pub role: String,
+    #[serde(default)]
+    pub initial_password: Option<String>,
+    #[serde(default)]
+    pub password_change_required: bool,
 }
 
 fn default_role() -> String {
@@ -120,9 +125,25 @@ pub async fn post_users(
         created_at: Utc::now(),
         disabled: false,
     };
+    let password_hash = body
+        .initial_password
+        .as_deref()
+        .map(hash_password)
+        .transpose()
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                e.to_string(),
+                e.to_string(),
+            )
+        })?;
     state
         .operator_store
-        .add_user(user.clone())
+        .add_user_with_password(
+            user.clone(),
+            password_hash.as_deref(),
+            body.password_change_required,
+        )
         .map_err(api_store)?;
 
     info!(

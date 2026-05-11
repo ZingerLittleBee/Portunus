@@ -842,6 +842,37 @@ impl SqliteOperatorStore {
             })
     }
 
+    pub(crate) fn add_user_with_password(
+        &self,
+        user: User,
+        password_hash: Option<&str>,
+        password_change_required: bool,
+    ) -> Result<(), IdentityStoreError> {
+        let user_for_err = user.id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                if user_exists(tx, &user.id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_already_exists".into(),
+                    });
+                }
+                insert_user(tx, &user)?;
+                if let Some(hash) = password_hash {
+                    tx.execute(
+                        "UPDATE users SET password_hash = ?, password_change_required = ? \
+                         WHERE user_id = ?",
+                        params![hash, i32::from(password_change_required), user.id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?;
+                }
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { .. } => IdentityStoreError::UserAlreadyExists(user_for_err),
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
     pub fn remove_user(&self, user_id: &UserId) -> Result<UserRemoveSummary, IdentityStoreError> {
         let uid_for_err = user_id.clone();
         self.store
