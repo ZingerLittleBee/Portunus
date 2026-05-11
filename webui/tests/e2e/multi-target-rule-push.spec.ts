@@ -13,7 +13,7 @@ test.describe("multi-target rule push", () => {
     request,
     server,
   }) => {
-    await loginAs(page, server.superadminToken);
+    await loginAs(page, server.superadminUserId, server.superadminPassword);
 
     // Provision a client so the rule-push body validates server-side
     // before the expected offline-client rejection.
@@ -79,7 +79,7 @@ test.describe("multi-target rule push", () => {
     request,
     server,
   }) => {
-    await loginAs(page, server.superadminToken);
+    await loginAs(page, server.superadminUserId, server.superadminPassword);
     await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
       method: "POST",
       body: { name: "edge-st" },

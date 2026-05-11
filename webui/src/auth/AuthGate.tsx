@@ -13,6 +13,10 @@ export function fetchIdentity(): Promise<Identity> {
   return apiFetch<Identity>("/v1/users/me");
 }
 
+function isMeQueryKey(queryKey: readonly unknown[]): boolean {
+  return queryKey.length === ME_QUERY_KEY.length && queryKey.every((part, idx) => part === ME_QUERY_KEY[idx]);
+}
+
 interface AuthGateProps {
   /** Required role; omit for "any authenticated user". */
   role?: Role;
@@ -26,7 +30,9 @@ export function AuthGate({ role, children }: AuthGateProps) {
   useEffect(() => {
     const onUnauth = () => {
       clearLegacyToken();
-      queryClient.clear();
+      queryClient.removeQueries({
+        predicate: (query) => !isMeQueryKey(query.queryKey),
+      });
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauth);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauth);

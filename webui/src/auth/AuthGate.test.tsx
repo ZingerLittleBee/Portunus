@@ -132,6 +132,20 @@ describe("local password auth UI", () => {
     });
   });
 
+  it("redirects to login on 401 without trapping AuthGate in loading", async () => {
+    mockFetch({
+      "/v1/auth/status": { body: { onboarding_required: false } },
+      "/v1/users/me": { status: 401, body: { error: { code: "unauthenticated" } } },
+    });
+    const { qc } = renderApp("/");
+    qc.setQueryData(["clients"], [{ client_name: "secret-edge" }]);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("User ID")).toBeDefined();
+    });
+    expect(qc.getQueryData(["clients"])).toBeUndefined();
+  });
+
   it("shows the required password-change step after temporary-password login", async () => {
     const { LoginPage } = await import("@/auth/LoginPage");
     mockFetch({
