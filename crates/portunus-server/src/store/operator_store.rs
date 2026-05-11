@@ -611,12 +611,12 @@ impl SqliteOperatorStore {
     #[allow(dead_code)]
     pub(crate) fn verify_onboarding_setup_token(
         &self,
-        raw: &str,
+        candidate_token: &str,
         now: DateTime<Utc>,
     ) -> Result<bool, IdentityStoreError> {
         self.store
             .with_conn(|c| {
-                let row = c
+                let stored_token = c
                     .query_row(
                         "SELECT token_hash, expires_at FROM onboarding_setup WHERE id = 1",
                         [],
@@ -624,7 +624,7 @@ impl SqliteOperatorStore {
                     )
                     .optional()
                     .map_err(map_rusqlite)?;
-                Ok(row.is_some_and(|record| record.verify(raw, now)))
+                Ok(stored_token.is_some_and(|record| record.verify(candidate_token, now)))
             })
             .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
     }
