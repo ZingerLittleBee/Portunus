@@ -16,7 +16,7 @@ pub mod http;
 pub mod identity_cli;
 pub mod owner_cap;
 pub mod owner_cap_cli;
-pub mod passwords;
+pub(crate) mod passwords;
 pub mod per_port_stats;
 pub mod rbac;
 pub mod rule_cli;
