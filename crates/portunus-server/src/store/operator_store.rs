@@ -1913,6 +1913,51 @@ mod tests {
     }
 
     #[test]
+    fn login_attempt_expired_lockout_starts_new_burst() {
+        let (_d, s) = fresh();
+        let subject = "alice";
+        let remote_addr = "127.0.0.1";
+        let now = fixed_ts();
+
+        let mut state = crate::operator::throttle::ThrottleDecision::default();
+        for offset in 0..crate::operator::throttle::LOCK_AFTER_FAILURES {
+            state = s
+                .record_login_attempt_failure(
+                    subject,
+                    remote_addr,
+                    crate::operator::throttle::AuthThrottleAction::Login,
+                    now + chrono::Duration::seconds(i64::from(offset)),
+                )
+                .unwrap();
+        }
+
+        let after_lockout = state.locked_until.unwrap() + chrono::Duration::seconds(1);
+        let state = s
+            .record_login_attempt_failure(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_lockout,
+            )
+            .unwrap();
+
+        assert_eq!(state.failures, 1);
+        assert_eq!(state.first_failed_at, Some(after_lockout));
+        assert_eq!(state.last_failed_at, Some(after_lockout));
+        assert_eq!(state.locked_until, None);
+
+        let persisted = s
+            .login_attempt_state(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_lockout,
+            )
+            .unwrap();
+        assert_eq!(persisted, state);
+    }
+
+    #[test]
     fn login_attempt_unknown_subject_round_trip() {
         let (_d, s) = fresh();
         let now = fixed_ts();
