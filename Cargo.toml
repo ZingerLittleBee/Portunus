@@ -68,6 +68,7 @@ axum = { version = "0.8", features = ["tokio", "macros"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+rpassword = "7.5.2"
 
 # Logging
 tracing = "0.1"

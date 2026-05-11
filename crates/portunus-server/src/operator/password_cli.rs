@@ -1,6 +1,6 @@
 //! Local break-glass password and onboarding-token CLI commands.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -47,31 +47,29 @@ pub fn reset_password(
         )
         .map_err(identity_error_exit)?;
 
-    operator_store
-        .insert_audit_entry(&AuditEntry {
-            timestamp: Utc::now(),
-            actor: "_local_cli".into(),
-            role: Some(OperatorRole::Superadmin),
-            method: "CLI".into(),
-            path: format!("reset-password {}", user_id.as_str()),
-            outcome: AuditOutcome::Allow,
-            reason: None,
-            action: Some("operator.password_reset".into()),
-            resource_kind: Some("user".into()),
-            resource_value: Some(user_id.as_str().to_string()),
-            details: Some(serde_json::json!({
-                "sessions_revoked": summary.sessions_revoked,
-                "api_tokens_revoked": summary.api_tokens_revoked,
-                "temporary_password_generated": temporary,
-                "password_change_required": password_change_required,
-                "api_tokens_kept": keep_api_tokens,
-                "source": "local_cli",
-            })),
-        })
-        .map_err(|e| {
-            eprintln!("error: audit_write_failed: {e}");
-            1
-        })?;
+    let audit_result = operator_store.insert_audit_entry(&AuditEntry {
+        timestamp: Utc::now(),
+        actor: "_local_cli".into(),
+        role: Some(OperatorRole::Superadmin),
+        method: "CLI".into(),
+        path: format!("reset-password {}", user_id.as_str()),
+        outcome: AuditOutcome::Allow,
+        reason: None,
+        action: Some("operator.password_reset".into()),
+        resource_kind: Some("user".into()),
+        resource_value: Some(user_id.as_str().to_string()),
+        details: Some(serde_json::json!({
+            "sessions_revoked": summary.sessions_revoked,
+            "api_tokens_revoked": summary.api_tokens_revoked,
+            "temporary_password_generated": temporary,
+            "password_change_required": password_change_required,
+            "api_tokens_kept": keep_api_tokens,
+            "source": "local_cli",
+        })),
+    });
+    if let Err(e) = audit_result {
+        eprintln!("warning: audit_write_failed: {e}");
+    }
 
     println!(
         "password_reset=ok user_id={} sessions_revoked={} api_tokens_revoked={}",
@@ -134,24 +132,19 @@ fn read_password_stdin() -> Result<String, u8> {
 }
 
 fn read_password_prompted() -> Result<String, u8> {
-    let first = prompt_password("New password: ")?;
-    let second = prompt_password("Confirm password: ")?;
+    let first = rpassword::prompt_password("New password: ").map_err(|e| {
+        eprintln!("error: read_password_tty: {e}");
+        1
+    })?;
+    let second = rpassword::prompt_password("Confirm password: ").map_err(|e| {
+        eprintln!("error: read_password_tty: {e}");
+        1
+    })?;
     if first != second {
         eprintln!("error: password_mismatch");
         return Err(3);
     }
     Ok(first)
-}
-
-fn prompt_password(prompt: &str) -> Result<String, u8> {
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(|e| {
-        eprintln!("error: flush_prompt: {e}");
-        1
-    })?;
-    let password = read_password_stdin();
-    eprintln!();
-    password
 }
 
 fn password_error_exit(error: PasswordError) -> u8 {
