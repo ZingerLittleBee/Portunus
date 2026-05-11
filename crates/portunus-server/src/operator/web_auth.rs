@@ -461,9 +461,10 @@ fn onboarding_throttle_subject(setup_token: Option<&str>) -> &'static str {
 }
 
 fn login_throttle_subject(user_id: &str) -> String {
-    UserId::from_str(user_id)
-        .map(|id| id.as_str().to_string())
-        .unwrap_or_else(|_| UNKNOWN_AUTH_SUBJECT.to_string())
+    UserId::from_str(user_id).map_or_else(
+        |_| UNKNOWN_AUTH_SUBJECT.to_string(),
+        |id| id.as_str().to_string(),
+    )
 }
 
 fn session_cookie(secret: &str, secure: bool) -> String {
