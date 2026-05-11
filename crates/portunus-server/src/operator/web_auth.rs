@@ -7,15 +7,16 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{ConnectInfo, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
 };
 use chrono::Utc;
 use portunus_auth::{OperatorAuthenticator, OperatorRole, RbacError, User, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::operator::http::ApiError;
-use crate::operator::passwords::{PasswordError, hash_password};
-use crate::operator::throttle::AuthThrottleAction;
+use crate::operator::passwords::{PasswordError, hash_password, verify_password};
+use crate::operator::sessions;
+use crate::operator::throttle::{AuthThrottleAction, UNKNOWN_AUTH_SUBJECT};
 use crate::state::AppState;
 use crate::store::operator_store::OnboardingError;
 
@@ -44,6 +45,12 @@ pub struct OnboardingResponse {
     pub role: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub user_id: String,
+    pub password: String,
+}
+
 pub async fn get_auth_status(State(state): State<Arc<AppState>>) -> Json<AuthStatusResponse> {
     Json(AuthStatusResponse {
         onboarding_required: !state.operator_store.has_any_superadmin(),
@@ -61,7 +68,13 @@ pub async fn post_auth_onboarding(
     }
     let remote_addr = remote_addr.ip().to_string();
     let throttle_subject = onboarding_throttle_subject(body.setup_token.as_deref());
-    reject_if_throttled(&state, throttle_subject, &remote_addr, now)?;
+    reject_if_throttled(
+        &state,
+        throttle_subject,
+        &remote_addr,
+        AuthThrottleAction::Onboarding,
+        now,
+    )?;
 
     let outcome = verify_setup_token_for_hashing(&state, body.setup_token.as_deref(), now)
         .and_then(|setup_token| {
@@ -95,6 +108,58 @@ pub async fn post_auth_onboarding(
                 throttle_subject,
                 &remote_addr,
                 AuthThrottleAction::Onboarding,
+                now,
+            );
+            Err(err)
+        }
+    }
+}
+
+pub async fn post_auth_login(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<LoginRequest>,
+) -> Result<(StatusCode, [(header::HeaderName, String); 1]), ApiError> {
+    let now = Utc::now();
+    let remote_ip = remote_addr.ip().to_string();
+    let throttle_subject = login_throttle_subject(&body.user_id);
+    reject_if_throttled(
+        &state,
+        &throttle_subject,
+        &remote_ip,
+        AuthThrottleAction::Login,
+        now,
+    )?;
+
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+
+    let outcome = authenticate_login(
+        &state,
+        &body,
+        now,
+        remote_ip.clone(),
+        user_agent,
+        state.operator_http_cookie_secure,
+    );
+
+    match outcome {
+        Ok(cookie) => {
+            let _ = state.operator_store.clear_login_attempts(
+                &throttle_subject,
+                &remote_ip,
+                AuthThrottleAction::Login,
+            );
+            Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
+        }
+        Err(err) => {
+            let _ = state.operator_store.record_login_attempt_failure(
+                &throttle_subject,
+                &remote_ip,
+                AuthThrottleAction::Login,
                 now,
             );
             Err(err)
@@ -144,21 +209,61 @@ fn build_onboarding_user(body: &OnboardingRequest) -> Result<(User, String), Api
     Ok((user, password_hash))
 }
 
+fn authenticate_login(
+    state: &AppState,
+    body: &LoginRequest,
+    now: chrono::DateTime<chrono::Utc>,
+    remote_addr: String,
+    user_agent: Option<String>,
+    secure_cookie: bool,
+) -> Result<String, ApiError> {
+    let user_id = UserId::from_str(&body.user_id).map_err(|_| invalid_login())?;
+    let user = state
+        .operator_store
+        .get_user(&user_id)
+        .ok_or_else(invalid_login)?;
+    if user.disabled {
+        return Err(invalid_login());
+    }
+    let password_state = state
+        .operator_store
+        .password_state(&user_id)
+        .map_err(|_| invalid_login())?
+        .ok_or_else(invalid_login)?;
+    verify_password(&body.password, &password_state.hash).map_err(|_| invalid_login())?;
+
+    let secret = sessions::generate_session_secret();
+    let session_hash = sessions::hash_session_secret(&secret);
+    state
+        .operator_store
+        .create_web_session(
+            &session_hash,
+            &user_id,
+            now,
+            now + sessions::ABSOLUTE_TIMEOUT,
+            Some(remote_addr),
+            user_agent,
+        )
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok(session_cookie(&secret, secure_cookie))
+}
+
 fn reject_if_throttled(
     state: &AppState,
     subject: &str,
     remote_addr: &str,
+    action: AuthThrottleAction,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), ApiError> {
     let state = state
         .operator_store
-        .login_attempt_state(subject, remote_addr, AuthThrottleAction::Onboarding, now)
+        .login_attempt_state(subject, remote_addr, action, now)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     if state.is_locked(now) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "too many onboarding attempts",
+            "too many authentication attempts",
         ));
     }
     Ok(())
@@ -170,6 +275,32 @@ fn onboarding_throttle_subject(setup_token: Option<&str>) -> &'static str {
     } else {
         ONBOARDING_THROTTLE_SUBJECT_MISSING
     }
+}
+
+fn login_throttle_subject(user_id: &str) -> String {
+    UserId::from_str(user_id)
+        .map(|id| id.as_str().to_string())
+        .unwrap_or_else(|_| UNKNOWN_AUTH_SUBJECT.to_string())
+}
+
+fn session_cookie(secret: &str, secure: bool) -> String {
+    let mut cookie = format!(
+        "{}={secret}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+        sessions::SESSION_COOKIE,
+        sessions::ABSOLUTE_TIMEOUT.num_seconds(),
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn invalid_login() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "invalid_login",
+        "invalid username or password",
+    )
 }
 
 fn setup_token_required() -> ApiError {
