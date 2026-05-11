@@ -49,8 +49,7 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    ports:
-      - "7443:7443"
+    network_mode: host
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped
@@ -70,6 +69,9 @@ docker compose up -d && docker compose logs -f -t
 这已经足够完成默认 Server 安装。自动生成的 TLS 材料和 SQLite 状态都放在
 `portunus-data` 卷里。
 
+使用 host networking 后，Web UI 在 Server 主机的
+`http://127.0.0.1:7080/`。Client 控制面 listener 仍然是 `0.0.0.0:7443`。
+
 ### Compose 文件参考
 
 ```yaml
@@ -77,8 +79,7 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    ports:
-      - "7443:7443"
+    network_mode: host
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped

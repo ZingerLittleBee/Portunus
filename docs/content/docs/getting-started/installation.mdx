@@ -51,8 +51,7 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    ports:
-      - "7443:7443"
+    network_mode: host
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped
@@ -72,6 +71,10 @@ docker compose up -d && docker compose logs -f -t
 That is enough for a default server install. Generated TLS material and SQLite
 state live in the `portunus-data` volume.
 
+With host networking, the Web UI is available on the server host at
+`http://127.0.0.1:7080/`. The client control-plane listener remains on
+`0.0.0.0:7443`.
+
 ### Compose file reference
 
 ```yaml
@@ -79,8 +82,7 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    ports:
-      - "7443:7443"
+    network_mode: host
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped

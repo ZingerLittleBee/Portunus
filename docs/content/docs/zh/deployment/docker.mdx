@@ -24,8 +24,7 @@ services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
     container_name: portunus-server
-    ports:
-      - "7443:7443"
+    network_mode: host
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped
@@ -34,7 +33,7 @@ services:
     profiles:
       - cli
     image: ghcr.io/zingerlittlebee/portunus-server:latest
-    network_mode: "service:server"
+    network_mode: host
     volumes:
       - portunus-data:/var/lib/portunus
     entrypoint:
@@ -69,6 +68,9 @@ docker compose up -d server
 named volume 只保存自动生成的 TLS 材料、SQLite 数据库和其他守护进程持有的
 状态，路径是 `/var/lib/portunus`。如果 `/var/lib/portunus/server.toml`
 不存在，Server 就使用内置默认值。
+host networking 会把 Web UI 和 operator API 保持在 Server 主机的 loopback 上：
+`http://127.0.0.1:7080/`；Client 控制面 listener 仍然监听
+`0.0.0.0:7443`。
 
 如果需要覆写默认值，再把可选 `server.toml` 挂进同一个 data-dir：
 
@@ -163,12 +165,13 @@ docker compose up -d server
 用于从本地 checkout 构建运行时镜像。它适合开发和 release 验证，不是推荐安装路径：
 
 ```sh
-cargo build --release -p portunus-server -p portunus-client
-arch="$(docker version --format '{{.Server.Arch}}')"
-mkdir -p "docker-bin/${arch}"
-cp target/release/portunus-server target/release/portunus-client "docker-bin/${arch}/"
+./deploy/docker/prepare-build-context.sh
 docker compose -f deploy/docker/docker-compose.yml build
 ```
+
+这个 helper 会在 `rust:1.88-bookworm` 里编译，确保复制进镜像的二进制和 Debian
+12 distroless 运行时兼容。不要把更新宿主发行版上编译出来的二进制直接塞进这些
+镜像，否则容器启动时可能报 `GLIBC_2.38 not found`。
 
 ## 注意事项
 
