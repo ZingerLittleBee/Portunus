@@ -51,8 +51,15 @@ services:
     container_name: portunus-server
     ports:
       - "7443:7443"
+      - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
     restart: unless-stopped
 
 volumes:
@@ -70,6 +77,9 @@ docker compose up -d && docker compose logs -f -t
 这已经足够完成默认 Server 安装。自动生成的 TLS 材料和 SQLite 状态都放在
 `portunus-data` 卷里。
 
+Web UI 在 Server 主机的 `http://127.0.0.1:7080/`。Client 控制面 listener
+仍然是 `0.0.0.0:7443`。
+
 ### Compose 文件参考
 
 ```yaml
@@ -79,8 +89,15 @@ services:
     container_name: portunus-server
     ports:
       - "7443:7443"
+      - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
     restart: unless-stopped
 
 volumes:

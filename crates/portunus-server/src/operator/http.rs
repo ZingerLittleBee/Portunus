@@ -1,7 +1,9 @@
-//! Loopback HTTP API mirroring the CLI surface (operator-api.md).
+//! Operator HTTP API mirroring the CLI surface (operator-api.md).
 //!
-//! Authorisation is local UNIX shell access on the server host (FR-022).
-//! The bind address MUST be loopback; we assert that at server startup.
+//! Every protected `/v1/*` route is bearer-token authenticated and RBAC-gated.
+//! `/v1/auth/status` and `/v1/auth/onboarding` stay outside that layer for
+//! first-run setup. The bind address defaults to loopback, but operators may
+//! expose it explicitly.
 
 use axum::{
     Extension, Json, Router,
@@ -28,8 +30,11 @@ use crate::state::AppState;
 const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn router(state: Arc<AppState>) -> Router {
-    use crate::operator::{audit_http, credentials, grants, stats_stream, users, users_me};
-    Router::new()
+    use crate::operator::{
+        audit_http, credentials, grants, stats_stream, users, users_me, web_auth,
+    };
+
+    let protected = Router::new()
         .route("/v1/clients", get(get_clients).post(post_clients))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/rules", get(get_rules).post(post_rules))
@@ -58,9 +63,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Mounted BEFORE `/v1/users/{user_id}` so axum's path matcher
         // routes `/v1/users/me` here and never to `get_user("me")`.
         .route("/v1/users/me", get(users_me::get_users_me))
+        .route("/v1/users/me/password", post(web_auth::post_self_password))
         .route(
             "/v1/users/{user_id}",
             get(users::get_user).delete(users::delete_user),
+        )
+        .route(
+            "/v1/users/{user_id}/password",
+            post(web_auth::post_user_password),
         )
         .route(
             "/v1/users/{user_id}/credentials",
@@ -93,7 +103,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
-        .route_layer(from_fn_with_state(state.clone(), auth_middleware))
+        .route_layer(from_fn_with_state(state.clone(), auth_middleware));
+
+    Router::new()
+        .route("/v1/auth/status", get(web_auth::get_auth_status))
+        .route("/v1/auth/onboarding", post(web_auth::post_auth_onboarding))
+        .route("/v1/auth/login", post(web_auth::post_auth_login))
+        .route("/v1/auth/logout", post(web_auth::post_auth_logout))
+        .merge(protected)
         .with_state(state)
 }
 
@@ -1378,10 +1395,9 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[tokio::test]
-    async fn binds_loopback_only() {
+    async fn loopback_bind_is_valid() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
-        // Per FR-022: operator HTTP must bind to loopback only.
         assert!(addr.ip().is_loopback(), "got {addr}");
     }
 

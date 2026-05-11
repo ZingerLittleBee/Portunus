@@ -3,10 +3,17 @@
 #   docker-bin/amd64/portunus-client
 #   docker-bin/arm64/portunus-client
 
+ARG TARGETARCH
+
+FROM debian:12-slim AS abi-check
+ARG TARGETARCH
+COPY docker-bin/${TARGETARCH}/portunus-client /usr/local/bin/portunus-client
+RUN /usr/local/bin/portunus-client --version
+
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 ARG TARGETARCH
-COPY docker-bin/${TARGETARCH}/portunus-client /usr/local/bin/portunus-client
+COPY --from=abi-check /usr/local/bin/portunus-client /usr/local/bin/portunus-client
 
 # Bundle is mounted read-only at /etc/portunus/client.bundle.json.
 # Forwarding rules pushed by the operator may bind any port the kernel allows;

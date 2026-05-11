@@ -2,7 +2,7 @@
 //!
 //! Covers:
 //! - Fresh open lands at the current target schema version
-//!   (5 after V005 added by 011-rate-limiting-qos).
+//!   (6 after V006 added by local password auth).
 //! - A simulated v0.8 state.db (only V001 applied) is auto-migrated up
 //!   to V002 on open — the additive `sni_pattern` column appears.
 //! - A state.db whose `schema_migrations` head exceeds the binary's
@@ -16,16 +16,46 @@ use portunus_server::store::{BootError, Store};
 use rusqlite::{Connection, OpenFlags};
 use tempfile::tempdir;
 
+fn column_exists(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .expect("pragma");
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .expect("columns");
+    rows.filter_map(Result::ok).any(|name| name == column)
+}
+
+fn table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get::<_, bool>(0),
+    )
+    .expect("table exists query")
+}
+
 #[test]
-fn fresh_open_lands_at_v09_target() {
+fn fresh_store_has_current_schema() {
     let dir = tempdir().unwrap();
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 5,
-        "current target schema is 5 (V001 + V002 + V003 + V004 + V005)"
+        v, 6,
+        "current target schema is 6 (V001 + V002 + V003 + V004 + V005 + V006)"
     );
     assert_eq!(v, Store::target_schema_version());
+
+    store
+        .with_conn(|conn| {
+            assert!(column_exists(conn, "users", "password_hash"));
+            assert!(column_exists(conn, "users", "password_change_required"));
+            assert!(table_exists(conn, "web_sessions"));
+            assert!(table_exists(conn, "login_attempts"));
+            assert!(table_exists(conn, "onboarding_setup"));
+            Ok(())
+        })
+        .expect("inspect schema");
 }
 
 /// Open the freshly-migrated state.db, confirm `sni_pattern` is a real

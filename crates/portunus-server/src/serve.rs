@@ -5,10 +5,11 @@
 //! 2. Open SQLite and load/generate TLS material.
 //! 3. Determine the externally-advertised endpoint (used in bundles).
 //! 4. Start the Tonic gRPC listener with the bearer-token interceptor.
-//! 5. Start the loopback operator HTTP listener.
+//! 5. Start the operator HTTP listener.
 //! 6. Reserve the metrics listener bind point (US3 wires the real handler).
 //! 7. Await SIGINT/SIGTERM; trigger drain.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use chrono::Utc;
 use portunus_auth::OperatorAuthenticator;
 use portunus_core::PortunusError;
 use portunus_core::config::ServerConfig;
@@ -46,6 +48,8 @@ pub struct ServeOptions {
     pub data_dir: PathBuf,
     /// Override the host:port advertised in newly-issued bundles.
     pub advertised_endpoint: Option<String>,
+    /// Override operator HTTP API + Web UI bind address.
+    pub operator_http_listen: Option<SocketAddr>,
 }
 
 // Wires every subsystem (TLS, gRPC, operator HTTP, metrics, shutdown). Splitting
@@ -120,6 +124,17 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
             }
         }
     }
+    if !operator_store.has_any_superadmin() {
+        let now = Utc::now();
+        let raw = operator_store
+            .rotate_onboarding_setup_token(now)
+            .map_err(|e| PortunusError::Tls(format!("rotate onboarding setup token: {e}")))?;
+        info!(
+            event = "operator.onboarding_setup_token_rotated",
+            expires_at = %(now + crate::operator::setup_token::DEFAULT_SETUP_TOKEN_TTL),
+        );
+        eprintln!("Portunus onboarding setup token: {raw}");
+    }
     let clients = ConnectedClients::default();
     let shutdown = Shutdown::new();
 
@@ -184,10 +199,6 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
 
     let identity = Identity::from_pem(tls.cert_pem.as_bytes(), tls.key_pem.as_bytes());
     let tls_acceptor = ServerTlsConfig::new().identity(identity);
-    assert!(
-        http_addr.ip().is_loopback(),
-        "operator_http_listen must bind to loopback (got {http_addr})"
-    );
     let metrics_listener = TcpListener::bind(cfg.metrics_listen).await?;
     let metrics_addr = metrics_listener.local_addr()?;
     assert!(
@@ -256,9 +267,12 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         http::router(Arc::clone(&state)).fallback(crate::operator::webui::serve_webui);
     let http_shutdown = shutdown.token();
     let http_task = tokio::spawn(async move {
-        let res = axum::serve(http_listener, operator_router)
-            .with_graceful_shutdown(async move { http_shutdown.cancelled().await })
-            .await;
+        let res = axum::serve(
+            http_listener,
+            operator_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { http_shutdown.cancelled().await })
+        .await;
         if let Err(e) = res {
             error!(event = "server.operator_http_failed", error = %e);
         }
@@ -322,11 +336,15 @@ async fn render_metrics(State(state): State<MetricsState>) -> impl IntoResponse 
 
 fn load_config(opts: &ServeOptions) -> Result<ServerConfig, PortunusError> {
     let resolved = opts.data_dir.join("server.toml");
-    if resolved.exists() {
+    let mut cfg = if resolved.exists() {
         ServerConfig::from_toml_path_with_data_dir(&resolved, &opts.data_dir)
     } else {
         Ok(ServerConfig::default_for_data_dir(&opts.data_dir))
+    }?;
+    if let Some(operator_http_listen) = opts.operator_http_listen {
+        cfg.operator_http_listen = operator_http_listen;
     }
+    Ok(cfg)
 }
 
 /// 008-sqlite-storage T020 — legacy JSON warn-and-ignore.

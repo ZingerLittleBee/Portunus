@@ -22,13 +22,37 @@
   },
   "login": {
     "title": "Sign in",
-    "subtitle": "Paste your operator bearer token to continue.",
-    "bearerLabel": "Bearer token",
-    "tokenRequired": "Token is required",
-    "invalidToken": "Token rejected ({{code}}). Try again.",
+    "subtitle": "Use your operator user ID and password.",
+    "userIdLabel": "User ID",
+    "passwordLabel": "Password",
+    "credentialsRequired": "User ID and password are required.",
+    "invalidCredentials": "Sign-in failed ({{code}}). Try again.",
     "signIn": "Sign in",
     "signingIn": "Signing in…",
-    "sessionExpired": "Session expired or token revoked. Please sign in again."
+    "sessionExpired": "Session expired. Please sign in again.",
+    "changeTitle": "Set a new password",
+    "changeSubtitle": "This account must change its temporary password before continuing.",
+    "newPasswordLabel": "New password",
+    "newPasswordConfirmLabel": "Confirm new password",
+    "newPasswordRequired": "New password and confirmation are required.",
+    "passwordMismatch": "Password confirmation does not match.",
+    "passwordChangeFailed": "Password change failed ({{code}}).",
+    "savePassword": "Save password",
+    "savingPassword": "Saving…"
+  },
+  "onboarding": {
+    "title": "Create the first admin",
+    "subtitle": "Enter the setup token printed by the server, then create the first superadmin.",
+    "setupTokenLabel": "Setup token",
+    "userIdLabel": "Admin user ID",
+    "displayNameLabel": "Display name",
+    "passwordLabel": "Password",
+    "passwordConfirmLabel": "Confirm password",
+    "required": "All fields are required.",
+    "passwordMismatch": "Password confirmation does not match.",
+    "failed": "Onboarding failed ({{code}}).",
+    "create": "Create admin",
+    "creating": "Creating…"
   },
   "permissionDenied": {
     "title": "Permission denied",
@@ -42,12 +66,12 @@
     "cascadePreview": "These resources will also be removed:"
   },
   "tokenReveal": {
-    "title": "Bearer token issued",
-    "description": "Copy this token now — it will not be shown again.",
+    "title": "API token issued",
+    "description": "Copy this API token now — it will not be shown again.",
     "copy": "Copy",
     "copied": "Copied",
     "dismiss": "Dismiss",
-    "tokenLabel": "Bearer token (one-time)"
+    "tokenLabel": "API token or temporary password (one-time)"
   },
   "errorBanner": {
     "label": "Request failed",
@@ -78,7 +102,10 @@
     "title": "New user",
     "submit": "Create user",
     "invalidId": "ID must start with a lowercase letter and use a-z, 0-9, dash or underscore.",
-    "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter."
+    "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter.",
+    "initialPassword": "Initial password",
+    "initialPasswordHint": "Optional. Leave blank to create the user without Web login password.",
+    "forcePasswordChange": "Require password change on first login"
   },
   "userDetail": {
     "credentials": "Credentials",
@@ -93,8 +120,16 @@
     "deleteTitle": "Delete user?",
     "deleteBody": "User {{id}} will be removed along with the dependents listed below. This cannot be undone.",
     "rotateTitle": "Rotate this credential?",
-    "rotateBody": "A new bearer token will be issued and the current one will stop working.",
-    "rotateConfirm": "Rotate"
+    "rotateBody": "A new API token will be issued and the current one will stop working.",
+    "rotateConfirm": "Rotate",
+    "resetPassword": "Reset password",
+    "resetPasswordTitle": "Reset password?",
+    "resetPasswordBody": "Reset the Web login password for {{id}}. Active Web sessions are revoked.",
+    "resetPasswordConfirm": "Reset password",
+    "newPasswordOptional": "New password (optional)",
+    "generateTemporary": "Leave blank to generate a temporary password",
+    "requirePasswordChange": "Require password change on next login",
+    "keepApiTokens": "Keep existing API tokens"
   },
   "grants": {
     "title": "Grants",

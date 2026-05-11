@@ -116,10 +116,12 @@ jobs:
           path: webui/dist
           retention-days: 1
 
-  build:
-    name: build (${{ matrix.target }})
+  build-linux:
+    name: build linux (${{ matrix.target }})
     needs: [metadata, webui]
     runs-on: ${{ matrix.os }}
+    container:
+      image: rust:1.88-bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -128,6 +130,65 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Download webui/dist
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+
+      - name: cargo build --release
+        shell: bash
+        run: cargo build --release -p portunus-server -p portunus-client --target "${{ matrix.target }}"
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          target="${{ matrix.target }}"
+          archive_base="portunus-${version}-${target}"
+          staging="dist/${archive_base}"
+
+          mkdir -p "${staging}"
+          cp "target/${target}/release/portunus-server" "${staging}/"
+          cp "target/${target}/release/portunus-client" "${staging}/"
+          cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
+          (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/portunus-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz
+          retention-days: 1
+
+  build-macos:
+    name: build macos (${{ matrix.target }})
+    needs: [metadata, webui]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-14
@@ -187,7 +248,7 @@ jobs:
 
   docker:
     name: docker images
-    needs: [metadata, build]
+    needs: [metadata, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -229,6 +290,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -268,7 +334,7 @@ jobs:
 
   publish:
     name: publish GitHub release
-    needs: [metadata, build, docker]
+    needs: [metadata, build-linux, build-macos, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write

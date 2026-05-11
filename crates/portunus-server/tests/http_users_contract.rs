@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 const SUPERADMIN_TOKEN: &str = "T026-super";
 
-fn build_router() -> (axum::Router, TempDir) {
+fn build_router_with_store() -> (axum::Router, TempDir, Arc<portunus_server::store::Store>) {
     let dir = TempDir::new().expect("tempdir");
     let sqlite_store =
         std::sync::Arc::new(portunus_server::store::Store::open(dir.path()).unwrap());
@@ -45,7 +45,12 @@ fn build_router() -> (axum::Router, TempDir) {
         )
         .expect("AppState"),
     );
-    (http::router(state), dir)
+    (http::router(state), dir, sqlite_store)
+}
+
+fn build_router() -> (axum::Router, TempDir) {
+    let (router, dir, _store) = build_router_with_store();
+    (router, dir)
 }
 
 fn req(method: &str, uri: &str, bearer: &str, body: serde_json::Value) -> Request<Body> {
@@ -94,6 +99,121 @@ async fn post_users_happy_path_creates_user() {
     let v = body_json(resp).await;
     let arr = v.as_array().expect("array");
     assert_eq!(arr.len(), 2);
+}
+
+#[tokio::test]
+async fn post_users_accepts_initial_password_without_issuing_api_token() {
+    let (router, _dir, store) = build_router_with_store();
+    let resp = router
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({
+                "user_id": "alice",
+                "display_name": "Alice",
+                "initial_password": "correct horse battery staple",
+                "password_change_required": true
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let (password_hash, password_change_required, credential_count): (Option<String>, i64, i64) =
+        store
+            .with_conn(|conn| {
+                let password = conn
+                    .query_row(
+                        "SELECT password_hash, password_change_required FROM users WHERE user_id = 'alice'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(portunus_server::store::map_rusqlite)?;
+                let credential_count = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM credentials WHERE user_id = 'alice'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(portunus_server::store::map_rusqlite)?;
+                Ok((password.0, password.1, credential_count))
+            })
+            .expect("query user password");
+    assert!(
+        password_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("$argon2"))
+    );
+    assert_eq!(password_change_required, 1);
+    assert_eq!(credential_count, 0);
+}
+
+#[tokio::test]
+async fn post_users_rejects_initial_password_policy_errors_without_creating_user() {
+    let (router, _dir, store) = build_router_with_store();
+    let resp = router
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({
+                "user_id": "alice",
+                "display_name": "Alice",
+                "initial_password": "short"
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "password_too_short");
+
+    let count: i64 = store
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE user_id = 'alice'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(portunus_server::store::map_rusqlite)
+        })
+        .expect("count alice users");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn post_users_rejects_password_change_required_without_initial_password() {
+    let (router, _dir, store) = build_router_with_store();
+    let resp = router
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({
+                "user_id": "alice",
+                "display_name": "Alice",
+                "password_change_required": true
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "initial_password_required");
+
+    let count: i64 = store
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE user_id = 'alice'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(portunus_server::store::map_rusqlite)
+        })
+        .expect("count alice users");
+    assert_eq!(count, 0);
 }
 
 #[tokio::test]
@@ -152,16 +272,6 @@ async fn post_users_rejects_invalid_id_with_422() {
 #[tokio::test]
 async fn delete_self_returns_409_cannot_remove_self() {
     let (router, _d) = build_router();
-    // The `_legacy` superadmin can't be removed via the regular DELETE
-    // because reserved IDs only deserialize through the private
-    // constructor — that's already enforced by `UserId::from_str`. So
-    // we instead validate the self-removal protection by deleting
-    // a user the caller IS the legacy superadmin (legacy id).
-    // The bootstrapped legacy id is `_legacy` (reserved), which the
-    // public `from_str` rejects with `reserved_user_id`. That prevents
-    // the request from reaching the `cannot_remove_self` check at all.
-    // Instead, exercise the rejection path with a regular user so the
-    // legacy superadmin requests the deletion of itself by user_id.
     let resp = router
         .clone()
         .oneshot(req(
@@ -172,9 +282,7 @@ async fn delete_self_returns_409_cannot_remove_self() {
         ))
         .await
         .expect("oneshot");
-    // `_legacy` fails the public `UserId::from_str` regex, so we get
-    // 422 `reserved_user_id` BEFORE the self-removal check fires.
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
 
 /// T031 (R-006 cascade ordering): when a user is deleted, the

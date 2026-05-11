@@ -22,13 +22,22 @@ releases.
 
 ## Login
 
-The login page asks for your operator bearer token. Paste it and click
-"Sign in".
+Since v1.1.0 the Web UI uses local user ID + password login. On first
+startup, before any active `superadmin` exists, the server prints a setup
+token to stderr and stores only its hash in SQLite. Open the Web UI, enter
+that setup token, and create the first `superadmin` account.
 
-- The token is stored in `sessionStorage` only — flushed on browser close.
-- It is **never** stored in `localStorage` or cookies.
-- Every `/v1/*` request flows through the same `auth_layer` middleware
-  the CLI uses.
+- The setup token expires after 30 minutes.
+- If onboarding is not completed, each server process start rotates the setup
+  token and invalidates the previous one.
+- Web login creates an `HttpOnly` `portunus_session` cookie. The SPA does not
+  store login secrets in `sessionStorage` or `localStorage`.
+- Admins create users manually and may set an initial password. Self-service
+  public registration is intentionally not supported.
+
+API bearer tokens still exist, but they are separate from Web login. Use API
+tokens for CLI and automation (`PORTUNUS_OPERATOR_TOKEN`); use passwords for
+the browser.
 
 ## What you get
 
@@ -82,20 +91,40 @@ bundles.
 
 ![Settings page with theme and language controls.](../../../src/screenshots/webui-settings-en.png)
 
-## Loopback by default
+## Bind address
 
-The operator HTTP listener is loopback-pinned at startup. Remote access
-stays an operator concern:
+The operator HTTP listener defaults to loopback. For containers or trusted
+reverse proxies, set `operator_http_listen = "0.0.0.0:7080"` and publish the
+port intentionally. Remote access stays an operator concern:
 
 - **SSH-tunnel** `127.0.0.1:7080` from your workstation, or
 - Sit the listener behind a **reverse proxy** that adds its own auth.
 
-## Token-leak safeguards
+## Secret-leak safeguards
 
-- `sessionStorage` only — never `localStorage` or cookies.
-- Bearer never appears in the URL, query string, or `Referer` header.
-- Bearer never reaches the DOM (audit checklist verifies zero matches
-  for the first 8 chars).
+- Web login secrets are never written to browser storage.
+- Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` when TLS is
+  enabled.
+- API tokens and temporary passwords are shown only in one-time reveal dialogs
+  and are never placed in URLs.
+
+## Password recovery
+
+Normal users do not self-reset through a public "forgot password" flow. A
+`superadmin` resets the password from the user detail page. The reset revokes
+Web sessions and revokes API tokens by default unless the admin explicitly
+keeps them.
+
+If the last `superadmin` forgets the password, recovery is local-only. Use the
+actual superadmin user ID (`_superadmin` for `bootstrap-superadmin`, or the ID
+chosen during Web onboarding):
+
+```sh
+portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
+```
+
+The command prints a temporary password once and marks the account as requiring
+a password change. There is no remote backdoor reset endpoint.
 
 ## Build
 

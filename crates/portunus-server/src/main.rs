@@ -1,5 +1,6 @@
 //! `portunus-server` binary entry point.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use portunus_server::operator::bootstrap;
 use portunus_server::operator::cli::{self, OperatorError};
 use portunus_server::operator::identity_cli;
 use portunus_server::operator::owner_cap_cli;
+use portunus_server::operator::password_cli;
 use portunus_server::operator::rule_cli;
 use portunus_server::serve;
 use portunus_server::state::AppState;
@@ -40,7 +42,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Cmd {
     /// Run the long-lived server (gRPC + operator HTTP + metrics).
-    Serve,
+    Serve {
+        /// Override operator HTTP API + Web UI bind address.
+        #[arg(long)]
+        operator_http_listen: Option<SocketAddr>,
+    },
     /// Provision a new client and write its credential bundle.
     ProvisionClient {
         name: String,
@@ -245,6 +251,21 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
+    /// Reset a local user's password directly against the store.
+    ResetPassword {
+        user_id: String,
+        /// Read the new password from the first stdin line.
+        #[arg(long, conflicts_with = "temporary")]
+        password_stdin: bool,
+        /// Generate a one-time password, print it once, and require change on login.
+        #[arg(long)]
+        temporary: bool,
+        /// Keep active bearer API tokens for this user.
+        #[arg(long)]
+        keep_api_tokens: bool,
+    },
+    /// Rotate the first-run onboarding setup token for an unbootstrapped store.
+    OnboardingToken,
     /// Add a grant (superadmin-only). `--client` is either a `ClientName`
     /// or `*` for wildcard. `--protocols` is a comma-separated list
     /// (e.g. `tcp` or `tcp,udp`).
@@ -413,10 +434,13 @@ fn run(cli: Cli) -> Result<(), u8> {
     let data_dir = portunus_server::data_dir::resolve(cli.data_dir.clone());
 
     match cli.cmd {
-        Cmd::Serve => {
+        Cmd::Serve {
+            operator_http_listen,
+        } => {
             let opts = serve::ServeOptions {
                 data_dir: data_dir.clone(),
                 advertised_endpoint: cli.advertised_endpoint.clone(),
+                operator_http_listen,
             };
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -593,6 +617,19 @@ fn run(cli: Cli) -> Result<(), u8> {
             label.as_deref(),
             format,
         ),
+        Cmd::ResetPassword {
+            user_id,
+            password_stdin,
+            temporary,
+            keep_api_tokens,
+        } => password_cli::reset_password(
+            &data_dir,
+            &user_id,
+            password_stdin,
+            temporary,
+            keep_api_tokens,
+        ),
+        Cmd::OnboardingToken => password_cli::onboarding_token(&data_dir),
         Cmd::GrantAdd {
             user_id,
             client,
@@ -807,4 +844,32 @@ fn init_tracing() {
         .with(json_layer)
         .with(RedactionLayer::new())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_accepts_operator_http_listen_override() {
+        let cli = Cli::try_parse_from([
+            "portunus-server",
+            "serve",
+            "--operator-http-listen",
+            "0.0.0.0:7080",
+        ])
+        .expect("serve should accept operator HTTP bind override");
+
+        match cli.cmd {
+            Cmd::Serve {
+                operator_http_listen,
+            } => {
+                assert_eq!(
+                    operator_http_listen.expect("override present").to_string(),
+                    "0.0.0.0:7080"
+                );
+            }
+            other => panic!("expected serve command, got {other:?}"),
+        }
+    }
 }

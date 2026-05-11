@@ -13,7 +13,7 @@ test("alice cannot see admin nav, /users, or /users/bob", async ({ page, request
   await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "bob");
   const alice = await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");
 
-  await loginAs(page, alice.token);
+  await loginAs(page, alice.userId, alice.password);
 
   // Nav: superadmin items hidden.
   await expect(page.getByRole("link", { name: /users/i })).toHaveCount(0);
@@ -35,7 +35,7 @@ test("alice cannot see admin nav, /users, or /users/bob", async ({ page, request
 
 test("rotate credential — new token works, old token 401s", async ({ page, request, server }) => {
   const alice = await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");
-  await loginAs(page, alice.token);
+  await loginAs(page, alice.userId, alice.password);
 
   // Open her own user detail (self path is allowed).
   await page.goto(`/users/alice`);
@@ -49,7 +49,7 @@ test("rotate credential — new token works, old token 401s", async ({ page, req
   await page.getByRole("dialog").getByRole("button", { name: /^rotate$/i }).click();
 
   // TokenRevealModal renders the new token in a <pre aria-label="...">.
-  const tokenField = page.getByLabel(/bearer token \(one-time\)/i);
+  const tokenField = page.getByLabel(/api token.*one-time/i);
   await expect(tokenField).toBeVisible();
   const newToken = ((await tokenField.textContent()) ?? "").trim();
   expect(newToken).not.toBe(alice.token);

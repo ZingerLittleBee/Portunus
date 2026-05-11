@@ -13,7 +13,7 @@ import { test, expect } from "./fixtures/server";
 import { loginAs, api } from "./fixtures/helpers";
 
 test("superadmin happy path", async ({ page, request, server }) => {
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
 
   // Dashboard greeting visible.
   await expect(page.getByRole("heading", { level: 1 })).toContainText(/welcome/i);
@@ -27,7 +27,7 @@ test("superadmin happy path", async ({ page, request, server }) => {
 
   // Issue credential — token shown ONCE.
   await page.getByRole("button", { name: /issue credential/i }).click();
-  const tokenField = page.getByLabel(/bearer token \(one-time\)/i);
+  const tokenField = page.getByLabel(/api token.*one-time/i);
   await expect(tokenField).toBeVisible();
   const issued = (await tokenField.textContent())?.trim() ?? "";
   expect(issued).not.toBe("");
@@ -36,7 +36,7 @@ test("superadmin happy path", async ({ page, request, server }) => {
   // selectAll() in that path. Assert only that the click does not throw
   // and the modal stays open.
   await page.getByRole("button", { name: /^copy$/i }).click();
-  await expect(page.getByLabel(/bearer token \(one-time\)/i)).toBeVisible();
+  await expect(page.getByLabel(/api token.*one-time/i)).toBeVisible();
   await page.getByRole("button", { name: /dismiss/i }).click();
   // Scrubbed: the token text is no longer present anywhere on the page.
   expect(await page.evaluate(() => document.body.innerText)).not.toContain(issued);

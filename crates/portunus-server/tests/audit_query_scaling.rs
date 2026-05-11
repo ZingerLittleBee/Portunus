@@ -51,6 +51,10 @@ async fn envelope_queries_under_two_seconds_at_100k_rows() {
             path: "/v1/users".into(),
             outcome,
             reason: None,
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
         });
     }
     // Allow the durable writer to flush every batch.

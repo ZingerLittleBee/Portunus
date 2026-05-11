@@ -93,26 +93,30 @@ WantedBy=multi-user.target
 sudo cp deploy/server.toml.example /var/lib/portunus/server.toml
 sudo nano /var/lib/portunus/server.toml
 
-# 2. 引导超管（一次性，Token 仅打印一次）
-sudo -u portunus-server portunus-server \
-    --data-dir /var/lib/portunus \
-    bootstrap-superadmin --name 'Initial admin'
-
-# 3. 启用并启动 server
+# 2. 启用并启动 server
 sudo systemctl enable --now portunus-server
 sudo systemctl status portunus-server
 
-# 4. 配发首个 Client
+# 3. 读取 serve 打印的 setup token
+sudo journalctl -u portunus-server -n 100 --no-pager \
+  | grep 'Portunus onboarding setup token'
+
+# 4. 通过 SSH tunnel 或本机浏览器打开 http://127.0.0.1:7080/，
+#    粘贴 setup token，创建第一个 superadmin 密码。
+
+# 5. 在 Web UI Credentials 页面创建 API Token，然后用 CLI 配发首个 Client。
 export PORTUNUS_OPERATOR_TOKEN=<paste-token>
 portunus-server provision-client edge-01 \
   --out /tmp/edge-01.bundle.json
 
-# 5. 把 bundle 拷到边缘主机（scp / rsync），落到那台机器的
+# 6. 把 bundle 拷到边缘主机（scp / rsync），落到那台机器的
 #    /etc/portunus/client.bundle.json，权限 0600。
 
-# 6. 在边缘主机上启用 client unit
+# 7. 在边缘主机上启用 client unit
 sudo systemctl enable --now portunus-client
 ```
+
+setup token 30 分钟后过期，并且在 onboarding 完成前每次 server 启动都会轮换。
 
 ## 烟雾测试
 
@@ -120,6 +124,23 @@ sudo systemctl enable --now portunus-client
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/users/me
 ```
+
+## 密码恢复
+
+如果最后一个 `superadmin` 忘记 Web 密码，先停服务，在本地重置现有账户，再启动
+服务。这里要使用真实的超管用户 ID：`bootstrap-superadmin` 创建的是
+`_superadmin`，Web onboarding 创建的是初始化时选择的 ID：
+
+```sh
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus \
+  reset-password admin --temporary
+sudo systemctl start portunus-server
+```
+
+该命令只打印一次临时密码，并要求登录后修改密码。它会直接打开 SQLite store，
+所以不要在 `portunus-server.service` 运行时执行。
 
 ## 加固备注
 

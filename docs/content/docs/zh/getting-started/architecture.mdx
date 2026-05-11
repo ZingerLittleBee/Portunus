@@ -15,7 +15,7 @@ icon: Network
               │            portunus-server            │
               │                                      │
    操作员 ────┤  • CLI 子命令                        │
-   (CLI/HTTP) │  • 操作员 HTTP API + Bearer 认证    │
+   (CLI/HTTP) │  • 操作员 HTTP API + Web session    │
               │  • Web UI（loopback）               │
               │  • RBAC：用户、凭据、Grant          │
               │  • SQLite 状态存储                  │
@@ -41,10 +41,10 @@ icon: Network
 
 ## 控制面
 
-- **TLS + Bearer Token** 认证。Server 在首次启动时自签一张叶证书；每个 Client
-  下发包都包含其 SHA-256 指纹，Client 在每次连接时校验该指纹。
+- **TLS 指纹固定的 Client 认证**。Server 在首次启动时自签一张叶证书；每个
+  Client 下发包都包含其 SHA-256 指纹，Client 在每次连接时校验该指纹。
 - **操作员 HTTP API** 监听在 `operator_http_listen`（默认 loopback）。
-  每一条 `/v1/*` 请求都需要 `Authorization: Bearer <token>`。
+  受保护路由接受 Web session cookie 或 `Authorization: Bearer <token>` API 凭据。
 - **gRPC 控制流** 监听在 `control_listen`。规则下发、统计上报、健康更新、
   热更新事件都走 *每个 Client 一条* 的双向流。
 - **SQLite 状态** 存放于 `<data-dir>/state.db`（WAL 模式 + refinery 迁移）。

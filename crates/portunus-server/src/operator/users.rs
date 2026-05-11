@@ -24,7 +24,9 @@ use tracing::info;
 
 use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
+use crate::operator::passwords::{PasswordError, hash_password};
 use crate::operator::rbac;
+use crate::operator::user_ids::parse_stored_user_id;
 use crate::state::AppState;
 use portunus_auth::IdentityStoreError;
 
@@ -47,6 +49,21 @@ fn api_store(e: IdentityStoreError) -> ApiError {
     ApiError::new(status, code, e.to_string())
 }
 
+fn password_error(error: PasswordError) -> ApiError {
+    match error {
+        PasswordError::TooShort | PasswordError::TooLong | PasswordError::Invalid => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            error.to_string(),
+            error.to_string(),
+        ),
+        PasswordError::HashFailed => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "password_hash_failed",
+            "password hashing failed",
+        ),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateUserBody {
     pub user_id: String,
@@ -54,6 +71,10 @@ pub struct CreateUserBody {
     /// "superadmin" or "user". Defaults to "user" if absent.
     #[serde(default = "default_role")]
     pub role: String,
+    #[serde(default)]
+    pub initial_password: Option<String>,
+    #[serde(default)]
+    pub password_change_required: bool,
 }
 
 fn default_role() -> String {
@@ -120,9 +141,26 @@ pub async fn post_users(
         created_at: Utc::now(),
         disabled: false,
     };
+    if body.initial_password.is_none() && body.password_change_required {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "initial_password_required",
+            "password_change_required requires initial_password",
+        ));
+    }
+    let password_hash = body
+        .initial_password
+        .as_deref()
+        .map(hash_password)
+        .transpose()
+        .map_err(password_error)?;
     state
         .operator_store
-        .add_user(user.clone())
+        .add_user_with_password(
+            user.clone(),
+            password_hash.as_deref(),
+            body.password_change_required,
+        )
         .map_err(api_store)?;
 
     info!(
@@ -163,7 +201,7 @@ pub async fn get_user(
     Path(user_id): Path<String>,
 ) -> Result<Json<UserView>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let id = UserId::from_str(&user_id).map_err(api_rbac)?;
+    let id = parse_stored_user_id(&user_id).map_err(api_rbac)?;
     let user = state
         .operator_store
         .get_user(&id)
@@ -187,7 +225,7 @@ pub async fn delete_user(
     Path(user_id): Path<String>,
 ) -> Result<Json<DeleteUserResponse>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let id = UserId::from_str(&user_id).map_err(api_rbac)?;
+    let id = parse_stored_user_id(&user_id).map_err(api_rbac)?;
 
     if id == identity.user_id {
         return Err(api_rbac(RbacError::CannotRemoveSelf));

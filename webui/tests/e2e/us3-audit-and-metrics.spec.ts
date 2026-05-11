@@ -22,7 +22,7 @@ test("superadmin sees mixed allow/deny entries; tenant cannot reach /audit", asy
   expect(denied.status()).toBe(403);
 
   // Drive the SPA as superadmin.
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
   await page.goto("/audit");
   // DataTable renders rows under [role="rowgroup"]; wait for any row.
   const dataRows = page.locator('[role="rowgroup"] [role="row"]');
@@ -60,7 +60,7 @@ test("superadmin sees mixed allow/deny entries; tenant cannot reach /audit", asy
 
 test("tenant /audit renders PermissionDenied", async ({ page, server, request }) => {
   const alice = await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");
-  await loginAs(page, alice.token);
+  await loginAs(page, alice.userId, alice.password);
   await page.goto("/audit");
   await expect(page.getByText(/permission denied/i)).toBeVisible();
 });
@@ -69,7 +69,7 @@ test("superadmin /metrics renders raw text + dashboard gauges parse", async ({
   page,
   server,
 }) => {
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
   await page.goto("/metrics");
   // Raw /metrics block contains the Prometheus header.
   await expect(page.locator("pre")).toContainText("# HELP");

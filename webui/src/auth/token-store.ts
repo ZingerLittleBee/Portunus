@@ -1,14 +1,9 @@
-/// `sessionStorage`-backed token store.
-///
-/// Token is cleared on browser close (sessionStorage semantics) to bound
-/// the theft window to a single browsing session. Spec FR-002 / SC-006.
-
-const TOKEN_KEY = "portunus.token";
+const LEGACY_TOKEN_KEY = "portunus.token";
 const CHANGED_EVENT = "portunus:token-changed";
 
 export function getToken(): string | null {
   try {
-    return window.sessionStorage.getItem(TOKEN_KEY);
+    return window.sessionStorage.getItem(LEGACY_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -16,7 +11,7 @@ export function getToken(): string | null {
 
 export function setToken(token: string): void {
   try {
-    window.sessionStorage.setItem(TOKEN_KEY, token);
+    window.sessionStorage.setItem(LEGACY_TOKEN_KEY, token);
     window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
   } catch {
     // sessionStorage can throw in private mode / quota exceeded.
@@ -25,8 +20,12 @@ export function setToken(token: string): void {
 }
 
 export function clearToken(): void {
+  clearLegacyToken();
+}
+
+export function clearLegacyToken(): void {
   try {
-    window.sessionStorage.removeItem(TOKEN_KEY);
+    window.sessionStorage.removeItem(LEGACY_TOKEN_KEY);
     window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
   } catch {
     /* ignore */
@@ -40,7 +39,7 @@ export function clearToken(): void {
 export function subscribe(cb: () => void): () => void {
   const onLocal = () => cb();
   const onStorage = (e: StorageEvent) => {
-    if (e.key === TOKEN_KEY || e.key === null) cb();
+    if (e.key === LEGACY_TOKEN_KEY || e.key === null) cb();
   };
   window.addEventListener(CHANGED_EVENT, onLocal);
   window.addEventListener("storage", onStorage);

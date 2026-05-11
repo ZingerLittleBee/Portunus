@@ -3,10 +3,20 @@
 #   docker-bin/amd64/portunus-server
 #   docker-bin/arm64/portunus-server
 
+ARG TARGETARCH
+
+FROM debian:12-slim AS abi-check
+ARG TARGETARCH
+COPY docker-bin/${TARGETARCH}/portunus-server /usr/local/bin/portunus-server
+RUN /usr/local/bin/portunus-server --version
+RUN mkdir -p /var/lib/portunus /shared && chown 65532:65532 /var/lib/portunus /shared
+
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 ARG TARGETARCH
-COPY docker-bin/${TARGETARCH}/portunus-server /usr/local/bin/portunus-server
+COPY --from=abi-check /usr/local/bin/portunus-server /usr/local/bin/portunus-server
+COPY --from=abi-check --chown=nonroot:nonroot /var/lib/portunus /var/lib/portunus
+COPY --from=abi-check --chown=nonroot:nonroot /shared /shared
 
 # /var/lib/portunus holds SQLite state, generated TLS material, and the
 # optional server.toml override file.

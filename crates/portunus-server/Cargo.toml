@@ -30,6 +30,7 @@ rustls = { workspace = true }
 rcgen = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
+rpassword = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
@@ -58,6 +59,7 @@ refinery = { workspace = true }
 num_cpus = { workspace = true }
 nix = { workspace = true }
 blake3 = { workspace = true }
+argon2 = { workspace = true }
 # Direct flock(2) for store-in-use detection on Unix; transitively
 # present via rusqlite but listed here so the call site is auditable.
 libc = "0.2"

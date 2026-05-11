@@ -1,5 +1,6 @@
 //! Shared state injected into operator handlers and the gRPC service.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use portunus_auth::OperatorAuthenticator;
@@ -46,6 +47,11 @@ pub struct AppState {
     /// (T013, 004-udp-forward). `None` when the server was started
     /// from a CLI-only path that pre-dates the v0.4.0 tunables.
     pub server_config: Option<Arc<ServerConfig>>,
+    /// Public operator origin used for CSRF Origin checks when the UI
+    /// is fronted by a reverse proxy or public hostname.
+    pub operator_http_public_origin: String,
+    /// Whether operator cookies should be marked `Secure`.
+    pub operator_http_cookie_secure: bool,
     /// Operator-side identity store (005-multi-user-rbac). Always
     /// present after `serve.rs` startup; used by the auth_layer
     /// middleware (T019) to verify operator bearer tokens.
@@ -98,6 +104,7 @@ impl AppState {
         let audit = Arc::new(AuditRing::new());
         let metrics = Arc::new(Metrics::new()?);
         let rule_store = Arc::new(SqliteRuleStore::new(Arc::clone(&store)));
+        let default_server_config = ServerConfig::default_for_data_dir(Path::new("."));
         // 011-rate-limiting-qos T027: hydrate the owner-cap service from
         // SQLite. Boot path failures degrade to an empty cache so the
         // server still comes up — the rate-limit subsystem treats a
@@ -131,6 +138,8 @@ impl AppState {
             per_port_stats: PerPortStatsCache::new(),
             range_rule_max_ports,
             server_config: None,
+            operator_http_public_origin: default_server_config.operator_http_origin_for_csrf(),
+            operator_http_cookie_secure: default_server_config.operator_http_cookie_secure(),
             operator_store,
             operator_auth,
             audit,
@@ -149,6 +158,8 @@ impl AppState {
         // `main.rs` saw on the CLI; passing the same value through here
         // is harmless but makes intent explicit.
         self.range_rule_max_ports = cfg.range_rule_max_ports;
+        self.operator_http_public_origin = cfg.operator_http_origin_for_csrf();
+        self.operator_http_cookie_secure = cfg.operator_http_cookie_secure();
         self.server_config = Some(cfg);
         self
     }

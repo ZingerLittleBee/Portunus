@@ -24,6 +24,8 @@ export interface CreateUserBody {
   user_id: string;
   display_name: string;
   role?: "superadmin" | "user";
+  initial_password?: string;
+  password_change_required?: boolean;
 }
 
 export interface CreateUserResponse {

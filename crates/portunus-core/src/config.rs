@@ -18,6 +18,8 @@ pub struct ServerConfig {
     pub control_listen: SocketAddr,
     #[serde(default = "default_operator_http_listen")]
     pub operator_http_listen: SocketAddr,
+    #[serde(default)]
+    pub operator_http_public_origin: Option<String>,
     #[serde(default = "default_metrics_listen")]
     pub metrics_listen: SocketAddr,
     pub tls_cert_path: PathBuf,
@@ -73,6 +75,7 @@ pub struct ServerConfig {
 struct ServerConfigToml {
     control_listen: Option<SocketAddr>,
     operator_http_listen: Option<SocketAddr>,
+    operator_http_public_origin: Option<String>,
     metrics_listen: Option<SocketAddr>,
     tls_cert_path: Option<PathBuf>,
     tls_key_path: Option<PathBuf>,
@@ -167,6 +170,7 @@ impl ServerConfig {
         Self {
             control_listen: default_control_listen(),
             operator_http_listen: default_operator_http_listen(),
+            operator_http_public_origin: None,
             metrics_listen: default_metrics_listen(),
             tls_cert_path: data_dir.join("server.crt"),
             tls_key_path: data_dir.join("server.key"),
@@ -200,6 +204,9 @@ impl ServerConfig {
         }
         if let Some(v) = overrides.operator_http_listen {
             cfg.operator_http_listen = v;
+        }
+        if let Some(v) = overrides.operator_http_public_origin {
+            cfg.operator_http_public_origin = Some(v);
         }
         if let Some(v) = overrides.metrics_listen {
             cfg.metrics_listen = v;
@@ -240,6 +247,9 @@ impl ServerConfig {
     }
 
     fn validate(&self) -> Result<(), PortunusError> {
+        if let Some(origin) = self.operator_http_public_origin.as_deref() {
+            validate_operator_http_public_origin(origin)?;
+        }
         if self.range_rule_max_ports == 0 {
             return Err(PortunusError::ConfigInvalid(
                 "range_rule_max_ports must be >= 1 (a cap of 0 rejects every range push, almost certainly a misconfiguration)".into(),
@@ -275,6 +285,146 @@ impl ServerConfig {
         self.udp_max_flows_per_rule
             .unwrap_or_else(default_udp_max_flows_per_rule)
     }
+
+    /// Public origin used for CSRF Origin validation. Falls back to the
+    /// operator listen address when no explicit public hostname/origin is set.
+    #[must_use]
+    pub fn operator_http_origin_for_csrf(&self) -> String {
+        self.operator_http_public_origin
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", self.operator_http_listen))
+    }
+
+    /// Whether operator cookies should be marked `Secure`.
+    #[must_use]
+    pub fn operator_http_cookie_secure(&self) -> bool {
+        self.operator_http_origin_for_csrf().starts_with("https://")
+    }
+}
+
+fn validate_operator_http_public_origin(origin: &str) -> Result<(), PortunusError> {
+    if origin.bytes().any(|b| b.is_ascii_whitespace()) {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must not contain whitespace".into(),
+        ));
+    }
+
+    let rest = if let Some(v) = origin.strip_prefix("http://") {
+        v
+    } else if let Some(v) = origin.strip_prefix("https://") {
+        v
+    } else {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must start with http:// or https://".into(),
+        ));
+    };
+
+    if rest.is_empty() {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must include a host".into(),
+        ));
+    }
+    if origin.ends_with('/') {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must not end with /".into(),
+        ));
+    }
+    if rest.contains('/') || rest.contains('?') || rest.contains('#') {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must be an origin only, without path, query, or fragment"
+                .into(),
+        ));
+    }
+
+    validate_operator_http_origin_authority(rest)
+}
+
+fn validate_operator_http_origin_authority(authority: &str) -> Result<(), PortunusError> {
+    if let Some(after_open) = authority.strip_prefix('[') {
+        let Some(close_idx) = after_open.find(']') else {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin IPv6 host must be bracketed".into(),
+            ));
+        };
+        let host = &after_open[..close_idx];
+        if host.is_empty() || host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin must include a valid host".into(),
+            ));
+        }
+        let rest = &after_open[close_idx + 1..];
+        if rest.is_empty() {
+            return Ok(());
+        }
+        let Some(port) = rest.strip_prefix(':') else {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin IPv6 host must use [host]:port form".into(),
+            ));
+        };
+        return validate_operator_http_origin_port(port);
+    }
+
+    if authority.contains('[') || authority.contains(']') {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin IPv6 host must be bracketed".into(),
+        ));
+    }
+
+    if authority.matches(':').count() > 1 {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin IPv6 host must be bracketed".into(),
+        ));
+    }
+
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    validate_operator_http_origin_hostname(host)?;
+    if let Some(port) = port {
+        validate_operator_http_origin_port(port)?;
+    }
+    Ok(())
+}
+
+fn validate_operator_http_origin_hostname(host: &str) -> Result<(), PortunusError> {
+    if host.is_empty() || host.contains('@') {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must include a valid host".into(),
+        ));
+    }
+
+    if host.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+        && host.parse::<std::net::Ipv4Addr>().is_err()
+    {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must include a valid host".into(),
+        ));
+    }
+
+    for label in host.split('.') {
+        if label.is_empty()
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin must include a valid host".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_operator_http_origin_port(port: &str) -> Result<(), PortunusError> {
+    if port.is_empty() || port.parse::<u16>().ok().filter(|port| *port > 0).is_none() {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin port must be a valid 1..=65535 integer".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl ClientConfig {
@@ -496,6 +646,91 @@ mod tests {
                     assert!(msg.contains("udp_max_flows_per_rule"), "msg: {msg}");
                 }
                 other => panic!("expected ConfigInvalid for v={v}, got {other:?}"),
+            }
+        }
+    }
+
+    mod server_config_public_origin {
+        use super::*;
+
+        #[test]
+        fn parses_https_origin_and_sets_secure_cookie() {
+            let toml = r#"
+                operator_http_public_origin = "https://ops.example.com"
+            "#;
+            let dir = write_tmp("server.toml", toml);
+            let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+            assert_eq!(
+                cfg.operator_http_public_origin.as_deref(),
+                Some("https://ops.example.com")
+            );
+            assert_eq!(
+                cfg.operator_http_origin_for_csrf(),
+                "https://ops.example.com"
+            );
+            assert!(cfg.operator_http_cookie_secure());
+        }
+
+        #[test]
+        fn accepts_port_and_bracketed_ipv6_origins() {
+            for origin in [
+                "https://ops.example.com:8443",
+                "https://[::1]:7080",
+                "http://[2001:db8::1]",
+            ] {
+                let toml = format!(r#"operator_http_public_origin = "{origin}""#);
+                let dir = write_tmp("server.toml", &toml);
+                let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+                assert_eq!(cfg.operator_http_origin_for_csrf(), origin);
+            }
+        }
+
+        #[test]
+        fn defaults_to_listen_origin_on_http() {
+            let dir = write_tmp("server.toml", "");
+            let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+            assert_eq!(cfg.operator_http_public_origin, None);
+            assert_eq!(cfg.operator_http_origin_for_csrf(), "http://127.0.0.1:7080");
+            assert!(!cfg.operator_http_cookie_secure());
+        }
+
+        #[test]
+        fn rejects_invalid_public_origins() {
+            for origin in [
+                "ops.example.com",
+                "https://ops.example.com/",
+                "https://ops.example.com/path",
+                "https://ops.example.com?query=1",
+                "https://ops.example.com#frag",
+                "https://:8443",
+                "https://::1",
+                "https://[::1",
+                "https://ops.example.com:bad",
+                "https://ops.example.com:0",
+                "https://ops.example.com:65536",
+                "https://user@ops.example.com",
+                "https://-bad-host",
+                "https://bad-host-",
+                "https://bad..host",
+                "https://bad_host",
+                "https://256.256.256.256",
+                "https:// host",
+                "https://?x",
+                "https://#x",
+            ] {
+                let toml = format!(r#"operator_http_public_origin = "{origin}""#);
+                let dir = write_tmp("server.toml", &toml);
+                let err =
+                    ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap_err();
+                match err {
+                    PortunusError::ConfigInvalid(msg) => {
+                        assert!(
+                            msg.contains("operator_http_public_origin"),
+                            "origin {origin} produced msg: {msg}"
+                        );
+                    }
+                    other => panic!("expected ConfigInvalid for origin {origin}, got {other:?}"),
+                }
             }
         }
     }

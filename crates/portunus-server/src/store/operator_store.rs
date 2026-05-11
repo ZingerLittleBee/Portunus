@@ -21,11 +21,49 @@ use portunus_auth::{
 use portunus_core::{ClientName, fingerprint};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::operator::{
+    audit::AuditEntry,
+    sessions,
+    setup_token::{DEFAULT_SETUP_TOKEN_TTL, SetupTokenRecord},
+    throttle::{AuthThrottleAction, ThrottleDecision},
+};
 use crate::store::{Store, StoreError, map_rusqlite};
 
 #[derive(Clone)]
 pub struct SqliteOperatorStore {
     store: Arc<Store>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct PasswordState {
+    pub hash: String,
+    pub password_change_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct WebSession {
+    pub user_id: UserId,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub absolute_expires_at: DateTime<Utc>,
+    pub remote_addr: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PasswordResetSummary {
+    pub sessions_revoked: usize,
+    pub api_tokens_revoked: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnboardingError {
+    AlreadyBootstrapped,
+    InvalidSetupToken,
+    UserAlreadyExists(UserId),
+    Store(String),
 }
 
 impl std::fmt::Debug for SqliteOperatorStore {
@@ -184,6 +222,518 @@ impl SqliteOperatorStore {
             .unwrap_or(0)
     }
 
+    pub(crate) fn has_active_superadmin(&self) -> Result<bool, IdentityStoreError> {
+        self.store
+            .with_conn(|c| {
+                let n: i64 = c
+                    .query_row(
+                        "SELECT COUNT(*) FROM users WHERE role = 'superadmin' AND disabled = 0",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                Ok(n > 0)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_password_hash(
+        &self,
+        user_id: &UserId,
+        hash: &str,
+        password_change_required: bool,
+    ) -> Result<(), IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                let changed = tx
+                    .execute(
+                        "UPDATE users SET password_hash = ?, password_change_required = ? \
+                         WHERE user_id = ?",
+                        params![hash, i32::from(password_change_required), user_id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?;
+                if changed == 0 {
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
+                }
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    pub(crate) fn reset_password_state(
+        &self,
+        user_id: &UserId,
+        hash: &str,
+        password_change_required: bool,
+        revoke_sessions: bool,
+        revoke_api_tokens: bool,
+    ) -> Result<PasswordResetSummary, IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        let now = Utc::now().to_rfc3339();
+        self.store
+            .with_write_tx(|tx| {
+                if !user_exists(tx, user_id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
+                }
+                tx.execute(
+                    "UPDATE users SET password_hash = ?, password_change_required = ? \
+                     WHERE user_id = ?",
+                    params![hash, i32::from(password_change_required), user_id.as_str()],
+                )
+                .map_err(map_rusqlite)?;
+
+                let sessions_revoked = if revoke_sessions {
+                    tx.execute(
+                        "UPDATE web_sessions \
+                         SET revoked_at = COALESCE(revoked_at, ?) \
+                         WHERE user_id = ? AND revoked_at IS NULL",
+                        params![now, user_id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?
+                } else {
+                    0
+                };
+
+                let api_tokens_revoked = if revoke_api_tokens {
+                    tx.execute(
+                        "UPDATE credentials \
+                         SET status = 'revoked', revoked_at = ? \
+                         WHERE user_id = ? AND status = 'active'",
+                        params![now, user_id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?
+                } else {
+                    0
+                };
+
+                Ok(PasswordResetSummary {
+                    sessions_revoked,
+                    api_tokens_revoked,
+                })
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn password_state(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Option<PasswordState>, IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        self.store
+            .with_conn(|c| {
+                let row = c
+                    .query_row(
+                        "SELECT password_hash, password_change_required \
+                         FROM users WHERE user_id = ?",
+                        params![user_id.as_str()],
+                        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i32>(1)? != 0)),
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                match row {
+                    None => Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    }),
+                    Some((None, _)) => Ok(None),
+                    Some((Some(hash), password_change_required)) => Ok(Some(PasswordState {
+                        hash,
+                        password_change_required,
+                    })),
+                }
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn create_web_session(
+        &self,
+        session_hash: &str,
+        user_id: &UserId,
+        created_at: DateTime<Utc>,
+        absolute_expires_at: DateTime<Utc>,
+        remote_addr: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<(), IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                if !user_exists(tx, user_id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
+                }
+                tx.execute(
+                    "INSERT INTO web_sessions \
+                        (session_hash, user_id, created_at, last_seen_at, absolute_expires_at, revoked_at, remote_addr, user_agent) \
+                     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                    params![
+                        session_hash,
+                        user_id.as_str(),
+                        created_at.to_rfc3339(),
+                        created_at.to_rfc3339(),
+                        absolute_expires_at.to_rfc3339(),
+                        remote_addr,
+                        user_agent,
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn verify_web_session(
+        &self,
+        session_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<WebSession>, IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                let row = tx
+                    .query_row(
+                        "SELECT user_id, created_at, last_seen_at, absolute_expires_at, revoked_at, remote_addr, user_agent \
+                         FROM web_sessions WHERE session_hash = ?",
+                        params![session_hash],
+                        row_to_web_session_record,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+
+                let Some((mut session, revoked_at)) = row else {
+                    return Ok(None);
+                };
+
+                if revoked_at.is_some()
+                    || sessions::session_is_expired(
+                        session.last_seen_at,
+                        session.absolute_expires_at,
+                        now,
+                    )
+                {
+                    return Ok(None);
+                }
+
+                tx.execute(
+                    "UPDATE web_sessions SET last_seen_at = ? \
+                     WHERE session_hash = ? AND revoked_at IS NULL",
+                    params![now.to_rfc3339(), session_hash],
+                )
+                .map_err(map_rusqlite)?;
+                session.last_seen_at = now;
+
+                Ok(Some(session))
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[cfg(test)]
+    fn delete_web_session_for_test(&self, session_hash: &str) -> Result<usize, IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "DELETE FROM web_sessions WHERE session_hash = ?",
+                    params![session_hash],
+                )
+                .map_err(map_rusqlite)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn revoke_web_session(&self, session_hash: &str) -> Result<(), IdentityStoreError> {
+        let revoked_at = Utc::now().to_rfc3339();
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "UPDATE web_sessions \
+                     SET revoked_at = COALESCE(revoked_at, ?) \
+                     WHERE session_hash = ?",
+                    params![revoked_at, session_hash],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn revoke_web_sessions_for_user(
+        &self,
+        user_id: &UserId,
+    ) -> Result<(), IdentityStoreError> {
+        let uid_for_err = user_id.clone();
+        let revoked_at = Utc::now().to_rfc3339();
+        self.store
+            .with_write_tx(|tx| {
+                if !user_exists(tx, user_id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_not_found".into(),
+                    });
+                }
+                tx.execute(
+                    "UPDATE web_sessions \
+                     SET revoked_at = COALESCE(revoked_at, ?) \
+                     WHERE user_id = ?",
+                    params![revoked_at, user_id.as_str()],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "user_not_found" => {
+                    IdentityStoreError::UserNotFound(uid_for_err)
+                }
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn prune_expired_web_sessions(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<usize, IdentityStoreError> {
+        let idle_cutoff = (now - sessions::IDLE_TIMEOUT).to_rfc3339();
+        let absolute_cutoff = now.to_rfc3339();
+        self.store
+            .with_write_tx(|tx| {
+                let deleted = tx
+                    .execute(
+                        "DELETE FROM web_sessions \
+                         WHERE revoked_at IS NOT NULL \
+                            OR absolute_expires_at < ? \
+                            OR last_seen_at < ?",
+                        params![absolute_cutoff, idle_cutoff],
+                    )
+                    .map_err(map_rusqlite)?;
+                Ok(deleted)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    pub(crate) fn rotate_onboarding_setup_token(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<String, IdentityStoreError> {
+        let (raw, record) = SetupTokenRecord::new(now, DEFAULT_SETUP_TOKEN_TTL);
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO onboarding_setup (id, token_hash, issued_at, expires_at) \
+                     VALUES (1, ?, ?, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                        token_hash = excluded.token_hash, \
+                        issued_at = excluded.issued_at, \
+                        expires_at = excluded.expires_at",
+                    params![
+                        record.hash_hex(),
+                        now.to_rfc3339(),
+                        record.expires_at().to_rfc3339(),
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))?;
+        Ok(raw)
+    }
+
+    pub(crate) fn insert_audit_entry(&self, entry: &AuditEntry) -> Result<(), IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                let action = entry
+                    .action
+                    .clone()
+                    .unwrap_or_else(|| format!("{} {}", entry.method, entry.path));
+                let mut details = serde_json::json!({
+                    "role": entry.role,
+                    "reason": entry.reason,
+                });
+                if let Some(extra) = entry.details.as_ref()
+                    && let (Some(base), Some(extra)) = (details.as_object_mut(), extra.as_object())
+                {
+                    for (key, value) in extra {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+                tx.execute(
+                    "INSERT INTO audit \
+                     (ts, user_id, outcome, action, resource_kind, resource_value, correlation_id, details_json) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        entry.timestamp.to_rfc3339(),
+                        if entry.actor.is_empty() {
+                            None
+                        } else {
+                            Some(entry.actor.as_str())
+                        },
+                        entry.outcome.as_str(),
+                        action,
+                        entry.resource_kind.as_deref(),
+                        entry.resource_value.as_deref(),
+                        "",
+                        details.to_string(),
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn verify_onboarding_setup_token(
+        &self,
+        candidate_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, IdentityStoreError> {
+        self.store
+            .with_conn(|c| {
+                let stored_token = c
+                    .query_row(
+                        "SELECT token_hash, expires_at FROM onboarding_setup WHERE id = 1",
+                        [],
+                        row_to_setup_token_record,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                Ok(stored_token.is_some_and(|record| record.verify(candidate_token, now)))
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear_onboarding_setup_token(&self) -> Result<(), IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute("DELETE FROM onboarding_setup WHERE id = 1", [])
+                    .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn login_attempt_state(
+        &self,
+        subject: &str,
+        remote_addr: &str,
+        action: AuthThrottleAction,
+        now: DateTime<Utc>,
+    ) -> Result<ThrottleDecision, IdentityStoreError> {
+        self.store
+            .with_conn(|c| {
+                let row = c
+                    .query_row(
+                        "SELECT failures, first_failed_at, last_failed_at, locked_until \
+                         FROM login_attempts \
+                         WHERE subject = ? AND remote_addr = ? AND action = ?",
+                        params![subject, remote_addr, action.as_db_str()],
+                        row_to_login_attempt,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                Ok(row.unwrap_or_default().effective_at(now))
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_login_attempt_failure(
+        &self,
+        subject: &str,
+        remote_addr: &str,
+        action: AuthThrottleAction,
+        now: DateTime<Utc>,
+    ) -> Result<ThrottleDecision, IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                let mut state = tx
+                    .query_row(
+                        "SELECT failures, first_failed_at, last_failed_at, locked_until \
+                         FROM login_attempts \
+                         WHERE subject = ? AND remote_addr = ? AND action = ?",
+                        params![subject, remote_addr, action.as_db_str()],
+                        row_to_login_attempt,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?
+                    .unwrap_or_default();
+                state.record_failure(now);
+
+                tx.execute(
+                    "INSERT INTO login_attempts \
+                        (subject, remote_addr, action, failures, first_failed_at, last_failed_at, locked_until) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(subject, remote_addr, action) DO UPDATE SET \
+                        failures = excluded.failures, \
+                        first_failed_at = excluded.first_failed_at, \
+                        last_failed_at = excluded.last_failed_at, \
+                        locked_until = excluded.locked_until",
+                    params![
+                        subject,
+                        remote_addr,
+                        action.as_db_str(),
+                        i64::from(state.failures),
+                        state.first_failed_at.map(|ts| ts.to_rfc3339()),
+                        state.last_failed_at.map(|ts| ts.to_rfc3339()),
+                        state.locked_until.map(|ts| ts.to_rfc3339()),
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+
+                Ok(state)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear_login_attempts(
+        &self,
+        subject: &str,
+        remote_addr: &str,
+        action: AuthThrottleAction,
+    ) -> Result<(), IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "DELETE FROM login_attempts \
+                     WHERE subject = ? AND remote_addr = ? AND action = ?",
+                    params![subject, remote_addr, action.as_db_str()],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
     // ---------------- atomic bootstrap paths ----------------
 
     pub fn bootstrap_pair(&self, user: User, cred: Credential) -> Result<(), IdentityStoreError> {
@@ -259,6 +809,78 @@ impl SqliteOperatorStore {
             })
     }
 
+    pub(crate) fn onboard_first_superadmin(
+        &self,
+        user: User,
+        password_hash: &str,
+        setup_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), OnboardingError> {
+        if user.role != OperatorRole::Superadmin {
+            return Err(OnboardingError::Store(
+                "onboard_first_superadmin requires a superadmin user".into(),
+            ));
+        }
+        let user_for_err = user.id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                let active_superadmins: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM users WHERE role = 'superadmin' AND disabled = 0",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                if active_superadmins > 0 {
+                    return Err(StoreError::Conflict {
+                        detail: "already_bootstrapped".into(),
+                    });
+                }
+
+                let setup = tx
+                    .query_row(
+                        "SELECT token_hash, expires_at FROM onboarding_setup WHERE id = 1",
+                        [],
+                        row_to_setup_token_record,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                if !setup.is_some_and(|record| record.verify(setup_token, now)) {
+                    return Err(StoreError::Conflict {
+                        detail: "setup_token_invalid".into(),
+                    });
+                }
+
+                if user_exists(tx, &user.id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_already_exists".into(),
+                    });
+                }
+                insert_user(tx, &user)?;
+                tx.execute(
+                    "UPDATE users SET password_hash = ?, password_change_required = 0 \
+                     WHERE user_id = ?",
+                    params![password_hash, user.id.as_str()],
+                )
+                .map_err(map_rusqlite)?;
+                tx.execute("DELETE FROM onboarding_setup WHERE id = 1", [])
+                    .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { detail } if detail == "already_bootstrapped" => {
+                    OnboardingError::AlreadyBootstrapped
+                }
+                StoreError::Conflict { detail } if detail == "setup_token_invalid" => {
+                    OnboardingError::InvalidSetupToken
+                }
+                StoreError::Conflict { detail } if detail == "user_already_exists" => {
+                    OnboardingError::UserAlreadyExists(user_for_err)
+                }
+                other => OnboardingError::Store(other.to_string()),
+            })
+    }
+
     // ---------------- mutating ops ----------------
 
     pub fn add_user(&self, user: User) -> Result<(), IdentityStoreError> {
@@ -271,6 +893,37 @@ impl SqliteOperatorStore {
                     });
                 }
                 insert_user(tx, &user)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { .. } => IdentityStoreError::UserAlreadyExists(user_for_err),
+                other => IdentityStoreError::WriteFailed(other.to_string()),
+            })
+    }
+
+    pub(crate) fn add_user_with_password(
+        &self,
+        user: User,
+        password_hash: Option<&str>,
+        password_change_required: bool,
+    ) -> Result<(), IdentityStoreError> {
+        let user_for_err = user.id.clone();
+        self.store
+            .with_write_tx(|tx| {
+                if user_exists(tx, &user.id)? {
+                    return Err(StoreError::Conflict {
+                        detail: "user_already_exists".into(),
+                    });
+                }
+                insert_user(tx, &user)?;
+                if let Some(hash) = password_hash {
+                    tx.execute(
+                        "UPDATE users SET password_hash = ?, password_change_required = ? \
+                         WHERE user_id = ?",
+                        params![hash, i32::from(password_change_required), user.id.as_str()],
+                    )
+                    .map_err(map_rusqlite)?;
+                }
                 Ok(())
             })
             .map_err(|e| match e {
@@ -814,6 +1467,69 @@ fn row_to_grant(r: &Row<'_>) -> rusqlite::Result<Grant> {
     })
 }
 
+fn row_to_web_session_record(r: &Row<'_>) -> rusqlite::Result<(WebSession, Option<DateTime<Utc>>)> {
+    let user_id: String = r.get(0)?;
+    let created_at: String = r.get(1)?;
+    let last_seen_at: String = r.get(2)?;
+    let absolute_expires_at: String = r.get(3)?;
+    let revoked_at: Option<String> = r.get(4)?;
+    let remote_addr: Option<String> = r.get(5)?;
+    let user_agent: Option<String> = r.get(6)?;
+
+    Ok((
+        WebSession {
+            user_id: parse_user_id(&user_id, 0)?,
+            created_at: parse_ts_rusqlite(&created_at, 1)?,
+            last_seen_at: parse_ts_rusqlite(&last_seen_at, 2)?,
+            absolute_expires_at: parse_ts_rusqlite(&absolute_expires_at, 3)?,
+            remote_addr,
+            user_agent,
+        },
+        revoked_at.map(|ts| parse_ts_rusqlite(&ts, 4)).transpose()?,
+    ))
+}
+
+fn row_to_login_attempt(r: &Row<'_>) -> rusqlite::Result<ThrottleDecision> {
+    let failures = r.get::<_, i64>(0)?;
+    let first_failed_at: Option<String> = r.get(1)?;
+    let last_failed_at: Option<String> = r.get(2)?;
+    let locked_until: Option<String> = r.get(3)?;
+
+    let failures = u32::try_from(failures).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad failures count: {e}"),
+            )),
+        )
+    })?;
+
+    Ok(ThrottleDecision {
+        failures,
+        first_failed_at: first_failed_at
+            .map(|ts| parse_ts_rusqlite(&ts, 1))
+            .transpose()?,
+        last_failed_at: last_failed_at
+            .map(|ts| parse_ts_rusqlite(&ts, 2))
+            .transpose()?,
+        locked_until: locked_until
+            .map(|ts| parse_ts_rusqlite(&ts, 3))
+            .transpose()?,
+    })
+}
+
+#[allow(dead_code)]
+fn row_to_setup_token_record(r: &Row<'_>) -> rusqlite::Result<SetupTokenRecord> {
+    let hash_hex: String = r.get(0)?;
+    let expires_at: String = r.get(1)?;
+    Ok(SetupTokenRecord::from_stored(
+        hash_hex,
+        parse_ts_rusqlite(&expires_at, 1)?,
+    ))
+}
+
 fn parse_user_id(s: &str, col: usize) -> rusqlite::Result<UserId> {
     if s.starts_with('_') {
         Ok(UserId::reserved(s))
@@ -1020,6 +1736,16 @@ mod tests {
         }
     }
 
+    fn bob() -> User {
+        User {
+            id: UserId::from_str("bob").unwrap(),
+            display_name: "Bob".into(),
+            role: OperatorRole::User,
+            created_at: fixed_ts(),
+            disabled: false,
+        }
+    }
+
     fn superadmin() -> User {
         User {
             id: UserId::superadmin(),
@@ -1132,6 +1858,604 @@ mod tests {
         assert_eq!(s.count_superadmins(), 0);
         s.add_user(superadmin()).unwrap();
         assert_eq!(s.count_superadmins(), 1);
+    }
+
+    #[test]
+    fn password_hash_round_trips_without_exposing_in_user_view() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+
+        s.set_password_hash(&alice_id, "$argon2id$fake", true)
+            .unwrap();
+        let state = s.password_state(&alice_id).unwrap().unwrap();
+        assert_eq!(state.hash, "$argon2id$fake");
+        assert!(state.password_change_required);
+
+        let public_user = s.get_user(&alice_id).unwrap();
+        assert_eq!(public_user.id, alice_id);
+        assert_eq!(s.list_users(), vec![public_user]);
+    }
+
+    #[test]
+    fn password_state_distinguishes_unset_from_missing_user() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+
+        assert_eq!(s.password_state(&alice_id).unwrap(), None);
+
+        let missing = UserId::from_str("missing").unwrap();
+        let err = s.password_state(&missing).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+
+        let err = s
+            .set_password_hash(&missing, "$argon2id$fake", false)
+            .unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn web_session_create_verify_revoke_round_trip() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let raw = crate::operator::sessions::generate_session_secret();
+        let hash = crate::operator::sessions::hash_session_secret(&raw);
+        let created_at = fixed_ts();
+        let absolute_expires_at = created_at + chrono::Duration::days(7);
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            absolute_expires_at,
+            Some("127.0.0.1".into()),
+            Some("test-agent".into()),
+        )
+        .unwrap();
+
+        let session = s.verify_web_session(&hash, created_at).unwrap().unwrap();
+        assert_eq!(session.user_id, alice_id);
+        assert_eq!(session.created_at, created_at);
+        assert_eq!(session.absolute_expires_at, absolute_expires_at);
+        assert_eq!(session.remote_addr.as_deref(), Some("127.0.0.1"));
+        assert_eq!(session.user_agent.as_deref(), Some("test-agent"));
+
+        s.revoke_web_session(&hash).unwrap();
+        assert!(s.verify_web_session(&hash, created_at).unwrap().is_none());
+    }
+
+    #[test]
+    fn web_session_idle_expired_returns_none() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("idle-secret");
+        let created_at = fixed_ts();
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let now =
+            created_at + crate::operator::sessions::IDLE_TIMEOUT + chrono::Duration::seconds(1);
+        assert!(s.verify_web_session(&hash, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn web_session_verify_persists_last_seen_refresh() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("refresh-secret");
+        let created_at = fixed_ts();
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let refreshed_at = created_at + chrono::Duration::hours(7);
+        let refreshed = s.verify_web_session(&hash, refreshed_at).unwrap().unwrap();
+        assert_eq!(refreshed.last_seen_at, refreshed_at);
+
+        let still_valid_after_original_idle_deadline = created_at + chrono::Duration::hours(14);
+        assert!(
+            s.verify_web_session(&hash, still_valid_after_original_idle_deadline)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn web_session_absolute_expired_returns_none() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("absolute-secret");
+        let created_at = fixed_ts();
+        let absolute_expires_at = created_at + chrono::Duration::hours(1);
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            absolute_expires_at,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let now = absolute_expires_at + chrono::Duration::seconds(1);
+        assert!(s.verify_web_session(&hash, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn web_session_missing_after_delete_returns_none() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("delete-secret");
+        let created_at = fixed_ts();
+
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(s.delete_web_session_for_test(&hash).unwrap(), 1);
+        assert!(s.verify_web_session(&hash, created_at).unwrap().is_none());
+    }
+
+    #[test]
+    fn onboarding_setup_token_rotation_rejects_old_token() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        let first = s.rotate_onboarding_setup_token(now).unwrap();
+        let second = s
+            .rotate_onboarding_setup_token(now + chrono::Duration::minutes(1))
+            .unwrap();
+
+        assert!(
+            s.verify_onboarding_setup_token(&second, now + chrono::Duration::minutes(1))
+                .unwrap()
+        );
+        assert!(!s.verify_onboarding_setup_token(&first, now).unwrap());
+    }
+
+    #[test]
+    fn onboarding_setup_token_stores_hash_and_expires() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        let raw = s.rotate_onboarding_setup_token(now).unwrap();
+
+        let stored_hash: String = s
+            .store
+            .with_conn(|c| {
+                let hash = c
+                    .query_row(
+                        "SELECT token_hash FROM onboarding_setup WHERE id = 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                Ok(hash)
+            })
+            .unwrap();
+        assert_ne!(stored_hash, raw);
+        assert!(
+            s.verify_onboarding_setup_token(&raw, now + chrono::Duration::minutes(29))
+                .unwrap()
+        );
+        assert!(
+            !s.verify_onboarding_setup_token(&raw, now + chrono::Duration::minutes(30))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn onboarding_setup_token_clear_and_missing_row_return_false() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        assert!(!s.verify_onboarding_setup_token("missing", now).unwrap());
+
+        let raw = s.rotate_onboarding_setup_token(now).unwrap();
+        assert!(s.verify_onboarding_setup_token(&raw, now).unwrap());
+
+        s.clear_onboarding_setup_token().unwrap();
+        assert!(!s.verify_onboarding_setup_token(&raw, now).unwrap());
+    }
+
+    #[test]
+    fn revoke_web_sessions_for_user_revokes_only_target_user() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        let bob_id = UserId::from_str("bob").unwrap();
+        s.add_user(alice()).unwrap();
+        s.add_user(bob()).unwrap();
+        let created_at = fixed_ts();
+        let absolute_expires_at = created_at + chrono::Duration::days(7);
+
+        let alice_hash_a = crate::operator::sessions::hash_session_secret("alice-secret-a");
+        let alice_hash_b = crate::operator::sessions::hash_session_secret("alice-secret-b");
+        let bob_hash = crate::operator::sessions::hash_session_secret("bob-secret");
+
+        s.create_web_session(
+            &alice_hash_a,
+            &alice_id,
+            created_at,
+            absolute_expires_at,
+            None,
+            None,
+        )
+        .unwrap();
+        s.create_web_session(
+            &alice_hash_b,
+            &alice_id,
+            created_at,
+            absolute_expires_at,
+            None,
+            None,
+        )
+        .unwrap();
+        s.create_web_session(
+            &bob_hash,
+            &bob_id,
+            created_at,
+            absolute_expires_at,
+            None,
+            None,
+        )
+        .unwrap();
+
+        s.revoke_web_sessions_for_user(&alice_id).unwrap();
+
+        assert!(
+            s.verify_web_session(&alice_hash_a, created_at)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.verify_web_session(&alice_hash_b, created_at)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.verify_web_session(&bob_hash, created_at)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn web_session_prune_removes_revoked_and_expired_sessions() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let created_at = fixed_ts();
+        let now = created_at + chrono::Duration::days(8);
+        let revoked_hash = crate::operator::sessions::hash_session_secret("revoked-secret");
+        let expired_hash = crate::operator::sessions::hash_session_secret("expired-secret");
+        let live_hash = crate::operator::sessions::hash_session_secret("live-secret");
+
+        s.create_web_session(
+            &revoked_hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(30),
+            None,
+            None,
+        )
+        .unwrap();
+        s.create_web_session(
+            &expired_hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(1),
+            None,
+            None,
+        )
+        .unwrap();
+        s.create_web_session(
+            &live_hash,
+            &alice_id,
+            now,
+            now + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+        s.revoke_web_session(&revoked_hash).unwrap();
+
+        assert_eq!(s.prune_expired_web_sessions(now).unwrap(), 2);
+        assert!(s.verify_web_session(&revoked_hash, now).unwrap().is_none());
+        assert!(s.verify_web_session(&expired_hash, now).unwrap().is_none());
+        assert!(s.verify_web_session(&live_hash, now).unwrap().is_some());
+    }
+
+    #[test]
+    fn web_session_create_and_bulk_revoke_reject_missing_user() {
+        let (_d, s) = fresh();
+        let missing = UserId::from_str("missing").unwrap();
+        let hash = crate::operator::sessions::hash_session_secret("missing-secret");
+        let created_at = fixed_ts();
+
+        let err = s
+            .create_web_session(
+                &hash,
+                &missing,
+                created_at,
+                created_at + chrono::Duration::days(7),
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+
+        let err = s.revoke_web_sessions_for_user(&missing).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn login_attempt_failures_persist_lockout() {
+        let (_d, s) = fresh();
+        let subject = "alice";
+        let remote_addr = "127.0.0.1";
+        let now = fixed_ts();
+
+        for offset in 0..crate::operator::throttle::LOCK_AFTER_FAILURES {
+            s.record_login_attempt_failure(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now + chrono::Duration::seconds(i64::from(offset)),
+            )
+            .unwrap();
+        }
+
+        let state = s
+            .login_attempt_state(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            state.failures,
+            crate::operator::throttle::LOCK_AFTER_FAILURES
+        );
+        assert!(state.locked_until.is_some());
+    }
+
+    #[test]
+    fn login_attempt_success_clear_removes_lockout() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        s.record_login_attempt_failure(
+            "alice",
+            "127.0.0.1",
+            crate::operator::throttle::AuthThrottleAction::Login,
+            now,
+        )
+        .unwrap();
+        s.clear_login_attempts(
+            "alice",
+            "127.0.0.1",
+            crate::operator::throttle::AuthThrottleAction::Login,
+        )
+        .unwrap();
+
+        let state = s
+            .login_attempt_state(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            crate::operator::throttle::ThrottleDecision::default()
+        );
+    }
+
+    #[test]
+    fn login_attempt_expired_lockout_starts_new_burst() {
+        let (_d, s) = fresh();
+        let subject = "alice";
+        let remote_addr = "127.0.0.1";
+        let now = fixed_ts();
+
+        let mut state = crate::operator::throttle::ThrottleDecision::default();
+        for offset in 0..crate::operator::throttle::LOCK_AFTER_FAILURES {
+            state = s
+                .record_login_attempt_failure(
+                    subject,
+                    remote_addr,
+                    crate::operator::throttle::AuthThrottleAction::Login,
+                    now + chrono::Duration::seconds(i64::from(offset)),
+                )
+                .unwrap();
+        }
+
+        let after_lockout = state.locked_until.unwrap() + chrono::Duration::seconds(1);
+        let state = s
+            .record_login_attempt_failure(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_lockout,
+            )
+            .unwrap();
+
+        assert_eq!(state.failures, 1);
+        assert_eq!(state.first_failed_at, Some(after_lockout));
+        assert_eq!(state.last_failed_at, Some(after_lockout));
+        assert_eq!(state.locked_until, None);
+
+        let persisted = s
+            .login_attempt_state(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_lockout,
+            )
+            .unwrap();
+        assert_eq!(persisted, state);
+    }
+
+    #[test]
+    fn login_attempt_failures_expire_after_window() {
+        let (_d, s) = fresh();
+        let subject = "alice";
+        let remote_addr = "127.0.0.1";
+        let now = fixed_ts();
+        let after_window =
+            now + chrono::Duration::seconds(crate::operator::throttle::FAILURE_WINDOW_SECONDS + 1);
+
+        s.record_login_attempt_failure(
+            subject,
+            remote_addr,
+            crate::operator::throttle::AuthThrottleAction::Login,
+            now,
+        )
+        .unwrap();
+        let state = s
+            .record_login_attempt_failure(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_window,
+            )
+            .unwrap();
+
+        assert_eq!(state.failures, 1);
+        assert_eq!(state.first_failed_at, Some(after_window));
+        assert_eq!(state.last_failed_at, Some(after_window));
+        assert_eq!(state.locked_until, None);
+
+        let persisted = s
+            .login_attempt_state(
+                subject,
+                remote_addr,
+                crate::operator::throttle::AuthThrottleAction::Login,
+                after_window,
+            )
+            .unwrap();
+        assert_eq!(persisted, state);
+    }
+
+    #[test]
+    fn login_attempt_unknown_subject_round_trip() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        let state = s
+            .record_login_attempt_failure(
+                crate::operator::throttle::UNKNOWN_AUTH_SUBJECT,
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+
+        assert_eq!(state.failures, 1);
+        let persisted = s
+            .login_attempt_state(
+                crate::operator::throttle::UNKNOWN_AUTH_SUBJECT,
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        assert_eq!(persisted.failures, 1);
+    }
+
+    #[test]
+    fn login_attempt_buckets_are_independent_by_remote_and_action() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        for offset in 0..crate::operator::throttle::LOCK_AFTER_FAILURES {
+            s.record_login_attempt_failure(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now + chrono::Duration::seconds(i64::from(offset)),
+            )
+            .unwrap();
+        }
+        s.record_login_attempt_failure(
+            "alice",
+            "10.0.0.5",
+            crate::operator::throttle::AuthThrottleAction::Login,
+            now,
+        )
+        .unwrap();
+        s.record_login_attempt_failure(
+            "alice",
+            "127.0.0.1",
+            crate::operator::throttle::AuthThrottleAction::PasswordReset,
+            now,
+        )
+        .unwrap();
+
+        let login_local = s
+            .login_attempt_state(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        let login_remote = s
+            .login_attempt_state(
+                "alice",
+                "10.0.0.5",
+                crate::operator::throttle::AuthThrottleAction::Login,
+                now,
+            )
+            .unwrap();
+        let reset_local = s
+            .login_attempt_state(
+                "alice",
+                "127.0.0.1",
+                crate::operator::throttle::AuthThrottleAction::PasswordReset,
+                now,
+            )
+            .unwrap();
+
+        assert_eq!(
+            login_local.failures,
+            crate::operator::throttle::LOCK_AFTER_FAILURES
+        );
+        assert!(login_local.locked_until.is_some());
+        assert_eq!(login_remote.failures, 1);
+        assert!(login_remote.locked_until.is_none());
+        assert_eq!(reset_local.failures, 1);
+        assert!(reset_local.locked_until.is_none());
     }
 
     #[test]

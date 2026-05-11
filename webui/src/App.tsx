@@ -1,8 +1,12 @@
-import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router-dom";
+import { lazy, Suspense, useEffect } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 
+import { getAuthStatus } from "@/api/auth";
 import { AuthGate } from "@/auth/AuthGate";
 import { LoginPage } from "@/auth/LoginPage";
+import { OnboardingPage } from "@/auth/OnboardingPage";
+import { clearLegacyToken } from "@/auth/token-store";
 import { Nav } from "@/components/Nav";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { Dashboard } from "@/pages/Dashboard";
@@ -41,20 +45,57 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+function AuthStatusGate({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const { data, isLoading } = useQuery({
+    queryKey: ["auth", "status"],
+    queryFn: getAuthStatus,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  if (isLoading || !data) {
+    if (!isLoading) {
+      return <>{children}</>;
+    }
+    return (
+      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
+        Loading…
+      </div>
+    );
+  }
+  if (data.onboarding_required && location.pathname !== "/onboarding") {
+    return <Navigate to="/onboarding" replace />;
+  }
+  if (!data.onboarding_required && location.pathname === "/onboarding") {
+    return <Navigate to="/login" replace />;
+  }
+  if (location.pathname === "/login") {
+    return <>{children}</>;
+  }
+  return <>{children}</>;
+}
+
 export function App() {
+  useEffect(() => {
+    clearLegacyToken();
+  }, []);
+
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/"
-        element={
-          <AuthGate>
-            <Shell>
-              <Dashboard />
-            </Shell>
-          </AuthGate>
-        }
-      />
+    <AuthStatusGate>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route
+          path="/"
+          element={
+            <AuthGate>
+              <Shell>
+                <Dashboard />
+              </Shell>
+            </AuthGate>
+          }
+        />
       <Route
         path="/users"
         element={
@@ -195,8 +236,9 @@ export function App() {
           </AuthGate>
         }
       />
-      <Route path="/forbidden" element={<PermissionDenied />} />
-      <Route path="*" element={<NotFound />} />
-    </Routes>
+        <Route path="/forbidden" element={<PermissionDenied />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </AuthStatusGate>
   );
 }

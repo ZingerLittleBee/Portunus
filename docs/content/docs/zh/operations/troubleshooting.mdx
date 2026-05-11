@@ -71,11 +71,12 @@ portunus-server list-clients
 
 | 码 | 原因 |
 | --- | --- |
-| `unauthenticated` | 缺少或非法 Bearer |
+| `unauthenticated` | 缺少或非法 Bearer API Token / Web 会话 |
 | `not_owner` | 已认证，但调用方不拥有该资源 |
 | `client_not_granted` | 调用方在所请求 Client 上没有 Grant |
 | `port_outside_grant` | 监听端口落在任何一个 Grant 之外 |
 | `protocol_not_granted` | 协议（TCP/UDP）不在 Grant 中 |
+| `password_change_required` | Web 会话被限制，用户必须先修改临时密码 |
 
 闭集匹配规则见 [RBAC](/zh/docs/features/rbac)。
 
@@ -107,13 +108,44 @@ portunus-server list-clients
 
 ### `bootstrap_required`（HTTP 503）
 
-server 还没有任何超管。运行：
+server 还没有任何启用的超管。v1.1.0 起，启动 `serve`，从 stderr / 日志读取
+setup token，然后打开 Web UI 创建第一个 `superadmin`：
 
 ```sh
-portunus-server bootstrap-superadmin --name 'Initial admin'
+journalctl -u portunus-server -n 100 --no-pager \
+  | grep 'Portunus onboarding setup token'
 ```
 
-…或在 `server.toml` 中设置 `operator_token` 然后重启一次。
+setup token 30 分钟后过期；只要 onboarding 还没完成，每次 server 启动都会
+轮换 token。如果已经存在 `superadmin`，onboarding 不会重新打开，请走下面的
+密码恢复流程。
+
+旧自动化仍可使用 `bootstrap-superadmin` 或 `server.toml` 中的 `operator_token`
+创建 API Token 访问，但这些路径不会创建 Web 密码。
+
+## Web 登录与密码恢复
+
+### `rate_limited`
+
+登录、onboarding、密码重置都会按 subject 和远端 IP 限流。等 lockout 过期后再
+试。暴力猜密码就该无聊，代码这次没犯傻。
+
+### 最后一个 `superadmin` 忘记密码
+
+先停止 server 进程，在本地重置现有账户，然后重启。这里要使用真实的超管用户
+ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的是
+初始化时选择的 ID，例如 `admin`。
+
+```sh
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus \
+  reset-password admin --temporary
+sudo systemctl start portunus-server
+```
+
+该命令只打印一次 `temporary_password=...`，撤销 Web 会话，默认撤销 API Token，
+并标记账户下次登录必须修改密码。这个场景没有远程 "forgot password" 接口。
 
 ## 性能问题
 

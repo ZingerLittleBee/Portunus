@@ -8,7 +8,6 @@
 //! raw bearer token over the wire (in the response body). The token MUST
 //! NOT appear in any `tracing` log (Constitution Principle IV).
 
-use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::{
@@ -25,6 +24,7 @@ use tracing::info;
 
 use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
+use crate::operator::user_ids::parse_stored_user_id;
 use crate::state::AppState;
 
 fn api_rbac(e: RbacError) -> ApiError {
@@ -39,7 +39,7 @@ fn api_store(e: IdentityStoreError) -> ApiError {
 }
 
 fn parse_user_id(raw: &str) -> Result<UserId, ApiError> {
-    UserId::from_str(raw).map_err(api_rbac)
+    parse_stored_user_id(raw).map_err(api_rbac)
 }
 
 fn parse_cred_id(raw: &str) -> Result<CredentialId, ApiError> {

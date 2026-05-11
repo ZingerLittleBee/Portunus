@@ -15,14 +15,29 @@ key below is optional and only overrides the defaults you specify.
 # Bind to 0.0.0.0 for cross-host clients, or to a specific interface.
 control_listen = "0.0.0.0:7443"
 
-# Operator HTTP API + Web UI. MUST stay on loopback by default.
-# Every /v1/* request also requires Authorization: Bearer <token>,
-# so the loopback bind is defence-in-depth.
+# Operator HTTP API + Web UI. Defaults to loopback.
+# Bind 0.0.0.0 only when container port publishing or a trusted reverse proxy
+# needs it. Protected /v1 routes still require a Web session cookie or
+# Authorization: Bearer <token>.
 operator_http_listen = "127.0.0.1:7080"
+
+# Optional public origin used for CSRF Origin validation and, in v1.1+,
+# whether local-login session cookies get the Secure attribute.
+# Set this when the UI is reached through a reverse proxy / public hostname.
+# Must start with http:// or https:// and MUST NOT end with a trailing slash.
+# Origin only, no path, query, or fragment. Explicit ports are allowed.
+# IPv6 literals must use brackets, for example: https://[::1]:7080
+# operator_http_public_origin = "https://ops.example.com"
 
 # Prometheus /metrics endpoint. Same loopback constraint.
 metrics_listen = "127.0.0.1:7081"
 ```
+
+If `operator_http_public_origin` is unset, Portunus falls back to
+`http://<operator_http_listen>`, which is fine for direct local access. When
+the browser sees a different public hostname than the bind address, set this
+explicitly or CSRF Origin checks and cookie security decisions will be based on
+the wrong origin.
 
 ## TLS material
 
@@ -42,7 +57,7 @@ Since v0.8 most persistent state lives in `<data-dir>/state.db` (SQLite). See
 ## Bootstrap shortcut
 
 ```toml
-# One-shot bootstrap shortcut for the operator superadmin.
+# Legacy one-shot bootstrap shortcut for an operator API superadmin.
 # When set AND the identity store has NO superadmin yet, the server
 # auto-mints the reserved `_legacy` superadmin with this exact token
 # on first start. After bootstrap, leave the line in (silently
@@ -54,6 +69,10 @@ Generate a token: `portunus-server gen-token`.
 
 Alternative: `portunus-server bootstrap-superadmin --name ops` prints
 a fresh bearer once.
+
+For normal v1.1+ Web UI setup, prefer first-run onboarding with the setup token
+printed by `serve`. `operator_token` creates API-token access, not a browser
+password.
 
 ## Drain & logging
 
@@ -120,6 +139,7 @@ built-in defaults.
 ```toml
 control_listen        = "0.0.0.0:7443"
 operator_http_listen  = "127.0.0.1:7080"
+operator_http_public_origin = "https://ops.example.com"
 metrics_listen        = "127.0.0.1:7081"
 
 tls_cert_path         = "/var/lib/portunus/server.crt"

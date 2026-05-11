@@ -12,7 +12,7 @@ import { loginAs, api, provisionUserWithToken } from "./fixtures/helpers";
 
 test("quickstart walkthrough end-to-end", async ({ page, request, server }) => {
   // § 3 — login.
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
 
   // § 4 — provision alice + bob and a client.
   await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");

@@ -51,6 +51,10 @@ fn allow_entry() -> AuditEntry {
         path: "/v1/rules".into(),
         outcome: AuditOutcome::Allow,
         reason: None,
+        action: None,
+        resource_kind: None,
+        resource_value: None,
+        details: None,
     }
 }
 

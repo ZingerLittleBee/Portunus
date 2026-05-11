@@ -9,7 +9,7 @@ import { test, expect } from "./fixtures/server";
 import { loginAs } from "./fixtures/helpers";
 
 test("theme toggle updates data-theme within 200 ms", async ({ page, server }) => {
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
   await page.goto("/settings");
 
   // Settings page renders three theme radios — light / dark / system.
@@ -28,7 +28,7 @@ test("theme toggle updates data-theme within 200 ms", async ({ page, server }) =
 });
 
 test("language toggle to zh-CN renders Chinese strings", async ({ page, server }) => {
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
   await page.goto("/settings");
 
   await page.getByRole("main").getByRole("button", { name: "中文" }).click();
@@ -40,7 +40,7 @@ test("language toggle to zh-CN renders Chinese strings", async ({ page, server }
 });
 
 test("preferences persist across reload", async ({ page, server }) => {
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
   await page.goto("/settings");
   await page.getByRole("main").getByRole("button", { name: /^dark$/i }).click();
   await page.getByRole("main").getByRole("button", { name: "中文" }).click();
@@ -55,7 +55,7 @@ test("preferences persist across reload", async ({ page, server }) => {
 test("prefers-color-scheme: dark with theme=system picks dark", async ({ browser, server }) => {
   const ctx = await browser.newContext({ colorScheme: "dark" });
   const page = await ctx.newPage();
-  await loginAs(page, server.superadminToken);
+  await loginAs(page, server.superadminUserId, server.superadminPassword);
   // Default theme is "system" on first visit; prefers-color-scheme=dark
   // resolves to dark without manual toggling.
   expect(await page.evaluate(() => document.documentElement.dataset["theme"])).toBe("dark");
