@@ -120,7 +120,7 @@
     "deleteTitle": "Delete user?",
     "deleteBody": "User {{id}} will be removed along with the dependents listed below. This cannot be undone.",
     "rotateTitle": "Rotate this credential?",
-    "rotateBody": "A new bearer token will be issued and the current one will stop working.",
+    "rotateBody": "A new API token will be issued and the current one will stop working.",
     "rotateConfirm": "Rotate",
     "resetPassword": "Reset password",
     "resetPasswordTitle": "Reset password?",

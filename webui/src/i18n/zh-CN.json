@@ -120,7 +120,7 @@
     "deleteTitle": "删除用户?",
     "deleteBody": "用户 {{id}} 将被删除,以下从属资源也会被一并清理。此操作不可撤销。",
     "rotateTitle": "轮换该凭证?",
-    "rotateBody": "将签发新的 bearer 令牌,旧令牌将立即失效。",
+    "rotateBody": "将签发新的 API 令牌,旧令牌将立即失效。",
     "rotateConfirm": "轮换",
     "resetPassword": "重置密码",
     "resetPasswordTitle": "重置密码?",

@@ -35,12 +35,6 @@ export function useIssueCredential(userId: string) {
 }
 
 export function useRotateCredential(userId: string, credentialId: string) {
-  // NOTE: no `onSuccess` invalidation here. When the *self* user rotates,
-  // the next request must carry the freshly-minted bearer; refetching the
-  // credentials list before the caller swaps the new token into
-  // sessionStorage uses the old (now-revoked) bearer and bounces the
-  // session to /login. The caller is responsible for invalidating
-  // credentials after the token swap (see `UserDetail.tsx`).
   return useMutation({
     mutationFn: (body: IssueCredentialBody = {}) =>
       apiFetch<IssueCredentialResponse>(
