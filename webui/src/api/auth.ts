@@ -21,6 +21,12 @@ export interface OnboardingRequest {
   setup_token: string;
 }
 
+export interface ChangeOwnPasswordRequest {
+  current_password: string;
+  new_password: string;
+  new_password_confirm: string;
+}
+
 export function getAuthStatus(): Promise<AuthStatus> {
   return apiFetch<AuthStatus>("/v1/auth/status");
 }
@@ -38,6 +44,13 @@ export function logout(): Promise<void> {
 
 export function onboard(body: OnboardingRequest): Promise<void> {
   return apiFetch<void>("/v1/auth/onboarding", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function changeOwnPassword(body: ChangeOwnPasswordRequest): Promise<void> {
+  return apiFetch<void>("/v1/users/me/password", {
     method: "POST",
     body: JSON.stringify(body),
   });

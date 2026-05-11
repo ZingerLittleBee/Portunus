@@ -1,14 +1,15 @@
 import { useTranslation } from "react-i18next";
-import { NavLink } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { NavLink, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { logout } from "@/api/auth";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { canSeeAuditLog, canSeeUsersList } from "@/lib/permissions";
 import { cn } from "@/lib/cn";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { Button } from "@/components/ui/button";
-import { clearToken } from "@/auth/token-store";
+import { clearLegacyToken } from "@/auth/token-store";
 
 interface NavItem {
   to: string;
@@ -39,6 +40,20 @@ function useIdentity() {
 export function Nav() {
   const { t } = useTranslation();
   const identity = useIdentity();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  async function signOut() {
+    try {
+      await logout();
+    } catch {
+      // Local sign-out should still clear client state if the session is gone.
+    } finally {
+      clearLegacyToken();
+      queryClient.removeQueries({ queryKey: ME_QUERY_KEY });
+      navigate("/login", { replace: true });
+    }
+  }
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center border-b bg-background/80 px-4 backdrop-blur">
@@ -68,10 +83,7 @@ export function Nav() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => {
-            clearToken();
-            window.location.href = "/login";
-          }}
+          onClick={() => void signOut()}
         >
           {t("nav.signOut")}
         </Button>
