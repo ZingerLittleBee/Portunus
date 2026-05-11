@@ -22,6 +22,7 @@ use portunus_core::{ClientName, fingerprint};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::operator::{
+    audit::AuditEntry,
     sessions,
     setup_token::{DEFAULT_SETUP_TOKEN_TTL, SetupTokenRecord},
     throttle::{AuthThrottleAction, ThrottleDecision},
@@ -219,6 +220,21 @@ impl SqliteOperatorStore {
                 Ok(n as usize)
             })
             .unwrap_or(0)
+    }
+
+    pub(crate) fn has_active_superadmin(&self) -> Result<bool, IdentityStoreError> {
+        self.store
+            .with_conn(|c| {
+                let n: i64 = c
+                    .query_row(
+                        "SELECT COUNT(*) FROM users WHERE role = 'superadmin' AND disabled = 0",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                Ok(n > 0)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
     }
 
     #[allow(dead_code)]
@@ -547,6 +563,49 @@ impl SqliteOperatorStore {
             })
             .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))?;
         Ok(raw)
+    }
+
+    pub(crate) fn insert_audit_entry(&self, entry: &AuditEntry) -> Result<(), IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                let action = entry
+                    .action
+                    .clone()
+                    .unwrap_or_else(|| format!("{} {}", entry.method, entry.path));
+                let mut details = serde_json::json!({
+                    "role": entry.role,
+                    "reason": entry.reason,
+                });
+                if let Some(extra) = entry.details.as_ref()
+                    && let (Some(base), Some(extra)) = (details.as_object_mut(), extra.as_object())
+                {
+                    for (key, value) in extra {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+                tx.execute(
+                    "INSERT INTO audit \
+                     (ts, user_id, outcome, action, resource_kind, resource_value, correlation_id, details_json) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        entry.timestamp.to_rfc3339(),
+                        if entry.actor.is_empty() {
+                            None
+                        } else {
+                            Some(entry.actor.as_str())
+                        },
+                        entry.outcome.as_str(),
+                        action,
+                        entry.resource_kind.as_deref(),
+                        entry.resource_value.as_deref(),
+                        "",
+                        details.to_string(),
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
     }
 
     #[allow(dead_code)]

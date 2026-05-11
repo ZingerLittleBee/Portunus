@@ -13,6 +13,7 @@ use portunus_server::operator::bootstrap;
 use portunus_server::operator::cli::{self, OperatorError};
 use portunus_server::operator::identity_cli;
 use portunus_server::operator::owner_cap_cli;
+use portunus_server::operator::password_cli;
 use portunus_server::operator::rule_cli;
 use portunus_server::serve;
 use portunus_server::state::AppState;
@@ -250,6 +251,21 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
+    /// Reset a local user's password directly against the store.
+    ResetPassword {
+        user_id: String,
+        /// Read the new password from the first stdin line.
+        #[arg(long, conflicts_with = "temporary")]
+        password_stdin: bool,
+        /// Generate a one-time password, print it once, and require change on login.
+        #[arg(long)]
+        temporary: bool,
+        /// Keep active bearer API tokens for this user.
+        #[arg(long)]
+        keep_api_tokens: bool,
+    },
+    /// Rotate the first-run onboarding setup token for an unbootstrapped store.
+    OnboardingToken,
     /// Add a grant (superadmin-only). `--client` is either a `ClientName`
     /// or `*` for wildcard. `--protocols` is a comma-separated list
     /// (e.g. `tcp` or `tcp,udp`).
@@ -601,6 +617,19 @@ fn run(cli: Cli) -> Result<(), u8> {
             label.as_deref(),
             format,
         ),
+        Cmd::ResetPassword {
+            user_id,
+            password_stdin,
+            temporary,
+            keep_api_tokens,
+        } => password_cli::reset_password(
+            &data_dir,
+            &user_id,
+            password_stdin,
+            temporary,
+            keep_api_tokens,
+        ),
+        Cmd::OnboardingToken => password_cli::onboarding_token(&data_dir),
         Cmd::GrantAdd {
             user_id,
             client,
