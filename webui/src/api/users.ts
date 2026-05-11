@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/api/client";
+import { credentialsKey } from "@/api/credentials";
+import { ME_QUERY_KEY } from "@/auth/AuthGate";
 import type {
   CreateUserBody,
   CreateUserResponse,
@@ -56,6 +58,35 @@ export function useDeleteUser() {
       void qc.invalidateQueries({ queryKey: USERS_KEY });
       void qc.invalidateQueries({ queryKey: ["rules"] });
       void qc.invalidateQueries({ queryKey: ["grants"] });
+    },
+  });
+}
+
+export interface ResetUserPasswordBody {
+  new_password?: string;
+  temporary_password?: boolean;
+  keep_api_tokens?: boolean;
+}
+
+export interface ResetUserPasswordResponse {
+  user_id: string;
+  sessions_revoked: number;
+  api_tokens_revoked: number;
+  temporary_password?: string;
+}
+
+export function useResetUserPassword(userId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ResetUserPasswordBody) =>
+      apiFetch<ResetUserPasswordResponse>(`/v1/users/${encodeURIComponent(userId)}/password`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: userKey(userId) });
+      void qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: credentialsKey(userId) });
     },
   });
 }

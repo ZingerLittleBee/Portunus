@@ -55,6 +55,9 @@ function AuthStatusGate({ children }: { children: React.ReactNode }) {
   });
 
   if (isLoading || !data) {
+    if (!isLoading) {
+      return <>{children}</>;
+    }
     return (
       <div className="flex min-h-screen items-center justify-center text-muted-foreground">
         Loading…
@@ -66,6 +69,9 @@ function AuthStatusGate({ children }: { children: React.ReactNode }) {
   }
   if (!data.onboarding_required && location.pathname === "/onboarding") {
     return <Navigate to="/login" replace />;
+  }
+  if (location.pathname === "/login") {
+    return <>{children}</>;
   }
   return <>{children}</>;
 }

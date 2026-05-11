@@ -15,6 +15,8 @@ export function UserCreate() {
   const create = useCreateUser();
   const [userId, setUserId] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [initialPassword, setInitialPassword] = useState("");
+  const [forcePasswordChange, setForcePasswordChange] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -25,7 +27,16 @@ export function UserCreate() {
       return;
     }
     try {
-      const res = await create.mutateAsync({ user_id: userId, display_name: displayName });
+      const res = await create.mutateAsync({
+        user_id: userId,
+        display_name: displayName,
+        ...(initialPassword
+          ? {
+              initial_password: initialPassword,
+              password_change_required: forcePasswordChange,
+            }
+          : {}),
+      });
       navigate(`/users/${res.user_id}`);
     } catch (err) {
       const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
@@ -62,6 +73,26 @@ export function UserCreate() {
               required
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="initial_password">{t("userCreate.initialPassword")}</Label>
+            <Input
+              id="initial_password"
+              type="password"
+              autoComplete="new-password"
+              value={initialPassword}
+              onChange={(e) => setInitialPassword(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">{t("userCreate.initialPasswordHint")}</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={forcePasswordChange}
+              onChange={(e) => setForcePasswordChange(e.target.checked)}
+              disabled={!initialPassword}
+            />
+            {t("userCreate.forcePasswordChange")}
+          </label>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">
             <Button type="submit" disabled={create.isPending}>

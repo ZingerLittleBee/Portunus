@@ -45,6 +45,7 @@ export function OnboardingPage() {
       });
       await login({ user_id: userId.trim(), password });
       const identity = await fetchIdentity();
+      queryClient.setQueryData(["auth", "status"], { onboarding_required: false });
       queryClient.setQueryData(ME_QUERY_KEY, identity);
       navigate("/", { replace: true });
     } catch (err) {

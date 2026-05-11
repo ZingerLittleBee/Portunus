@@ -66,12 +66,12 @@
     "cascadePreview": "以下资源也会被一并删除："
   },
   "tokenReveal": {
-    "title": "新 Bearer 令牌",
-    "description": "请立即复制——之后将不会再显示。",
+    "title": "已签发 API 令牌",
+    "description": "请立即复制此 API 令牌——之后将不会再显示。",
     "copy": "复制",
     "copied": "已复制",
     "dismiss": "关闭",
-    "tokenLabel": "Bearer 令牌（仅显示一次）"
+    "tokenLabel": "API 令牌或临时密码（仅显示一次）"
   },
   "errorBanner": {
     "label": "请求失败",
@@ -102,7 +102,10 @@
     "title": "新建用户",
     "submit": "创建用户",
     "invalidId": "ID 必须以小写字母开头,可包含 a-z、0-9、连字符或下划线。",
-    "idHint": "小写字母、数字、连字符和下划线;必须以字母开头。"
+    "idHint": "小写字母、数字、连字符和下划线;必须以字母开头。",
+    "initialPassword": "初始密码",
+    "initialPasswordHint": "可选。留空则创建没有 Web 登录密码的用户。",
+    "forcePasswordChange": "首次登录时要求修改密码"
   },
   "userDetail": {
     "credentials": "凭证",
@@ -118,7 +121,15 @@
     "deleteBody": "用户 {{id}} 将被删除,以下从属资源也会被一并清理。此操作不可撤销。",
     "rotateTitle": "轮换该凭证?",
     "rotateBody": "将签发新的 bearer 令牌,旧令牌将立即失效。",
-    "rotateConfirm": "轮换"
+    "rotateConfirm": "轮换",
+    "resetPassword": "重置密码",
+    "resetPasswordTitle": "重置密码?",
+    "resetPasswordBody": "重置 {{id}} 的 Web 登录密码。该用户的活跃 Web 会话会被撤销。",
+    "resetPasswordConfirm": "重置密码",
+    "newPasswordOptional": "新密码（可选）",
+    "generateTemporary": "留空则生成临时密码",
+    "requirePasswordChange": "下次登录要求修改密码",
+    "keepApiTokens": "保留现有 API 令牌"
   },
   "grants": {
     "title": "授权",

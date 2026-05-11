@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 interface TokenRevealModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /// One-shot bearer token. Shown once, scrubbed when the modal closes.
+  /// One-shot secret. Shown once, scrubbed when the modal closes.
   token: string;
   title?: string;
   description?: string;

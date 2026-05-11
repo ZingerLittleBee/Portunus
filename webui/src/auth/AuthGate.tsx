@@ -26,7 +26,7 @@ export function AuthGate({ role, children }: AuthGateProps) {
   useEffect(() => {
     const onUnauth = () => {
       clearLegacyToken();
-      queryClient.removeQueries({ queryKey: ME_QUERY_KEY });
+      queryClient.clear();
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauth);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauth);

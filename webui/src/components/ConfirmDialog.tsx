@@ -21,6 +21,7 @@ interface ConfirmDialogProps {
   destructive?: boolean;
   busy?: boolean;
   onConfirm: () => void | Promise<void>;
+  children?: React.ReactNode;
 }
 
 export function ConfirmDialog({
@@ -33,6 +34,7 @@ export function ConfirmDialog({
   destructive,
   busy,
   onConfirm,
+  children,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   return (
@@ -52,6 +54,7 @@ export function ConfirmDialog({
             </ul>
           </div>
         )}
+        {children}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             {t("confirm.cancel")}

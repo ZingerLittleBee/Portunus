@@ -50,7 +50,7 @@ export function Nav() {
       // Local sign-out should still clear client state if the session is gone.
     } finally {
       clearLegacyToken();
-      queryClient.removeQueries({ queryKey: ME_QUERY_KEY });
+      queryClient.clear();
       navigate("/login", { replace: true });
     }
   }

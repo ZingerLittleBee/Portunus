@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Trash2, RotateCcw } from "lucide-react";
 
-import { useUser, useDeleteUser } from "@/api/users";
+import { useUser, useDeleteUser, useResetUserPassword } from "@/api/users";
 import {
   credentialsKey,
   useCredentialsList,
@@ -15,11 +15,12 @@ import {
 import { useGrantsList, useRevokeGrant } from "@/api/grants";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { canSeeUserDetail, type Identity } from "@/lib/permissions";
-import { setToken } from "@/auth/token-store";
 import { PermissionDenied } from "@/components/PermissionDenied";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { TokenRevealModal } from "@/components/TokenRevealModal";
@@ -58,11 +59,16 @@ function UserDetailInner({ userId, identity }: InnerProps) {
   const revokeCred = useRevokeCredential(userId);
   const revokeGrant = useRevokeGrant();
   const deleteUser = useDeleteUser();
+  const resetPassword = useResetUserPassword(userId);
 
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
-  const [issuedFromRotation, setIssuedFromRotation] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<string | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [temporaryPassword, setTemporaryPassword] = useState(true);
+  const [keepApiTokens, setKeepApiTokens] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   const rotate = useRotateCredential(userId, rotateTarget ?? "");
 
@@ -82,11 +88,18 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             </Badge>
           )}
         </div>
-        {!isSelf && identity?.role === "superadmin" && (
-          <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-            <Trash2 className="mr-1 h-4 w-4" />
-            {t("userDetail.delete")}
-          </Button>
+        {identity?.role === "superadmin" && (
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setResetOpen(true)}>
+              {t("userDetail.resetPassword")}
+            </Button>
+            {!isSelf && (
+              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+                <Trash2 className="mr-1 h-4 w-4" />
+                {t("userDetail.delete")}
+              </Button>
+            )}
+          </div>
         )}
       </div>
 
@@ -100,7 +113,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             onClick={async () => {
               const res = await issue.mutateAsync({});
               setIssuedToken(res.token);
-              setIssuedFromRotation(false);
             }}
             disabled={issue.isPending}
           >
@@ -193,14 +205,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         open={!!issuedToken}
         onOpenChange={async (open) => {
           if (!open) {
-            if (issuedFromRotation && isSelf && issuedToken) {
-              // T047: rotating one's own credential — swap the new token
-              // into sessionStorage so subsequent requests keep working.
-              setToken(issuedToken);
-              await qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
-            }
             setIssuedToken(null);
-            setIssuedFromRotation(false);
           }
         }}
         token={issuedToken ?? ""}
@@ -216,19 +221,76 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           busy={rotate.isPending}
           onConfirm={async () => {
             const res = await rotate.mutateAsync({});
-            // For self-rotation, swap the new token into sessionStorage
-            // BEFORE TanStack invalidates any cache that would refetch
-            // with the now-revoked old bearer.
-            if (isSelf) {
-              setToken(res.token);
-            }
             await qc.invalidateQueries({ queryKey: credentialsKey(userId) });
             setRotateTarget(null);
             setIssuedToken(res.token);
-            setIssuedFromRotation(!isSelf);
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={resetOpen}
+        onOpenChange={(open) => {
+          setResetOpen(open);
+          if (!open) {
+            setNewPassword("");
+            setTemporaryPassword(true);
+            setKeepApiTokens(false);
+            setResetError(null);
+          }
+        }}
+        title={t("userDetail.resetPasswordTitle")}
+        description={t("userDetail.resetPasswordBody", { id: userId })}
+        confirmLabel={t("userDetail.resetPasswordConfirm")}
+        busy={resetPassword.isPending}
+        onConfirm={async () => {
+          setResetError(null);
+          try {
+            const res = await resetPassword.mutateAsync({
+              ...(newPassword ? { new_password: newPassword } : {}),
+              temporary_password: temporaryPassword,
+              keep_api_tokens: keepApiTokens,
+            });
+            setResetOpen(false);
+            if (res.temporary_password) {
+              setIssuedToken(res.temporary_password);
+            }
+          } catch (err) {
+            setResetError(err instanceof Error ? err.message : String(err));
+          }
+        }}
+      >
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="reset-password">{t("userDetail.newPasswordOptional")}</Label>
+            <Input
+              id="reset-password"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder={t("userDetail.generateTemporary")}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={temporaryPassword}
+              onChange={(e) => setTemporaryPassword(e.target.checked)}
+            />
+            {t("userDetail.requirePasswordChange")}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={keepApiTokens}
+              onChange={(e) => setKeepApiTokens(e.target.checked)}
+            />
+            {t("userDetail.keepApiTokens")}
+          </label>
+          {resetError && <p className="text-sm text-destructive">{resetError}</p>}
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }
