@@ -6,7 +6,9 @@ use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use chrono::Utc;
-use portunus_auth::{UserId, token::hash_token};
+use portunus_auth::{
+    Credential, CredentialId, CredentialStatus, OperatorRole, User, UserId, token::hash_token,
+};
 use portunus_core::fingerprint;
 use portunus_server::clients::ConnectedClients;
 use portunus_server::operator::http;
@@ -173,6 +175,33 @@ async fn login_cookie(router: &axum::Router, user_id: &str, password: &str) -> S
         .to_string()
 }
 
+fn seed_reserved_superadmin(
+    operator_store: &portunus_server::store::operator_store::SqliteOperatorStore,
+    user_id: UserId,
+    bearer_token: &str,
+) {
+    let now = Utc::now();
+    let user = User {
+        id: user_id.clone(),
+        display_name: "Bootstrap Superadmin".into(),
+        role: OperatorRole::Superadmin,
+        created_at: now,
+        disabled: false,
+    };
+    let credential = Credential {
+        id: CredentialId::new(),
+        user_id,
+        token_hash: hash_token(bearer_token),
+        label: Some("bootstrap".into()),
+        created_at: now,
+        last_used_at: None,
+        status: CredentialStatus::active(),
+    };
+    operator_store
+        .bootstrap_pair(user, credential)
+        .expect("seed reserved superadmin");
+}
+
 #[tokio::test]
 async fn self_password_change_requires_current_password() {
     let (router, _state, _operator_store, store, _dir) = build_router();
@@ -255,6 +284,52 @@ async fn admin_reset_revokes_sessions_and_api_tokens_by_default() {
 }
 
 #[tokio::test]
+async fn reserved_superadmin_can_be_reset_and_login_with_local_password() {
+    let (router, _state, operator_store, _store, _dir) = build_router();
+    let bearer = "reserved-superadmin-bootstrap-token";
+    let user_id = UserId::superadmin();
+    seed_reserved_superadmin(&operator_store, user_id.clone(), bearer);
+
+    let resp = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/v1/users/_superadmin/password",
+            json!({
+                "new_password": "changed correct horse battery staple",
+                "keep_api_tokens": true
+            }),
+            None,
+            Some(bearer),
+            false,
+        ))
+        .await
+        .expect("reserved password reset");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let cookie = login_cookie(
+        &router,
+        user_id.as_str(),
+        "changed correct horse battery staple",
+    )
+    .await;
+    let detail = router
+        .oneshot(request(
+            Method::GET,
+            "/v1/users/_superadmin",
+            json!(null),
+            Some(&cookie),
+            None,
+            false,
+        ))
+        .await
+        .expect("reserved user detail");
+    assert_eq!(detail.status(), StatusCode::OK);
+    let body = body_json(detail).await;
+    assert_eq!(body["user_id"], "_superadmin");
+}
+
+#[tokio::test]
 async fn admin_reset_can_keep_api_tokens_explicitly() {
     let (router, _state, operator_store, store, _dir) = build_router();
     create_admin(&router, &store, "admin").await;
@@ -295,6 +370,49 @@ async fn admin_reset_can_keep_api_tokens_explicitly() {
         .await
         .expect("users me");
     assert_eq!(preserved.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn generated_admin_reset_password_is_always_temporary() {
+    let (router, _state, _operator_store, store, _dir) = build_router();
+    create_admin(&router, &store, "admin").await;
+    let cookie = login_cookie(&router, "admin", PASSWORD).await;
+
+    let resp = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/v1/users/admin/password",
+            json!({
+                "temporary_password": false,
+                "keep_api_tokens": true
+            }),
+            Some(&cookie),
+            None,
+            true,
+        ))
+        .await
+        .expect("admin reset");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let generated = body["temporary_password"]
+        .as_str()
+        .expect("generated temporary password");
+
+    let login = router
+        .oneshot(request(
+            Method::POST,
+            "/v1/auth/login",
+            json!({ "user_id": "admin", "password": generated }),
+            None,
+            None,
+            false,
+        ))
+        .await
+        .expect("temporary login");
+    assert_eq!(login.status(), StatusCode::OK);
+    let body = body_json(login).await;
+    assert_eq!(body["password_change_required"], true);
 }
 
 #[tokio::test]

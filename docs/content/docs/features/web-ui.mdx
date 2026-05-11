@@ -115,10 +115,12 @@ Normal users do not self-reset through a public "forgot password" flow. A
 Web sessions and revokes API tokens by default unless the admin explicitly
 keeps them.
 
-If the last `superadmin` forgets the password, recovery is local-only:
+If the last `superadmin` forgets the password, recovery is local-only. Use the
+actual superadmin user ID (`_superadmin` for `bootstrap-superadmin`, or the ID
+chosen during Web onboarding):
 
 ```sh
-portunus-server --data-dir /var/lib/portunus reset-password _superadmin --temporary
+portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
 ```
 
 The command prints a temporary password once and marks the account as requiring

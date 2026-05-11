@@ -101,10 +101,12 @@ CI 中有覆盖率单元测试 —— 翻译键在两个语言包之间不一致
 重置密码。重置会撤销该用户的 Web 会话，并默认撤销 API Token；只有管理员明确
 勾选保留时才会保留 API Token。
 
-如果最后一个 `superadmin` 忘记密码，只能本地恢复：
+如果最后一个 `superadmin` 忘记密码，只能本地恢复。这里要使用真实的超管用户
+ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的是初始化时
+选择的 ID：
 
 ```sh
-portunus-server --data-dir /var/lib/portunus reset-password _superadmin --temporary
+portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
 ```
 
 该命令只打印一次临时密码，并标记账户下次登录必须修改密码。没有远程后门重置

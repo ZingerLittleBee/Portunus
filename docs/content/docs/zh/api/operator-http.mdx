@@ -37,9 +37,9 @@ Token 请求不需要 CSRF 头。
 
 | 状态 | Body | 原因 |
 | --- | --- | --- |
-| `401 unauthenticated` | `{"error":"unauthenticated"}` | 缺少或非法 Bearer / Web session |
-| `403 not_owner` | `{"error":"not_owner"}` | 已认证，但调用方不拥有该资源 |
-| `403 password_change_required` | `{"error":"password_change_required"}` | Web session 必须先修改临时密码 |
+| `401 unauthenticated` | `{"error":{"code":"unauthenticated","message":"..."}}` | 缺少或非法 Bearer / Web session |
+| `403 not_owner` | `{"error":{"code":"not_owner","message":"..."}}` | 已认证，但调用方不拥有该资源 |
+| `403 password_change_required` | `{"error":{"code":"password_change_required","message":"..."}}` | Web session 必须先修改临时密码 |
 | `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC 信封拒绝（见 [RBAC](/zh/docs/features/rbac)） |
 | `403 csrf_*` | cookie 认证写请求未通过 CSRF 检查 |
 | `429 rate_limited` | 登录、onboarding 或密码重置尝试过多 |

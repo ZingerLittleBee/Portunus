@@ -245,10 +245,11 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         busy={resetPassword.isPending}
         onConfirm={async () => {
           setResetError(null);
+          const explicitPassword = newPassword.length > 0;
           try {
             const res = await resetPassword.mutateAsync({
-              ...(newPassword ? { new_password: newPassword } : {}),
-              temporary_password: temporaryPassword,
+              ...(explicitPassword ? { new_password: newPassword } : {}),
+              temporary_password: explicitPassword ? temporaryPassword : true,
               keep_api_tokens: keepApiTokens,
             });
             setResetOpen(false);
@@ -275,7 +276,8 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
-              checked={temporaryPassword}
+              checked={newPassword.length === 0 || temporaryPassword}
+              disabled={newPassword.length === 0}
               onChange={(e) => setTemporaryPassword(e.target.checked)}
             />
             {t("userDetail.requirePasswordChange")}

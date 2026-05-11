@@ -128,13 +128,14 @@ curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
 ## 密码恢复
 
 如果最后一个 `superadmin` 忘记 Web 密码，先停服务，在本地重置现有账户，再启动
-服务：
+服务。这里要使用真实的超管用户 ID：`bootstrap-superadmin` 创建的是
+`_superadmin`，Web onboarding 创建的是初始化时选择的 ID：
 
 ```sh
 sudo systemctl stop portunus-server
 sudo -u portunus-server portunus-server \
   --data-dir /var/lib/portunus \
-  reset-password _superadmin --temporary
+  reset-password admin --temporary
 sudo systemctl start portunus-server
 ```
 

@@ -21,6 +21,7 @@ use crate::operator::http::ApiError;
 use crate::operator::passwords::{PasswordError, hash_password, verify_password};
 use crate::operator::sessions;
 use crate::operator::throttle::{AuthThrottleAction, UNKNOWN_AUTH_SUBJECT};
+use crate::operator::user_ids::parse_stored_user_id;
 use crate::operator::{auth_layer, csrf};
 use crate::state::AppState;
 use crate::store::operator_store::OnboardingError;
@@ -248,7 +249,7 @@ pub async fn post_user_password(
     if identity.role != OperatorRole::Superadmin {
         return Err(ApiError::from(RbacError::RoleRequired));
     }
-    let target = UserId::from_str(&user_id).map_err(ApiError::from)?;
+    let target = parse_stored_user_id(&user_id).map_err(ApiError::from)?;
     let remote_ip = remote_addr.ip().to_string();
     let throttle_subject = target.as_str().to_string();
     reject_if_throttled(
@@ -365,7 +366,7 @@ fn authenticate_login(
     user_agent: Option<String>,
     secure_cookie: bool,
 ) -> Result<AuthenticatedLogin, ApiError> {
-    let user_id = UserId::from_str(&body.user_id).map_err(|_| invalid_login())?;
+    let user_id = parse_stored_user_id(&body.user_id).map_err(|_| invalid_login())?;
     let user = state
         .operator_store
         .get_user(&user_id)
@@ -415,7 +416,7 @@ fn reset_user_password(
         .new_password
         .clone()
         .unwrap_or_else(portunus_auth::token::generate_token);
-    let password_change_required = body.temporary_password.unwrap_or(generated);
+    let password_change_required = generated || body.temporary_password.unwrap_or(false);
     let revoke_api_tokens = body.keep_api_tokens != Some(true);
     let new_hash = hash_password(&new_password).map_err(password_error)?;
     let summary = state

@@ -26,6 +26,7 @@ pub(crate) mod sessions;
 pub(crate) mod setup_token;
 pub mod stats_stream;
 pub(crate) mod throttle;
+pub(crate) mod user_ids;
 pub mod users;
 pub mod users_me;
 pub(crate) mod web_auth;

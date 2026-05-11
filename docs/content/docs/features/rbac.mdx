@@ -134,10 +134,13 @@ Normal users do not self-reset through a public "forgot password" form. A
 and revokes API tokens by default unless the admin explicitly keeps them.
 
 If the last `superadmin` loses the password, stop the server and run the local
-break-glass command on the host that owns the data dir:
+break-glass command on the host that owns the data dir. Use the actual
+superadmin user ID. For `bootstrap-superadmin` installs that ID is
+`_superadmin`; for Web onboarding it is the ID chosen during setup, for example
+`admin`.
 
 ```sh
-portunus-server --data-dir /var/lib/portunus reset-password _superadmin --temporary
+portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
 ```
 
 The command prints a temporary password once and requires a password change at

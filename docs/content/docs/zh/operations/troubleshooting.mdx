@@ -132,13 +132,15 @@ setup token 30 分钟后过期；只要 onboarding 还没完成，每次 server 
 
 ### 最后一个 `superadmin` 忘记密码
 
-先停止 server 进程，在本地重置现有账户，然后重启：
+先停止 server 进程，在本地重置现有账户，然后重启。这里要使用真实的超管用户
+ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的是
+初始化时选择的 ID，例如 `admin`。
 
 ```sh
 sudo systemctl stop portunus-server
 sudo -u portunus-server portunus-server \
   --data-dir /var/lib/portunus \
-  reset-password _superadmin --temporary
+  reset-password admin --temporary
 sudo systemctl start portunus-server
 ```
 

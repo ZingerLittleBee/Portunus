@@ -272,16 +272,6 @@ async fn post_users_rejects_invalid_id_with_422() {
 #[tokio::test]
 async fn delete_self_returns_409_cannot_remove_self() {
     let (router, _d) = build_router();
-    // The `_legacy` superadmin can't be removed via the regular DELETE
-    // because reserved IDs only deserialize through the private
-    // constructor — that's already enforced by `UserId::from_str`. So
-    // we instead validate the self-removal protection by deleting
-    // a user the caller IS the legacy superadmin (legacy id).
-    // The bootstrapped legacy id is `_legacy` (reserved), which the
-    // public `from_str` rejects with `reserved_user_id`. That prevents
-    // the request from reaching the `cannot_remove_self` check at all.
-    // Instead, exercise the rejection path with a regular user so the
-    // legacy superadmin requests the deletion of itself by user_id.
     let resp = router
         .clone()
         .oneshot(req(
@@ -292,9 +282,7 @@ async fn delete_self_returns_409_cannot_remove_self() {
         ))
         .await
         .expect("oneshot");
-    // `_legacy` fails the public `UserId::from_str` regex, so we get
-    // 422 `reserved_user_id` BEFORE the self-removal check fires.
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
 
 /// T031 (R-006 cascade ordering): when a user is deleted, the

@@ -142,13 +142,16 @@ supposed to be boring.
 
 ### Last `superadmin` forgot the password
 
-Stop the server process, reset the existing account locally, then restart:
+Stop the server process, reset the existing account locally, then restart. Use
+the actual superadmin user ID. For `bootstrap-superadmin` installs that ID is
+`_superadmin`; for Web onboarding it is the ID chosen during setup, for example
+`admin`.
 
 ```sh
 sudo systemctl stop portunus-server
 sudo -u portunus-server portunus-server \
   --data-dir /var/lib/portunus \
-  reset-password _superadmin --temporary
+  reset-password admin --temporary
 sudo systemctl start portunus-server
 ```
 

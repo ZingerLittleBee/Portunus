@@ -135,9 +135,13 @@ again, so browser onboarding normally uses the token printed by `server` logs.
 
 ```sh
 docker compose stop server
-docker compose run --rm operator reset-password _superadmin --temporary
+docker compose run --rm operator reset-password admin --temporary
 docker compose up -d server
 ```
+
+Use the actual superadmin user ID. For `bootstrap-superadmin` installs that ID
+is `_superadmin`; for Web onboarding it is the ID chosen during setup, for
+example `admin`.
 
 ## Client compose
 

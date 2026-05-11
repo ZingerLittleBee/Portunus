@@ -26,6 +26,7 @@ use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
 use crate::operator::passwords::{PasswordError, hash_password};
 use crate::operator::rbac;
+use crate::operator::user_ids::parse_stored_user_id;
 use crate::state::AppState;
 use portunus_auth::IdentityStoreError;
 
@@ -200,7 +201,7 @@ pub async fn get_user(
     Path(user_id): Path<String>,
 ) -> Result<Json<UserView>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let id = UserId::from_str(&user_id).map_err(api_rbac)?;
+    let id = parse_stored_user_id(&user_id).map_err(api_rbac)?;
     let user = state
         .operator_store
         .get_user(&id)
@@ -224,7 +225,7 @@ pub async fn delete_user(
     Path(user_id): Path<String>,
 ) -> Result<Json<DeleteUserResponse>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let id = UserId::from_str(&user_id).map_err(api_rbac)?;
+    let id = parse_stored_user_id(&user_id).map_err(api_rbac)?;
 
     if id == identity.user_id {
         return Err(api_rbac(RbacError::CannotRemoveSelf));

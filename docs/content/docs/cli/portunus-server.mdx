@@ -79,8 +79,11 @@ running against the same `--data-dir`.
 
 ```sh
 portunus-server --data-dir /var/lib/portunus \
-  reset-password _superadmin --temporary
+  reset-password admin --temporary
 ```
+
+Use the actual superadmin user ID. For `bootstrap-superadmin` installs that ID
+is `_superadmin`; for Web onboarding it is the ID chosen during setup.
 
 Without `--temporary`, the command prompts twice without echo. `--password-stdin`
 reads the new password from the first stdin line for automation. By default,

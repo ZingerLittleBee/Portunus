@@ -39,9 +39,9 @@ Responses on missing / invalid authentication:
 
 | Status | Body | Cause |
 | --- | --- | --- |
-| `401 unauthenticated` | `{"error":"unauthenticated"}` | Missing / invalid bearer or Web session |
-| `403 not_owner` | `{"error":"not_owner"}` | Authenticated, but caller does not own the resource |
-| `403 password_change_required` | `{"error":"password_change_required"}` | Web session must change a temporary password first |
+| `401 unauthenticated` | `{"error":{"code":"unauthenticated","message":"..."}}` | Missing / invalid bearer or Web session |
+| `403 not_owner` | `{"error":{"code":"not_owner","message":"..."}}` | Authenticated, but caller does not own the resource |
+| `403 password_change_required` | `{"error":{"code":"password_change_required","message":"..."}}` | Web session must change a temporary password first |
 | `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/en/docs/features/rbac)) |
 | `403 csrf_*` | Cookie-authenticated write failed CSRF checks |
 | `429 rate_limited` | Too many login, onboarding, or password-reset attempts |
