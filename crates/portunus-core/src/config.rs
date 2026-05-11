@@ -379,14 +379,42 @@ fn validate_operator_http_origin_authority(authority: &str) -> Result<(), Portun
     let (host, port) = authority
         .split_once(':')
         .map_or((authority, None), |(host, port)| (host, Some(port)));
-    if host.is_empty() {
+    validate_operator_http_origin_hostname(host)?;
+    if let Some(port) = port {
+        validate_operator_http_origin_port(port)?;
+    }
+    Ok(())
+}
+
+fn validate_operator_http_origin_hostname(host: &str) -> Result<(), PortunusError> {
+    if host.is_empty() || host.contains('@') {
         return Err(PortunusError::ConfigInvalid(
             "operator_http_public_origin must include a valid host".into(),
         ));
     }
-    if let Some(port) = port {
-        validate_operator_http_origin_port(port)?;
+
+    if host.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+        && host.parse::<std::net::Ipv4Addr>().is_err()
+    {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must include a valid host".into(),
+        ));
     }
+
+    for label in host.split('.') {
+        if label.is_empty()
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin must include a valid host".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -680,6 +708,12 @@ mod tests {
                 "https://ops.example.com:bad",
                 "https://ops.example.com:0",
                 "https://ops.example.com:65536",
+                "https://user@ops.example.com",
+                "https://-bad-host",
+                "https://bad-host-",
+                "https://bad..host",
+                "https://bad_host",
+                "https://256.256.256.256",
                 "https:// host",
                 "https://?x",
                 "https://#x",
