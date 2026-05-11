@@ -24,7 +24,7 @@ use tracing::info;
 
 use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
-use crate::operator::passwords::hash_password;
+use crate::operator::passwords::{PasswordError, hash_password};
 use crate::operator::rbac;
 use crate::state::AppState;
 use portunus_auth::IdentityStoreError;
@@ -46,6 +46,21 @@ fn api_store(e: IdentityStoreError) -> ApiError {
         _ => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     };
     ApiError::new(status, code, e.to_string())
+}
+
+fn password_error(error: PasswordError) -> ApiError {
+    match error {
+        PasswordError::TooShort | PasswordError::TooLong | PasswordError::Invalid => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            error.to_string(),
+            error.to_string(),
+        ),
+        PasswordError::HashFailed => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "password_hash_failed",
+            "password hashing failed",
+        ),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,18 +140,19 @@ pub async fn post_users(
         created_at: Utc::now(),
         disabled: false,
     };
+    if body.initial_password.is_none() && body.password_change_required {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "initial_password_required",
+            "password_change_required requires initial_password",
+        ));
+    }
     let password_hash = body
         .initial_password
         .as_deref()
         .map(hash_password)
         .transpose()
-        .map_err(|e| {
-            ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                e.to_string(),
-                e.to_string(),
-            )
-        })?;
+        .map_err(password_error)?;
     state
         .operator_store
         .add_user_with_password(
