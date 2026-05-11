@@ -159,9 +159,8 @@ fn authenticate_request(
     state: &AppState,
     req: &Request<Body>,
 ) -> Result<(OperatorIdentity, AuthMethod), RbacError> {
-    if let Some(secret) = sessions::cookie_value(req.headers(), sessions::SESSION_COOKIE)
-        && let Ok(identity) = verify_session_secret(state, secret)
-    {
+    if let Some(secret) = sessions::cookie_value(req.headers(), sessions::SESSION_COOKIE) {
+        let identity = verify_session_secret(state, secret)?;
         return Ok((identity, AuthMethod::Cookie));
     }
 

@@ -481,6 +481,32 @@ async fn bearer_post_does_not_need_csrf() {
 }
 
 #[tokio::test]
+async fn invalid_cookie_does_not_fall_back_to_valid_bearer() {
+    let (router, operator_store, store, _dir) = build_router(false);
+    create_password_user(&router, &store, "admin").await;
+    let admin_id = "admin".parse::<UserId>().expect("admin user id");
+    let (_credential, api_token) = operator_store
+        .issue_credential(&admin_id, Some("api".into()))
+        .expect("issue api credential");
+
+    let resp = router
+        .oneshot(authed_req(
+            Method::GET,
+            "/v1/users/me",
+            json!(null),
+            Some("portunus_session=invalid"),
+            Some(&api_token),
+            false,
+            None,
+        ))
+        .await
+        .expect("users me");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "credential_invalid");
+}
+
+#[tokio::test]
 async fn cookie_post_rejects_mismatched_origin() {
     let (router, _operator_store, store, _dir) = build_router(false);
     create_password_user(&router, &store, "admin").await;
