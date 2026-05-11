@@ -30,12 +30,12 @@ impl Store {
             // them without an ORDER BY sort.
             let sql = match outcome_filter {
                 Some(_) => {
-                    "SELECT ts, user_id, outcome, action, details_json \
+                    "SELECT ts, user_id, outcome, action, resource_kind, resource_value, details_json \
                      FROM audit WHERE outcome = ? \
                      ORDER BY ts DESC, seq DESC LIMIT ?"
                 }
                 None => {
-                    "SELECT ts, user_id, outcome, action, details_json \
+                    "SELECT ts, user_id, outcome, action, resource_kind, resource_value, details_json \
                      FROM audit \
                      ORDER BY ts DESC, seq DESC LIMIT ?"
                 }
@@ -46,13 +46,16 @@ impl Store {
                 let user_id: Option<String> = r.get(1)?;
                 let outcome_str: String = r.get(2)?;
                 let action: String = r.get(3)?;
-                let details_json: String = r.get(4)?;
+                let resource_kind: Option<String> = r.get(4)?;
+                let resource_value: Option<String> = r.get(5)?;
+                let details_json: String = r.get(6)?;
 
                 let timestamp = DateTime::parse_from_rfc3339(&ts)
                     .map_or_else(|_| Utc::now(), |dt| dt.with_timezone(&Utc));
                 let outcome = AuditOutcome::parse(&outcome_str).unwrap_or(AuditOutcome::Allow);
                 let (method, path) = split_action(&action);
-                let (role, reason) = parse_details(&details_json);
+                let (role, reason, details) = parse_details(&details_json);
+                let action_field = (!action.contains(' ')).then_some(action);
                 Ok(AuditEntry {
                     timestamp,
                     actor: user_id.unwrap_or_default(),
@@ -61,10 +64,10 @@ impl Store {
                     path,
                     outcome,
                     reason,
-                    action: None,
-                    resource_kind: None,
-                    resource_value: None,
-                    details: None,
+                    action: action_field,
+                    resource_kind,
+                    resource_value,
+                    details,
                 })
             };
             let iter = if let Some(o) = outcome_filter {
@@ -140,7 +143,7 @@ impl Store {
                 format!(" WHERE {}", where_clauses.join(" AND "))
             };
             let sql = format!(
-                "SELECT seq, ts, user_id, outcome, action, details_json \
+                "SELECT seq, ts, user_id, outcome, action, resource_kind, resource_value, details_json \
                  FROM audit{where_sql} \
                  ORDER BY ts DESC, seq DESC LIMIT ?"
             );
@@ -153,13 +156,16 @@ impl Store {
                 let user_id: Option<String> = r.get(2)?;
                 let outcome_str: String = r.get(3)?;
                 let action: String = r.get(4)?;
-                let details_json: String = r.get(5)?;
+                let resource_kind: Option<String> = r.get(5)?;
+                let resource_value: Option<String> = r.get(6)?;
+                let details_json: String = r.get(7)?;
 
                 let timestamp = DateTime::parse_from_rfc3339(&ts)
                     .map_or_else(|_| Utc::now(), |dt| dt.with_timezone(&Utc));
                 let outcome = AuditOutcome::parse(&outcome_str).unwrap_or(AuditOutcome::Allow);
                 let (method, path) = split_action(&action);
-                let (role, reason) = parse_details(&details_json);
+                let (role, reason, details) = parse_details(&details_json);
+                let action_field = (!action.contains(' ')).then_some(action);
                 Ok((
                     seq,
                     AuditEntry {
@@ -170,10 +176,10 @@ impl Store {
                         path,
                         outcome,
                         reason,
-                        action: None,
-                        resource_kind: None,
-                        resource_value: None,
-                        details: None,
+                        action: action_field,
+                        resource_kind,
+                        resource_value,
+                        details,
                     },
                 ))
             };
@@ -265,8 +271,14 @@ fn split_action(action: &str) -> (String, String) {
     }
 }
 
-fn parse_details(s: &str) -> (Option<portunus_auth::OperatorRole>, Option<String>) {
-    let v: serde_json::Value = serde_json::from_str(s).unwrap_or(serde_json::Value::Null);
+fn parse_details(
+    s: &str,
+) -> (
+    Option<portunus_auth::OperatorRole>,
+    Option<String>,
+    Option<serde_json::Value>,
+) {
+    let mut v: serde_json::Value = serde_json::from_str(s).unwrap_or(serde_json::Value::Null);
     let role = v
         .get("role")
         .and_then(|r| serde_json::from_value(r.clone()).ok());
@@ -274,7 +286,14 @@ fn parse_details(s: &str) -> (Option<portunus_auth::OperatorRole>, Option<String
         .get("reason")
         .and_then(|r| r.as_str())
         .map(ToString::to_string);
-    (role, reason)
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("role");
+        obj.remove("reason");
+        if obj.is_empty() {
+            return (role, reason, None);
+        }
+    }
+    (role, reason, Some(v))
 }
 
 #[cfg(test)]

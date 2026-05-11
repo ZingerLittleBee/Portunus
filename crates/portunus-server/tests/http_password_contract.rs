@@ -13,6 +13,7 @@ use portunus_server::operator::http;
 use portunus_server::state::AppState;
 use serde_json::json;
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -47,6 +48,13 @@ fn build_router() -> (
         )
         .expect("AppState"),
     );
+    let audit_handle = portunus_server::store::audit_writer::spawn(
+        Arc::clone(&sqlite_store),
+        state.metrics.audit_buffer_drops_total.clone(),
+        state.metrics.audit_durable_writer_lag_seconds.clone(),
+        CancellationToken::new(),
+    );
+    state.audit.bind_durable_writer(audit_handle);
     (
         http::router(Arc::clone(&state)),
         state,
@@ -320,4 +328,18 @@ async fn admin_reset_writes_audit_event_without_password() {
     assert!(!audit_json.contains(new_password));
     assert!(audit_json.contains("sessions_revoked"));
     assert!(audit_json.contains("api_tokens_revoked"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let durable = store.query_audit_recent(20, None).expect("durable audit");
+    let durable_reset = durable
+        .iter()
+        .find(|entry| entry.action.as_deref() == Some("operator.password_reset"))
+        .expect("durable password reset audit event");
+    assert_eq!(durable_reset.actor, "admin");
+    assert_eq!(durable_reset.resource_kind.as_deref(), Some("user"));
+    assert_eq!(durable_reset.resource_value.as_deref(), Some("admin"));
+    let durable_json = serde_json::to_string(durable_reset).expect("durable audit json");
+    assert!(!durable_json.contains(new_password));
+    assert!(durable_json.contains("sessions_revoked"));
+    assert!(durable_json.contains("api_tokens_revoked"));
 }
