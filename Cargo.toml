@@ -82,6 +82,7 @@ toml = "0.8"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 blake3 = "1"
 sha2 = "0.10"
+argon2 = { version = "0.5.3", features = ["std"] }
 ulid = { version = "1", features = ["serde"] }
 
 # Errors
