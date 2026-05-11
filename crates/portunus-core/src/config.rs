@@ -303,6 +303,12 @@ impl ServerConfig {
 }
 
 fn validate_operator_http_public_origin(origin: &str) -> Result<(), PortunusError> {
+    if origin.bytes().any(|b| b.is_ascii_whitespace()) {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must not contain whitespace".into(),
+        ));
+    }
+
     let rest = if let Some(v) = origin.strip_prefix("http://") {
         v
     } else if let Some(v) = origin.strip_prefix("https://") {
@@ -329,12 +335,67 @@ fn validate_operator_http_public_origin(origin: &str) -> Result<(), PortunusErro
                 .into(),
         ));
     }
-    if rest.bytes().any(|b| b.is_ascii_whitespace()) {
+
+    validate_operator_http_origin_authority(rest)
+}
+
+fn validate_operator_http_origin_authority(authority: &str) -> Result<(), PortunusError> {
+    if let Some(after_open) = authority.strip_prefix('[') {
+        let Some(close_idx) = after_open.find(']') else {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin IPv6 host must be bracketed".into(),
+            ));
+        };
+        let host = &after_open[..close_idx];
+        if host.is_empty() || host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin must include a valid host".into(),
+            ));
+        }
+        let rest = &after_open[close_idx + 1..];
+        if rest.is_empty() {
+            return Ok(());
+        }
+        let Some(port) = rest.strip_prefix(':') else {
+            return Err(PortunusError::ConfigInvalid(
+                "operator_http_public_origin IPv6 host must use [host]:port form".into(),
+            ));
+        };
+        return validate_operator_http_origin_port(port);
+    }
+
+    if authority.contains('[') || authority.contains(']') {
         return Err(PortunusError::ConfigInvalid(
-            "operator_http_public_origin must not contain whitespace".into(),
+            "operator_http_public_origin IPv6 host must be bracketed".into(),
         ));
     }
 
+    if authority.matches(':').count() > 1 {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin IPv6 host must be bracketed".into(),
+        ));
+    }
+
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    if host.is_empty() {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin must include a valid host".into(),
+        ));
+    }
+    if let Some(port) = port {
+        validate_operator_http_origin_port(port)?;
+    }
+    Ok(())
+}
+
+fn validate_operator_http_origin_port(port: &str) -> Result<(), PortunusError> {
+    if port.is_empty() || port.parse::<u16>().ok().filter(|port| *port > 0).is_none() {
+        return Err(PortunusError::ConfigInvalid(
+            "operator_http_public_origin port must be a valid 1..=65535 integer".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -583,6 +644,20 @@ mod tests {
         }
 
         #[test]
+        fn accepts_port_and_bracketed_ipv6_origins() {
+            for origin in [
+                "https://ops.example.com:8443",
+                "https://[::1]:7080",
+                "http://[2001:db8::1]",
+            ] {
+                let toml = format!(r#"operator_http_public_origin = "{origin}""#);
+                let dir = write_tmp("server.toml", &toml);
+                let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
+                assert_eq!(cfg.operator_http_origin_for_csrf(), origin);
+            }
+        }
+
+        #[test]
         fn defaults_to_listen_origin_on_http() {
             let dir = write_tmp("server.toml", "");
             let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
@@ -599,6 +674,15 @@ mod tests {
                 "https://ops.example.com/path",
                 "https://ops.example.com?query=1",
                 "https://ops.example.com#frag",
+                "https://:8443",
+                "https://::1",
+                "https://[::1",
+                "https://ops.example.com:bad",
+                "https://ops.example.com:0",
+                "https://ops.example.com:65536",
+                "https:// host",
+                "https://?x",
+                "https://#x",
             ] {
                 let toml = format!(r#"operator_http_public_origin = "{origin}""#);
                 let dir = write_tmp("server.toml", &toml);

@@ -20,11 +20,12 @@ control_listen = "0.0.0.0:7443"
 # needs it. Every /v1/* request still requires Authorization: Bearer <token>.
 operator_http_listen = "127.0.0.1:7080"
 
-# Optional public origin used for CSRF Origin validation and whether
-# operator session cookies get the Secure attribute.
+# Optional public origin used for CSRF Origin validation and, in v1.1+,
+# whether local-login session cookies get the Secure attribute.
 # Set this when the UI is reached through a reverse proxy / public hostname.
 # Must start with http:// or https:// and MUST NOT end with a trailing slash.
-# Origin only, no path, query, or fragment.
+# Origin only, no path, query, or fragment. Explicit ports are allowed.
+# IPv6 literals must use brackets, for example: https://[::1]:7080
 # operator_http_public_origin = "https://ops.example.com"
 
 # Prometheus /metrics endpoint. Same loopback constraint.

@@ -19,11 +19,12 @@ control_listen = "0.0.0.0:7443"
 # 每条 /v1/* 请求仍然需要 Authorization: Bearer <token>。
 operator_http_listen = "127.0.0.1:7080"
 
-# 可选的公开 Origin，用于 CSRF Origin 校验，以及决定
-# operator session cookie 是否带 Secure 属性。
+# 可选的公开 Origin，用于 CSRF Origin 校验；在 v1.1+ 中也用于决定
+# 本地登录 session cookie 是否带 Secure 属性。
 # 当 UI 通过反向代理或公网域名访问时应显式设置它。
 # 必须以 http:// 或 https:// 开头，且结尾不能带 /。
-# 这里只能填 origin，不能带 path、query 或 fragment。
+# 这里只能填 origin，不能带 path、query 或 fragment。允许显式端口。
+# IPv6 literal 必须使用方括号，例如：https://[::1]:7080
 # operator_http_public_origin = "https://ops.example.com"
 
 # Prometheus /metrics 端点。同样的 loopback 约束。
