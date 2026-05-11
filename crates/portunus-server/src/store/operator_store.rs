@@ -23,6 +23,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::operator::{
     sessions,
+    setup_token::{DEFAULT_SETUP_TOKEN_TTL, SetupTokenRecord},
     throttle::{AuthThrottleAction, ThrottleDecision},
 };
 use crate::store::{Store, StoreError, map_rusqlite};
@@ -442,6 +443,65 @@ impl SqliteOperatorStore {
                     )
                     .map_err(map_rusqlite)?;
                 Ok(deleted)
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    pub(crate) fn rotate_onboarding_setup_token(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<String, IdentityStoreError> {
+        let (raw, record) = SetupTokenRecord::new(now, DEFAULT_SETUP_TOKEN_TTL);
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO onboarding_setup (id, token_hash, issued_at, expires_at) \
+                     VALUES (1, ?, ?, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                        token_hash = excluded.token_hash, \
+                        issued_at = excluded.issued_at, \
+                        expires_at = excluded.expires_at",
+                    params![
+                        record.hash_hex(),
+                        now.to_rfc3339(),
+                        record.expires_at().to_rfc3339(),
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))?;
+        Ok(raw)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn verify_onboarding_setup_token(
+        &self,
+        raw: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, IdentityStoreError> {
+        self.store
+            .with_conn(|c| {
+                let row = c
+                    .query_row(
+                        "SELECT token_hash, expires_at FROM onboarding_setup WHERE id = 1",
+                        [],
+                        row_to_setup_token_record,
+                    )
+                    .optional()
+                    .map_err(map_rusqlite)?;
+                Ok(row.is_some_and(|record| record.verify(raw, now)))
+            })
+            .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear_onboarding_setup_token(&self) -> Result<(), IdentityStoreError> {
+        self.store
+            .with_write_tx(|tx| {
+                tx.execute("DELETE FROM onboarding_setup WHERE id = 1", [])
+                    .map_err(map_rusqlite)?;
+                Ok(())
             })
             .map_err(|e| IdentityStoreError::WriteFailed(e.to_string()))
     }
@@ -1223,6 +1283,16 @@ fn row_to_login_attempt(r: &Row<'_>) -> rusqlite::Result<ThrottleDecision> {
     })
 }
 
+#[allow(dead_code)]
+fn row_to_setup_token_record(r: &Row<'_>) -> rusqlite::Result<SetupTokenRecord> {
+    let hash_hex: String = r.get(0)?;
+    let expires_at: String = r.get(1)?;
+    Ok(SetupTokenRecord::from_stored(
+        hash_hex,
+        parse_ts_rusqlite(&expires_at, 1)?,
+    ))
+}
+
 fn parse_user_id(s: &str, col: usize) -> rusqlite::Result<UserId> {
     if s.starts_with('_') {
         Ok(UserId::reserved(s))
@@ -1715,6 +1785,68 @@ mod tests {
 
         assert_eq!(s.delete_web_session_for_test(&hash).unwrap(), 1);
         assert!(s.verify_web_session(&hash, created_at).unwrap().is_none());
+    }
+
+    #[test]
+    fn onboarding_setup_token_rotation_rejects_old_token() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        let first = s.rotate_onboarding_setup_token(now).unwrap();
+        let second = s
+            .rotate_onboarding_setup_token(now + chrono::Duration::minutes(1))
+            .unwrap();
+
+        assert!(
+            s.verify_onboarding_setup_token(&second, now + chrono::Duration::minutes(1))
+                .unwrap()
+        );
+        assert!(!s.verify_onboarding_setup_token(&first, now).unwrap());
+    }
+
+    #[test]
+    fn onboarding_setup_token_stores_hash_and_expires() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        let raw = s.rotate_onboarding_setup_token(now).unwrap();
+
+        let stored_hash: String = s
+            .store
+            .with_conn(|c| {
+                let hash = c
+                    .query_row(
+                        "SELECT token_hash FROM onboarding_setup WHERE id = 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                Ok(hash)
+            })
+            .unwrap();
+        assert_ne!(stored_hash, raw);
+        assert!(
+            s.verify_onboarding_setup_token(&raw, now + chrono::Duration::minutes(29))
+                .unwrap()
+        );
+        assert!(
+            !s.verify_onboarding_setup_token(&raw, now + chrono::Duration::minutes(30))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn onboarding_setup_token_clear_and_missing_row_return_false() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+
+        assert!(!s.verify_onboarding_setup_token("missing", now).unwrap());
+
+        let raw = s.rotate_onboarding_setup_token(now).unwrap();
+        assert!(s.verify_onboarding_setup_token(&raw, now).unwrap());
+
+        s.clear_onboarding_setup_token().unwrap();
+        assert!(!s.verify_onboarding_setup_token(&raw, now).unwrap());
     }
 
     #[test]

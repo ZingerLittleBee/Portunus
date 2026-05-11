@@ -21,6 +21,7 @@ pub mod per_port_stats;
 pub mod rbac;
 pub mod rule_cli;
 pub(crate) mod sessions;
+pub(crate) mod setup_token;
 pub mod stats_stream;
 pub(crate) mod throttle;
 pub mod users;

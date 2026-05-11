@@ -22,6 +22,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use chrono::Utc;
 use portunus_auth::OperatorAuthenticator;
 use portunus_core::PortunusError;
 use portunus_core::config::ServerConfig;
@@ -122,6 +123,17 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
                 return Err(PortunusError::Tls(format!("operator_token bootstrap: {e}")));
             }
         }
+    }
+    if !operator_store.has_any_superadmin() {
+        let now = Utc::now();
+        let raw = operator_store
+            .rotate_onboarding_setup_token(now)
+            .map_err(|e| PortunusError::Tls(format!("rotate onboarding setup token: {e}")))?;
+        info!(
+            event = "operator.onboarding_setup_token_rotated",
+            expires_at = %(now + crate::operator::setup_token::DEFAULT_SETUP_TOKEN_TTL),
+        );
+        eprintln!("Portunus onboarding setup token: {raw}");
     }
     let clients = ConnectedClients::default();
     let shutdown = Shutdown::new();
