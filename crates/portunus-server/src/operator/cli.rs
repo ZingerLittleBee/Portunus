@@ -264,18 +264,19 @@ impl OperatorError {
             | Self::RateLimitUnsupportedByClient { .. }
             | Self::RateLimitValidation { .. } => 3,
             Self::ClientNotConnected(_) => 4,
-            Self::ClientNotFound(_) => 8,
-            Self::ClientNotRevoked(_) => 5,
             // 009-tls-sni-routing: SNI conflicts share exit 5 with
             // PortInUse (the closest analogue: rule shape rejected
-            // because the listener is already committed).
+            // because the listener is already committed). `ClientNotRevoked`
+            // joins the family since "still active, refuse to delete" is
+            // the same shape: precondition for a destructive op not met.
             Self::PortInUse { .. }
             | Self::SniRouteDuplicate { .. }
             | Self::SniFallbackDuplicate { .. }
-            | Self::LegacyToSniUnsupported { .. } => 5,
+            | Self::LegacyToSniUnsupported { .. }
+            | Self::ClientNotRevoked(_) => 5,
             Self::ActivationFailed(_) => 6,
             Self::AckTimeout => 7,
-            Self::RuleNotFound => 8,
+            Self::RuleNotFound | Self::ClientNotFound(_) => 8,
             // 005: RBAC failures use the new operator-api table:
             // 4=auth, 5=rbac denial, 6=bootstrap_required, 2=already_bootstrapped, 3=validation.
             Self::Rbac(e) => match e {
@@ -503,7 +504,7 @@ pub async fn revoke(state: &AppState, raw_name: &str) -> Result<(), OperatorErro
 /// Permanently remove a previously-revoked client from the store.
 /// Returns `ClientNotFound` / `ClientNotRevoked` so callers can map to
 /// the right HTTP status and CLI exit code.
-pub async fn delete_client(state: &AppState, raw_name: &str) -> Result<(), OperatorError> {
+pub fn delete_client(state: &AppState, raw_name: &str) -> Result<(), OperatorError> {
     let name = ClientName::from_str(raw_name)?;
     match state
         .tokens

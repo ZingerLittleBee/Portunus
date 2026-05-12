@@ -141,7 +141,7 @@ async fn delete_client(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    cli::delete_client(&state, &name).await?;
+    cli::delete_client(&state, &name)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

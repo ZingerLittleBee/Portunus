@@ -418,7 +418,7 @@ mod tests {
         let old = s.issue(cn("edge-01")).unwrap();
         let new = match s.reissue(&cn("edge-01")).unwrap() {
             ReissueOutcome::Rotated(t) => t,
-            other => panic!("expected Rotated, got {other:?}"),
+            ReissueOutcome::NotFound => panic!("expected Rotated, got NotFound"),
         };
         assert_ne!(old, new);
         // Old token no longer authenticates.
@@ -437,7 +437,7 @@ mod tests {
         s.revoke(&cn("edge-01")).unwrap();
         let new = match s.reissue(&cn("edge-01")).unwrap() {
             ReissueOutcome::Rotated(t) => t,
-            other => panic!("expected Rotated, got {other:?}"),
+            ReissueOutcome::NotFound => panic!("expected Rotated, got NotFound"),
         };
         assert_eq!(s.verify(&new).unwrap().client_name.as_str(), "edge-01");
         let row = s.list().unwrap();

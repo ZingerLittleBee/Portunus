@@ -28,6 +28,7 @@ pub struct ServerConfig {
     ///      if you can't change the proxy), or
     ///   2. You want to hard-lock writes to one declared origin as a
     ///      defense-in-depth measure.
+    ///
     /// When set, the value must be an origin (`scheme://host[:port]`) with
     /// no path, query, or fragment.
     #[serde(default)]
