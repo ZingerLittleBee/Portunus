@@ -5,6 +5,58 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-05-13
+
+UX-focused release. Operators can now recover from a lost credential
+bundle, surface OS-specific install commands directly from the Web
+UI, and keep the clients list uncluttered. CSRF works out of the box
+on Docker / loopback / LAN deployments without any config knob.
+
+### Added
+
+- **Re-issue credential** — client detail page now offers an
+  in-place credential rotation that invalidates the old bearer
+  token, disconnects any live forwarder under the same name, and
+  hands back a fresh bundle. Recovers from "I navigated away
+  before saving the bundle" without having to revoke + provision
+  with a different name.
+- **Permanent client deletion** — `DELETE /v1/clients/{name}` and a
+  matching Web UI action purge already-revoked rows from the
+  store, freeing the name for re-provisioning. Refuses to touch
+  still-active clients (`409 client_not_revoked`).
+- **Hide-revoked filter** — clients list defaults to showing only
+  active clients; a "Show revoked (N)" toggle exposes history when
+  needed.
+- **In-UI install commands** — after issuing or re-issuing a
+  client, the Web UI renders OS-specific, copy-pasteable
+  installation steps (Docker, Linux/systemd, manual run). The
+  credential bundle is base64-embedded into each command so no
+  separate file transfer is required.
+- **`make dev` workflow** — top-level Makefile runs the backend
+  and Vite UI together with hot reload, auto-bootstrapping the
+  superadmin account and a temporary Web UI password on first
+  launch.
+
+### Changed
+
+- **CSRF default policy** — cookie-authenticated writes now pass
+  same-origin verification (`Origin` vs `Host`) when
+  `operator_http_public_origin` is not configured. This matches
+  Grafana / Caddy / Gitea and works zero-config for
+  `localhost` / loopback / LAN / proxy-preserved `Host` setups.
+  Setting `operator_http_public_origin` still hard-locks writes to
+  one declared origin for reverse-proxy lockdown scenarios.
+- **Bundle warning copy** clarifies that the bearer token is
+  surfaced exactly once and the server stores only its hash;
+  navigating away discards the plaintext.
+
+### Fixed
+
+- **Docker `--operator-http-listen 0.0.0.0:7080` no longer breaks
+  the Web UI** — the previous CSRF middleware compared the request
+  `Origin` against `http://{listen}`, which produced a guaranteed
+  mismatch any time the listen address was `0.0.0.0`.
+
 ## [1.1.0] — 2026-05-11
 
 Adds local password authentication for the operator Web UI. The data

@@ -89,7 +89,8 @@ fn request(
     if csrf {
         builder = builder
             .header("x-portunus-csrf", "1")
-            .header(header::ORIGIN, ORIGIN);
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::HOST, "127.0.0.1:7080");
     }
     let mut request = builder.body(Body::from(body_bytes)).expect("request");
     request.extensions_mut().insert(ConnectInfo(

@@ -266,6 +266,12 @@
     "revoked": "已撤销",
     "provision": "签发客户端",
     "revoke": "撤销",
+    "delete": "彻底删除",
+    "deleteConfirmTitle": "删除客户端 {{name}}?",
+    "deleteConfirmBody": "将从审计表中移除该客户端;之后此名称可被重新签发。该操作不可恢复。",
+    "deleteConfirmAction": "删除",
+    "showRevoked": "显示已撤销",
+    "revokedCount": "{{count}} 条已撤销",
     "emptyTitle": "暂无客户端",
     "emptyBody": "签发一个客户端凭证包以便转发器接入。"
   },
@@ -273,12 +279,46 @@
     "title": "签发客户端",
     "submit": "签发凭证包",
     "bundleHeading": "凭证包",
-    "bundleHint": "凭证包内含 bearer 令牌,请立即保存到本地,并通过安全渠道传给客户端。",
+    "bundleHint": "凭证包内含 bearer 令牌。服务端只保存其哈希值,离开本页面后明文将无法再次取出。请立即保存到本地,并通过安全渠道传给客户端。",
+    "reissueHint": "新凭证包已生成。原 bearer 令牌已失效;同名运行中的转发器将在重新部署新凭证后自动重连。请立即保存文件 —— 离开本页明文将丢失。",
     "download": "下载凭证包",
     "copy": "复制 JSON",
     "reveal": "显示",
     "hide": "隐藏",
-    "backToList": "返回客户端列表"
+    "backToList": "返回客户端列表",
+    "install": {
+      "heading": "在客户端机器上安装",
+      "hint": "在准备转发流量的主机上依次执行以下步骤。凭证包已经 base64 编码内联到每条命令里,无需另外复制文件。",
+      "tabDocker": "Docker",
+      "tabLinux": "Linux (systemd)",
+      "tabManual": "手动",
+      "copy": "复制",
+      "copied": "已复制",
+      "stepLabel": "第 {{n}} 步",
+      "docker": {
+        "step1Title": "把凭证包落到目标主机",
+        "step1Hint": "把 base64 字符串解码成 ./portunus/bundle.json,权限 0600。",
+        "step2Title": "运行转发器",
+        "step2Hint": "拉取发布的 client 镜像并使用 host 网络,以便转发端口直接绑定在宿主机网卡上。",
+        "step3Title": "查看日志确认连接",
+        "step3Hint": "几秒内应能看到 connected 行。"
+      },
+      "linux": {
+        "step1Title": "安装二进制",
+        "step1Hint": "自动识别 x86_64 / aarch64,下载发布 tarball 并把 portunus-client 装到 /usr/local/bin。",
+        "step2Title": "安装凭证包",
+        "step2Hint": "把凭证解码到 /etc/portunus/client.bundle.json,属主为专用系统用户。",
+        "step3Title": "安装并启动 systemd 服务",
+        "step3Hint": "写入 unit 文件、重载 systemd、设为开机自启并立即启动。",
+        "step4Title": "验证",
+        "step4Hint": "systemctl 显示 active (running);journalctl 跟踪实时日志。"
+      },
+      "manual": {
+        "step1Title": "解码凭证包",
+        "step2Title": "运行 client",
+        "step2Hint": "假设 portunus-client 已在 PATH 中。开发环境构建命令:cargo build --release -p portunus-client"
+      }
+    }
   },
   "clientDetail": {
     "back": "返回",
@@ -288,7 +328,11 @@
     "remote": "远端地址",
     "connectedAt": "连接时间",
     "provisionedAt": "签发时间",
-    "revokedAt": "吊销时间"
+    "revokedAt": "吊销时间",
+    "reissue": "重新签发凭证",
+    "reissueConfirmTitle": "为 {{name}} 重新签发凭证?",
+    "reissueConfirmBody": "将轮换 bearer 令牌。原令牌立刻失效,同名运行中的客户端会立即断开 —— 需要部署下方的新凭证后才会重连。",
+    "reissueConfirmAction": "重新签发"
   },
   "ownerQuotas": {
     "help": "所有者级别的上限会应用到该用户在此客户端上推送的全部规则。所有者上限优先于单规则上限生效。",

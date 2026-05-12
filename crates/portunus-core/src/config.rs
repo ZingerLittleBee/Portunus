@@ -18,6 +18,19 @@ pub struct ServerConfig {
     pub control_listen: SocketAddr,
     #[serde(default = "default_operator_http_listen")]
     pub operator_http_listen: SocketAddr,
+    /// Advanced — leave unset for normal deployments. The operator HTTP
+    /// CSRF middleware defaults to a same-origin check (Origin vs `Host`
+    /// header), which handles `localhost`, loopback IPs, LAN IPs, and any
+    /// reverse-proxy hostname that propagates `Host` correctly with zero
+    /// configuration. Set this only when:
+    ///   1. Your reverse proxy rewrites/strips `Host` (the proper fix is
+    ///      `proxy_set_header Host $host;` on nginx — use this knob only
+    ///      if you can't change the proxy), or
+    ///   2. You want to hard-lock writes to one declared origin as a
+    ///      defense-in-depth measure.
+    ///
+    /// When set, the value must be an origin (`scheme://host[:port]`) with
+    /// no path, query, or fragment.
     #[serde(default)]
     pub operator_http_public_origin: Option<String>,
     #[serde(default = "default_metrics_listen")]
@@ -286,19 +299,25 @@ impl ServerConfig {
             .unwrap_or_else(default_udp_max_flows_per_rule)
     }
 
-    /// Public origin used for CSRF Origin validation. Falls back to the
-    /// operator listen address when no explicit public hostname/origin is set.
+    /// Explicit public origin used for CSRF Origin validation, if the
+    /// operator declared one in `server.toml`. When `None`, the CSRF
+    /// middleware falls back to a same-origin check (Origin vs `Host`
+    /// header), which works for `localhost`, loopback IPs, LAN IPs, and
+    /// any reverse-proxy hostname without configuration.
     #[must_use]
-    pub fn operator_http_origin_for_csrf(&self) -> String {
-        self.operator_http_public_origin
-            .clone()
-            .unwrap_or_else(|| format!("http://{}", self.operator_http_listen))
+    pub fn operator_http_origin_for_csrf(&self) -> Option<&str> {
+        self.operator_http_public_origin.as_deref()
     }
 
-    /// Whether operator cookies should be marked `Secure`.
+    /// Whether operator cookies should be marked `Secure`. Only ever
+    /// true when the operator explicitly opted in to an `https://` public
+    /// origin — otherwise the operator HTTP server is plain HTTP and a
+    /// Secure cookie would silently get dropped by browsers.
     #[must_use]
     pub fn operator_http_cookie_secure(&self) -> bool {
-        self.operator_http_origin_for_csrf().starts_with("https://")
+        self.operator_http_public_origin
+            .as_deref()
+            .is_some_and(|o| o.starts_with("https://"))
     }
 }
 
@@ -666,7 +685,7 @@ mod tests {
             );
             assert_eq!(
                 cfg.operator_http_origin_for_csrf(),
-                "https://ops.example.com"
+                Some("https://ops.example.com")
             );
             assert!(cfg.operator_http_cookie_secure());
         }
@@ -681,16 +700,16 @@ mod tests {
                 let toml = format!(r#"operator_http_public_origin = "{origin}""#);
                 let dir = write_tmp("server.toml", &toml);
                 let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
-                assert_eq!(cfg.operator_http_origin_for_csrf(), origin);
+                assert_eq!(cfg.operator_http_origin_for_csrf(), Some(origin));
             }
         }
 
         #[test]
-        fn defaults_to_listen_origin_on_http() {
+        fn defaults_to_same_origin_check_on_http() {
             let dir = write_tmp("server.toml", "");
             let cfg = ServerConfig::from_toml_path(&dir.path().join("server.toml")).unwrap();
             assert_eq!(cfg.operator_http_public_origin, None);
-            assert_eq!(cfg.operator_http_origin_for_csrf(), "http://127.0.0.1:7080");
+            assert_eq!(cfg.operator_http_origin_for_csrf(), None);
             assert!(!cfg.operator_http_cookie_secure());
         }
 

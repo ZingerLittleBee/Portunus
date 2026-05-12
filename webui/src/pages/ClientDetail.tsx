@@ -9,7 +9,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, RefreshCw, Trash2 } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import {
@@ -18,11 +19,18 @@ import {
   useDeleteOwnerRateLimit,
   useOwnerRateLimit,
   usePutOwnerRateLimit,
+  useReissueClient,
 } from "@/api/clients";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { canProvisionClient } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ClientInstallSteps } from "@/components/ClientInstallSteps";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CredentialBundleCard } from "@/components/CredentialBundleCard";
+import type { CredentialBundle } from "@/api/types";
 import {
   EMPTY_RATE_LIMIT_FORM,
   RateLimitForm,
@@ -41,10 +49,32 @@ export function ClientDetail() {
   const { clientName = "" } = useParams<{ clientName: string }>();
   const clients = useClientsList();
   const client = clients.data?.find((c) => c.client_name === clientName);
+  const { data: identity } = useQuery({
+    queryKey: ME_QUERY_KEY,
+    queryFn: fetchIdentity,
+    staleTime: 60_000,
+  });
+  const canReissue = canProvisionClient(identity);
+  const reissue = useReissueClient();
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [reissuedBundle, setReissuedBundle] = useState<CredentialBundle | null>(null);
+  const [reissueError, setReissueError] = useState<string | null>(null);
+
+  async function doReissue() {
+    setReissueError(null);
+    try {
+      const bundle = await reissue.mutateAsync(clientName);
+      setReissuedBundle(bundle);
+      setConfirmOpen(false);
+    } catch (err) {
+      setReissueError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+    }
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Button variant="ghost" size="sm" onClick={() => navigate("/clients")}>
           <ArrowLeft className="h-4 w-4 mr-1" />
           {t("clientDetail.back")}
@@ -59,6 +89,21 @@ export function ClientDetail() {
         {client?.revoked_at && (
           <Badge variant="destructive">{t("clients.revoked")}</Badge>
         )}
+        {canReissue && client && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => {
+              setReissueError(null);
+              setConfirmOpen(true);
+            }}
+            disabled={reissue.isPending}
+          >
+            <RefreshCw className="mr-1 h-4 w-4" />
+            {t("clientDetail.reissue")}
+          </Button>
+        )}
       </div>
 
       <Tabs defaultValue="overview">
@@ -66,7 +111,7 @@ export function ClientDetail() {
           <TabsTrigger value="overview">{t("clientDetail.tabOverview")}</TabsTrigger>
           <TabsTrigger value="owners">{t("clientDetail.tabOwnerQuotas")}</TabsTrigger>
         </TabsList>
-        <TabsContent value="overview">
+        <TabsContent value="overview" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>{t("clientDetail.overviewTitle")}</CardTitle>
@@ -93,11 +138,35 @@ export function ClientDetail() {
               )}
             </CardContent>
           </Card>
+          {reissuedBundle && (
+            <>
+              <CredentialBundleCard bundle={reissuedBundle} intent="reissue" />
+              <ClientInstallSteps bundle={reissuedBundle} />
+            </>
+          )}
         </TabsContent>
         <TabsContent value="owners">
           <OwnerQuotasTab clientName={clientName} />
         </TabsContent>
       </Tabs>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmOpen(false);
+            setReissueError(null);
+          }
+        }}
+        title={t("clientDetail.reissueConfirmTitle", { name: clientName })}
+        description={t("clientDetail.reissueConfirmBody")}
+        confirmLabel={t("clientDetail.reissueConfirmAction")}
+        destructive
+        busy={reissue.isPending}
+        onConfirm={doReissue}
+      >
+        {reissueError && <p className="text-sm text-destructive">{reissueError}</p>}
+      </ConfirmDialog>
     </div>
   );
 }

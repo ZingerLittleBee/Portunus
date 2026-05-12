@@ -36,7 +36,9 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     let protected = Router::new()
         .route("/v1/clients", get(get_clients).post(post_clients))
+        .route("/v1/clients/{name}", delete(delete_client))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
+        .route("/v1/clients/{name}/reissue", post(post_reissue))
         .route("/v1/rules", get(get_rules).post(post_rules))
         .route(
             "/v1/rules/{rule_id}",
@@ -133,6 +135,22 @@ async fn post_revoke(
 ) -> Result<StatusCode, ApiError> {
     cli::revoke(&state, &name).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_client(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    cli::delete_client(&state, &name)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn post_reissue(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<(StatusCode, Json<CredentialBundle>), ApiError> {
+    let (_name, bundle) = cli::reissue_client(&state, &name).await?;
+    Ok((StatusCode::OK, Json(bundle)))
 }
 
 async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>> {
@@ -1314,7 +1332,8 @@ impl From<OperatorError> for ApiError {
             // violate.
             | OperatorError::SniRouteDuplicate { .. }
             | OperatorError::SniFallbackDuplicate { .. }
-            | OperatorError::LegacyToSniUnsupported { .. } => StatusCode::CONFLICT,
+            | OperatorError::LegacyToSniUnsupported { .. }
+            | OperatorError::ClientNotRevoked(_) => StatusCode::CONFLICT,
             OperatorError::InvalidName(_)
             | OperatorError::InvalidProtocol(_)
             | OperatorError::InvalidTarget(_)
@@ -1358,7 +1377,9 @@ impl From<OperatorError> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
-            OperatorError::RuleNotFound => StatusCode::NOT_FOUND,
+            OperatorError::RuleNotFound | OperatorError::ClientNotFound(_) => {
+                StatusCode::NOT_FOUND
+            }
             // 005-multi-user-rbac: RBAC failures use the auth_layer's
             // shared status table (single source of truth).
             OperatorError::Rbac(rb) => crate::operator::auth_layer::rbac_status(rb),

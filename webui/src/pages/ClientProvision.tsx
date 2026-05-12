@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { Download, Copy, Check, Eye, EyeOff } from "lucide-react";
 
 import { useProvisionClient } from "@/api/clients";
 import { ApiError } from "@/api/client";
@@ -9,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ClientInstallSteps } from "@/components/ClientInstallSteps";
+import { CredentialBundleCard } from "@/components/CredentialBundleCard";
 import type { CredentialBundle } from "@/api/types";
 
 export function ClientProvision() {
@@ -17,8 +18,6 @@ export function ClientProvision() {
   const provision = useProvisionClient();
   const [name, setName] = useState("");
   const [bundle, setBundle] = useState<CredentialBundle | null>(null);
-  const [revealed, setRevealed] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -32,32 +31,8 @@ export function ClientProvision() {
     }
   }
 
-  function downloadBundle() {
-    if (!bundle) return;
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${bundle.client_name}.bundle.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  async function copyBundle() {
-    if (!bundle) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2_000);
-    } catch {
-      /* ignore */
-    }
-  }
-
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>{t("clientProvision.title")}</CardTitle>
@@ -91,36 +66,13 @@ export function ClientProvision() {
       </Card>
 
       {bundle && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("clientProvision.bundleHeading")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-sm text-muted-foreground">{t("clientProvision.bundleHint")}</p>
-            <div className="flex gap-2">
-              <Button onClick={downloadBundle}>
-                <Download className="mr-1 h-4 w-4" />
-                {t("clientProvision.download")}
-              </Button>
-              <Button variant="outline" onClick={copyBundle}>
-                {copied ? <Check className="mr-1 h-4 w-4" /> : <Copy className="mr-1 h-4 w-4" />}
-                {copied ? t("tokenReveal.copied") : t("clientProvision.copy")}
-              </Button>
-              <Button variant="ghost" onClick={() => setRevealed((r) => !r)}>
-                {revealed ? <EyeOff className="mr-1 h-4 w-4" /> : <Eye className="mr-1 h-4 w-4" />}
-                {revealed ? t("clientProvision.hide") : t("clientProvision.reveal")}
-              </Button>
-            </div>
-            {revealed && (
-              <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
-                {JSON.stringify(bundle, null, 2)}
-              </pre>
-            )}
-            <Button variant="link" onClick={() => navigate("/clients")}>
-              {t("clientProvision.backToList")}
-            </Button>
-          </CardContent>
-        </Card>
+        <>
+          <CredentialBundleCard bundle={bundle} intent="provision" />
+          <ClientInstallSteps bundle={bundle} />
+          <Button variant="link" onClick={() => navigate("/clients")}>
+            {t("clientProvision.backToList")}
+          </Button>
+        </>
       )}
     </div>
   );

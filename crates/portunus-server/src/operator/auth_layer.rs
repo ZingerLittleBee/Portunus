@@ -94,7 +94,7 @@ pub async fn auth_middleware(
     };
 
     if auth_method == AuthMethod::Cookie
-        && let Err(e) = csrf::verify(&req, &state.operator_http_public_origin)
+        && let Err(e) = csrf::verify(&req, state.operator_http_public_origin.as_deref())
     {
         bump_request(&state, "deny", e.code());
         warn!(
