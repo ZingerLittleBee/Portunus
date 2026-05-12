@@ -384,7 +384,10 @@ mod tests {
         let (_d, s) = fresh();
         s.issue(cn("edge-01")).unwrap();
         s.revoke(&cn("edge-01")).unwrap();
-        assert_eq!(s.delete_revoked(&cn("edge-01")).unwrap(), DeleteOutcome::Deleted);
+        assert_eq!(
+            s.delete_revoked(&cn("edge-01")).unwrap(),
+            DeleteOutcome::Deleted
+        );
         assert!(s.list().unwrap().is_empty());
     }
 
@@ -392,7 +395,10 @@ mod tests {
     fn delete_revoked_refuses_active_row() {
         let (_d, s) = fresh();
         s.issue(cn("edge-01")).unwrap();
-        assert_eq!(s.delete_revoked(&cn("edge-01")).unwrap(), DeleteOutcome::StillActive);
+        assert_eq!(
+            s.delete_revoked(&cn("edge-01")).unwrap(),
+            DeleteOutcome::StillActive
+        );
         // Row must still exist after a refused delete.
         assert_eq!(s.list().unwrap().len(), 1);
     }
@@ -400,7 +406,10 @@ mod tests {
     #[test]
     fn delete_revoked_reports_not_found() {
         let (_d, s) = fresh();
-        assert_eq!(s.delete_revoked(&cn("never-existed")).unwrap(), DeleteOutcome::NotFound);
+        assert_eq!(
+            s.delete_revoked(&cn("never-existed")).unwrap(),
+            DeleteOutcome::NotFound
+        );
     }
 
     #[test]
@@ -439,7 +448,10 @@ mod tests {
     #[test]
     fn reissue_reports_not_found() {
         let (_d, s) = fresh();
-        assert!(matches!(s.reissue(&cn("nope")).unwrap(), ReissueOutcome::NotFound));
+        assert!(matches!(
+            s.reissue(&cn("nope")).unwrap(),
+            ReissueOutcome::NotFound
+        ));
     }
 
     #[test]

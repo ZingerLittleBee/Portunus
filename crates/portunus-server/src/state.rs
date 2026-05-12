@@ -162,8 +162,7 @@ impl AppState {
         // `main.rs` saw on the CLI; passing the same value through here
         // is harmless but makes intent explicit.
         self.range_rule_max_ports = cfg.range_rule_max_ports;
-        self.operator_http_public_origin =
-            cfg.operator_http_origin_for_csrf().map(str::to_owned);
+        self.operator_http_public_origin = cfg.operator_http_origin_for_csrf().map(str::to_owned);
         self.operator_http_cookie_secure = cfg.operator_http_cookie_secure();
         self.server_config = Some(cfg);
         self

@@ -48,10 +48,7 @@ pub(crate) fn requires_csrf(method: &Method) -> bool {
 /// is not a concern because the session cookie is origin-scoped — an
 /// attacker controlled host can pass the same-origin check but cannot
 /// produce a valid session.
-pub(crate) fn verify(
-    req: &Request<Body>,
-    expected_origin: Option<&str>,
-) -> Result<(), CsrfError> {
+pub(crate) fn verify(req: &Request<Body>, expected_origin: Option<&str>) -> Result<(), CsrfError> {
     if !requires_csrf(req.method()) {
         return Ok(());
     }
