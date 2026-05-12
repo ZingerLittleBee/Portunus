@@ -266,6 +266,12 @@
     "revoked": "Revoked",
     "provision": "Provision client",
     "revoke": "Revoke",
+    "delete": "Delete permanently",
+    "deleteConfirmTitle": "Delete client {{name}}?",
+    "deleteConfirmBody": "This removes the client from the audit table. The name can be reused for a fresh provision afterwards. This is irreversible.",
+    "deleteConfirmAction": "Delete",
+    "showRevoked": "Show revoked",
+    "revokedCount": "{{count}} revoked",
     "emptyTitle": "No clients yet",
     "emptyBody": "Provision a client bundle so a forwarder can connect."
   },
@@ -273,7 +279,8 @@
     "title": "Provision client",
     "submit": "Issue bundle",
     "bundleHeading": "Credential bundle",
-    "bundleHint": "This bundle contains the bearer token. Save it to disk now and share it with the client over a secure channel.",
+    "bundleHint": "This bundle contains the bearer token. The server only ever stores its hash — once you leave this page the plaintext is gone for good. Save it to disk now and share it with the client over a secure channel.",
+    "reissueHint": "New bundle issued. The previous bearer token is invalidated and any live forwarder under this name will reconnect on the new credentials once redeployed. Save the file now — leaving this page discards the plaintext.",
     "download": "Download bundle",
     "copy": "Copy JSON",
     "reveal": "Reveal",
@@ -321,7 +328,11 @@
     "remote": "Remote address",
     "connectedAt": "Connected at",
     "provisionedAt": "Provisioned at",
-    "revokedAt": "Revoked at"
+    "revokedAt": "Revoked at",
+    "reissue": "Re-issue credential",
+    "reissueConfirmTitle": "Re-issue credential for {{name}}?",
+    "reissueConfirmBody": "Rotates the bearer token. The existing token stops working immediately and any running client process is disconnected — it will reconnect once you redeploy the new bundle below.",
+    "reissueConfirmAction": "Re-issue"
   },
   "ownerQuotas": {
     "help": "Per-owner caps apply across all rules a user pushes to this client. Per-owner ceilings bind before per-rule caps.",

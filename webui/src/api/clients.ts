@@ -45,6 +45,30 @@ export function useRevokeClient() {
   });
 }
 
+export function useDeleteClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
+export function useReissueClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<CredentialBundle>(`/v1/clients/${encodeURIComponent(name)}/reissue`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
 // 011-rate-limiting-qos T040: per-owner rate-limit envelope CRUD on a
 // connected client. Backed by the operator endpoints implemented in
 // crates/portunus-server/src/operator/owner_cap.rs.

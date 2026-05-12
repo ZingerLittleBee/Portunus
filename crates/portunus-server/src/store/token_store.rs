@@ -203,6 +203,82 @@ impl Authenticator for SqliteTokenStore {
     }
 }
 
+/// Outcome of `SqliteTokenStore::delete_revoked`. The store refuses to
+/// drop a still-active client — operators must revoke first so the
+/// connected forwarder gets disconnected before its name vanishes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    Deleted,
+    NotFound,
+    StillActive,
+}
+
+/// Outcome of `SqliteTokenStore::reissue`. `Rotated` carries the new
+/// plaintext token (server-side it's hashed before the transaction
+/// commits — same one-shot disclosure contract as `issue`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReissueOutcome {
+    Rotated(String),
+    NotFound,
+}
+
+impl SqliteTokenStore {
+    /// Permanently remove a previously-revoked client row. Refuses to
+    /// touch active rows so the caller can't accidentally race the
+    /// data-plane disconnect path. Returns `StillActive` if the row is
+    /// still live; the caller is expected to `revoke()` first.
+    pub fn delete_revoked(&self, name: &ClientName) -> Result<DeleteOutcome, StoreError> {
+        self.store.with_write_tx(|tx| {
+            let revoked_at: Option<Option<String>> = match tx.query_row(
+                "SELECT revoked_at FROM client_tokens WHERE client_name = ?",
+                rusqlite::params![name.as_str()],
+                |r| r.get::<_, Option<String>>(0),
+            ) {
+                Ok(v) => Some(v),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(map_rusqlite(e)),
+            };
+            match revoked_at {
+                None => Ok(DeleteOutcome::NotFound),
+                Some(None) => Ok(DeleteOutcome::StillActive),
+                Some(Some(_)) => {
+                    tx.execute(
+                        "DELETE FROM client_tokens WHERE client_name = ?",
+                        rusqlite::params![name.as_str()],
+                    )
+                    .map_err(map_rusqlite)?;
+                    Ok(DeleteOutcome::Deleted)
+                }
+            }
+        })
+    }
+
+    /// Rotate a client's bearer token in place. Works on active OR
+    /// revoked rows: rotation clears `revoked_at`, refreshes the hash
+    /// and `issued_at`, and hands back the new plaintext exactly once.
+    /// The caller is responsible for disconnecting any live session so
+    /// the forwarder picks up the new credentials.
+    pub fn reissue(&self, name: &ClientName) -> Result<ReissueOutcome, StoreError> {
+        let token = token::generate_token();
+        let hash_hex = fingerprint::hex(&token::hash_token(&token));
+        let issued_at = Utc::now().to_rfc3339();
+        let rows = self.store.with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE client_tokens \
+                 SET token_hash = ?, issued_at = ?, revoked_at = NULL \
+                 WHERE client_name = ?",
+                rusqlite::params![hash_hex, issued_at, name.as_str()],
+            )
+            .map_err(map_rusqlite)
+        })?;
+        if rows == 0 {
+            Ok(ReissueOutcome::NotFound)
+        } else {
+            Ok(ReissueOutcome::Rotated(token))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +377,69 @@ mod tests {
         let reopened = SqliteTokenStore::new(store);
         let id = reopened.verify(&token).unwrap();
         assert_eq!(id.client_name.as_str(), "edge-01");
+    }
+
+    #[test]
+    fn delete_revoked_removes_row() {
+        let (_d, s) = fresh();
+        s.issue(cn("edge-01")).unwrap();
+        s.revoke(&cn("edge-01")).unwrap();
+        assert_eq!(s.delete_revoked(&cn("edge-01")).unwrap(), DeleteOutcome::Deleted);
+        assert!(s.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_revoked_refuses_active_row() {
+        let (_d, s) = fresh();
+        s.issue(cn("edge-01")).unwrap();
+        assert_eq!(s.delete_revoked(&cn("edge-01")).unwrap(), DeleteOutcome::StillActive);
+        // Row must still exist after a refused delete.
+        assert_eq!(s.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_revoked_reports_not_found() {
+        let (_d, s) = fresh();
+        assert_eq!(s.delete_revoked(&cn("never-existed")).unwrap(), DeleteOutcome::NotFound);
+    }
+
+    #[test]
+    fn reissue_rotates_token_and_invalidates_old() {
+        let (_d, s) = fresh();
+        let old = s.issue(cn("edge-01")).unwrap();
+        let new = match s.reissue(&cn("edge-01")).unwrap() {
+            ReissueOutcome::Rotated(t) => t,
+            other => panic!("expected Rotated, got {other:?}"),
+        };
+        assert_ne!(old, new);
+        // Old token no longer authenticates.
+        assert!(matches!(
+            s.verify(&old).unwrap_err(),
+            AuthError::Failed(AuthFailureReason::NotFound)
+        ));
+        // New token does.
+        assert_eq!(s.verify(&new).unwrap().client_name.as_str(), "edge-01");
+    }
+
+    #[test]
+    fn reissue_revives_revoked_client() {
+        let (_d, s) = fresh();
+        s.issue(cn("edge-01")).unwrap();
+        s.revoke(&cn("edge-01")).unwrap();
+        let new = match s.reissue(&cn("edge-01")).unwrap() {
+            ReissueOutcome::Rotated(t) => t,
+            other => panic!("expected Rotated, got {other:?}"),
+        };
+        assert_eq!(s.verify(&new).unwrap().client_name.as_str(), "edge-01");
+        let row = s.list().unwrap();
+        assert_eq!(row.len(), 1);
+        assert_eq!(row[0].revoked_at, None, "reissue must clear revoked_at");
+    }
+
+    #[test]
+    fn reissue_reports_not_found() {
+        let (_d, s) = fresh();
+        assert!(matches!(s.reissue(&cn("nope")).unwrap(), ReissueOutcome::NotFound));
     }
 
     #[test]

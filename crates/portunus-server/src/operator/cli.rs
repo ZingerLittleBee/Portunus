@@ -39,6 +39,16 @@ pub enum OperatorError {
     Auth(#[from] AuthError),
     #[error("client_not_connected: {0}")]
     ClientNotConnected(ClientName),
+    /// `client-delete` / `client-reissue` invoked with a name that has
+    /// no row in `client_tokens`. Maps to HTTP 404 / exit 8 (shares the
+    /// generic `not_found` family with `RuleNotFound`).
+    #[error("client_not_found: {0}")]
+    ClientNotFound(ClientName),
+    /// `client-delete` invoked against a still-active row. Operators
+    /// must `revoke` first so the data-plane disconnect runs before the
+    /// name vanishes. Maps to HTTP 409 / exit 5 (conflict family).
+    #[error("client_not_revoked: {0}")]
+    ClientNotRevoked(ClientName),
     /// Display includes the offending port when known so operator
     /// tooling (and the HTTP `error.message` body) can pinpoint the
     /// collision (US4 / 002-port-range-forward T053). The bare
@@ -254,6 +264,8 @@ impl OperatorError {
             | Self::RateLimitUnsupportedByClient { .. }
             | Self::RateLimitValidation { .. } => 3,
             Self::ClientNotConnected(_) => 4,
+            Self::ClientNotFound(_) => 8,
+            Self::ClientNotRevoked(_) => 5,
             // 009-tls-sni-routing: SNI conflicts share exit 5 with
             // PortInUse (the closest analogue: rule shape rejected
             // because the listener is already committed).
@@ -307,6 +319,8 @@ impl OperatorError {
             | Self::ProxyProtocolValidation { code, .. }
             | Self::RateLimitValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
+            Self::ClientNotFound(_) => "client_not_found",
+            Self::ClientNotRevoked(_) => "client_not_revoked",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
             Self::AckTimeout => "ack_timeout",
@@ -484,6 +498,69 @@ pub async fn revoke(state: &AppState, raw_name: &str) -> Result<(), OperatorErro
         was_connected = disconnected,
     );
     Ok(())
+}
+
+/// Permanently remove a previously-revoked client from the store.
+/// Returns `ClientNotFound` / `ClientNotRevoked` so callers can map to
+/// the right HTTP status and CLI exit code.
+pub async fn delete_client(state: &AppState, raw_name: &str) -> Result<(), OperatorError> {
+    let name = ClientName::from_str(raw_name)?;
+    match state
+        .tokens
+        .delete_revoked(&name)
+        .map_err(|e| OperatorError::Auth(AuthError::StoreCorrupt(e.to_string())))?
+    {
+        crate::store::token_store::DeleteOutcome::Deleted => {
+            info!(
+                event = "audit.client_delete",
+                outcome = "success",
+                client_name = %name,
+            );
+            Ok(())
+        }
+        crate::store::token_store::DeleteOutcome::NotFound => {
+            Err(OperatorError::ClientNotFound(name))
+        }
+        crate::store::token_store::DeleteOutcome::StillActive => {
+            Err(OperatorError::ClientNotRevoked(name))
+        }
+    }
+}
+
+/// Rotate a client's credential and return the new bundle. Works on
+/// active OR revoked rows — a revoked client is brought back to life
+/// with a fresh token. Any live forwarder under this name is forcibly
+/// disconnected so it reconnects with the rotated credentials.
+pub async fn reissue_client(
+    state: &AppState,
+    raw_name: &str,
+) -> Result<(ClientName, CredentialBundle), OperatorError> {
+    let name = ClientName::from_str(raw_name)?;
+    let token = match state
+        .tokens
+        .reissue(&name)
+        .map_err(|e| OperatorError::Auth(AuthError::StoreCorrupt(e.to_string())))?
+    {
+        crate::store::token_store::ReissueOutcome::Rotated(t) => t,
+        crate::store::token_store::ReissueOutcome::NotFound => {
+            return Err(OperatorError::ClientNotFound(name));
+        }
+    };
+    let was_connected = state.clients.disconnect(&name).await;
+    let bundle = CredentialBundle::new(
+        name.clone(),
+        state.server_endpoint.clone(),
+        state.server_cert_sha256.clone(),
+        state.server_cert_pem.clone(),
+        token,
+    );
+    info!(
+        event = "audit.client_reissue",
+        outcome = "success",
+        client_name = %name,
+        was_connected,
+    );
+    Ok((name, bundle))
 }
 
 /// `list-clients`. Joins the union of provisioned + currently-connected.

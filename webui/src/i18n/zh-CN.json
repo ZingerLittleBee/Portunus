@@ -266,6 +266,12 @@
     "revoked": "已撤销",
     "provision": "签发客户端",
     "revoke": "撤销",
+    "delete": "彻底删除",
+    "deleteConfirmTitle": "删除客户端 {{name}}?",
+    "deleteConfirmBody": "将从审计表中移除该客户端;之后此名称可被重新签发。该操作不可恢复。",
+    "deleteConfirmAction": "删除",
+    "showRevoked": "显示已撤销",
+    "revokedCount": "{{count}} 条已撤销",
     "emptyTitle": "暂无客户端",
     "emptyBody": "签发一个客户端凭证包以便转发器接入。"
   },
@@ -273,7 +279,8 @@
     "title": "签发客户端",
     "submit": "签发凭证包",
     "bundleHeading": "凭证包",
-    "bundleHint": "凭证包内含 bearer 令牌,请立即保存到本地,并通过安全渠道传给客户端。",
+    "bundleHint": "凭证包内含 bearer 令牌。服务端只保存其哈希值,离开本页面后明文将无法再次取出。请立即保存到本地,并通过安全渠道传给客户端。",
+    "reissueHint": "新凭证包已生成。原 bearer 令牌已失效;同名运行中的转发器将在重新部署新凭证后自动重连。请立即保存文件 —— 离开本页明文将丢失。",
     "download": "下载凭证包",
     "copy": "复制 JSON",
     "reveal": "显示",
@@ -321,7 +328,11 @@
     "remote": "远端地址",
     "connectedAt": "连接时间",
     "provisionedAt": "签发时间",
-    "revokedAt": "吊销时间"
+    "revokedAt": "吊销时间",
+    "reissue": "重新签发凭证",
+    "reissueConfirmTitle": "为 {{name}} 重新签发凭证?",
+    "reissueConfirmBody": "将轮换 bearer 令牌。原令牌立刻失效,同名运行中的客户端会立即断开 —— 需要部署下方的新凭证后才会重连。",
+    "reissueConfirmAction": "重新签发"
   },
   "ownerQuotas": {
     "help": "所有者级别的上限会应用到该用户在此客户端上推送的全部规则。所有者上限优先于单规则上限生效。",
