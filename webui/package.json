@@ -1,7 +1,7 @@
 {
   "name": "portunus-webui",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "Operator Web UI for portunus-server (006-management-web-ui).",
   "scripts": {
