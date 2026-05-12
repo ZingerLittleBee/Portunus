@@ -278,7 +278,40 @@
     "copy": "Copy JSON",
     "reveal": "Reveal",
     "hide": "Hide",
-    "backToList": "Back to clients"
+    "backToList": "Back to clients",
+    "install": {
+      "heading": "Install on the client machine",
+      "hint": "Run the steps below on the host that will forward traffic. The credential bundle is base64-embedded into each command so you don't have to copy a separate file.",
+      "tabDocker": "Docker",
+      "tabLinux": "Linux (systemd)",
+      "tabManual": "Manual",
+      "copy": "Copy",
+      "copied": "Copied",
+      "stepLabel": "Step {{n}}",
+      "docker": {
+        "step1Title": "Materialise the bundle on the target host",
+        "step1Hint": "Decodes the base64 blob into ./portunus/bundle.json with 0600 permissions.",
+        "step2Title": "Run the forwarder",
+        "step2Hint": "Pulls the published client image and binds the host network so forwarded ports land on the host's interfaces.",
+        "step3Title": "Tail logs to verify",
+        "step3Hint": "You should see a 'connected' line within a few seconds."
+      },
+      "linux": {
+        "step1Title": "Install the binary",
+        "step1Hint": "Detects x86_64/aarch64, downloads the release tarball, and drops portunus-client into /usr/local/bin.",
+        "step2Title": "Install the bundle",
+        "step2Hint": "Decodes the bundle into /etc/portunus/client.bundle.json owned by a dedicated system user.",
+        "step3Title": "Install + start the systemd unit",
+        "step3Hint": "Writes the unit, reloads systemd, enables it on boot, and starts it now.",
+        "step4Title": "Verify",
+        "step4Hint": "systemctl shows active (running); journalctl tails the live log."
+      },
+      "manual": {
+        "step1Title": "Decode the bundle",
+        "step2Title": "Run the client",
+        "step2Hint": "Assumes portunus-client is on your PATH. For local development build it with: cargo build --release -p portunus-client"
+      }
+    }
   },
   "clientDetail": {
     "back": "Back",

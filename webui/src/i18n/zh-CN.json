@@ -278,7 +278,40 @@
     "copy": "复制 JSON",
     "reveal": "显示",
     "hide": "隐藏",
-    "backToList": "返回客户端列表"
+    "backToList": "返回客户端列表",
+    "install": {
+      "heading": "在客户端机器上安装",
+      "hint": "在准备转发流量的主机上依次执行以下步骤。凭证包已经 base64 编码内联到每条命令里,无需另外复制文件。",
+      "tabDocker": "Docker",
+      "tabLinux": "Linux (systemd)",
+      "tabManual": "手动",
+      "copy": "复制",
+      "copied": "已复制",
+      "stepLabel": "第 {{n}} 步",
+      "docker": {
+        "step1Title": "把凭证包落到目标主机",
+        "step1Hint": "把 base64 字符串解码成 ./portunus/bundle.json,权限 0600。",
+        "step2Title": "运行转发器",
+        "step2Hint": "拉取发布的 client 镜像并使用 host 网络,以便转发端口直接绑定在宿主机网卡上。",
+        "step3Title": "查看日志确认连接",
+        "step3Hint": "几秒内应能看到 connected 行。"
+      },
+      "linux": {
+        "step1Title": "安装二进制",
+        "step1Hint": "自动识别 x86_64 / aarch64,下载发布 tarball 并把 portunus-client 装到 /usr/local/bin。",
+        "step2Title": "安装凭证包",
+        "step2Hint": "把凭证解码到 /etc/portunus/client.bundle.json,属主为专用系统用户。",
+        "step3Title": "安装并启动 systemd 服务",
+        "step3Hint": "写入 unit 文件、重载 systemd、设为开机自启并立即启动。",
+        "step4Title": "验证",
+        "step4Hint": "systemctl 显示 active (running);journalctl 跟踪实时日志。"
+      },
+      "manual": {
+        "step1Title": "解码凭证包",
+        "step2Title": "运行 client",
+        "step2Hint": "假设 portunus-client 已在 PATH 中。开发环境构建命令:cargo build --release -p portunus-client"
+      }
+    }
   },
   "clientDetail": {
     "back": "返回",
