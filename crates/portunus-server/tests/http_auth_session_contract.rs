@@ -154,6 +154,12 @@ fn authed_req(
     if let Some(origin) = origin {
         builder = builder.header(header::ORIGIN, origin);
     }
+    // CSRF same-origin fallback needs a Host header. The server itself
+    // listens at 127.0.0.1:7080 by default; tests that assert "origin
+    // matches" pair this Host with `Origin: http://127.0.0.1:7080`, and
+    // tests that assert "origin rejected" pair it with a deliberately
+    // foreign Origin so the same-origin check rejects.
+    builder = builder.header(header::HOST, "127.0.0.1:7080");
     let mut request = if method == Method::GET {
         builder.body(Body::empty()).expect("request")
     } else {

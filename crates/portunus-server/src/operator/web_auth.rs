@@ -296,7 +296,7 @@ pub async fn post_auth_logout(
                 "missing session cookie",
             )
         })?;
-    csrf::verify(&req, &state.operator_http_public_origin).map_err(csrf_error)?;
+    csrf::verify(&req, state.operator_http_public_origin.as_deref()).map_err(csrf_error)?;
     auth_layer::verify_session_secret(&state, secret).map_err(|_| {
         ApiError::new(
             StatusCode::UNAUTHORIZED,
