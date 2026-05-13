@@ -13,6 +13,57 @@ fi
 
 mkdir -p "${data_dir}"
 
+advertised_host="${advertised_endpoint%%:*}"
+cert_path="${data_dir}/server.crt"
+key_path="${data_dir}/server.key"
+
+if [ -n "${advertised_host}" ]; then
+  regenerate_cert=0
+  if [ ! -s "${cert_path}" ] || [ ! -s "${key_path}" ]; then
+    regenerate_cert=1
+  elif ! openssl x509 -in "${cert_path}" -noout -checkhost "${advertised_host}" >/dev/null 2>&1; then
+    regenerate_cert=1
+  fi
+
+  if [ "${regenerate_cert}" -eq 1 ]; then
+    san="DNS:${advertised_host},DNS:localhost,IP:127.0.0.1,IP:::1"
+    case "${advertised_host}" in
+      *[!0-9.]*)
+        ;;
+      *)
+        san="IP:${advertised_host},DNS:localhost,IP:127.0.0.1,IP:::1"
+        ;;
+    esac
+
+    tmp_conf="$(mktemp)"
+    cat > "${tmp_conf}" <<EOF
+[req]
+distinguished_name = dn
+x509_extensions = v3_req
+prompt = no
+
+[dn]
+CN = ${advertised_host}
+
+[v3_req]
+subjectAltName = ${san}
+EOF
+    openssl req \
+      -x509 \
+      -newkey ec \
+      -pkeyopt ec_paramgen_curve:prime256v1 \
+      -nodes \
+      -days 825 \
+      -keyout "${key_path}" \
+      -out "${cert_path}" \
+      -config "${tmp_conf}" \
+      >/dev/null 2>&1
+    rm -f "${tmp_conf}"
+    chmod 0600 "${key_path}"
+    chmod 0644 "${cert_path}"
+  fi
+fi
+
 cat > "${data_dir}/server.toml" <<EOF
 control_listen = "${control_listen}"
 operator_http_listen = "0.0.0.0:${operator_port}"

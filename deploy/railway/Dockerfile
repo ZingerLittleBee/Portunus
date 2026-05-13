@@ -28,7 +28,7 @@ RUN cargo build --release -p portunus-server
 
 FROM debian:12-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates openssl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/portunus
 COPY --from=rust-builder /app/target/release/portunus-server /usr/local/bin/portunus-server
