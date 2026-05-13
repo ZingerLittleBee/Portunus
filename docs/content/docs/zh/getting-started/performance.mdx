@@ -10,9 +10,9 @@ icon: Gauge
 
 ## v1.3.0 头条（Linux TCP splice 快路径）
 
-在专用 Linux 测试机（Debian 13、kernel 6.12.74-2、glibc 2.41，与下文
-[Linux iptables Baseline](#linux-iptables-baseline) 同一台硬件）上，v1.3.0 的
-splice 快路径让**未带宽限制的 TCP 规则单流吞吐翻倍以上**：
+在专用 Linux 测试机（Debian 13、kernel 6.12.74-2、glibc 2.41，与
+[v0.11 Linux iptables baseline](/zh/docs/getting-started/performance-history#linux-iptables-baseline)
+同一台硬件）上，v1.3.0 的 splice 快路径让**未带宽限制的 TCP 规则单流吞吐翻倍以上**：
 
 | 模式 | iperf3 direct loopback | Portunus uncapped | Portunus / direct | vs v1.2.0 userspace |
 | --- | ---: | ---: | ---: | ---: |
@@ -65,7 +65,11 @@ Mbit/s），不是回归；splice OFF 与 splice ON 在 < 10 Gbit/s 区间相差
 ### splice 之外保持不变
 
 - 每连接 setup 延迟、半关闭语义、字节计数器、Prometheus 指标、审计事件、
-  RBAC、限速（capped 规则**继续走 userspace 通道**，与 v1.1.0 字节级一致）。
+  RBAC、限速。**capped 规则继续走 userspace 通道，与 v1.2.0 字节级一致。**
+  splice 启用条件按连接判定：`Linux && TCP && !PORTUNUS_DISABLE_SPLICE
+  && 规则与 owner 都没设带宽 cap`；`concurrent_connections` 与
+  `new_connections_per_sec` 是 accept-time gate，**不会** 让 splice 失效。
+  详见 [限流与 QoS — 与 splice 快路径的交互](/zh/docs/features/rate-limiting#%E4%B8%8E-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84%E7%9A%84%E4%BA%A4%E4%BA%92)。
 - 跨平台行为：macOS / Windows 构建未变更（splice 用
   `#[cfg(target_os = "linux")]` 门控；`nm` 确认 darwin release 二进制零
   splice 符号）。

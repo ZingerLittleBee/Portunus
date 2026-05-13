@@ -23,6 +23,40 @@ v0.11.0 起支持。每个上限都是 **独立可选** 的，不设置时与 v0
   在线连接数以下，也只会优雅 drain，对新连接按新的更低上限拒绝。
 </Callout>
 
+## 与 splice 快路径的交互
+
+v1.3.0 的 Linux TCP 零拷贝快路径在 **accept 时按连接判定**，判定式就一行：
+
+```text
+启用 splice  ⇔  Linux  &&  TCP  &&  !PORTUNUS_DISABLE_SPLICE
+              &&  规则未设  bandwidth_in_bps / bandwidth_out_bps
+              &&  owner 未设 bandwidth_in_bps / bandwidth_out_bps
+```
+
+换句话说：
+
+| 规则形态 | 走哪条数据面 | 原因 |
+| --- | --- | --- |
+| 规则与 owner **都没** 设带宽 cap | splice 快路径 | 没有要 shape 的字节，内核 pipe 直通 |
+| 规则或 owner 任一方向设了带宽 cap | userspace 路径 | token bucket shaper，与 v1.2.0 字节级一致 |
+
+几个关键边界：
+
+- **`new_connections_per_sec` 与 `concurrent_connections` 不会让 splice 失效。**
+  它们是 accept-time gate，**在选择数据面之前** 就执行完毕——只决定一条
+  连接是被拒绝还是被放进来，不参与字节 shape。设了 `concurrent_connections
+  = 1000` 但没设带宽 cap 的规则，照样走 splice。
+- 同一台 Server 上限速与非限速规则共存没有问题——每条连接独立判定。
+- 热更新加 / 去掉带宽 cap **只对新连接生效**；已建立的连接保持原路径
+  直到关闭。
+- splice 仅在 Linux + TCP 启用。UDP 规则与非 Linux 部署始终走 userspace
+  路径，cap 行为完全相同。
+- 所有 cap 相关 metrics、审计字段、throttle 计数、reject 行为与 splice
+  是否启用 **无关**。详见 [指标](#指标)。
+
+一句话：开 splice 不会让你失去任何 QoS 能力。限速规则只是不享受这次提速，
+不限速规则白嫖到。
+
 ## 每条规则的上限
 
 ```sh

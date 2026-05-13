@@ -27,6 +27,44 @@ zero or negative rates.
   the new ceiling.
 </Callout>
 
+## Interaction with the splice fast path
+
+The Linux TCP zero-copy fast path added in v1.3.0 is decided **per
+connection** at accept time. The predicate is exactly:
+
+```text
+splice runs  ⇔  Linux  &&  TCP  &&  !PORTUNUS_DISABLE_SPLICE
+              &&  rule has no  bandwidth_in_bps / bandwidth_out_bps
+              &&  owner has no bandwidth_in_bps / bandwidth_out_bps
+```
+
+In plain terms:
+
+| Rule shape | Data path | Reason |
+| --- | --- | --- |
+| No bandwidth cap on rule **and** no bandwidth cap on owner | splice fast path | Nothing to shape; kernel pipe is byte-perfect. |
+| Any bandwidth cap (rule or owner, in or out direction) | userspace path | Token-bucket shaper, byte-identical to v1.2.0. |
+
+Important consequences:
+
+- **`new_connections_per_sec` and `concurrent_connections` do NOT
+  disable splice.** They are accept-time gates that run **before** the
+  data path is chosen — they reject or admit a connection, but they do
+  not shape its bytes. A rule with `concurrent_connections = 1000` and
+  no bandwidth cap still uses splice for the data plane.
+- Mixing capped and uncapped rules on the same server is fine — each
+  connection picks its own path independently.
+- Hot-reload that adds or removes a bandwidth cap only affects **new**
+  connections. Existing connections keep their original path until
+  they close.
+- splice is TCP-only and Linux-only. UDP rules and non-Linux hosts
+  always use the userspace path; caps apply identically.
+- All cap metrics, audit fields, throttle counters, and reject behavior
+  are unchanged by splice. See [Metrics](#metrics).
+
+The net effect: enabling splice never costs you a QoS feature. Capped
+rules simply skip the speedup; uncapped rules get it for free.
+
 ## Per-rule caps
 
 ```sh

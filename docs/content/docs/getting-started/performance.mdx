@@ -13,8 +13,9 @@ userspace.
 ## v1.3.0 Headline (Linux TCP splice fast path)
 
 On the dedicated Linux bench host (Debian 13, kernel 6.12.74-2, glibc 2.41,
-same hardware as the v0.11 baseline in [Linux iptables Baseline](#linux-iptables-baseline)
-below), the v1.3.0 splice fast path **more than doubles single-flow uncapped
+same hardware as the
+[v0.11 Linux iptables baseline](/en/docs/getting-started/performance-history#linux-iptables-baseline)),
+the v1.3.0 splice fast path **more than doubles single-flow uncapped
 throughput** on plain TCP rules with no per-rule and no per-owner bandwidth
 cap:
 
@@ -74,8 +75,13 @@ saturate cores the two-process direct/iptables paths cannot.
 ### What does NOT change with splice
 
 - Per-connection setup latency, half-close semantics, byte counters,
-  Prometheus metrics, audit events, RBAC, rate limiting (capped rules
-  remain on the canonical userspace path, byte-identical to v1.1.0).
+  Prometheus metrics, audit events, RBAC, rate limiting. **Capped
+  rules remain on the canonical userspace path, byte-identical to
+  v1.2.0.** splice eligibility is decided per connection by
+  `Linux && TCP && !PORTUNUS_DISABLE_SPLICE && no bandwidth cap on
+  rule or owner`; `concurrent_connections` and `new_connections_per_sec`
+  are accept-time gates and do **not** disable splice. See
+  [Rate Limiting & QoS — Interaction with the splice fast path](/en/docs/features/rate-limiting#interaction-with-the-splice-fast-path).
 - Cross-platform behaviour: macOS / Windows builds are unchanged
   (splice is `#[cfg(target_os = "linux")]`-gated; `nm` confirms zero
   splice symbols in the darwin release binary).
