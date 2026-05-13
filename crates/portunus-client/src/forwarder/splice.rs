@@ -1110,10 +1110,7 @@ mod integration {
         let (got, expected) = writer_task.await.unwrap();
         assert_eq!(got.len(), expected.len(), "echoed length matches input");
         assert_eq!(got, expected, "echoed bytes are identical");
-        assert_eq!(
-            usize::try_from(transferred.bytes_out).unwrap(),
-            got.len()
-        );
+        assert_eq!(usize::try_from(transferred.bytes_out).unwrap(), got.len());
 
         let _ = echo_task.await;
     }
