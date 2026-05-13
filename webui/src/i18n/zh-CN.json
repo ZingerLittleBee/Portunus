@@ -349,8 +349,15 @@
     "currentCap": "当前配额:",
     "errorEmpty": "请至少设置一项上限,或选择移除整个配额。",
     "emptyTitle": "暂无所有者",
-    "emptyBody": "当用户向该客户端推送规则后,会显示在此处,供您配置每位租户的配额。",
-    "tableAriaLabel": "每个所有者的速率限制配额"
+    "emptyBody": "当用户向该客户端推送规则后,会显示在此处,供您配置每位租户的配额。也可以点击右上角“添加所有者配额”预先设置。",
+    "tableAriaLabel": "每个所有者的速率限制配额",
+    "addOwnerCap": "添加所有者配额",
+    "addDialogTitle": "为所有者添加配额",
+    "addDialogBody": "输入用户 ID。即使该用户尚未向此客户端推送规则,也可以预先设置上限;之后该用户推送的规则会自动适用此配额。",
+    "addOwnerIdLabel": "所有者 (用户 ID)",
+    "addOwnerIdPlaceholder": "例如 alice",
+    "addContinue": "继续",
+    "addErrorEmpty": "请输入用户 ID。"
   },
   "audit": {
     "title": "审计日志",

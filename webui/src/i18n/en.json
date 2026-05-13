@@ -349,8 +349,15 @@
     "currentCap": "Current cap:",
     "errorEmpty": "Set at least one cap, or remove the envelope instead.",
     "emptyTitle": "No owners yet",
-    "emptyBody": "When operators push rules to this client, the owners appear here so you can apply per-tenant caps.",
-    "tableAriaLabel": "Per-owner rate-limit envelopes"
+    "emptyBody": "When operators push rules to this client, the owners appear here so you can apply per-tenant caps. You can also use \"Add owner cap\" to seed one ahead of time.",
+    "tableAriaLabel": "Per-owner rate-limit envelopes",
+    "addOwnerCap": "Add owner cap",
+    "addDialogTitle": "Add cap for an owner",
+    "addDialogBody": "Enter the user ID. You can set a cap before the user pushes a rule to this client; once they do, the cap applies automatically.",
+    "addOwnerIdLabel": "Owner (user ID)",
+    "addOwnerIdPlaceholder": "e.g. alice",
+    "addContinue": "Continue",
+    "addErrorEmpty": "Please enter a user ID."
   },
   "audit": {
     "title": "Audit log",
