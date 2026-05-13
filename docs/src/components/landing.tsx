@@ -66,15 +66,15 @@ const copy = {
     statusActive: "ACTIVE",
     rangesTitle: "Performance you can plan around.",
     rangesIntro:
-      "On Linux, plain TCP rules with no bandwidth cap use a kernel splice fast path. In the measured loopback run, the same single flow doubles from 9.9 Gbit/s to 21.9 Gbit/s — close to the kernel forwarding ceiling, far above the userspace baseline.",
+      "On Linux, plain TCP rules with no bandwidth cap use a kernel splice fast path. On the bench host, single-flow throughput doubles from 9.9 Gbit/s to 21.9 Gbit/s, and the offered-load sweep tracks both direct iperf3 and iptables REDIRECT to 95-109 % through 20 Gbit/s — the v0.11 saturation point disappears for uncapped TCP.",
     ranges: [
       [
         "100M – 10G",
         "Hits the offered rate end-to-end. Indistinguishable from a direct iperf3 baseline.",
       ],
       [
-        "12.5G – 15G",
-        "With the splice fast path, single-flow throughput stays within measurement noise of the kernel baseline.",
+        "12.5G – 20G",
+        "With the splice fast path, the proxied flow stays within iperf3 noise of direct loopback and iptables REDIRECT.",
       ],
       [
         "Rate-limited rules",
@@ -160,12 +160,12 @@ const copy = {
     statusActive: "运行中",
     rangesTitle: "可以照着规划的性能。",
     rangesIntro:
-      "Linux 上无带宽限制的 TCP 规则会走内核 splice 快路径。在 loopback 实测中，同一条单流从 9.9 Gbit/s 翻倍到 21.9 Gbit/s——接近内核转发的天花板，远高于 userspace 基线。",
+      "Linux 上无带宽限制的 TCP 规则会走内核 splice 快路径。在测试机上，单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；同一份 offered-load sweep 在 100 Mbit/s 到 20 Gbit/s 区间内紧贴 direct iperf3 与 iptables REDIRECT（95-109 %）——v0.11 报告里的早期饱和拐点在无带宽限制 TCP 上消失了。",
     ranges: [
       ["100M – 10G", "端到端跑满 offered 速率，与 direct iperf3 实测没有可感知的差距。"],
       [
-        "12.5G – 15G",
-        "开启 splice 快路径后，单流吞吐与内核基线之间只剩测量噪声。",
+        "12.5G – 20G",
+        "开启 splice 快路径后，proxy 路径与 direct loopback、iptables REDIRECT 仅相差测量噪声。",
       ],
       [
         "带限速的规则",

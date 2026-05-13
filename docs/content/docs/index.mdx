@@ -23,13 +23,15 @@ Most users are not trying to saturate a local 20 Gbit/s loopback path; they
 are running under a real bandwidth limit. Starting in v1.3.0, plain TCP rules
 with no bandwidth cap use a Linux kernel `splice(2)` fast path. On the same
 measured Linux host that produced the v0.11 baseline, single-flow uncapped
-throughput **doubled from 9.9 Gbit/s to 21.9 Gbit/s** (2.20×) and reaches the
-offered rate end-to-end through 15 Gbit/s.
+throughput **doubled from 9.9 Gbit/s to 21.9 Gbit/s** (2.20×). The
+operator-facing offered-load sweep through 20 Gbit/s tracks both direct
+`iperf3` and `iptables` REDIRECT within iperf3 short-run noise — the v0.11
+"Portunus saturates ≥ 12.5 Gbit/s" caveat disappears for uncapped TCP.
 
 | Offered bandwidth | What to expect (v1.3.0) |
 | --- | --- |
 | 100 Mbit/s - 10 Gbit/s | Hits the offered rate. Indistinguishable from a direct iperf3 baseline. |
-| 12.5 - 15 Gbit/s | With splice on, single-flow throughput stays within measurement noise of the kernel baseline. |
+| 12.5 - 20 Gbit/s | With splice on, single-flow throughput stays within iperf3 noise of direct loopback and iptables REDIRECT (95-109 %). |
 | Rate-limited rules | Bandwidth-capped rules stay on the canonical userspace path — metrics, counters, and audit byte-identical to v1.2.0. |
 
 <Cards>

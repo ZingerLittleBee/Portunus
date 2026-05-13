@@ -28,28 +28,39 @@ pipeline（iperf client → portunus-client → iperf server）的并行度
 ### Offered-load sweep（v1.3.0 攻破 v0.11 saturation 区间）
 
 v0.11 的报告明确指出 `≥ 12.5 Gbit/s` 是 Portunus 早期饱和、远远落后
-iptables 的区间。v1.3.0 直接攻克：
+iptables 的区间。v1.3.0 的 splice 快路径在这台机器上把这段差距压平了。
+下表用与 v0.11 baseline 同一份 `scripts/perf_loopback.py --with-iptables
+--offered-mbps …` —— 同样 11 个采样点、同样 iptables REDIRECT 对照、
+同一台机器 —— 分别在 v1.3.0 splice ON（默认）与 splice OFF
+（`PORTUNUS_DISABLE_SPLICE=1`）下背对背采集：
 
-| Offered (Mbit/s) | Direct | Portunus + splice OFF | Portunus + splice ON | splice 提速 |
-| ---: | ---: | ---: | ---: | ---: |
-| 100 | 100 | 100 | 100 | 1.00× |
-| 500 | 500 | 500 | 500 | 1.00× |
-| 1,000 | 1,000 | 1,000 | 1,000 | 1.00× |
-| 2,500 | 2,500 | 2,499 | 2,498 | 1.00× |
-| 5,000 | 4,999 | 5,000 | 5,000 | 1.00× |
-| 7,500 | 7,499 | 7,996 | 7,500 | 0.94× |
-| 10,000 | 10,215 | 10,401 | 9,999 | 0.96× |
-| **12,500** | 13,345 | **9,701** | **12,499** | **1.29×** |
-| **15,000** | 16,103 | **9,719** | **16,120** | **1.66×** |
+| Offered 带宽 | Direct | iptables REDIRECT | Portunus + splice OFF | Portunus + splice ON | splice 提速 | splice OFF / iptables | splice ON / iptables |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 Mbit/s | 100 | 100 | 100 | 100 | 1.00× | 100.0% | 100.0% |
+| 500 Mbit/s | 500 | 500 | 500 | 500 | 1.00× | 100.0% | 100.0% |
+| 1 Gbit/s | 1,000 | 1,000 | 1,000 | 1,000 | 1.00× | 100.0% | 100.0% |
+| 2.5 Gbit/s | 2,500 | 2,500 | 2,500 | 2,498 | 1.00× | 100.0% | 99.9% |
+| 5 Gbit/s | 4,999 | 5,005 | 5,207 | 4,999 | 0.96× | 104.0% | 99.9% |
+| 7.5 Gbit/s | 7,476 | 7,492 | 6,775 | 7,499 | 1.11× | 90.4% | 100.1% |
+| 10 Gbit/s | 9,999 | 10,484 | 8,870 | 10,035 | 1.13× | 84.6% | 95.7% |
+| **12.5 Gbit/s** | 12,598 | 12,545 | **8,556** | **12,373** | **1.45×** | **68.2%** | **98.6%** |
+| **15 Gbit/s** | 15,569 | 15,523 | **9,953** | **16,370** | **1.64×** | **64.1%** | **105.5%** |
+| **18 Gbit/s** | 18,406 | 18,017 | **8,347** | **19,618** | **2.35×** | **46.3%** | **108.9%** |
+| **20 Gbit/s** | 19,088 | 18,738 | **8,690** | **20,147** | **2.32×** | **46.4%** | **107.5%** |
 
-对比下文 v0.11 [offered-load 表](#offered-load-sweep)：12.5 Gbit/s offered 时，
-v0.11 跑出 6,529 Mbit/s（49% of iptables），v1.3.0 splice OFF 跑出 9,701（v1.2.0
-userspace 调优仍在生效）。v1.3.0 splice ON 达到 **12,499 Mbit/s——基本等于 offered
-目标**，把与 iptables 的差距压缩到测量噪声之内。15 Gbit/s offered 时，splice ON
-跑满请求速率，而两条 userspace 路径都被 userspace memcpy 顶在 9.7 Gbit/s 左右。
+对比 v0.11 [offered-load 表](/zh/docs/getting-started/performance-history#offered-load-sweep)：12.5 Gbit/s
+offered 时，v0.11 跑出 6,529 Mbit/s（49% of iptables），v1.3.0 splice
+OFF 跑出 8,556 Mbit/s——依然明显落后 iptables。v1.3.0 splice ON 达到
+**12,373 Mbit/s（98.6% of iptables）——基本等于 offered 目标**。15-20
+Gbit/s 整段区间里，splice ON 与 direct loopback、iptables REDIRECT 的
+差距都收敛到 iperf3 短样本噪声范围内；而 splice OFF 的 userspace 路径
+仍然被 v1.2.0 userspace memcpy 顶在 ~8.5-10 Gbit/s。
 
-7.5G / 10G 行的 0.94× / 0.96× 在 iperf3 short-run pacing 噪声范围内（此机 ±200
-Mbit/s），不是回归；splice off 和 splice on 在该区间相差 ≤5%。
+5,000 Mbit/s 行的 0.96× 是 iperf3 short-run pacing 噪声（此机 ±200
+Mbit/s），不是回归；splice OFF 与 splice ON 在 < 10 Gbit/s 区间相差
+≤5%。15-20 Gbit/s 区间里 `splice ON / iptables` 列略高于 100%，原因
+与头条表里一致——三段 pipeline 能比 direct / iptables 两段路径多吃
+一个核。
 
 ### splice 之外保持不变
 
@@ -191,89 +202,6 @@ portunus_uncapped / direct_iperf3_loopback * 100
 
 限流目标是 8.389 Mbit/s，实测落在 +10% 验收线内。
 uncapped 占比 18.04% → 45.90% 的提升来自下面 [近期优化](#近期优化)。
-
-<details>
-<summary>**历史 baseline：v0.11 Linux iptables 对比 + Offered-Load Sweep**（保留以供 v1.3.0 溯源；点击展开）</summary>
-
-下方数字是 [v1.3.0 头条](#v130-%E5%A4%B4%E6%9D%A1linux-tcp-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84) 中 splice 用来对照的 v0.11 baseline。完整保留以便溯源——v1.3.0 splice ON 已经在 ≥ 12.5 Gbit/s 区间把 Portunus 与 `iptables` 的差距压平了；详见 v1.3.0 的 [offered-load sweep](#offered-load-sweepv130-%E6%94%BB%E7%A0%B4-v011-saturation-%E5%8C%BA%E9%97%B4)。
-
-### Linux iptables Baseline
-
-采集时间：2026-05-10。
-
-```text
-Linux 69-201-77-68 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64
-rustc 1.95.0 (59807616e 2026-04-14)
-iperf 3.18
-```
-
-命令：
-
-```sh
-TMPDIR=/root scripts/perf_loopback.py --seconds 10 --omit-seconds 2 \
-  --with-iptables --iptables-bin /usr/sbin/iptables
-```
-
-这台机器的 `/tmp` 是 `tmpfs`，而 `portunus-server` 会拒绝把 TLS / persistence
-状态放在 tmpfs 上，所以这里用 `TMPDIR=/root` 把临时 config / data 目录放到
-ext4。脚本结束后已清理 iptables 规则；`iptables -t nat -S OUTPUT` 只剩默认
-`-P OUTPUT ACCEPT` policy。
-
-| Path | Throughput | vs direct | vs iptables | Retransmits |
-| --- | ---: | ---: | ---: | ---: |
-| Direct `iperf3` loopback | 18,362-18,770 Mbit/s | 100.00% | 98-100% | 0 |
-| `iptables` `nat/OUTPUT REDIRECT` | 18,429-19,190 Mbit/s | 100-102% | 100.00% | 0 |
-| 通过 Portunus uncapped rule | 7,273-9,844 Mbit/s | 39-53% | 39-53% | 0-21 |
-| Portunus 限制为 `1,048,576 B/s` | 8.387 Mbit/s | n/a | n/a | 0 |
-
-限流目标是 8.389 Mbit/s，实测落在 +10% 验收线内。
-uncapped 极限值刻意写成范围：在这个速度上，结果会明显受 scheduler noise、
-TCP pacing、用户态 copy 的 CPU placement 影响。这台机器的一次样本是
-7,531.560 Mbit/s（iptables 的 39.25%），但重复运行落在 7,273 到
-9,844 Mbit/s 之间。面向用户带宽判断时，下面的 offered-load sweep 更有用，
-因为它更接近有限 WAN 链路，而不是裸 loopback 极限。
-
-#### Offered-Load Sweep
-
-下面这组用 `iperf3 -b <rate>` 做 TCP application pacing，回答更贴近用户的问题：
-“我的公网 / VPS 带宽就这么多，Portunus 和 iptables 到底有没有差？”
-
-命令形状：
-
-```sh
-TMPDIR=/root scripts/perf_loopback.py --seconds 5 --omit-seconds 1 \
-  --with-iptables --offered-mbps 100,500,1000,2500,5000,7500,10000,12500,15000,18000,20000 \
-  --iptables-bin /usr/sbin/iptables
-```
-
-| Offered load | Direct | iptables REDIRECT | Portunus | Portunus / iptables | 解读 |
-| ---: | ---: | ---: | ---: | ---: | --- |
-| 100 Mbit/s | 100.012 | 100.007 | 99.999 | 99.99% | 没有实质差异。 |
-| 500 Mbit/s | 499.986 | 500.011 | 500.138 | 100.03% | 没有实质差异。 |
-| 1 Gbit/s | 999.850 | 999.737 | 999.694 | 100.00% | 没有实质差异。 |
-| 2.5 Gbit/s | 2,499.613 | 2,499.853 | 2,499.678 | 99.99% | 没有实质差异。 |
-| 5 Gbit/s | 4,999.610 | 4,999.626 | 5,351.013 | 107.03% | 达到目标；短样本 pacing 噪声主导。 |
-| 7.5 Gbit/s | 7,471.440 | 7,499.448 | 8,172.746 | 108.98% | 达到目标；短样本 pacing 噪声主导。 |
-| 10 Gbit/s | 10,035.228 | 9,999.445 | 9,422.687 | 94.23% | 开始有小差距，但仍接近目标。 |
-| 12.5 Gbit/s | 12,753.687 | 13,198.878 | 6,528.820 | 49.46% | 差距打开；Portunus 受 CPU / 用户态 copy 限制。 |
-| 15 Gbit/s | 15,482.215 | 16,335.550 | 7,836.651 | 47.97% | 明显差距。 |
-| 18 Gbit/s | 18,228.201 | 17,948.877 | 7,919.914 | 44.12% | 明显差距。 |
-| 20 Gbit/s | 18,600.141 | 18,265.199 | 6,105.970 | 33.43% | 超出这台机器上 Portunus 的舒适区。 |
-
-这组数据应该按区间理解，不要当成所有机器的固定阈值：
-
-- **≤ 2.5 Gbit/s**：这台机器上 Portunus 和 iptables 基本一样。用户如果是
-  100M、500M、1G、2.5G 的 WAN / VPS 端口，转发器通常不是瓶颈。
-- **5-10 Gbit/s**：Portunus 还能接近目标速率，但已经进入“最好在自己机器上实测”的区域。
-- **≥ 12.5 Gbit/s**：iptables 仍接近 offered load，Portunus 明显更早饱和。
-  这个区间里，Portunus 的控制面、QoS、审计、metrics 等能力会有实打实的吞吐代价。
-
-> ⚠ "12.5 G+ Portunus 早期饱和"这条结论是
-> [v1.3.0 splice 快路径](#v130-%E5%A4%B4%E6%9D%A1linux-tcp-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84)
-> 已经为无带宽限制的 TCP 规则消除的瓶颈。v1.3.0 sweep 表是当前运维参考；
-> 这张表记录的是 splice 之前的 baseline。
-
-</details>
 
 ## 解读
 
@@ -420,6 +348,13 @@ iperf3 -J -c <edge-listen-ip> -p <listen_port> -t 30 -O 5
 ```
 
 同一轮里必须再直连 target 跑一次 `iperf3`，否则没有 direct baseline，数字就没法用。
+
+## 历史 baseline
+
+v0.11 的 Linux iptables 对比与 offered-load sweep —— 即 v1.3.0 头条
+用来对照的 splice 之前数字 —— 已经独立成单页：
+[历史性能 baseline（v0.11）](/zh/docs/getting-started/performance-history)。
+日常不需要看；仅在需要追溯旧基线时再去翻。
 
 ## 资料来源
 

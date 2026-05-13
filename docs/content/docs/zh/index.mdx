@@ -21,13 +21,15 @@ icon: BookOpen
 大多数用户并不是要榨干本机 20 Gbit/s loopback 的极限吞吐，而是在有限带宽下
 稳定转发。**v1.3.0 开始**，Linux 上无带宽限制的 TCP 规则会走内核
 `splice(2)` 快路径。在跑出 v0.11 baseline 的同一台 Linux 机器上，单流未限速
-吞吐**从 9.9 Gbit/s 翻倍到 21.9 Gbit/s（2.20×）**，并在 15 Gbit/s 以内端到端
-跑满 offered 速率。
+吞吐**从 9.9 Gbit/s 翻倍到 21.9 Gbit/s（2.20×）**；面向运维的 offered-load
+sweep 在 100 Mbit/s 到 20 Gbit/s 整个区间内都贴近 direct `iperf3` 和
+`iptables` REDIRECT（落在 iperf3 短样本噪声内）——v0.11 报告里"Portunus
+≥ 12.5 Gbit/s 早期饱和"这条注意事项，在无带宽限制 TCP 上消失了。
 
 | 目标带宽 | 结论（v1.3.0） |
 | --- | --- |
 | 100 Mbit/s - 10 Gbit/s | 端到端跑满 offered 速率，与 direct iperf3 实测没有可感知的差距。 |
-| 12.5 - 15 Gbit/s | 开启 splice 快路径后，单流吞吐与内核基线之间只剩测量噪声。 |
+| 12.5 - 20 Gbit/s | 开启 splice 快路径后，单流吞吐与 direct loopback、iptables REDIRECT 相差仅在 iperf3 噪声范围内（95-109 %）。 |
 | 带限速的规则 | 限带宽规则继续走 userspace 通道——指标、计数器、审计与 v1.2.0 字节级一致。 |
 
 <Cards>
