@@ -338,6 +338,123 @@ mod linux {
         usize::try_from(n).map_err(|_| Errno::EOVERFLOW)
     }
 
+    // T034 (SC-007) — fallback decision contract enforced by `classify`.
+    // See the module-level note above `mod linux` for context.
+    #[cfg(test)]
+    mod classify_tests {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use nix::errno::Errno;
+
+        use super::super::SpliceError;
+        use super::classify;
+
+        fn fresh() -> AtomicBool {
+            AtomicBool::new(false)
+        }
+
+        fn moved() -> AtomicBool {
+            AtomicBool::new(true)
+        }
+
+        #[test]
+        fn enosys_before_first_byte_is_unsupported_fallback() {
+            let moved_any = fresh();
+            match classify(Errno::ENOSYS, &moved_any) {
+                SpliceError::Unsupported { errno } => assert_eq!(errno, Errno::ENOSYS),
+                other => panic!("expected Unsupported, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn einval_before_first_byte_is_unsupported_fallback() {
+            let moved_any = fresh();
+            match classify(Errno::EINVAL, &moved_any) {
+                SpliceError::Unsupported { errno } => assert_eq!(errno, Errno::EINVAL),
+                other => panic!("expected Unsupported, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn eperm_before_first_byte_is_unsupported_fallback() {
+            // LSM / seccomp / sandbox policy rejection.
+            let moved_any = fresh();
+            match classify(Errno::EPERM, &moved_any) {
+                SpliceError::Unsupported { errno } => assert_eq!(errno, Errno::EPERM),
+                other => panic!("expected Unsupported, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn eopnotsupp_before_first_byte_is_unsupported_fallback() {
+            // On glibc EOPNOTSUPP and ENOTSUP share the same numeric value
+            // so a single match arm covers both names.
+            let moved_any = fresh();
+            match classify(Errno::EOPNOTSUPP, &moved_any) {
+                SpliceError::Unsupported { errno } => assert_eq!(errno, Errno::EOPNOTSUPP),
+                other => panic!("expected Unsupported, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn eio_is_terminal_io_error_not_fallback() {
+            let moved_any = fresh();
+            match classify(Errno::EIO, &moved_any) {
+                SpliceError::Io(e) => {
+                    assert_eq!(e.raw_os_error(), Some(Errno::EIO as i32));
+                }
+                other => panic!("EIO must be Io, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn econnreset_is_terminal_io_error_not_fallback() {
+            let moved_any = fresh();
+            match classify(Errno::ECONNRESET, &moved_any) {
+                SpliceError::Io(e) => {
+                    assert_eq!(e.raw_os_error(), Some(Errno::ECONNRESET as i32));
+                }
+                other => panic!("ECONNRESET must be Io, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn enosys_after_first_byte_promotes_to_io_no_fallback() {
+            // FR-006: once any byte has moved, even fallback-eligible
+            // errnos are terminal — userspace retry would risk dropping
+            // or double-counting in-flight bytes.
+            let moved_any = moved();
+            match classify(Errno::ENOSYS, &moved_any) {
+                SpliceError::Io(e) => {
+                    assert_eq!(e.raw_os_error(), Some(Errno::ENOSYS as i32));
+                }
+                other => panic!("ENOSYS after byte movement must be Io, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn eperm_after_first_byte_promotes_to_io_no_fallback() {
+            let moved_any = moved();
+            match classify(Errno::EPERM, &moved_any) {
+                SpliceError::Io(_) => {}
+                other => panic!("EPERM after byte movement must be Io, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn moved_any_is_only_read_not_written_by_classify() {
+            // classify must NOT mutate the AtomicBool — that's the
+            // caller's responsibility (splice_dir flips it on first
+            // Ok(n>0)).
+            let moved_any = fresh();
+            let _ = classify(Errno::ENOSYS, &moved_any);
+            assert!(!moved_any.load(Ordering::Relaxed));
+            let moved_any = moved();
+            let _ = classify(Errno::ENOSYS, &moved_any);
+            assert!(moved_any.load(Ordering::Relaxed));
+        }
+    }
+
     /// Translate an errno into either an [`Unsupported`](SpliceError::Unsupported)
     /// fallback signal (only when zero bytes have moved on either
     /// direction) or a terminal [`Io`](SpliceError::Io) error.
@@ -1175,3 +1292,27 @@ mod integration {
         );
     }
 }
+
+// ====================================================================
+// T034 — Fallback resilience tests (SC-007)
+// ====================================================================
+//
+// These tests live inside `mod linux` (see `classify_tests` below)
+// because `classify()` is the central fallback-decision function and is
+// crate-private to that module. The contract they enforce:
+//
+// 1. The errno whitelist (ENOSYS / EINVAL / EPERM / EOPNOTSUPP) maps to
+//    `SpliceError::Unsupported` ONLY when `moved_any` is false.
+// 2. Once any byte has moved, every errno (including the whitelist) maps
+//    to `SpliceError::Io` — userspace fallback is forbidden because
+//    bytes are in flight (FR-006).
+// 3. Errnos outside the whitelist always map to `SpliceError::Io`.
+//
+// An integration-level injection test that exercises the full
+// `copy_bidirectional` → `proxy.rs` → userspace-fallback chain was
+// attempted but discarded: a thread-local one-shot injector inside
+// `splice_raw` races against tokio task scheduling even on the
+// `current_thread` runtime, making the test flaky. The unit-level
+// contract in `classify` is the canonical guarantee; the
+// `proxy::copy_uncapped` fallback arm is exercised on the real Linux
+// kernel by the existing 166-test forwarder suite.
