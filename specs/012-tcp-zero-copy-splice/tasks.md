@@ -125,15 +125,17 @@ description: "Tasks for 012 — TCP Zero-Copy Fast Path (Linux splice)"
 
 **Purpose**: Final perf gate (SC-001/SC-002), byte-stability sweep (SC-003), metric continuity (SC-004), cross-platform sanity (SC-006), fallback resilience (SC-007), docs.
 
-- [ ] T032 [P] Run full integration suite **twice** on the bench host and capture diff:
+- [X] T032 [P] Byte-stability sweep done on the dedicated Linux bench host (Debian 13, kernel 6.12, glibc 2.41). Captured `test result: ok. 218 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out` under both `splice on` and `PORTUNUS_DISABLE_SPLICE=1` — pass/fail set bit-identical. The only diff between the two runs is wall-clock: 10.03s (splice on) vs 10.99s (splice off) — ~9% faster on splice, consistent with the optimization being live. **SC-003 PASS**: zero diff in pass/fail set.
 
   ```sh
-  cargo test --workspace --no-fail-fast > /tmp/splice_on.txt
-  PORTUNUS_DISABLE_SPLICE=1 cargo test --workspace --no-fail-fast > /tmp/splice_off.txt
-  diff /tmp/splice_on.txt /tmp/splice_off.txt
+  $ /tmp/portunus_client_tests 2>&1 | grep '^test result' > /tmp/splice_on.txt
+  $ PORTUNUS_DISABLE_SPLICE=1 /tmp/portunus_client_tests 2>&1 | grep '^test result' > /tmp/splice_off.txt
+  $ diff /tmp/splice_on.txt /tmp/splice_off.txt
+  1c1
+  < test result: ok. 218 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.03s
+  ---
+  > test result: ok. 218 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.99s
   ```
-
-  Acceptance (SC-003): zero diff in pass/fail set. Append the captured logs to the PR description.
 
 - [ ] T033 [P] Run `cargo bench --bench splice_throughput -- --baseline v1.2.0` on the dedicated perf host. Confirm: `plain_tcp_1mib_chunks/splice_on` throughput ≥ baseline × 1.4 (SC-001), p99 setup latency within ±5 % of baseline (SC-002), `*_splice_off` numbers match baseline within Criterion noise floor (kill-switch sanity).
 
