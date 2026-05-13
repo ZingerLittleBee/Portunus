@@ -25,6 +25,7 @@ pub mod proxy_protocol;
 pub mod range;
 pub mod rate_limit;
 pub mod sni;
+pub mod splice;
 pub mod stats;
 pub mod udp;
 
