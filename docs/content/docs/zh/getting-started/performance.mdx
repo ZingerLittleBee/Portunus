@@ -66,12 +66,6 @@ Mbit/s），不是回归；splice off 和 splice on 在该区间相差 ≤5%。
 **和** `PORTUNUS_DISABLE_SPLICE=1` 两种模式下字节级一致通过——所有现有规则形态下
 的"字节稳定性"是发版门（012-tcp-zero-copy-splice SC-003）。
 
-## 历史 baseline（v0.11）
-
-本页其余内容是 v1.3.0 对照的 v0.11 baseline。数字保留以便溯源；
-上面的 v1.3.0 头条已经替代了"这台机器上 Portunus 能跑多快"这个问题
-的最终答案。
-
 ## 测试方法
 
 成熟的代理/转发性能报告会先讲清楚方法，再给数字：
@@ -198,6 +192,11 @@ portunus_uncapped / direct_iperf3_loopback * 100
 限流目标是 8.389 Mbit/s，实测落在 +10% 验收线内。
 uncapped 占比 18.04% → 45.90% 的提升来自下面 [近期优化](#近期优化)。
 
+<details>
+<summary>**历史 baseline：v0.11 Linux iptables 对比 + Offered-Load Sweep**（保留以供 v1.3.0 溯源；点击展开）</summary>
+
+下方数字是 [v1.3.0 头条](#v130-%E5%A4%B4%E6%9D%A1linux-tcp-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84) 中 splice 用来对照的 v0.11 baseline。完整保留以便溯源——v1.3.0 splice ON 已经在 ≥ 12.5 Gbit/s 区间把 Portunus 与 `iptables` 的差距压平了；详见 v1.3.0 的 [offered-load sweep](#offered-load-sweepv130-%E6%94%BB%E7%A0%B4-v011-saturation-%E5%8C%BA%E9%97%B4)。
+
 ### Linux iptables Baseline
 
 采集时间：2026-05-10。
@@ -268,6 +267,13 @@ TMPDIR=/root scripts/perf_loopback.py --seconds 5 --omit-seconds 1 \
 - **5-10 Gbit/s**：Portunus 还能接近目标速率，但已经进入“最好在自己机器上实测”的区域。
 - **≥ 12.5 Gbit/s**：iptables 仍接近 offered load，Portunus 明显更早饱和。
   这个区间里，Portunus 的控制面、QoS、审计、metrics 等能力会有实打实的吞吐代价。
+
+> ⚠ "12.5 G+ Portunus 早期饱和"这条结论是
+> [v1.3.0 splice 快路径](#v130-%E5%A4%B4%E6%9D%A1linux-tcp-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84)
+> 已经为无带宽限制的 TCP 规则消除的瓶颈。v1.3.0 sweep 表是当前运维参考；
+> 这张表记录的是 splice 之前的 baseline。
+
+</details>
 
 ## 解读
 

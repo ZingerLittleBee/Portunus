@@ -80,12 +80,6 @@ splice-specific ones) passes bit-identically with splice on AND
 rule shape is enforced as a release gate (012-tcp-zero-copy-splice
 SC-003).
 
-## Historical baseline (v0.11)
-
-The remainder of this page captures the v0.11 baseline that v1.3.0 was
-compared against. Numbers are kept for traceability; the v1.3.0 headline
-above supersedes the "what Portunus delivers on this host" answer.
-
 ## Method
 
 Mature proxy performance reports separate methodology from results:
@@ -221,6 +215,11 @@ acceptance bound. The uncapped percent-of-direct improved from 18.04 % to
 45.90 % after the v0.11 tuning recorded under
 [Recent optimisations](#recent-optimisations).
 
+<details>
+<summary>**Historical baseline: v0.11 Linux iptables comparison + Offered-Load Sweep** (preserved for v1.3.0 traceability; click to expand)</summary>
+
+These numbers are the v0.11 baseline that the [v1.3.0 Headline](#v130-headline-linux-tcp-splice-fast-path) splice numbers are measured against. They are kept verbatim for traceability — the v1.3.0 splice ON path now closes the gap to `iptables` in the ≥ 12.5 Gbit/s band; see the v1.3.0 [offered-load sweep](#offered-load-sweep-v130-vs-v011-saturation-point) for the head-to-head.
+
 ### Linux iptables Baseline
 
 Captured on 2026-05-10 on:
@@ -298,6 +297,14 @@ Read this as bands, not a universal threshold:
 - **≥ 12.5 Gbit/s**: iptables stays near the offered load while Portunus
   saturates much earlier. In this range the richer control plane has a real
   throughput cost.
+
+> ⚠ This 12.5 G+ "Portunus saturates" caveat is the band that the
+> [v1.3.0 splice fast path](#v130-headline-linux-tcp-splice-fast-path)
+> closes for plain TCP rules without bandwidth caps. The v1.3.0 sweep
+> table is the current operator answer; this table records the
+> pre-splice baseline.
+
+</details>
 
 ## Interpretation
 
