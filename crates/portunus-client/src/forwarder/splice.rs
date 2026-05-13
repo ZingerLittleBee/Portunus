@@ -118,9 +118,7 @@ impl CopyCtx {
 #[cfg(target_os = "linux")]
 #[inline]
 pub(crate) fn eligible(ctx: &CopyCtx) -> bool {
-    matches!(ctx.protocol, Protocol::Tcp)
-        && !ctx.disable_splice
-        && !ctx.has_bandwidth_cap
+    matches!(ctx.protocol, Protocol::Tcp) && !ctx.disable_splice && !ctx.has_bandwidth_cap
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -142,10 +140,8 @@ pub(crate) const fn eligible(_ctx: &CopyCtx) -> bool {
 #[allow(dead_code)]
 pub(crate) fn disable_splice_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var_os("PORTUNUS_DISABLE_SPLICE")
-            .is_some_and(|v| !v.is_empty())
-    })
+    *CACHED
+        .get_or_init(|| std::env::var_os("PORTUNUS_DISABLE_SPLICE").is_some_and(|v| !v.is_empty()))
 }
 
 /// Success-return type of [`copy_bidirectional`].
@@ -261,7 +257,7 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 #[allow(unused_imports)]
-pub(crate) use linux::{copy_bidirectional, PipePair};
+pub(crate) use linux::{PipePair, copy_bidirectional};
 
 // ====================================================================
 // Cross-platform tests
@@ -403,14 +399,7 @@ mod build_tests {
             ..Default::default()
         };
         let handle = rule_handle_with(Some(&rl));
-        let ctx = CopyCtx::build(
-            RuleId(1),
-            Protocol::Tcp,
-            Some(&handle),
-            None,
-            false,
-            false,
-        );
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&handle), None, false, false);
         assert!(ctx.has_bandwidth_cap);
         assert!(!eligible(&ctx));
     }
@@ -420,14 +409,7 @@ mod build_tests {
     #[test]
     fn rule_without_bandwidth_cap_is_eligible_on_linux_only() {
         let handle = rule_handle_with(None);
-        let ctx = CopyCtx::build(
-            RuleId(1),
-            Protocol::Tcp,
-            Some(&handle),
-            None,
-            false,
-            false,
-        );
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&handle), None, false, false);
         assert!(!ctx.has_bandwidth_cap);
         assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
     }
@@ -442,14 +424,7 @@ mod build_tests {
             ..Default::default()
         };
         let handle = rule_handle_with(Some(&rl));
-        let ctx = CopyCtx::build(
-            RuleId(1),
-            Protocol::Tcp,
-            Some(&handle),
-            None,
-            false,
-            false,
-        );
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&handle), None, false, false);
         assert!(
             !ctx.has_bandwidth_cap,
             "concurrent_connections alone must not set has_bandwidth_cap"
@@ -466,14 +441,7 @@ mod build_tests {
             ..Default::default()
         };
         let handle = rule_handle_with(Some(&rl));
-        let ctx = CopyCtx::build(
-            RuleId(1),
-            Protocol::Tcp,
-            Some(&handle),
-            None,
-            false,
-            false,
-        );
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&handle), None, false, false);
         assert!(!ctx.has_bandwidth_cap);
         assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
     }
@@ -510,14 +478,7 @@ mod build_tests {
             ..Default::default()
         };
         let owner = owner_handle_with(Some(&owner_rl));
-        let ctx = CopyCtx::build(
-            RuleId(1),
-            Protocol::Tcp,
-            None,
-            Some(&owner),
-            false,
-            false,
-        );
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, None, Some(&owner), false, false);
         assert!(!ctx.has_bandwidth_cap);
         assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
     }
@@ -565,14 +526,7 @@ mod build_tests {
     /// rate-limit envelope at all) yield `has_bandwidth_cap: false`.
     #[test]
     fn no_handles_at_all_is_eligible_on_linux_only() {
-        let ctx = CopyCtx::build(
-            RuleId(1),
-            Protocol::Tcp,
-            None,
-            None,
-            false,
-            false,
-        );
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, None, None, false, false);
         assert!(!ctx.has_bandwidth_cap);
         assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
     }
