@@ -50,6 +50,9 @@ enum Cmd {
     /// Provision a new client and write its credential bundle.
     ProvisionClient {
         name: String,
+        /// Public IP address or DNS name users connect to for this client.
+        #[arg(long)]
+        address: Option<String>,
         /// Output path. Defaults to `<cwd>/<name>.bundle.json`.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -453,9 +456,9 @@ fn run(cli: Cli) -> Result<(), u8> {
                 1
             })
         }
-        Cmd::ProvisionClient { name, out } => {
+        Cmd::ProvisionClient { name, address, out } => {
             let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
-            match cli::provision_client(&state, &name, out) {
+            match cli::provision_client(&state, &name, address.as_deref(), out) {
                 Ok((path, _)) => {
                     println!("{}", path.display());
                     Ok(())
