@@ -31,6 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::forwarder::proxy::proxy_with_preread_and_prelude;
 use crate::forwarder::proxy_protocol::ProxyProtocolPrelude;
+use crate::forwarder::rate_limit::scope::{LayeredAcquire, try_acquire_layered};
 use crate::forwarder::stats::RuleStats;
 use crate::resolver::{LiveResolver, Resolve};
 
@@ -135,6 +136,19 @@ pub struct SniRuleSlot {
     pub sni_route_exact_total: Arc<AtomicU64>,
     pub sni_route_wildcard_total: Arc<AtomicU64>,
     pub sni_route_fallback_total: Arc<AtomicU64>,
+    /// 011-rate-limiting-qos: per-rule data-plane limiter handle.
+    /// Cloned from `GroupMember.rate_limit` so the SNI dispatcher
+    /// hands the same `try_acquire_layered` cascade the legacy
+    /// accept path uses.
+    pub rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+    /// 011-rate-limiting-qos: per-rule reject/active stats accumulator.
+    pub rate_limit_stats:
+        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 011-rate-limiting-qos: per-owner data-plane limiter handle.
+    pub owner_rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
+    /// 011-rate-limiting-qos: per-owner reject/active stats accumulator.
+    pub owner_rate_limit_stats:
+        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
 }
 
 /// Snapshot of the rule slots a SNI listener can dispatch to.
@@ -382,6 +396,55 @@ async fn handle_accept<R: Resolve + 'static>(
         None => None,
     };
 
+    // 011-rate-limiting-qos T020/T030: the owner-then-rule admission
+    // cascade. SNI dispatch has to peek the ClientHello before it can
+    // resolve the rule, so the gate runs after route lookup rather
+    // than at accept (FR-013 ordering is preserved within the layered
+    // call). A reject drops the post-peek socket; the OS sends RST
+    // (Q3 / FR-009). Guards held for the lifetime of the proxy task
+    // so the active-connections gauge decrements on close (mirrors
+    // the legacy accept_loop and failover_path patterns).
+    let (_owner_admit, _rule_admit) = match try_acquire_layered(
+        slot.owner_rate_limit.as_ref(),
+        slot.rate_limit.as_ref(),
+        false,
+    ) {
+        LayeredAcquire::Granted {
+            owner_guard,
+            rule_guard,
+        } => (owner_guard, rule_guard),
+        LayeredAcquire::OwnerRejected(reason) => {
+            if let Some(s) = slot.owner_rate_limit_stats.as_ref() {
+                s.record_reject(reason);
+            }
+            debug!(
+                target = "tls_sni",
+                event = "tls.rate_limit_reject",
+                rule_id = %rule_id,
+                listen_port,
+                peer = %peer,
+                scope = "owner",
+                reason = reason.as_metric_label(),
+            );
+            return;
+        }
+        LayeredAcquire::RuleRejected(reason) => {
+            if let Some(s) = slot.rate_limit_stats.as_ref() {
+                s.record_reject(reason);
+            }
+            debug!(
+                target = "tls_sni",
+                event = "tls.rate_limit_reject",
+                rule_id = %rule_id,
+                listen_port,
+                peer = %peer,
+                scope = "rule",
+                reason = reason.as_metric_label(),
+            );
+            return;
+        }
+    };
+
     let res = proxy_with_preread_and_prelude(
         stream,
         Some(preread),
@@ -394,17 +457,18 @@ async fn handle_accept<R: Resolve + 'static>(
         cancel,
         Some(Arc::clone(&slot.stats)),
         slot.listen_port,
-        // 011-rate-limiting-qos T020/T030: the SNI dispatcher does
-        // not currently carry per-rule or per-owner limiters through
-        // PortGroupSlot (it pre-dates the cap envelope). Pre-0.11
-        // SNI rules stay uncapped; capped SNI rules are routed
-        // through the legacy accept_loop instead because rate_limit +
-        // sni_pattern together aren't yet plumbed through the port-
-        // group cache. Future work will revisit this end-to-end.
-        None,
-        None,
-        None,
-        None,
+        // 011-rate-limiting-qos limiters plumbed end-to-end through
+        // PortGroupManager (GroupMember) and the per-port watch into
+        // SniRuleSlot. The layered admission cascade above gates the
+        // accept; here the same handles flow into the proxy so the
+        // bandwidth-cap-aware bidi copy applies any per-chunk caps,
+        // identical to the legacy accept path. Capped SNI rules now
+        // enforce both per-rule and per-owner caps without any
+        // diversion through the legacy accept_loop.
+        slot.rate_limit.clone(),
+        slot.rate_limit_stats.clone(),
+        slot.owner_rate_limit.clone(),
+        slot.owner_rate_limit_stats.clone(),
     )
     .await;
     if let Err(e) = res

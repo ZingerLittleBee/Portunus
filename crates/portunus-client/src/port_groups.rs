@@ -76,7 +76,7 @@ pub enum PortGroupError {
 /// One member rule of a SNI group. Holds the per-rule data plane
 /// context the listener needs to dispatch a connection.
 #[derive(Clone)]
-struct GroupMember {
+pub(crate) struct GroupMember {
     rule_id: RuleId,
     sni_pattern: Option<String>,
     target: Target,
@@ -88,6 +88,20 @@ struct GroupMember {
     sni_route_exact_total: Arc<AtomicU64>,
     sni_route_wildcard_total: Arc<AtomicU64>,
     sni_route_fallback_total: Arc<AtomicU64>,
+    /// 011-rate-limiting-qos: per-rule data-plane limiter. Carried
+    /// verbatim from `ClientRule.rate_limit` so the SNI dispatcher
+    /// can apply the same admission gate as the legacy accept path.
+    pub(crate) rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+    /// 011-rate-limiting-qos: per-rule reject/active stats accumulator.
+    pub(crate) rate_limit_stats:
+        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 011-rate-limiting-qos: per-owner data-plane limiter. Threaded
+    /// through so capped SNI rules enforce the owner-scope cap.
+    pub(crate) owner_rate_limit:
+        Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
+    /// 011-rate-limiting-qos: per-owner reject/active stats accumulator.
+    pub(crate) owner_rate_limit_stats:
+        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
 }
 
 /// Per-port runtime: the bound listener task, the table watch
@@ -171,6 +185,10 @@ impl PortGroupManager {
             sni_route_exact_total: Arc::clone(&stats.sni_route_exact_total),
             sni_route_wildcard_total: Arc::clone(&stats.sni_route_wildcard_total),
             sni_route_fallback_total: Arc::clone(&stats.sni_route_fallback_total),
+            rate_limit: rule.rate_limit.clone(),
+            rate_limit_stats: rule.rate_limit_stats.clone(),
+            owner_rate_limit: rule.owner_rate_limit.clone(),
+            owner_rate_limit_stats: rule.owner_rate_limit_stats.clone(),
         };
 
         match self.groups.get_mut(&listen_port) {
@@ -303,6 +321,20 @@ impl PortGroupManager {
             .map(|m| Arc::clone(&m.stats))
     }
 
+    /// Test-only accessor: retrieve the `GroupMember` for a
+    /// `(listen_port, rule_id)` pair so plumbing tests can assert
+    /// that the owner / rule rate-limit handles propagate from the
+    /// inbound `ClientRule` into the per-port snapshot.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn group_member_for_test(
+        &self,
+        listen_port: u16,
+        rule_id: RuleId,
+    ) -> Option<&GroupMember> {
+        self.groups.get(&listen_port)?.members.get(&rule_id)
+    }
+
     /// `true` if at least one SNI listener is bound. The control
     /// loop uses this to know whether `StatsReport.sni_listener_stats`
     /// might carry rows even when no per-rule slots exist.
@@ -384,6 +416,10 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
                 sni_route_exact_total: Arc::clone(&m.sni_route_exact_total),
                 sni_route_wildcard_total: Arc::clone(&m.sni_route_wildcard_total),
                 sni_route_fallback_total: Arc::clone(&m.sni_route_fallback_total),
+                rate_limit: m.rate_limit.clone(),
+                rate_limit_stats: m.rate_limit_stats.clone(),
+                owner_rate_limit: m.owner_rate_limit.clone(),
+                owner_rate_limit_stats: m.owner_rate_limit_stats.clone(),
             },
         );
     }
@@ -521,6 +557,50 @@ mod tests {
             PortGroupError::UnknownRuleId(id) => assert_eq!(id, RuleId(999)),
             other => panic!("got {other:?}"),
         }
+    }
+
+    /// Owner-cap plumbing fix: confirm that `apply_push` copies the
+    /// `owner_rate_limit` handle from the inbound `ClientRule` into
+    /// the per-port `GroupMember`. Without this hop, capped SNI rules
+    /// silently lose their owner-scope cap before they reach
+    /// `SniRuleSlot` and `proxy_with_preread_and_prelude`.
+    #[tokio::test]
+    async fn t074_apply_push_carries_owner_rate_limit_into_group_member() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+        use portunus_core::RateLimit;
+
+        for port in 50_200..50_300 {
+            let mut mgr = PortGroupManager::new();
+            let mut r = rule(1, port, 9001, Some("api.example.com"));
+
+            let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+            let owner_id = OwnerId::new("alice");
+            owner_mgr.install(
+                &owner_id,
+                Some(&RateLimit {
+                    concurrent_connections: Some(1),
+                    ..Default::default()
+                }),
+            );
+            let owner_handle =
+                Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&owner_mgr)));
+            r.owner_rate_limit = Some(Arc::clone(&owner_handle));
+
+            if mgr.apply_push(r, live_resolver()).is_ok() {
+                let member = mgr
+                    .group_member_for_test(port, RuleId(1))
+                    .expect("member registered");
+                assert!(
+                    member.owner_rate_limit.is_some(),
+                    "GroupMember must carry the owner_rate_limit handle"
+                );
+                mgr.shutdown();
+                return;
+            }
+        }
+        panic!("could not bind a free port in 50200..50300");
     }
 }
 
@@ -1149,6 +1229,101 @@ mod e2e_tests {
             cap_a.lock().await.is_empty(),
             "non-TLS request must not reach any backend"
         );
+        mgr.shutdown();
+    }
+
+    /// Owner-cap plumbing fix (t075): end-to-end enforcement of the
+    /// owner-scope `concurrent_connections=1` cap through the SNI
+    /// dispatcher. Pushes a single capped SNI rule, opens one matching
+    /// connection (admitted), then a second (rejected after admission
+    /// gate). The owner-scope active-connections gauge must stay at 1
+    /// and `OwnerConcurrent` must tick exactly once.
+    #[tokio::test]
+    async fn t075_sni_dispatcher_enforces_owner_concurrent_cap_end_to_end() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        use portunus_core::{RateLimit, RejectReason};
+        use std::time::Duration;
+
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&owner_mgr)));
+        let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
+
+        // Backend captures forwarded bytes so the first connection's
+        // ClientHello reaches a real socket (mirrors the existing
+        // helpers in this module).
+        let (backend_addr, _cap) = spawn_capture_backend().await;
+        let listen_port = ephemeral_port().await;
+
+        let mut mgr = PortGroupManager::new();
+        let mut r = make_rule(1, listen_port, backend_addr, Some("api.example.com"));
+        r.owner_rate_limit = Some(Arc::clone(&owner_limiter));
+        r.owner_rate_limit_stats = Some(Arc::clone(&owner_stats));
+        mgr.apply_push(r, live_resolver()).expect("push");
+
+        // First connection — admitted by the layered gate.
+        let listen_addr = std::net::SocketAddr::from(([127, 0, 0, 1], listen_port));
+        let mut conn_a = TcpStream::connect(listen_addr).await.unwrap();
+        conn_a
+            .write_all(&build_client_hello(Some("api.example.com")))
+            .await
+            .unwrap();
+
+        // Wait for the SNI dispatcher's handle_accept task to run
+        // through the owner-scope admission gate and bump the
+        // active-connections gauge.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while owner_limiter.active_connections() < 1 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "SNI dispatcher never reached owner active_connections=1"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(owner_limiter.active_connections(), 1);
+        assert_eq!(owner_stats.reject_total(RejectReason::OwnerConcurrent), 0);
+
+        // Second connection — kernel accepts, but the owner-scope
+        // admission gate refuses (cap == 1). The socket is dropped
+        // after ClientHello peek; the gauge must stay at 1 and the
+        // OwnerConcurrent reject counter must tick exactly once.
+        let mut conn_b = TcpStream::connect(listen_addr).await.unwrap();
+        conn_b
+            .write_all(&build_client_hello(Some("api.example.com")))
+            .await
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while owner_stats.reject_total(RejectReason::OwnerConcurrent) == 0 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "owner-scope reject not recorded within 3s on SNI dispatch path"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            owner_limiter.active_connections(),
+            1,
+            "rejected conn must not bump active"
+        );
+        assert_eq!(
+            owner_stats.reject_total(RejectReason::OwnerConcurrent),
+            1,
+            "OwnerConcurrent must tick exactly once"
+        );
+
+        drop(conn_a);
+        drop(conn_b);
         mgr.shutdown();
     }
 
