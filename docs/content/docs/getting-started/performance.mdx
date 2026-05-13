@@ -153,9 +153,11 @@ data_plane.rtt_1byte_through_proxy     baseline 72167.4 ns   fresh 45815.0 ns   
 OK: all benchmarks within 50% of baseline.
 ```
 
-The deltas above reflect the v0.11 hot-path tuning recorded under
-[Recent optimisations](#recent-optimisations) below — added latency
-is unchanged within noise; bulk throughput improves materially.
+The deltas above are vs. a pre-v0.11 Criterion baseline; they reflect
+the v0.11 hot-path tuning recorded under
+[v0.11 hot-path tuning](#v011-hot-path-tuning) below. v1.3.0 does **not**
+change Criterion numbers on macOS — splice is Linux-only and Criterion
+runs on the developer's host.
 
 ### Criterion UDP
 
@@ -208,7 +210,13 @@ Result:
 | Portunus capped at `1,048,576 B/s` | 8.394 Mbit/s |
 
 This local capture was taken on macOS, so it does **not** include the
-Linux-only iptables baseline.
+Linux-only iptables baseline — and **splice is also Linux-only**, so
+these macOS numbers are byte-identical between v1.2.0 and v1.3.0 on
+this host. The Linux splice numbers live in the
+[v1.3.0 headline](#v130-headline-linux-tcp-splice-fast-path) at the top
+of this page. macOS shows a higher absolute number than the Linux box
+purely because macOS loopback (`lo0`) is significantly faster than this
+Linux host's `lo` — the two are not comparable; only same-host deltas are.
 
 `Portunus as percent of direct loopback` is only:
 
@@ -229,25 +237,42 @@ Portunus rule. That adds:
 The capped case targeted 8.389 Mbit/s and landed within the +10 percent
 acceptance bound. The uncapped percent-of-direct improved from 18.04 % to
 45.90 % after the v0.11 tuning recorded under
-[Recent optimisations](#recent-optimisations).
+[v0.11 hot-path tuning](#v011-hot-path-tuning).
 
 ## Interpretation
 
 Portunus is a userspace L4 forwarder. It accepts a TCP connection, dials
-the target, then copies bytes through Tokio. That makes it much richer than
-plain kernel NAT, but it necessarily crosses userspace and does more per-flow
-work.
+the target, and moves bytes between the two sockets. That makes it much
+richer than plain kernel NAT, but it still has to cross userspace
+boundaries the kernel doesn't.
 
-For raw same-host forwarding, kernel NAT / nftables flowtables should be the
-performance ceiling. Portunus is the right tool when the operator needs
-remote client registration, rule push, RBAC, auditability, per-owner QoS,
-metrics, SNI dispatch, PROXY protocol, and graceful rule lifecycle.
+How the per-flow cost lands depends on what the rule asks for:
 
-## Recent Optimisations
+- **Plain TCP, no bandwidth cap, Linux**: v1.3.0 routes the byte copy
+  through a kernel `splice + pipe` pair. The bytes never enter userspace
+  on `portunus-client`. On this host the [v1.3.0 sweep](#offered-load-sweep-v130-vs-v011-saturation-point)
+  shows splice ON tracking both direct `iperf3` and `iptables` REDIRECT
+  within iperf3 noise through 20 Gbit/s.
+- **Any bandwidth cap, or UDP, or macOS / Windows, or splice disabled**:
+  the canonical userspace path runs. Kernel NAT / nftables flowtables
+  remain the performance ceiling for *this* shape — userspace
+  `read → memcpy → write` adds real per-flow cost.
 
-The numbers above reflect three tuning changes landed in the v0.11
-hot path. Each is byte-stable (no functional or wire change) and
-falls back to v0.10 behaviour when its toggle is unset.
+Either way, Portunus is the right tool when you need remote client
+registration, rule push, RBAC, auditability, per-owner QoS, metrics,
+SNI dispatch, PROXY protocol, and graceful rule lifecycle. A static
+DNAT rule cannot give you any of these — comparing raw throughput
+alone is the wrong axis unless that's literally all you need.
+
+## v0.11 hot-path tuning
+
+The macOS Criterion and Real Process Loopback numbers above reflect
+three tuning changes that landed in the v0.11 hot path (`copy_bidirectional`
+size, centralised `dial()`, dynamic throttling chunk). v1.3.0 does **not**
+re-tune these knobs — splice runs in addition to them and only on Linux
+TCP rules without bandwidth caps. Each item below is byte-stable (no
+functional or wire change) and falls back to v0.10 behaviour when its
+toggle is unset.
 
 | Change | File | Effect |
 | --- | --- | --- |
@@ -274,24 +299,26 @@ opportunistically by the kernel.
 
 Open follow-ups (not in this revision):
 
-* Linux-only `splice(2)` zero-copy fast path on flows with no
-  pre-read, no PROXY prelude, and no bandwidth cap. Would be a
-  separate feature flag because it forks the data plane.
 * CLI / config plumbing for `dial_send_buffer_bytes` /
   `dial_recv_buffer_bytes`. Defaults are reasonable; expose only
   if operators report a kernel ceiling clamp on a real link.
 
+The "Linux-only `splice(2)` zero-copy fast path" item that lived here
+in v0.11 shipped in v1.3.0 — see the
+[v1.3.0 headline](#v130-headline-linux-tcp-splice-fast-path) at the
+top of this page.
+
 ## Comparable Forwarders
 
-| Dimension | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Performance profile | Highest. Kernel path, no userspace copy. | Highest for eligible flows; bypasses parts of the classic forwarding path. | High userspace proxy with mature event loop. | Very high userspace TCP proxy with excellent connection handling. | High but heavier userspace proxy, designed for service mesh / xDS. | Lightweight userspace redirector. | Flexible diagnostic pipe, not tuned as a managed production proxy. | Encrypted tunnel; throughput pays SSH crypto overhead. |
-| TCP | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| UDP | Yes | Yes | Yes | No generic UDP forwarding | Dedicated UDP filters / use cases | Yes | Yes | No native UDP |
-| Dynamic remote rule push | No built-in control plane | No built-in control plane | Reload/API depends on edition/config | Runtime API supports many operations | xDS control plane | Config reload style | No | Per-session |
-| RBAC / audit / metrics | External only | External only | Metrics via modules; no native tenant RBAC like Portunus | Strong stats, ACLs, stick tables | Rich telemetry and policy | Minimal | Minimal | SSH auth/logs |
-| QoS / rate limit | Basic shaping via `tc` / nftables ecosystem | Via nftables / `tc`, not app-owner aware | `limit_conn` / `limit_rate` style controls | Rich connection/rate controls | Rich filters, overload manager | Minimal | Minimal | Minimal |
-| Best fit | Static local host/network NAT. | Modern Linux packet filtering and forwarding. | Generic TCP/UDP proxying. | L4/L7 load balancing where TCP is enough. | Service mesh or xDS-managed environments. | Simple port redirection baseline. | Experiments and debugging. | Operationally convenient encrypted tunnels. |
+| Dimension | **Portunus (v1.3.0)** | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Performance profile | Userspace L4 with a Linux TCP `splice` fast path for uncapped flows. On the bench host tracks `iptables` REDIRECT to 20 Gbit/s; capped / UDP / non-Linux paths stay on the canonical userspace copy. | Highest. Kernel path, no userspace copy. | Highest for eligible flows; bypasses parts of the classic forwarding path. | High userspace proxy with mature event loop. | Very high userspace TCP proxy with excellent connection handling. | High but heavier userspace proxy, designed for service mesh / xDS. | Lightweight userspace redirector. | Flexible diagnostic pipe, not tuned as a managed production proxy. | Encrypted tunnel; throughput pays SSH crypto overhead. |
+| TCP | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| UDP | Yes (first-packet enforced) | Yes | Yes | Yes | No generic UDP forwarding | Dedicated UDP filters / use cases | Yes | Yes | No native UDP |
+| Dynamic remote rule push | First-class: central server pushes signed rule bundles to edge clients over pinned TLS; CLI, operator HTTP API, embedded Web UI, hot-reload. | No built-in control plane | No built-in control plane | Reload/API depends on edition/config | Runtime API supports many operations | xDS control plane | Config reload style | No | Per-session |
+| RBAC / audit / metrics | Native per-user / per-client / per-protocol / per-port-range RBAC; structured audit trail; Prometheus metrics; embedded SQLite store. | External only | External only | Metrics via modules; no native tenant RBAC | Strong stats, ACLs, stick tables | Rich telemetry and policy | Minimal | Minimal | SSH auth/logs |
+| QoS / rate limit | Per-rule and per-owner: `bandwidth_in/out_bps`, `new_connections_per_sec`, `concurrent_connections`. Token-bucket shaper; capped rules go through the canonical userspace path. | Basic shaping via `tc` / nftables ecosystem | Via nftables / `tc`, not app-owner aware | `limit_conn` / `limit_rate` style controls | Rich connection/rate controls | Rich filters, overload manager | Minimal | Minimal | Minimal |
+| Best fit | Centrally managed edge listeners with tenant-aware RBAC, per-owner QoS, observability, SNI dispatch, and PROXY protocol — TCP/UDP, single ports or ranges, IP or DNS targets. | Static local host/network NAT. | Modern Linux packet filtering and forwarding. | Generic TCP/UDP proxying. | L4/L7 load balancing where TCP is enough. | Service mesh or xDS-managed environments. | Simple port redirection baseline. | Experiments and debugging. | Operationally convenient encrypted tunnels. |
 
 The fair benchmark is not "compare published numbers." It is:
 

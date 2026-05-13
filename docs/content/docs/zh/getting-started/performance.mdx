@@ -134,8 +134,10 @@ data_plane.rtt_1byte_through_proxy     baseline 72167.4 ns   fresh 45815.0 ns   
 OK: all benchmarks within 50% of baseline.
 ```
 
-上面的 delta 反映了下面 [近期优化](#近期优化) 一节落地的 v0.11
-hot-path 调整 —— 1 字节 RTT 在噪声内不变，bulk 吞吐有显著提升。
+上表中的 delta 是相对于 v0.11 之前的 Criterion baseline，反映的是
+[v0.11 hot-path 调优](#v011-hot-path-%E8%B0%83%E4%BC%98)
+一节里那三处变动。v1.3.0 **不会** 改 macOS 上的 Criterion 数字——
+splice 仅 Linux 启用，而 Criterion 跑在开发者本机上。
 
 ### Criterion UDP
 
@@ -186,7 +188,12 @@ scripts/perf_loopback.py --seconds 3 --omit-seconds 1
 | Portunus / direct loopback | 45.90% |
 | Portunus 限制为 `1,048,576 B/s` | 8.394 Mbit/s |
 
-这组本机结果是在 macOS 上采集的，所以**不包含** Linux-only 的 iptables baseline。
+这组本机结果是在 macOS 上采集的，所以**不包含** Linux-only 的 iptables
+baseline——而且 **splice 也只在 Linux 启用**，所以这组 macOS 数字在
+v1.2.0 和 v1.3.0 之间字节级一致。Linux 上的 splice 数字在本页顶部的
+[v1.3.0 头条](#v130-%E5%A4%B4%E6%9D%A1linux-tcp-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84)。
+macOS 这组绝对值比 Linux 测试机高，是因为 macOS 的 `lo0` loopback
+本身就比那台 Linux 机器的 `lo` 快——两者不能直接比，只有同机 delta 才有意义。
 
 `Portunus / direct loopback` 只是：
 
@@ -205,23 +212,38 @@ portunus_uncapped / direct_iperf3_loopback * 100
 | `portunus_vs_iptables_pct` | `portunus_uncapped / iptables_redirect * 100`。 |
 
 限流目标是 8.389 Mbit/s，实测落在 +10% 验收线内。
-uncapped 占比 18.04% → 45.90% 的提升来自下面 [近期优化](#近期优化)。
+uncapped 占比 18.04% → 45.90% 的提升来自下面
+[v0.11 hot-path 调优](#v011-hot-path-%E8%B0%83%E4%BC%98)。
 
 ## 解读
 
-Portunus 是用户态 L4 forwarder。它 accept TCP 连接，dial target，然后通过 Tokio
-copy 字节。这让它比纯内核 NAT 做得多：控制面、RBAC、审计、owner QoS、metrics、
-SNI dispatch、PROXY protocol、规则生命周期。但代价也明确：路径会跨用户态，
-每条 flow 有更多工作。
+Portunus 是用户态 L4 forwarder。它 accept TCP 连接，dial target，然后在
+两条 socket 之间搬字节。这让它比纯内核 NAT 做得多，但路径必然要跨用户态
+做内核不做的事。
 
-如果只追求同机原始转发，内核 NAT / nftables flowtables 应该是性能天花板。
-如果需求是“远端 client 注册 + 中央规则下发 + 多租户 RBAC + 可观测 + QoS”，
-Portunus 才是这类问题的工具。拿它去和一条 DNAT 规则比纯吞吐，可以比，但
-这有点像拿瑞士军刀和一根针比扎洞速度，针当然快，废话。
+每条 flow 实际付多少代价，要看规则形态：
 
-## 近期优化
+- **纯 TCP、无带宽 cap、Linux**：v1.3.0 在 `portunus-client` 上把字节
+  搬运换成了内核 `splice + pipe`，字节根本不进用户态。这台机器上的
+  [v1.3.0 sweep](#offered-load-sweepv130-%E6%94%BB%E7%A0%B4-v011-saturation-%E5%8C%BA%E9%97%B4)
+  显示 splice ON 在 100 Mbit/s 到 20 Gbit/s 全程贴近 direct `iperf3`
+  与 `iptables` REDIRECT（落在 iperf3 噪声内）。
+- **有任何带宽 cap、UDP、macOS / Windows、或显式禁用 splice**：依然走
+  经典 userspace 路径。这种形态下 kernel NAT / nftables flowtables
+  仍然是性能天花板——userspace `read → memcpy → write` 有实打实的
+  每 flow 代价。
 
-上面的数字反映 v0.11 hot-path 落地的三处调优。每一项都是
+无论哪条路径，需要「远端 client 注册 + 中央规则下发 + 多租户 RBAC +
+可观测 + QoS + SNI 路由 + PROXY 协议 + 规则生命周期」时，Portunus
+才是合适的工具。一条 DNAT 规则给不了你这些——只比纯吞吐数字是错位
+的比较，除非你确实只需要那一条。
+
+## v0.11 hot-path 调优
+
+上面 macOS 的 Criterion 与真实进程 Loopback 数字反映的是 v0.11 落地的
+三处 hot-path 调优（`copy_bidirectional` size、集中式 `dial()`、动态
+throttle chunk）。v1.3.0 **没有** 再动这几个旋钮——splice 是在它们之上
+额外的一层，且只对 Linux + 无带宽 cap 的 TCP 规则生效。下表每一项都
 byte-stable（不改语义、不改 wire format），未启用时回落到 v0.10 行为。
 
 | 改动 | 文件 | 效果 |
@@ -246,22 +268,24 @@ byte-stable（不改语义、不改 wire format），未启用时回落到 v0.10
 
 后续待办（不在本次）：
 
-* Linux-only `splice(2)` 零拷贝快路径，仅覆盖 “无 preread / 无 PROXY
-  prelude / 无 bandwidth cap” 的流。需独立 feature flag，因为它会让数据面分叉。
 * `dial_send_buffer_bytes` / `dial_recv_buffer_bytes` 接到 CLI / 配置。
   默认值合理；只有当运维上报真实链路被内核 clamp 时再暴露。
 
+v0.11 时挂在这里的「Linux-only `splice(2)` 零拷贝快路径」已经在
+v1.3.0 落地——见本页顶部的
+[v1.3.0 头条](#v130-%E5%A4%B4%E6%9D%A1linux-tcp-splice-%E5%BF%AB%E8%B7%AF%E5%BE%84)。
+
 ## 常见转发方案对比
 
-| 维度 | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 性能预期 | 最高。内核路径，无用户态 copy。 | 最高。合格 flow 可绕开部分经典 forwarding path。 | 高性能用户态 proxy，事件循环成熟。 | 极高性能用户态 TCP proxy，连接处理成熟。 | 高性能但更重，面向 service mesh / xDS。 | 轻量用户态 redirector。 | 灵活诊断管道，不是托管式生产 proxy。 | 加密隧道，吞吐受 SSH crypto 影响。 |
-| TCP | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 |
-| UDP | 有 | 有 | 有 | 无通用 UDP 转发 | 有专门 UDP 场景 / 过滤器 | 有 | 有 | 无原生 UDP |
-| 动态远端规则下发 | 无内置控制面 | 无内置控制面 | reload/API 取决于版本和配置 | Runtime API 支持很多操作 | xDS 控制面 | 配置/reload 风格 | 无 | 按 session |
-| RBAC / 审计 / 指标 | 依赖外部系统 | 依赖外部系统 | 模块化 metrics，无 Portunus 这种租户模型 | stats、ACL、stick tables 很强 | telemetry 和 policy 很强 | 极少 | 极少 | SSH auth/log |
-| QoS / rate limit | 通过 `tc` / nftables 生态做基础整形 | nftables / `tc`，不是 app-owner 维度 | `limit_conn` / `limit_rate` 类控制 | 丰富的连接/速率控制 | filters / overload manager | 极少 | 极少 | 极少 |
-| 适合场景 | 本机/本网络静态 NAT。 | 现代 Linux packet filtering / forwarding。 | 通用 TCP/UDP proxy。 | TCP 足够时的 L4/L7 负载均衡。 | service mesh 或 xDS 管理环境。 | 简单端口 redirect baseline。 | 实验和调试。 | 运维方便的加密隧道。 |
+| 维度 | **Portunus（v1.3.0）** | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 性能预期 | 用户态 L4，给无带宽限制的 TCP 流配 Linux `splice` 快路径。测试机上贴近 `iptables` REDIRECT 到 20 Gbit/s；限速、UDP、非 Linux 仍走经典用户态 copy。 | 最高。内核路径，无用户态 copy。 | 最高。合格 flow 可绕开部分经典 forwarding path。 | 高性能用户态 proxy，事件循环成熟。 | 极高性能用户态 TCP proxy，连接处理成熟。 | 高性能但更重，面向 service mesh / xDS。 | 轻量用户态 redirector。 | 灵活诊断管道，不是托管式生产 proxy。 | 加密隧道，吞吐受 SSH crypto 影响。 |
+| TCP | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 |
+| UDP | 有（首包强制） | 有 | 有 | 有 | 无通用 UDP 转发 | 有专门 UDP 场景 / 过滤器 | 有 | 有 | 无原生 UDP |
+| 动态远端规则下发 | 一等公民：Server 通过 pinned TLS 向 edge Client 下发签名规则包；CLI、Operator HTTP API、内嵌 Web UI、热更新。 | 无内置控制面 | 无内置控制面 | reload/API 取决于版本和配置 | Runtime API 支持很多操作 | xDS 控制面 | 配置/reload 风格 | 无 | 按 session |
+| RBAC / 审计 / 指标 | 原生：按用户 / Client / 协议 / 端口段 RBAC；结构化审计；Prometheus 指标；内嵌 SQLite。 | 依赖外部系统 | 依赖外部系统 | 模块化 metrics，无原生租户模型 | stats、ACL、stick tables 很强 | telemetry 和 policy 很强 | 极少 | 极少 | SSH auth/log |
+| QoS / rate limit | 每条规则与每个 owner：`bandwidth_in/out_bps`、`new_connections_per_sec`、`concurrent_connections`。token bucket shaper；限速规则走经典用户态路径。 | 通过 `tc` / nftables 生态做基础整形 | nftables / `tc`，不是 app-owner 维度 | `limit_conn` / `limit_rate` 类控制 | 丰富的连接/速率控制 | filters / overload manager | 极少 | 极少 | 极少 |
+| 适合场景 | 中央化管理边缘 listener，带租户 RBAC、per-owner QoS、可观测、SNI dispatch、PROXY 协议——TCP/UDP，单端口或端口段，IP 或 DNS target。 | 本机/本网络静态 NAT。 | 现代 Linux packet filtering / forwarding。 | 通用 TCP/UDP proxy。 | TCP 足够时的 L4/L7 负载均衡。 | service mesh 或 xDS 管理环境。 | 简单端口 redirect baseline。 | 实验和调试。 | 运维方便的加密隧道。 |
 
 公平测试不是“找几篇网上数字拼表”，而是：
 
