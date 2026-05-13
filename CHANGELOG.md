@@ -34,6 +34,38 @@ unchanged.
   userspace path. Intended for diagnostic and bench-comparison use
   only; not advertised in `--help` or operator configuration. See
   `docs/operations/troubleshooting.mdx` for guidance.
+- **Owner-cap "Add" dialog in Web UI** — Operators can now set a
+  per-owner `concurrent_connections` / bandwidth cap on a client
+  before that owner pushes their first rule. The Owner quotas tab
+  previously only listed owners who already had rules, hiding the
+  PUT-before-rule code path the backend has always supported.
+
+### Changed
+
+- **`make dev` / `make ui` / `make webui-build`** auto-install
+  `webui/node_modules` on first use via a file-target gated on
+  `pnpm-lock.yaml`. Fresh clones and post-`make clean` runs no
+  longer fail with `vite: not found`.
+
+### Fixed
+
+- **SNI dispatcher silently dropped owner / rule rate-limit
+  handles.** Rules with `sni_pattern` routed through
+  `PortGroupManager` lost their limiter handles at `GroupMember` /
+  `SniRuleSlot` construction; the SNI accept loop then passed four
+  `None`s into the proxy. Capped SNI rules ran uncapped end-to-end.
+  Limiters are now threaded through
+  `GroupMember → SniRuleSlot → proxy_with_preread_and_prelude`,
+  and a `try_acquire_layered` cascade in
+  `sni::listener::handle_accept` mirrors the legacy and failover
+  accept paths.
+- **Legacy single-target HTTP push hard-coded
+  `rule.owner_id: None` on the wire.** Rules created via
+  `POST /v1/rules` with the v0.6 `target_host` / `target_port`
+  shape lost owner-cap enforcement on the client — the client
+  only installs an `OwnerRateLimitHandle` when the wire
+  `owner_id` is non-empty. Now mirrors `push_rule_multi_target`
+  and always emits `rule.owner_user_id`.
 
 ## [1.2.0] — 2026-05-13
 
