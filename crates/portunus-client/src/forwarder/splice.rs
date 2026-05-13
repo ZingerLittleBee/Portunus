@@ -1075,7 +1075,7 @@ mod integration {
             total
         });
 
-        let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let payload: Vec<u8> = (0u32..1024 * 1024).map(|i| (i % 251) as u8).collect();
         let expected = payload.clone();
         let writer_task = tokio::spawn(async move {
             downstream_client.write_all(&payload).await.unwrap();
@@ -1110,7 +1110,10 @@ mod integration {
         let (got, expected) = writer_task.await.unwrap();
         assert_eq!(got.len(), expected.len(), "echoed length matches input");
         assert_eq!(got, expected, "echoed bytes are identical");
-        assert_eq!(transferred.bytes_out as usize, got.len());
+        assert_eq!(
+            usize::try_from(transferred.bytes_out).unwrap(),
+            got.len()
+        );
 
         let _ = echo_task.await;
     }
