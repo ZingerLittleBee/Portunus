@@ -29,14 +29,15 @@ use super::rate_limit::scope::{OwnerRateLimitHandle, RuleRateLimitHandle};
 /// passed by reference into [`eligible`]. Small POD; `Copy` so callers do
 /// not need to clone.
 //
-// `dead_code` is silenced until the proxy.rs call site lands in T017.
-// Every field is read once T017 wires the eligibility branch.
-//
 // `struct_excessive_bools` is allowed here because these flags are the
 // natural encoding of the eligibility predicate's gates (FR-001..FR-007);
 // collapsing them into a state-machine enum would obscure the per-gate
 // test matrix in `eligible_tests`.
-#[allow(dead_code, clippy::struct_excessive_bools)]
+//
+// Non-Linux builds: `has_sni_replay_done` and `has_proxy_out` are only
+// read by the Linux tracing path, so they're dead on darwin/Windows.
+#[allow(clippy::struct_excessive_bools)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CopyCtx {
     /// Rule identifier — used for tracing-event correlation only.
@@ -80,7 +81,7 @@ impl CopyCtx {
     /// `CopyCtx` is not refreshed mid-connection. A subsequent rule
     /// hot-update via `PUT /v1/rules/{id}` that changes bandwidth-cap
     /// presence does NOT migrate in-flight connections between paths.
-    #[allow(dead_code)] // wired by T017 (proxy.rs call site)
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn build(
         rule_id: RuleId,
         protocol: Protocol,
@@ -117,7 +118,6 @@ impl CopyCtx {
 ///   was cached at process start and is part of `ctx`.
 #[cfg(target_os = "linux")]
 #[inline]
-#[allow(dead_code)] // wired by T017 (proxy.rs call site)
 pub(crate) fn eligible(ctx: &CopyCtx) -> bool {
     matches!(ctx.protocol, Protocol::Tcp) && !ctx.disable_splice && !ctx.has_bandwidth_cap
 }
@@ -137,8 +137,7 @@ pub(crate) const fn eligible(_ctx: &CopyCtx) -> bool {
 /// constructing `CopyCtx { disable_splice: true, .. }` directly rather
 /// than mutating the environment.
 //
-// `dead_code` is silenced until the proxy.rs call site lands in T017.
-#[allow(dead_code)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn disable_splice_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED
@@ -152,7 +151,7 @@ pub(crate) fn disable_splice_env() -> bool {
 /// **delivered** to the destination socket on each direction, never bytes
 /// received but not yet delivered. See spec FR-008 and research § R-008.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // wired by T017 (proxy.rs call site)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) struct Transferred {
     /// Bytes delivered downstream → upstream.
     pub(crate) bytes_in: u64,
@@ -174,7 +173,7 @@ pub(crate) struct Transferred {
 /// NOT retry on the userspace path. Doing so would risk dropping or
 /// double-counting bytes already in flight.
 #[derive(Debug)]
-#[allow(dead_code)] // wired by T017 (proxy.rs call site)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum SpliceError {
     /// First `splice` syscall returned an unsupported errno before any
     /// byte moved. Caller may fall back to the userspace path.
@@ -200,7 +199,6 @@ impl From<std::io::Error> for SpliceError {
 /// connections on the same rule are silent — the field schema in
 /// `contracts/internal-api.md` § 3 is intentionally low-cardinality.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // called by mod linux; only "live" once T017 wires the call site
 fn emit_splice_selected(ctx: &CopyCtx, pipe_capacity_bytes: usize) {
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -227,9 +225,6 @@ fn emit_splice_selected(ctx: &CopyCtx, pipe_capacity_bytes: usize) {
 // ====================================================================
 
 #[cfg(target_os = "linux")]
-// All items in this module become live at the proxy.rs wiring site (T017).
-// Until then, the entire module is "library code" with no internal callers.
-#[allow(dead_code)]
 mod linux {
     use std::io;
     use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -691,7 +686,12 @@ mod build_tests {
         let handle = rule_handle_with(None);
         let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&handle), None, false, false);
         assert!(!ctx.has_bandwidth_cap);
-        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029 CI matrix
+        // axis) `disable_splice` is true and `eligible` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice
+        );
     }
 
     /// T026 — rule with only `concurrent_connections` does NOT force
@@ -709,7 +709,12 @@ mod build_tests {
             !ctx.has_bandwidth_cap,
             "concurrent_connections alone must not set has_bandwidth_cap"
         );
-        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029) `eligible`
+        // is false even when `has_bandwidth_cap` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice
+        );
     }
 
     /// T026 pair — rule with only `new_connections_per_sec` does NOT
@@ -723,7 +728,12 @@ mod build_tests {
         let handle = rule_handle_with(Some(&rl));
         let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&handle), None, false, false);
         assert!(!ctx.has_bandwidth_cap);
-        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029 CI matrix
+        // axis) `disable_splice` is true and `eligible` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice
+        );
     }
 
     /// T027 — owner bandwidth cap forces userspace even when the rule
@@ -760,7 +770,12 @@ mod build_tests {
         let owner = owner_handle_with(Some(&owner_rl));
         let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, None, Some(&owner), false, false);
         assert!(!ctx.has_bandwidth_cap);
-        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029 CI matrix
+        // axis) `disable_splice` is true and `eligible` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice
+        );
     }
 
     /// Either side (rule OR owner) sets the flag.
@@ -799,7 +814,12 @@ mod build_tests {
             false,
         );
         assert!(!ctx.has_bandwidth_cap);
-        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029 CI matrix
+        // axis) `disable_splice` is true and `eligible` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice
+        );
     }
 
     /// `None` handles (the common steady-state for rules with no
@@ -808,7 +828,12 @@ mod build_tests {
     fn no_handles_at_all_is_eligible_on_linux_only() {
         let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, None, None, false, false);
         assert!(!ctx.has_bandwidth_cap);
-        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029 CI matrix
+        // axis) `disable_splice` is true and `eligible` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice
+        );
     }
 }
 
