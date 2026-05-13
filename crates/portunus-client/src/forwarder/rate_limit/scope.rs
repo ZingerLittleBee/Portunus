@@ -1526,4 +1526,78 @@ mod tests {
         let reg = OwnerRateLimitStatsRegistry::new();
         assert!(reg.drain_to_proto().is_empty());
     }
+
+    /// T076 / R-008: hot-lowering an owner concurrent cap must not
+    /// kill live guards — only new acquires reject until the active
+    /// count drains below the new ceiling. Complements the per-rule
+    /// invariant validated by `t030_owner_scope_manager_update_carries_state`.
+    #[tokio::test]
+    async fn t076_lowering_owner_concurrent_cap_drains_gracefully() {
+        let scope = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        let mk_cap = |n: u32| RateLimit {
+            concurrent_connections: Some(n),
+            ..Default::default()
+        };
+
+        // Initial cap = 5.
+        scope.install(&owner_id, Some(&mk_cap(5)));
+        let limiter = Arc::new(OwnerRateLimitHandle::new(
+            owner_id.clone(),
+            Arc::clone(&scope),
+        ));
+        let stats = crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new();
+
+        // Helper: drive try_acquire_layered for owner-only (no rule limiter).
+        let acquire = || try_acquire_layered(Some(&limiter), None, false);
+
+        let g1 = match acquire() {
+            LayeredAcquire::Granted { owner_guard, .. } => owner_guard.expect("owner guard 1"),
+            other => panic!("expected admit 1, got {other:?}"),
+        };
+        let g2 = match acquire() {
+            LayeredAcquire::Granted { owner_guard, .. } => owner_guard.expect("owner guard 2"),
+            other => panic!("expected admit 2, got {other:?}"),
+        };
+        assert_eq!(limiter.active_connections(), 2);
+
+        // Hot lower to 1 — active guards survive (no kill).
+        scope.update(&owner_id, Some(&mk_cap(1)));
+        assert_eq!(
+            limiter.active_connections(),
+            2,
+            "lower cap must not kill live guards"
+        );
+
+        // New acquire rejects.
+        match acquire() {
+            LayeredAcquire::OwnerRejected(reason) => {
+                assert_eq!(reason, RejectReason::OwnerConcurrent);
+                stats.record_reject(reason);
+            }
+            other => panic!("expected reject after lower-to-1, got {other:?}"),
+        }
+        assert_eq!(stats.reject_total(RejectReason::OwnerConcurrent), 1);
+
+        // Drop one guard — still over cap.
+        drop(g1);
+        assert_eq!(limiter.active_connections(), 1);
+        match acquire() {
+            LayeredAcquire::OwnerRejected(reason) => {
+                assert_eq!(reason, RejectReason::OwnerConcurrent);
+                stats.record_reject(reason);
+            }
+            other => panic!("expected reject at active==cap, got {other:?}"),
+        }
+        assert_eq!(stats.reject_total(RejectReason::OwnerConcurrent), 2);
+
+        // Drop the second — under cap.
+        drop(g2);
+        assert_eq!(limiter.active_connections(), 0);
+        let _g3 = match acquire() {
+            LayeredAcquire::Granted { owner_guard, .. } => owner_guard.expect("admit after drain"),
+            other => panic!("expected admit after drain, got {other:?}"),
+        };
+        assert_eq!(limiter.active_connections(), 1);
+    }
 }

@@ -194,6 +194,74 @@ A long tail (close to 3 s) usually means clients are sending
 ClientHellos in dribs and drabs over a slow network — not a
 Portunus issue.
 
+## Disabling the Linux fast path for triage
+
+On Linux, `portunus-client` automatically uses `splice(2)` to forward
+TCP traffic on rules that have no `bandwidth_in_bps` /
+`bandwidth_out_bps` (per-rule or per-owner). The optimization is
+operator-invisible by design — there is no rule field, config knob,
+or CLI flag for it. For diagnosis and bench-comparison the
+**internal** environment variable `PORTUNUS_DISABLE_SPLICE=1` forces
+every connection to the userspace path:
+
+```sh
+PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
+```
+
+This is intentionally not advertised in `--help`. Treat it as a
+debug-only escape hatch, not a stable API.
+
+### "I see `proxy.splice_unsupported_fallback` events"
+
+```json
+{"event":"proxy.splice_unsupported_fallback","errno_name":"ENOSYS"}
+```
+
+The kernel (or a sandbox / LSM / seccomp policy in front of it)
+rejected the `splice` syscall. The connection transparently fell
+back to the userspace path — functionality is unaffected, only peak
+throughput is reduced.
+
+**Fix**: relax the policy, or accept the fallback and silence the
+warn by setting `PORTUNUS_DISABLE_SPLICE=1`.
+
+### "I see recurring `proxy.splice_pipe_size_failed` events"
+
+```json
+{"event":"proxy.splice_pipe_size_failed",
+ "requested_bytes":1048576,
+ "actual_default_bytes":65536,
+ "errno_name":"EPERM"}
+```
+
+`/proc/sys/fs/pipe-max-size` is below the requested 1 MiB. The fast
+path still works at the kernel-default pipe size (64 KiB on most
+distros) but peak throughput on large-chunk workloads is reduced.
+
+**Fix**: raise the sysctl (per-host or in the systemd unit), or
+accept reduced peak throughput.
+
+### "Throughput on Linux equals the v1.2.0 baseline"
+
+The fast path is not active. Check, in order:
+
+1. `PORTUNUS_DISABLE_SPLICE` set on the client environment? Unset it.
+2. Rule has `bandwidth_in_bps` or `bandwidth_out_bps`? Per-chunk
+   userspace token accounting is required when bandwidth caps apply,
+   so the fast path is correctly disabled.
+3. Owner has a bandwidth cap? Same as #2.
+4. Inspect `proxy.splice_selected` (info-level) — it fires once per
+   rule when a rule first takes the fast path. Its absence indicates
+   ineligibility.
+
+### "`bytes_in` and bytes the upstream actually received do not match under RST"
+
+Behaviour is identical to the v1.2.0 userspace path: the counters
+count **delivered** bytes, never received-but-not-yet-delivered
+bytes. Under a mid-flow RST, in-flight bytes are dropped on both
+paths; the counters agree on the delivered total. This is not a
+regression introduced by the fast path.
+
 ## Where to file bugs
 
 GitHub issues: https://github.com/ZingerLittleBee/Portunus/issues

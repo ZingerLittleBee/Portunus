@@ -365,6 +365,100 @@ async fn t024_put_rejects_pre_011_client_with_422() {
 }
 
 #[tokio::test]
+async fn t070_concurrent_only_put_get_round_trip_v011_client() {
+    let f = build_fixture();
+    let rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let url = format!("/v1/clients/{CLIENT}/owners/alice/rate-limit");
+
+    // PUT — set ONLY concurrent_connections; all other rate-limit
+    // fields must remain absent in the response (no defaulting).
+    let body = serde_json::json!({ "concurrent_connections": 100 });
+    let put_resp = f
+        .router
+        .clone()
+        .oneshot(req_put(&url, SUPERADMIN_TOKEN, body.clone()))
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::OK, "PUT body={body}");
+    let put_json = response_json(put_resp).await;
+    assert_eq!(put_json["rate_limit"]["concurrent_connections"], 100);
+    for field in [
+        "bandwidth_in_bps",
+        "bandwidth_out_bps",
+        "new_connections_per_sec",
+        "bandwidth_in_burst",
+        "bandwidth_out_burst",
+        "new_connections_burst",
+    ] {
+        assert!(
+            put_json["rate_limit"][field].is_null(),
+            "field {field} should be null after concurrent-only PUT, got {:?}",
+            put_json["rate_limit"][field]
+        );
+    }
+
+    // GET round-trip — same shape.
+    let get_resp = f
+        .router
+        .clone()
+        .oneshot(req_get(&url, SUPERADMIN_TOKEN))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let get_json = response_json(get_resp).await;
+    assert_eq!(get_json["rate_limit"]["concurrent_connections"], 100);
+    assert!(get_json["rate_limit"]["bandwidth_in_bps"].is_null());
+
+    // gRPC push capture — the server-to-client envelope must mirror the API.
+    let push = drain_owner_rate_limit_update(&rx)
+        .await
+        .expect("push must arrive");
+    assert_eq!(
+        push.action,
+        portunus_proto::v1::OwnerRateLimitAction::Set as i32
+    );
+    assert_eq!(push.owner_id, "alice");
+    let rl = push.rate_limit.as_ref().expect("rate_limit present");
+    assert_eq!(rl.concurrent_connections, Some(100));
+    assert_eq!(rl.bandwidth_in_bps, None);
+    assert_eq!(rl.bandwidth_out_bps, None);
+    assert_eq!(rl.new_connections_per_sec, None);
+}
+
+#[tokio::test]
+async fn t071_concurrent_put_returns_422_for_pre_011_client() {
+    let f = build_fixture();
+    let rx = register_fake_client(&f, CLIENT, Some("0.10.0")).await;
+    let url = format!("/v1/clients/{CLIENT}/owners/alice/rate-limit");
+
+    let body = serde_json::json!({ "concurrent_connections": 100 });
+    let put_resp = f
+        .router
+        .clone()
+        .oneshot(req_put(&url, SUPERADMIN_TOKEN, body))
+        .await
+        .unwrap();
+    assert_eq!(
+        put_resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected capability gate to reject"
+    );
+    assert_eq!(err_code(put_resp).await, "rate_limit_unsupported_by_client");
+
+    // No push must have been emitted for this client.
+    assert!(drain_owner_rate_limit_update(&rx).await.is_none());
+
+    // No persisted row.
+    let get_resp = f
+        .router
+        .clone()
+        .oneshot(req_get(&url, SUPERADMIN_TOKEN))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn t024_put_rejects_disconnected_client_with_422() {
     let f = build_fixture();
     // No client connected — capability gate falls back to "unknown"

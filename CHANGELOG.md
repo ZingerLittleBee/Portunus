@@ -5,6 +5,68 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.3.0] — 2026-05-13
+
+Linux data-plane release. Single-flow uncapped TCP throughput on the
+v1.2.0 reference bench host doubles (9,954 → 21,922 Mbit/s; 2.20×).
+Operator surface, wire protocol, SQLite schema, and Web UI are
+unchanged.
+
+### Added
+
+- **Linux TCP zero-copy fast path** — on Linux hosts the
+  `portunus-client` data plane now uses `splice(2)` for TCP
+  forwarding when a rule has no bandwidth caps and no per-owner
+  bandwidth cap. The optimization is applied automatically with no
+  rule-level configuration; the byte stream, half-close semantics,
+  per-rule counters, and Prometheus metrics are identical to the
+  previous userspace path. macOS and Windows builds are unchanged
+  (the fast-path code is `#[cfg(target_os = "linux")]`-gated out
+  entirely). SNI-routed (v0.9) and PROXY-protocol (v0.10) rules
+  also benefit — the optimization kicks in once the prelude phase
+  completes. Rules with `bandwidth_in_bps` / `bandwidth_out_bps`
+  (per-rule or per-owner) continue on the userspace path so v0.11
+  rate-limit semantics are preserved exactly.
+- **`PORTUNUS_DISABLE_SPLICE` env variable** — set on the
+  `portunus-client` environment to force every connection to the
+  userspace path. Intended for diagnostic and bench-comparison use
+  only; not advertised in `--help` or operator configuration. See
+  `docs/operations/troubleshooting.mdx` for guidance.
+- **Owner-cap "Add" dialog in Web UI** — Operators can now set a
+  per-owner `concurrent_connections` / bandwidth cap on a client
+  before that owner pushes their first rule. The Owner quotas tab
+  previously only listed owners who already had rules, hiding the
+  PUT-before-rule code path the backend has always supported.
+
+### Changed
+
+- **`make dev` / `make ui` / `make webui-build`** auto-install
+  `webui/node_modules` on first use via a file-target gated on
+  `pnpm-lock.yaml`. Fresh clones and post-`make clean` runs no
+  longer fail with `vite: not found`.
+
+### Fixed
+
+- **SNI dispatcher silently dropped owner / rule rate-limit
+  handles.** Rules with `sni_pattern` routed through
+  `PortGroupManager` lost their limiter handles at `GroupMember` /
+  `SniRuleSlot` construction; the SNI accept loop then passed four
+  `None`s into the proxy. Capped SNI rules ran uncapped end-to-end.
+  Limiters are now threaded through
+  `GroupMember → SniRuleSlot → proxy_with_preread_and_prelude`,
+  and a `try_acquire_layered` cascade in
+  `sni::listener::handle_accept` mirrors the legacy and failover
+  accept paths.
+- **Legacy single-target HTTP push hard-coded
+  `rule.owner_id: None` on the wire.** Rules created via
+  `POST /v1/rules` with the v0.6 `target_host` / `target_port`
+  shape lost owner-cap enforcement on the client — the client
+  only installs an `OwnerRateLimitHandle` when the wire
+  `owner_id` is non-empty. Now mirrors `push_rule_multi_target`
+  and always emits `rule.owner_user_id`.
+
 ## [1.2.0] — 2026-05-13
 
 UX-focused release. Operators can now recover from a lost credential

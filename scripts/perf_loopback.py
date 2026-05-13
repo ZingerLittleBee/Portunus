@@ -290,8 +290,9 @@ def main() -> int:
                 "iptables is required for --with-iptables. "
                 "Install it, or pass --iptables-bin /path/to/iptables."
             )
-    if offered_mbps and not args.with_iptables:
-        raise SystemExit("--offered-mbps requires --with-iptables.")
+    # Offered-mbps without iptables is allowed (skips the iptables-redirect
+    # comparison row; useful when comparing splice on vs off where iptables
+    # is identical between the two runs).
 
     build_release(args.server_bin, args.client_bin)
 
@@ -310,10 +311,11 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="portunus-perf-") as tmp:
             tmpdir = pathlib.Path(tmp)
-            config_dir = tmpdir / "config"
+            # v1.2.0: the server expects `server.toml` inside `--data-dir`,
+            # not a separate `--config-dir`. Use data_dir as config_dir too.
             data_dir = tmpdir / "data"
-            config_dir.mkdir()
             data_dir.mkdir()
+            config_dir = data_dir
 
             token = check_output([str(args.server_bin), "gen-token"], os.environ.copy()).strip()
             write_config(config_dir, ports, token)
@@ -326,8 +328,6 @@ def main() -> int:
             check_output(
                 [
                     str(args.server_bin),
-                    "--config-dir",
-                    str(config_dir),
                     "--data-dir",
                     str(data_dir),
                     "--advertised-endpoint",
@@ -343,8 +343,6 @@ def main() -> int:
             server = subprocess.Popen(
                 [
                     str(args.server_bin),
-                    "--config-dir",
-                    str(config_dir),
                     "--data-dir",
                     str(data_dir),
                     "--advertised-endpoint",
@@ -392,8 +390,6 @@ def main() -> int:
             uncapped_rule = check_output(
                 [
                     str(args.server_bin),
-                    "--config-dir",
-                    str(config_dir),
                     "--data-dir",
                     str(data_dir),
                     "push-rule",
@@ -462,42 +458,43 @@ def main() -> int:
                         args.omit_seconds,
                         offered,
                     )
-                    iptables_limited = run_with_iperf_server(
-                        args.iperf3,
-                        ports.iperf_target,
-                        ports.iptables_listen,
-                        args.seconds,
-                        args.omit_seconds,
-                        offered,
-                    )
-                    matrix.append(
-                        {
-                            "offered_mbps": offered,
-                            "direct": direct_limited,
-                            "portunus_uncapped": proxied_limited,
-                            "iptables_redirect": iptables_limited,
-                            "portunus_vs_direct_pct": pct(
-                                proxied_limited["mbps"],
-                                direct_limited["mbps"],
-                            ),
-                            "portunus_vs_iptables_pct": pct(
-                                proxied_limited["mbps"],
-                                iptables_limited["mbps"],
-                            ),
-                            "iptables_vs_direct_pct": pct(
-                                iptables_limited["mbps"],
-                                direct_limited["mbps"],
-                            ),
-                        }
-                    )
+                    if args.with_iptables:
+                        iptables_limited = run_with_iperf_server(
+                            args.iperf3,
+                            ports.iperf_target,
+                            ports.iptables_listen,
+                            args.seconds,
+                            args.omit_seconds,
+                            offered,
+                        )
+                    else:
+                        iptables_limited = None
+                    entry: dict[str, Any] = {
+                        "offered_mbps": offered,
+                        "direct": direct_limited,
+                        "portunus_uncapped": proxied_limited,
+                        "portunus_vs_direct_pct": pct(
+                            proxied_limited["mbps"],
+                            direct_limited["mbps"],
+                        ),
+                    }
+                    if iptables_limited is not None:
+                        entry["iptables_redirect"] = iptables_limited
+                        entry["portunus_vs_iptables_pct"] = pct(
+                            proxied_limited["mbps"],
+                            iptables_limited["mbps"],
+                        )
+                        entry["iptables_vs_direct_pct"] = pct(
+                            iptables_limited["mbps"],
+                            direct_limited["mbps"],
+                        )
+                    matrix.append(entry)
                 result["offered_mbps_matrix"] = matrix
 
             if args.cap_bytes_per_sec > 0:
                 capped_rule = check_output(
                     [
                         str(args.server_bin),
-                        "--config-dir",
-                        str(config_dir),
                         "--data-dir",
                         str(data_dir),
                         "push-rule",

@@ -1,0 +1,231 @@
+{
+  "direct": {
+    "mbps": 18644.781,
+    "retransmits": 0
+  },
+  "duration_seconds": 5,
+  "host": "Linux 69-201-77-68 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64 GNU/Linux",
+  "iperf3": "iperf 3.18 (cJSON 1.7.15)",
+  "iptables_redirect": {
+    "mbps": 18555.711,
+    "retransmits": 0
+  },
+  "iptables_vs_direct_pct": 99.52,
+  "offered_mbps_matrix": [
+    {
+      "direct": {
+        "mbps": 100.004,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 100.01,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 100.01,
+      "offered_mbps": 100,
+      "portunus_uncapped": {
+        "mbps": 99.999,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 100.0,
+      "portunus_vs_iptables_pct": 99.99
+    },
+    {
+      "direct": {
+        "mbps": 499.858,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 499.999,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 100.03,
+      "offered_mbps": 500,
+      "portunus_uncapped": {
+        "mbps": 500.131,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 100.05,
+      "portunus_vs_iptables_pct": 100.03
+    },
+    {
+      "direct": {
+        "mbps": 999.865,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 999.871,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 100.0,
+      "offered_mbps": 1000,
+      "portunus_uncapped": {
+        "mbps": 999.843,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 100.0,
+      "portunus_vs_iptables_pct": 100.0
+    },
+    {
+      "direct": {
+        "mbps": 2499.842,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 2499.734,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 100.0,
+      "offered_mbps": 2500,
+      "portunus_uncapped": {
+        "mbps": 2498.056,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 99.93,
+      "portunus_vs_iptables_pct": 99.93
+    },
+    {
+      "direct": {
+        "mbps": 4999.469,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 5005.491,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 100.12,
+      "offered_mbps": 5000,
+      "portunus_uncapped": {
+        "mbps": 4999.312,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 100.0,
+      "portunus_vs_iptables_pct": 99.88
+    },
+    {
+      "direct": {
+        "mbps": 7476.053,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 7491.631,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 100.21,
+      "offered_mbps": 7500,
+      "portunus_uncapped": {
+        "mbps": 7498.798,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 100.3,
+      "portunus_vs_iptables_pct": 100.1
+    },
+    {
+      "direct": {
+        "mbps": 9999.441,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 10483.689,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 104.84,
+      "offered_mbps": 10000,
+      "portunus_uncapped": {
+        "mbps": 10035.146,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 100.36,
+      "portunus_vs_iptables_pct": 95.72
+    },
+    {
+      "direct": {
+        "mbps": 12598.162,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 12545.054,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 99.58,
+      "offered_mbps": 12500,
+      "portunus_uncapped": {
+        "mbps": 12373.189,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 98.21,
+      "portunus_vs_iptables_pct": 98.63
+    },
+    {
+      "direct": {
+        "mbps": 15568.904,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 15522.811,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 99.7,
+      "offered_mbps": 15000,
+      "portunus_uncapped": {
+        "mbps": 16369.535,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 105.14,
+      "portunus_vs_iptables_pct": 105.45
+    },
+    {
+      "direct": {
+        "mbps": 18405.828,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 18016.56,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 97.89,
+      "offered_mbps": 18000,
+      "portunus_uncapped": {
+        "mbps": 19618.244,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 106.59,
+      "portunus_vs_iptables_pct": 108.89
+    },
+    {
+      "direct": {
+        "mbps": 19088.195,
+        "retransmits": 0
+      },
+      "iptables_redirect": {
+        "mbps": 18738.044,
+        "retransmits": 0
+      },
+      "iptables_vs_direct_pct": 98.17,
+      "offered_mbps": 20000,
+      "portunus_uncapped": {
+        "mbps": 20147.071,
+        "retransmits": 0
+      },
+      "portunus_vs_direct_pct": 105.55,
+      "portunus_vs_iptables_pct": 107.52
+    }
+  ],
+  "omit_seconds": 1,
+  "portunus_capped": {
+    "cap_bytes_per_sec": 1048576,
+    "mbps": 8.386,
+    "retransmits": 4,
+    "rule_id": "1",
+    "target_mbps": 8.389,
+    "within_plus_10pct": true
+  },
+  "portunus_uncapped": {
+    "mbps": 21422.011,
+    "retransmits": 0
+  },
+  "portunus_vs_direct_pct": 114.9,
+  "portunus_vs_iptables_pct": 115.45,
+  "rustc": "unavailable ([Errno 2] No such file or directory: 'rustc')",
+  "uncapped_rule_id": "0"
+}

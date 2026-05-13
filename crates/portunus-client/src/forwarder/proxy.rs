@@ -232,6 +232,7 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
         .as_ref()
         .map(|s| ActiveGuard::new(Arc::clone(s), listen_port));
 
+    let had_proxy_prelude = proxy_prelude.is_some();
     if let Some(prelude) = proxy_prelude {
         proxy_protocol::write_prelude(&mut outbound, prelude).await?;
     }
@@ -291,13 +292,14 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
                 )
                 .await
             } else {
-                // 64 KiB per-direction buffer (see PROXY_COPY_BUF_SIZE).
-                // Per-connection resident cost: 2 * 64 KiB.
-                tokio::io::copy_bidirectional_with_sizes(
+                copy_uncapped(
                     &mut inbound,
                     &mut outbound,
-                    PROXY_COPY_BUF_SIZE,
-                    PROXY_COPY_BUF_SIZE,
+                    rule_id,
+                    rate_limit.as_deref(),
+                    owner_rate_limit.as_deref(),
+                    preread_in > 0,
+                    had_proxy_prelude,
                 )
                 .await
             }
@@ -310,6 +312,74 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
         s.record_out(listen_port, *bout);
     }
     result.map(|(bin, bout)| (bin + preread_in, bout))
+}
+
+/// Run the uncapped TCP forwarding loop (no per-rule and no per-owner
+/// bandwidth cap). On Linux the splice fast path is attempted first;
+/// when the kernel rejects splice with one of the documented
+/// "unsupported" errnos (`ENOSYS`/`EINVAL`/`EPERM`/`EOPNOTSUPP`) AND
+/// no bytes have moved yet, the connection transparently falls back
+/// to the userspace `copy_bidirectional_with_sizes`. Once any byte
+/// has moved, splice errors propagate as `io::Error` — the connection
+/// is terminal and the caller MUST NOT retry on the userspace path
+/// (FR-006).
+///
+/// On non-Linux this is a thin wrapper around `copy_bidirectional_with_sizes`.
+async fn copy_uncapped(
+    inbound: &mut TcpStream,
+    outbound: &mut TcpStream,
+    rule_id: RuleId,
+    rate_limit: Option<&RuleRateLimitHandle>,
+    owner_rate_limit: Option<&OwnerRateLimitHandle>,
+    has_sni_replay_done: bool,
+    has_proxy_out: bool,
+) -> io::Result<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        use super::splice;
+        let ctx = splice::CopyCtx::build(
+            rule_id,
+            portunus_proto::v1::Protocol::Tcp,
+            rate_limit,
+            owner_rate_limit,
+            has_sni_replay_done,
+            has_proxy_out,
+        );
+        if splice::eligible(&ctx) {
+            match splice::copy_bidirectional(inbound, outbound, &ctx).await {
+                Ok(t) => return Ok((t.bytes_in, t.bytes_out)),
+                Err(splice::SpliceError::Unsupported { errno }) => {
+                    warn!(
+                        event = "proxy.splice_unsupported_fallback",
+                        rule_id = %rule_id,
+                        errno_name = ?errno,
+                    );
+                    // fall through to userspace path
+                }
+                Err(splice::SpliceError::Io(e)) => return Err(e),
+            }
+        }
+    }
+    // Non-Linux, ineligible, or post-Unsupported fallback.
+    // 64 KiB per-direction buffer (see PROXY_COPY_BUF_SIZE).
+    // Per-connection resident cost: 2 * 64 KiB.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (
+            rule_id,
+            rate_limit,
+            owner_rate_limit,
+            has_sni_replay_done,
+            has_proxy_out,
+        );
+    }
+    tokio::io::copy_bidirectional_with_sizes(
+        inbound,
+        outbound,
+        PROXY_COPY_BUF_SIZE,
+        PROXY_COPY_BUF_SIZE,
+    )
+    .await
 }
 
 struct ActiveGuard {

@@ -30,6 +30,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClientInstallSteps } from "@/components/ClientInstallSteps";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CredentialBundleCard } from "@/components/CredentialBundleCard";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import type { CredentialBundle } from "@/api/types";
 import {
   EMPTY_RATE_LIMIT_FORM,
@@ -188,6 +198,7 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
   const { t } = useTranslation();
   const owners = useClientOwnersList(clientName);
   const [editingOwner, setEditingOwner] = useState<string | null>(null);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
 
   const columns: Column<OwnerListEntry>[] = [
     {
@@ -232,7 +243,12 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">{t("ownerQuotas.help")}</p>
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-sm text-muted-foreground">{t("ownerQuotas.help")}</p>
+        <Button size="sm" onClick={() => setAddDialogOpen(true)}>
+          {t("ownerQuotas.addOwnerCap")}
+        </Button>
+      </div>
       <DataTable
         rows={owners.data ?? []}
         columns={columns}
@@ -245,6 +261,14 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
         }
         ariaLabel={t("ownerQuotas.tableAriaLabel")}
       />
+      <AddOwnerCapDialog
+        open={addDialogOpen}
+        onClose={() => setAddDialogOpen(false)}
+        onConfirm={(ownerId) => {
+          setAddDialogOpen(false);
+          setEditingOwner(ownerId);
+        }}
+      />
       {editingOwner && (
         <OwnerQuotaEditor
           clientName={clientName}
@@ -253,6 +277,76 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
         />
       )}
     </div>
+  );
+}
+
+interface AddOwnerCapDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: (ownerId: string) => void;
+}
+
+function AddOwnerCapDialog({ open, onClose, onConfirm }: AddOwnerCapDialogProps) {
+  const { t } = useTranslation();
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset state every time the dialog opens. Using `open` as the
+  // trigger keeps the input empty for the next operator without
+  // forcing a key-based remount.
+  if (open && value === "" && error !== null) setError(null);
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      setError(t("ownerQuotas.addErrorEmpty"));
+      return;
+    }
+    onConfirm(trimmed);
+    setValue("");
+    setError(null);
+  }
+
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      onClose();
+      setValue("");
+      setError(null);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("ownerQuotas.addDialogTitle")}</DialogTitle>
+          <DialogDescription>{t("ownerQuotas.addDialogBody")}</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="add-owner-cap-id">
+              {t("ownerQuotas.addOwnerIdLabel")}
+            </Label>
+            <Input
+              id="add-owner-cap-id"
+              autoFocus
+              autoComplete="off"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={t("ownerQuotas.addOwnerIdPlaceholder")}
+            />
+            {error && <p className="text-sm text-destructive">{error}</p>}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("confirm.cancel")}
+            </Button>
+            <Button type="submit">{t("ownerQuotas.addContinue")}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

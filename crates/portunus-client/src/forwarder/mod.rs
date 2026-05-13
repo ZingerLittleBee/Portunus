@@ -25,6 +25,7 @@ pub mod proxy_protocol;
 pub mod range;
 pub mod rate_limit;
 pub mod sni;
+pub mod splice;
 pub mod stats;
 pub mod udp;
 
@@ -2244,6 +2245,239 @@ mod tests {
         assert_eq!(rule_limiter.active_connections(), 1);
         drop(surplus);
         drop(admit);
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+    }
+
+    /// T073: multi-target (failover-path) variant of `t030`. The
+    /// failover accept loop in `failover_path::accept_loop` runs the
+    /// same `try_acquire_layered` cascade as the single-target path,
+    /// so an owner `concurrent_connections=1` cap must reject the
+    /// second accept with `OwnerConcurrent`. This pins that the
+    /// owner gate fires BEFORE any target probe / connect attempt
+    /// (FR-013). `rule_limiter = None` isolates the owner gate from
+    /// the per-rule layer.
+    #[tokio::test]
+    async fn t073_owner_concurrent_cap_rejects_second_failover_accept() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&portunus_core::RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&owner_mgr)));
+        let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
+
+        // `multi_target_rule` populates `rule.targets` with one
+        // entry so `forwarder::run` dispatches into
+        // `failover_path::run_tcp` (the multi-target accept loop).
+        let mut rule = multi_target_rule(573, port, echo);
+        rule.owner_rate_limit = Some(Arc::clone(&owner_limiter));
+        rule.owner_rate_limit_stats = Some(Arc::clone(&owner_stats));
+
+        let task = tokio::spawn(async move {
+            run(
+                rule,
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(573)));
+
+        // First connection — admitted by the failover accept loop and
+        // kept open while we probe a second.
+        let mut conn_a = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        conn_a.write_all(b"ok").await.unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(2), conn_a.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"ok");
+
+        // Wait for the multi-target accept loop to register the admit
+        // on the owner limiter (gauge is the source of truth).
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_limiter.active_connections() < 1 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "failover accept loop never reached owner active_connections=1"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(owner_limiter.active_connections(), 1);
+        assert_eq!(
+            owner_stats.reject_total(portunus_core::RejectReason::OwnerConcurrent),
+            0
+        );
+
+        // Second connection — kernel accepts, owner gate refuses, the
+        // socket is dropped (accept-then-RST). The gauge must stay at
+        // 1 and the OwnerConcurrent counter must tick exactly once.
+        let conn_b = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_stats.reject_total(portunus_core::RejectReason::OwnerConcurrent) == 0 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "owner-scope reject not recorded within 2s on failover path"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            owner_limiter.active_connections(),
+            1,
+            "rejected conn must not bump active"
+        );
+        assert_eq!(
+            owner_stats.reject_total(portunus_core::RejectReason::OwnerConcurrent),
+            1,
+            "OwnerConcurrent must tick exactly once"
+        );
+
+        drop(conn_a);
+        drop(conn_b);
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+    }
+
+    /// T079 — Linux-only: when the splice fast path is selected for a
+    /// plain-TCP single-target rule (no bandwidth caps anywhere; owner
+    /// concurrent cap alone does NOT disable splice, see
+    /// `splice::build_tests::owner_concurrent_only_does_not_force_userspace`),
+    /// the owner concurrent guard installed by the accept loop must
+    /// persist for the entire lifetime of the spliced connection and
+    /// drop precisely when the connection ends.
+    ///
+    /// Gated `#[cfg(target_os = "linux")]` because it exercises the
+    /// real `splice(2)` data path. macOS / other platforms skip at
+    /// compile time and pick up the existing userspace coverage from
+    /// `t030_owner_cap_binds_before_rule_cap_on_tcp_accept`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn t079_owner_concurrent_guard_spans_splice_connection_lifetime() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+
+        // Owner cap = 1, no bandwidth caps. `has_bandwidth_cap` is
+        // false, so on Linux the splice fast path is selected for
+        // this connection per `splice::eligible`.
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&portunus_core::RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&owner_mgr)));
+
+        // Single-target plain-TCP rule: this dispatches through
+        // `forwarder::run` → single-target TCP path → splice on Linux.
+        // No rule rate-limit, no rule/owner bandwidth caps.
+        let mut rule = single_rule(579, port, echo);
+        rule.owner_rate_limit = Some(Arc::clone(&owner_limiter));
+
+        let task = tokio::spawn(async move {
+            run(
+                rule,
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(579)));
+
+        // Open a connection — must echo through the splice path.
+        let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        conn.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(2), conn.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"ping");
+
+        // Splice connection is live — owner active gauge must read 1.
+        // Wait briefly for the accept loop to register the bump.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_limiter.active_connections() < 1 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "accept loop never reached owner active_connections=1 on splice path"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            owner_limiter.active_connections(),
+            1,
+            "guard must persist for the duration of the splice connection"
+        );
+
+        // Close — guard must drop when the forwarder task observes FIN
+        // on the spliced stream.
+        drop(conn);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_limiter.active_connections() != 0 {
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            owner_limiter.active_connections(),
+            0,
+            "guard must drop when the splice connection closes"
+        );
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;

@@ -66,16 +66,19 @@ const copy = {
     statusActive: "ACTIVE",
     rangesTitle: "Performance you can plan around.",
     rangesIntro:
-      "In the measured Linux loopback run, Portunus matched kernel-space forwarding through 2.5 Gbit/s, stayed close from 5 to 10 Gbit/s, and only showed visible userspace overhead beyond 10 Gbit/s.",
+      "On Linux, plain TCP rules with no bandwidth cap use a kernel splice fast path. On the bench host, single-flow throughput doubles from 9.9 Gbit/s to 21.9 Gbit/s, and the offered-load sweep tracks both direct iperf3 and iptables REDIRECT to 95-109 % through 20 Gbit/s — the v0.11 saturation point disappears for uncapped TCP.",
     ranges: [
       [
-        "100M – 2.5G",
-        "Indistinguishable from the kernel baseline in the measured run.",
+        "100M – 10G",
+        "Hits the offered rate end-to-end. Indistinguishable from a direct iperf3 baseline.",
       ],
-      ["5G – 10G", "Close enough for most bandwidth plans."],
       [
-        "12.5G+",
-        "Application-level policy starts costing throughput; benchmark before committing.",
+        "12.5G – 20G",
+        "With the splice fast path, the proxied flow stays within iperf3 noise of direct loopback and iptables REDIRECT.",
+      ],
+      [
+        "Rate-limited rules",
+        "Bandwidth-capped rules stay on the canonical userspace path — byte-identical metrics, counters, and audit.",
       ],
     ],
     capabilitiesTitle:
@@ -157,11 +160,17 @@ const copy = {
     statusActive: "运行中",
     rangesTitle: "可以照着规划的性能。",
     rangesIntro:
-      "在 Linux loopback 实测中，Portunus 到 2.5 Gbit/s 都与内核态转发持平；5–10 Gbit/s 仍接近内核基线；超过 10 Gbit/s 后才出现明显的用户态开销。",
+      "Linux 上无带宽限制的 TCP 规则会走内核 splice 快路径。在测试机上，单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；同一份 offered-load sweep 在 100 Mbit/s 到 20 Gbit/s 区间内紧贴 direct iperf3 与 iptables REDIRECT（95-109 %）——v0.11 报告里的早期饱和拐点在无带宽限制 TCP 上消失了。",
     ranges: [
-      ["100M – 2.5G", "实测与内核基线没有可感知的差距。"],
-      ["5G – 10G", "多数带宽套餐已经够用。"],
-      ["12.5G+", "应用层策略会开始吃掉吞吐，上线前按自己的机器实测。"],
+      ["100M – 10G", "端到端跑满 offered 速率，与 direct iperf3 实测没有可感知的差距。"],
+      [
+        "12.5G – 20G",
+        "开启 splice 快路径后，proxy 路径与 direct loopback、iptables REDIRECT 仅相差测量噪声。",
+      ],
+      [
+        "带限速的规则",
+        "限带宽规则仍走 userspace 通道——指标、计数器、审计字节级一致。",
+      ],
     ],
     capabilitiesTitle: "不只是转发规则，还有团队真正会用到的一切。",
     capabilitiesIntro:
