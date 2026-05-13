@@ -486,11 +486,6 @@ impl OwnerRateLimitHandle {
         self.snapshot()
             .map_or(0, |limiter| limiter.active_connections())
     }
-
-    #[cfg(test)]
-    pub(crate) fn owner_id_for_test(&self) -> &OwnerId {
-        &self.owner_id
-    }
 }
 
 /// Per-owner data-plane limiter — same shape as [`RuleRateLimiter`]
@@ -1534,7 +1529,7 @@ mod tests {
 
     /// T076 / R-008: hot-lowering an owner concurrent cap must not
     /// kill live guards — only new acquires reject until the active
-    /// count drains below the new ceiling. Mirrors the per-rule
+    /// count drains below the new ceiling. Complements the per-rule
     /// invariant validated by `t030_owner_scope_manager_update_carries_state`.
     #[tokio::test]
     async fn t076_lowering_owner_concurrent_cap_drains_gracefully() {
@@ -1547,7 +1542,10 @@ mod tests {
 
         // Initial cap = 5.
         scope.install(&owner_id, Some(&mk_cap(5)));
-        let limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&scope)));
+        let limiter = Arc::new(OwnerRateLimitHandle::new(
+            owner_id.clone(),
+            Arc::clone(&scope),
+        ));
         let stats = crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new();
 
         // Helper: drive try_acquire_layered for owner-only (no rule limiter).
@@ -1564,7 +1562,7 @@ mod tests {
         assert_eq!(limiter.active_connections(), 2);
 
         // Hot lower to 1 — active guards survive (no kill).
-        scope.update(limiter.owner_id_for_test(), Some(&mk_cap(1)));
+        scope.update(&owner_id, Some(&mk_cap(1)));
         assert_eq!(
             limiter.active_connections(),
             2,
