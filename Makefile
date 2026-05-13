@@ -68,7 +68,7 @@ webui-install:  ## pnpm install --frozen-lockfile (webui/)
 # into the binary, so `make serve` will serve the UI on the same port as
 # the operator HTTP API. Re-run this whenever you change UI source and
 # want the embedded copy to update (i.e. when NOT using `make dev`).
-webui-build:  ## Build embedded Web UI bundle
+webui-build: webui/node_modules  ## Build embedded Web UI bundle
 	cd webui && pnpm build
 
 # Compile the server binary. With CARGO_PROFILE=release this produces
@@ -155,13 +155,22 @@ serve-docker: server-build  ## Run server bound to 0.0.0.0:7080 (simulates Docke
 #     rebuilds the changed crates only)
 # `trap 'kill 0'` ensures Ctrl-C tears down both child processes
 # cleanly via the shared shell process group.
-dev: dev-bootstrap  ## Run backend (skip embed) + Vite UI together — open http://localhost:5173
+dev: dev-bootstrap webui/node_modules  ## Run backend (skip embed) + Vite UI together — open http://localhost:5173
 	@echo "→ backend on http://$(LISTEN)  |  UI on http://localhost:5173  (Ctrl-C stops both)"
 	@trap 'kill 0' INT TERM; \
 	  PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
 	    --data-dir $(DATA_DIR) serve --operator-http-listen $(LISTEN) & \
 	  ( cd webui && pnpm dev ) & \
 	  wait
+
+# Vite needs webui/node_modules before `pnpm dev` can start. On a fresh
+# clone (or after `make clean` blew it away) this directory is missing
+# and `make dev` would crash with "pnpm: command not found" or "vite:
+# not found". Treat node_modules as a file-target so make runs
+# `webui-install` once, then never again unless someone deletes it.
+webui/node_modules: webui/pnpm-lock.yaml
+	cd webui && pnpm install --frozen-lockfile
+	@touch webui/node_modules
 
 # Backend-only variant of `dev`. Use this when you want to run the UI in
 # a separate terminal (e.g. to keep its log clean), or when pairing with
@@ -175,7 +184,7 @@ backend: dev-bootstrap  ## Run server with PORTUNUS_SKIP_WEBUI=1 (for pairing wi
 # Front-end-only variant. Vite dev server, hot reload, proxies /v1 +
 # /metrics to a backend you must run separately (`make backend` or
 # anything that listens on 127.0.0.1:7080). Browser: http://localhost:5173
-ui:  ## Run Vite dev server on http://localhost:5173 (proxies /v1 → 7080)
+ui: webui/node_modules  ## Run Vite dev server on http://localhost:5173 (proxies /v1 → 7080)
 	cd webui && pnpm dev
 
 ## --- test -------------------------------------------------------------------
