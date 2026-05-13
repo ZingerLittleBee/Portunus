@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prove that the existing `(client_name, owner_id)`-scoped `concurrent_connections` cap shipped in v0.11 is fully exercised, close the v0.11 SNI exception that today routes capped SNI rules through a non-dispatcher path, and confirm v1.3.0 splice does not regress the gate.
+**Goal:** Prove that the existing `(client_name, owner_id)`-scoped `concurrent_connections` cap shipped in v0.11 is fully exercised, fix the SNI dispatcher path that today silently drops owner / rule limiters when constructing `GroupMember`, and confirm v1.3.0 splice does not regress the gate.
 
 **This is not a new feature.** v0.11 already shipped the data model, persistence, server push, client enforcement (`try_acquire_layered`), and Web UI for owner caps including `concurrent_connections`. This plan locks down verification, documents one intentional v0.11 gap (SNI), and adds the v1.3.0 interaction tests that didn't exist when this work was first sketched.
 
@@ -16,7 +16,12 @@
 
 These three things need to be true at the end. They are NOT all confirmed today; read them before starting Chunk 2.
 
-1. **SNI dispatcher today routes capped rules to the legacy accept_loop.** `forwarder/sni/listener.rs:404` passes four explicit `None` slots to the SNI proxy call with a comment that pre-0.11 SNI rules stay uncapped and capped SNI rules go through the legacy `accept_loop`. **Confirm this is still the actual routing under `apply_push`** before deciding whether Task 5 is verification or a real `PortGroupSlot` upgrade. Test fixtures inside `port_groups.rs` (`#[cfg(test)]` at lines 401 and 539) show `owner_rate_limit: None` but **those are test builders, not evidence of a production drop** — do not use them as the diagnosis.
+1. **Capped SNI rules currently lose their limiter.** Tracing the code path:
+   - `control.rs:758-761` routes EVERY TCP single-port rule with `sni_pattern.is_some()` into `port_groups.apply_push` — there is **no** "capped → legacy" diversion.
+   - `port_groups.rs:159-174` builds `GroupMember` from the incoming `ClientRule` and explicitly does NOT capture `rate_limit` / `owner_rate_limit` / their stats. Those fields are dropped here.
+   - `forwarder/sni/listener.rs:404` then passes four explicit `None` slots into the proxy call.
+
+   Net effect: a rule with `sni_pattern = Some(_)` AND an owner `concurrent_connections` cap is admitted unconditionally — the cap is silently lost. The comment at `sni/listener.rs:397-407` describing a "legacy accept_loop" diversion is historical context from when the routing was different; it does not match current code. **Task 5 defaults to "upgrade the dispatcher to thread limiters through `GroupMember`+`PortGroupSlot`"** unless step 1 finds an upstream gate I missed.
 
 2. **v1.3.0 splice eligibility ignores `concurrent_connections`.** `forwarder/splice.rs:93-94` computes `has_bandwidth_cap` from `{rule, owner}` bandwidth caps only. A rule with only an owner `concurrent_connections` cap **still goes through splice**. We need an explicit invariant test (Chunk 4) so this can't silently regress.
 
@@ -167,39 +172,48 @@ PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client failover_path -- --nocapture
 
 Expected: PASS.
 
-### Task 5: SNI Path — Verify Routing Or Upgrade Dispatcher (DECISION POINT)
+### Task 5: SNI Path — Thread Limiters Through The Dispatcher
 
 **Files:** `crates/portunus-client/src/port_groups.rs`, `crates/portunus-client/src/forwarder/sni/listener.rs`, `crates/portunus-client/src/control.rs`
 
-The v0.11 design intentionally routes capped SNI rules through the legacy `accept_loop` rather than through the SNI dispatcher (see `forwarder/sni/listener.rs:397-407` comment + four `None` slots at line 404). This task decides whether that's still the actual behavior and whether to leave it alone.
+Default disposition is **upgrade the dispatcher**, per up-front callout #1. Step 1 is the only out — if it finds an upstream filter that prevents capped SNI rules from reaching `apply_push` in the first place, the rest of the task collapses to a verify-only routing tripwire. Otherwise, do the threading work.
 
-- [ ] **Step 1: Confirm the routing in `port_groups::apply_push`**
+- [ ] **Step 1: Search for an upstream filter (cheap, ~5 min)**
 
 ```bash
-rg -n "owner_rate_limit|rate_limit\b|legacy|accept_loop|sni_pattern" crates/portunus-client/src/port_groups.rs
+rg -n "sni_pattern|routes_via_sni|legacy_accept|fall(back|_to)_legacy" crates/portunus-client/src/control.rs crates/portunus-client/src/port_groups.rs
 ```
 
-Trace: when a rule has `sni_pattern = Some(_)` **and** an owner with a `concurrent_connections` cap, does `apply_push` route it into the SNI dispatcher (will silently drop the cap) or into the legacy `accept_loop` (will enforce)?
+Read `control.rs:751-761` (the `routes_via_sni` decision). Confirm there is no branch like "if rule has rate_limit AND sni_pattern, force legacy path". If you find one, jump to Step 5 (verify-only). The expected outcome is: no such filter exists.
 
-- [ ] **Step 2: Add a routing-invariant test in `port_groups.rs`**
+- [ ] **Step 2: Add a failing reproducer test in `port_groups.rs`**
 
-Build a `ClientRule` with `sni_pattern = Some("api.example.com")`, owner_id = `alice`, `owner_rate_limit = Some(<concurrent_connections = 1>)`. Drive `apply_push`. Assert: the rule is registered in the legacy accept_loop path (not in `port_groups`' SNI port table) — or, if it IS placed in the SNI table, **fail the test with a clear diagnostic that the SNI dispatcher does not enforce the cap**.
+Build a `ClientRule` with `sni_pattern = Some("api.example.com")`, `owner_id = "alice"`, `owner_rate_limit = Some(<concurrent_connections = 1>)`, plus a stats handle. Drive `apply_push` (use the existing `live_resolver` fixture). Through the test fixture, expose a way to read whatever `GroupMember` ends up storing for this rule. Assert that the stored member carries the `owner_rate_limit` handle. **This test will fail today** because `GroupMember` at `port_groups.rs:159-174` drops it.
 
-This test serves as a tripwire: any future refactor that moves capped SNI rules into the dispatcher without upgrading `PortGroupSlot` will break it.
+- [ ] **Step 3: Thread the four limiter handles through**
 
-- [ ] **Step 3: Decision — verify-only or upgrade**
+  - Extend `GroupMember` with `rate_limit`, `rate_limit_stats`, `owner_rate_limit`, `owner_rate_limit_stats` (all `Option<...>`).
+  - Have `apply_push` clone them from the incoming `ClientRule`.
+  - Pass them through to the SNI dispatcher call at `forwarder/sni/listener.rs:404` instead of the four `None`s.
+  - Update the comment at `sni/listener.rs:397-407` — it currently describes a routing that no longer exists; replace it with a one-liner explaining the new pass-through.
+  - Remove `owner_rate_limit: None` from the test fixtures in `port_groups.rs` if they get in the way; pass actual `None`-wrapped handles instead so they continue to type-check.
 
-If Step 2 confirms legacy enforcement: write one end-to-end test that drives a capped SNI rule and verifies enforcement (open 1 TLS connection through `api.example.com` → second TLS connection RST'd by the owner gate, `OwnerConcurrent` increments). Stop here.
+- [ ] **Step 4: Add the enforcement test (was Task 5 Step 3)**
 
-If Step 2 reveals that capped SNI rules ARE going through the dispatcher (drop on the floor), the work expands: thread `(owner_rate_limit, owner_rate_limit_stats, rate_limit, rate_limit_stats)` through `PortGroupSlot` and the four `None` args at `sni/listener.rs:404`. **Estimate +1-2 days; flag back to the planner before continuing.**
+End-to-end inside `port_groups.rs` `#[cfg(test)]` (or a focused `sni/listener.rs` test if easier with the existing harness): owner cap = 1; open one TLS-style connection through `api.example.com`; assert second connection is RST'd by the owner gate; `OwnerConcurrent` reject counter increments; rule reject counter unchanged.
 
-- [ ] **Step 4: Run**
+- [ ] **Step 5: Verify-only fallback (only if Step 1 found an upstream filter)**
+
+Add a routing-invariant assertion (e.g., a test that pushes a capped SNI rule and checks it landed in the legacy path, not in `port_groups`' SNI port table). Skip steps 2-4.
+
+- [ ] **Step 6: Run**
 
 ```bash
 PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client port_groups -- --nocapture
+PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client forwarder::sni -- --nocapture
 ```
 
-Expected: PASS.
+Expected: PASS. **Estimate: +1-2 days vs the rest of the plan**; flag back if Step 3 reveals deeper plumbing (e.g., the SNI dispatcher proxy call signature needs more args).
 
 ## Chunk 3: Reconnect and Hot-Update Behavior
 
@@ -234,25 +248,32 @@ Expected: PASS.
 
 ### Task 7: Confirm owner `concurrent_connections` Does Not Disable Splice
 
-**Files:** `crates/portunus-client/src/forwarder/splice.rs`, `crates/portunus-client/src/forwarder/proxy.rs`
+**Files:** `crates/portunus-client/src/forwarder/splice.rs`, `crates/portunus-client/src/forwarder/proxy.rs`, `crates/portunus-client/src/forwarder/mod.rs`
 
-The eligibility predicate at `splice.rs:93-94` ORs `has_bandwidth_cap` across `{rule, owner}` — `concurrent_connections` is NOT in the check. This invariant needs a tripwire test.
+Eligibility predicate at `splice.rs:121-122` is `matches!(ctx.protocol, Protocol::Tcp) && !ctx.disable_splice && !ctx.has_bandwidth_cap`, with `has_bandwidth_cap` computed at `splice.rs:93-94` from `{rule, owner}` bandwidth caps only. `concurrent_connections` and `new_connections_per_sec` do not appear here. **The context struct is named `CopyCtx`, not `SpliceCtx`.**
 
-- [ ] **Step 1: Confirm eligibility computation**
+Two of the three invariant tests already exist; this task adds the missing pieces.
+
+- [ ] **Step 1: Confirm the existing tests still pass**
 
 ```bash
-rg -n "has_bandwidth_cap|eligible\b" crates/portunus-client/src/forwarder/splice.rs crates/portunus-client/src/forwarder/proxy.rs
+PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client forwarder::splice::tests::rule_with_concurrent_only_does_not_force_userspace -- --nocapture
+PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client forwarder::splice::tests::owner_concurrent_only_does_not_force_userspace -- --nocapture
 ```
 
-Expect: `has_bandwidth_cap = rule_handle.is_some_and(RuleRateLimitHandle::has_bandwidth_cap) || owner_handle.is_some_and(OwnerRateLimitHandle::has_bandwidth_cap)`. No reference to `concurrent_connections` or `new_connections_per_sec` in this OR.
+Locations: `splice.rs:818` and `splice.rs:882`. Both assert `eligible(&CopyCtx { has_bandwidth_cap: false, ... }) == true` when only `concurrent_connections` is set.
 
-- [ ] **Step 2: Add invariant unit test in `splice.rs`** (`#[cfg(test)]`)
+- [ ] **Step 2: Add `new_connections_per_sec`-only invariant test if missing**
 
-Build `SpliceCtx` with an owner handle whose `RateLimit` has `concurrent_connections = Some(100)` and all bandwidth caps `None`. Assert `splice::eligible(&ctx) == true` on Linux. Also test the same shape with `new_connections_per_sec = Some(50)`. Both should remain eligible.
+```bash
+rg -n "new_connections_per_sec" crates/portunus-client/src/forwarder/splice.rs
+```
 
-- [ ] **Step 3: Add integration test for guard lifetime through splice**
+If no test covers an owner / rule cap with only `new_connections_per_sec` set, add one paralleling the two existing tests: build a `CopyCtx` whose handle has `new_connections_per_sec = Some(50)` and all bandwidth caps `None`. Assert `eligible(&ctx) == true`. Cover both rule-side and owner-side variants.
 
-In `forwarder/mod.rs` `#[cfg(test, target_os = "linux")]`: install owner cap `concurrent_connections = 1`; accept a connection that goes through splice; while bytes are flowing through `splice::copy_bidirectional`, assert the owner's `active_count() == 1`; close the upstream; assert `active_count()` drops back to `0`. This proves the `ActiveGuard` is held by the forwarder task, not the accept frame.
+- [ ] **Step 3: Add guard-lifetime integration test (new, the genuinely missing piece)**
+
+In `forwarder/mod.rs` `#[cfg(all(test, target_os = "linux"))]`: install an owner cap `concurrent_connections = 1`; accept one connection that goes through splice; while bytes flow through `splice::copy_bidirectional`, assert the owner scope's `active_count() == 1`. Close the upstream side; await task shutdown; assert `active_count()` returns to `0`. This proves the `ActiveGuard` is captured by the forwarder task, not dropped at accept frame.
 
 - [ ] **Step 4: Run**
 
@@ -261,7 +282,7 @@ PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client forwarder::splice -- --nocap
 PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-client forwarder::tests -- --nocapture
 ```
 
-Expected: PASS. Skip the Linux-only test on macOS via `cfg`.
+Expected: PASS. macOS skips the Linux-only test via `cfg`.
 
 ## Chunk 5: Operator Experience
 
@@ -346,9 +367,18 @@ This test crosses gRPC push, SQLite persistence, and client hydration in a singl
   - open a second connection; assert it is RST'd / closed before any forwarded bytes,
   - assert stats report (or Prometheus scrape if simpler with existing helpers) contains an `OwnerConcurrent` reject increment for `(edge-01, alice)`.
 
-- [ ] **Step 2: Persistence round-trip**
+- [ ] **Step 2: Persistence round-trip (drop client memory first)**
 
-After Step 1, restart the server (kill + relaunch reusing the data dir). Reconnect the client. Open a third connection. Assert it is still RST'd (the persisted cap survives server restart and is replayed on reconnect).
+The naive "restart server only, third connection still rejected" check does NOT prove SQLite replay — the client's in-memory `OwnerRateLimitScopeManager` would have kept the cap alive across the server outage. To actually exercise `welcome → persisted row → push → client hydration`:
+
+  1. Stop the client process. Then stop the server. The client's in-memory cap dies with it.
+  2. Restart the server **with the same data dir** (the SQLite file persists).
+  3. Restart the client **with the same client id / bundle**, completing a fresh handshake.
+  4. Through the (now hydrated) rule, open one connection and hold it.
+  5. Open a second connection. Assert: RST'd by the owner gate, `OwnerConcurrent` reject increment.
+  6. Assert via the operator HTTP API (`GET /v1/clients/{id}/owners/alice/rate-limit`) that the persisted row still reads `concurrent_connections = 1`.
+
+This sequence is the only one that proves all three things: SQLite persisted the row, the welcome replay sent it on reconnect, and the client applied it fresh from memory zero.
 
 - [ ] **Step 3: Run**
 
@@ -364,11 +394,13 @@ Expected: PASS.
 
 **Files:** any modified Rust files.
 
-- [ ] **Step 1: Format (workspace-wide, matches Makefile + CI)**
+- [ ] **Step 1: Format (only touched packages — avoid drive-by reformatting)**
 
 ```bash
-cargo fmt --all
+cargo fmt
 ```
+
+Run from each crate root that this plan modified (portunus-server, portunus-client, portunus-core if touched, portunus-e2e). CI runs `cargo fmt --all --check` as the gate, so any miss is caught upstream — but the plan executor should NOT reformat unrelated crates. If you genuinely changed every crate, `cargo fmt --all` is fine; otherwise scoped `cargo fmt` keeps the diff focused.
 
 - [ ] **Step 2: Clippy (matches CI gate)**
 
