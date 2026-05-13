@@ -77,9 +77,9 @@ export function ClientsList() {
       sortValue: (c) => c.client_name,
     },
     {
-      key: "remote",
-      header: t("clients.remote"),
-      render: (c) => c.remote_addr ?? "—",
+      key: "address",
+      header: t("clients.address"),
+      render: (c) => c.client_address ?? "—",
     },
     {
       key: "since",
