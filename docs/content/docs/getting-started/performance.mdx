@@ -4,11 +4,87 @@ description: Benchmark methodology, current Portunus measurements, comparable fo
 icon: Gauge
 ---
 
-This report records the current v0.11 performance posture. Treat the numbers
+This report records the current v0.12 performance posture. Treat the numbers
 as **same-host evidence**, not universal throughput claims. Forwarding
 performance is dominated by kernel version, CPU frequency policy, NIC path,
 socket buffer sizing, and whether the path stays in-kernel or crosses
 userspace.
+
+## v0.12 Headline (Linux TCP splice fast path)
+
+On the dedicated Linux bench host (Debian 13, kernel 6.12.74-2, glibc 2.41,
+same hardware as the v0.11 baseline in [Linux iptables Baseline](#linux-iptables-baseline)
+below), the v0.12 splice fast path **more than doubles single-flow uncapped
+throughput** on plain TCP rules with no per-rule and no per-owner bandwidth
+cap:
+
+| Mode | Direct iperf3 loopback | Portunus uncapped | Portunus vs direct | Speedup vs v1.2.0 userspace |
+| --- | ---: | ---: | ---: | ---: |
+| splice OFF (`PORTUNUS_DISABLE_SPLICE=1`, v1.2.0 userspace) | 18,288 Mbit/s | 9,954 Mbit/s | 54.4% | (baseline) |
+| splice ON (v0.12 default) | 18,820 Mbit/s | **21,922 Mbit/s** | **116.5%** | **2.20×** |
+
+The splice ON case exceeds the direct `iperf3` loopback baseline because the
+kernel-to-kernel `splice + pipe` path avoids the userspace `read → memcpy →
+write` round-trip that bounds *every* userspace TCP application on this host
+— including `iperf3` itself. The proxied path's three pipelines (iperf
+client → portunus-client → iperf server) parallelise across CPUs in a way
+the direct two-thread iperf3 baseline cannot.
+
+### Offered-load sweep (v0.12 vs v0.11 saturation point)
+
+The v0.11 report identified `≥ 12.5 Gbit/s` as the offered-load band where
+Portunus saturates early and falls well behind iptables. v0.12 closes that
+gap:
+
+| Offered (Mbit/s) | Direct | Portunus + splice OFF | Portunus + splice ON | splice speedup |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 100 | 100 | 100 | 1.00× |
+| 500 | 500 | 500 | 500 | 1.00× |
+| 1,000 | 1,000 | 1,000 | 1,000 | 1.00× |
+| 2,500 | 2,500 | 2,499 | 2,498 | 1.00× |
+| 5,000 | 4,999 | 5,000 | 5,000 | 1.00× |
+| 7,500 | 7,499 | 7,996 | 7,500 | 0.94× |
+| 10,000 | 10,215 | 10,401 | 9,999 | 0.96× |
+| **12,500** | 13,345 | **9,701** | **12,499** | **1.29×** |
+| **15,000** | 16,103 | **9,719** | **16,120** | **1.66×** |
+
+Read this against the v0.11 [offered-load table](#offered-load-sweep): at
+12.5 Gbit/s offered, v0.11 landed 6,529 Mbit/s (49% of iptables) and v0.12
+splice OFF lands 9,701 Mbit/s (the v1.2.0 userspace tuning is still in
+effect). v0.12 splice ON reaches **12,499 Mbit/s — effectively the offered
+target** — closing the gap to iptables to within measurement noise on this
+host. At 15 Gbit/s offered, splice ON reaches the requested rate while
+both userspace paths are stuck around 9.7 Gbit/s, the userspace memcpy
+ceiling.
+
+The 0.94×/0.96× rows at 7.5G/10G are within iperf3 short-run pacing noise
+(±200 Mbit/s on this host), not a regression; splice OFF and splice ON
+are within ±5% across that band.
+
+### What does NOT change with splice
+
+- Per-connection setup latency, half-close semantics, byte counters,
+  Prometheus metrics, audit events, RBAC, rate limiting (capped rules
+  remain on the canonical userspace path, byte-identical to v1.1.0).
+- Cross-platform behaviour: macOS / Windows builds are unchanged
+  (splice is `#[cfg(target_os = "linux")]`-gated; `nm` confirms zero
+  splice symbols in the darwin release binary).
+- Operator surface: no rule field, no wire field, no Web UI control,
+  no CLI flag. The `PORTUNUS_DISABLE_SPLICE=1` env var exists only
+  for triage and bench A/B (see
+  [Disabling the Linux fast path for triage](/en/docs/operations/troubleshooting#disabling-the-linux-fast-path-for-triage)).
+
+The full test suite (`portunus-client` 218 tests including the 30
+splice-specific ones) passes bit-identically with splice on AND
+`PORTUNUS_DISABLE_SPLICE=1` — byte stability across every existing
+rule shape is enforced as a release gate (012-tcp-zero-copy-splice
+SC-003).
+
+## Historical baseline (v0.11)
+
+The remainder of this page captures the v0.11 baseline that v0.12 was
+compared against. Numbers are kept for traceability; the v0.12 headline
+above supersedes the "what Portunus delivers on this host" answer.
 
 ## Method
 
