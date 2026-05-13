@@ -179,6 +179,64 @@ histogram_quantile(0.99,
 长尾（接近 3 s）通常意味着 client 在慢网络下分片发送 ClientHello —— 不是
 Portunus 的问题。
 
+## 在排错时关闭 Linux 快路径
+
+在 Linux 上，`portunus-client` 默认对没有 `bandwidth_in_bps` /
+`bandwidth_out_bps`（per-rule 或 per-owner）的 TCP 规则使用 `splice(2)`
+快路径。这个优化**对运维不可见**——没有规则字段、配置项或 CLI 开关。
+为了诊断或压测对照，**内部**环境变量 `PORTUNUS_DISABLE_SPLICE=1` 可以
+强制所有连接走 userspace 通道：
+
+```sh
+PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
+```
+
+`--help` 里有意不提这个变量。请把它当作**仅供排错的应急开关**，不是稳定 API。
+
+### "我看到 `proxy.splice_unsupported_fallback` 事件"
+
+```json
+{"event":"proxy.splice_unsupported_fallback","errno_name":"ENOSYS"}
+```
+
+内核（或它前面的 sandbox / LSM / seccomp 策略）拒绝了 `splice` 系统调用。
+连接已**透明回落到 userspace 通道**——功能不受影响，只有峰值吞吐略有下降。
+
+**修复**：放宽策略，或接受回落并设置 `PORTUNUS_DISABLE_SPLICE=1` 来消音
+告警。
+
+### "我看到反复 `proxy.splice_pipe_size_failed` 事件"
+
+```json
+{"event":"proxy.splice_pipe_size_failed",
+ "requested_bytes":1048576,
+ "actual_default_bytes":65536,
+ "errno_name":"EPERM"}
+```
+
+`/proc/sys/fs/pipe-max-size` 低于请求的 1 MiB。快路径仍以内核默认 pipe
+大小（多数发行版上 64 KiB）工作，但大块 workload 的峰值吞吐会下降。
+
+**修复**：调高这个 sysctl（per-host 或在 systemd unit 里），或接受降低的
+峰值吞吐。
+
+### "Linux 上的吞吐跟 v1.2.0 baseline 一样"
+
+快路径没有生效。依次检查：
+
+1. client 进程里 `PORTUNUS_DISABLE_SPLICE` 是否设置？取消它。
+2. 规则有没有 `bandwidth_in_bps` 或 `bandwidth_out_bps`？带宽限速需要
+   per-chunk userspace token 计数，所以快路径是被正确禁用的。
+3. owner 有没有带宽上限？同 #2。
+4. 看 `proxy.splice_selected`（info 级）——一条规则首次进入快路径时会
+   触发一次。这条事件缺席意味着规则不符合条件。
+
+### "RST 下 `bytes_in` 跟 upstream 实收字节数对不上"
+
+行为与 v1.2.0 userspace 通道完全一致：计数器统计的是**已送达**字节，
+不是"已收但未送达"的字节。中途 RST 会丢掉两条路径在途的字节；两侧
+计数器都同意"已送达总数"。这不是快路径引入的回归。
+
 ## 哪里报 bug
 
 GitHub issues：https://github.com/ZingerLittleBee/Portunus/issues

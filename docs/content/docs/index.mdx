@@ -20,16 +20,17 @@ audit logs, and traffic caps.
 ## Performance
 
 Most users are not trying to saturate a local 20 Gbit/s loopback path; they
-are running under a real bandwidth limit. On the measured Linux host,
-`Portunus` was effectively indistinguishable from a kernel-space forwarding
-baseline through 2.5 Gbit/s, stayed close around 5-10 Gbit/s, and only showed
-a clear gap once the offered load moved beyond 10 Gbit/s.
+are running under a real bandwidth limit. Starting in v1.3.0, plain TCP rules
+with no bandwidth cap use a Linux kernel `splice(2)` fast path. On the same
+measured Linux host that produced the v0.11 baseline, single-flow uncapped
+throughput **doubled from 9.9 Gbit/s to 21.9 Gbit/s** (2.20×) and reaches the
+offered rate end-to-end through 15 Gbit/s.
 
-| Offered bandwidth | What to expect |
+| Offered bandwidth | What to expect (v1.3.0) |
 | --- | --- |
-| 100 Mbit/s - 2.5 Gbit/s | No meaningful difference from kernel-space forwarding in the measured run. |
-| 5-10 Gbit/s | Usually close, but measure on the target host before promising hard SLOs. |
-| 12.5 Gbit/s+ | The richer userspace control plane starts to cost visible throughput. |
+| 100 Mbit/s - 10 Gbit/s | Hits the offered rate. Indistinguishable from a direct iperf3 baseline. |
+| 12.5 - 15 Gbit/s | With splice on, single-flow throughput stays within measurement noise of the kernel baseline. |
+| Rate-limited rules | Bandwidth-capped rules stay on the canonical userspace path — metrics, counters, and audit byte-identical to v1.2.0. |
 
 <Cards>
   <Card title="Methodology, raw numbers, and caveats" href="/en/docs/getting-started/performance" />
