@@ -201,12 +201,12 @@ impl From<std::io::Error> for SpliceError {
 #[cfg(target_os = "linux")]
 fn emit_splice_selected(ctx: &CopyCtx, pipe_capacity_bytes: usize) {
     use std::collections::HashSet;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, PoisonError};
 
     static SEEN: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let first = {
-        let mut guard = seen.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = seen.lock().unwrap_or_else(PoisonError::into_inner);
         guard.insert(ctx.rule_id.0)
     };
     if first {
@@ -340,7 +340,19 @@ mod linux {
 
     // T034 (SC-007) — fallback decision contract enforced by `classify`.
     // See the module-level note above `mod linux` for context.
+    //
+    // `items_after_test_module` is allowed because the rest of `mod linux`
+    // (helpers like `classify`, `drain_pipe_to`, `splice_dir`) is co-located
+    // with these truth-table tests on purpose; reordering would split the
+    // file by concern instead of by topic. `match_wildcard_for_single_variants`
+    // is allowed because the `other => panic!("…, got {other:?}")` pattern
+    // prints the unexpected variant for diagnostics — switching to
+    // `SpliceError::Io(_)` would lose the runtime context.
     #[cfg(test)]
+    #[allow(
+        clippy::items_after_test_module,
+        clippy::match_wildcard_for_single_variants
+    )]
     mod classify_tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -502,7 +514,7 @@ mod linux {
                 })
             });
             match res {
-                Ok(n) if n == 0 => {
+                Ok(0) => {
                     // Should not happen on the pipe-out side unless the
                     // destination has half-closed write. Treat as EOF
                     // for safety.
@@ -512,8 +524,11 @@ mod linux {
                     bytes_out.fetch_add(n as u64, Ordering::Relaxed);
                     remaining -= n;
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) if e.raw_os_error() == Some(libc::EINTR) => continue,
+                // EAGAIN → re-arm via dst.writable() on next iteration;
+                // EINTR → retry. Both fall through to the next `while`
+                // iteration.
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) if e.raw_os_error() == Some(libc::EINTR) => {}
                 Err(e) => return Err(e),
             }
         }
