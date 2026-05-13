@@ -1,5 +1,5 @@
 {
   "title": "Deployment",
   "icon": "Package",
-  "pages": ["systemd", "docker"]
+  "pages": ["systemd", "docker", "railway"]
 }

@@ -1,0 +1,90 @@
+---
+title: Deploy on Railway
+description: Run the Portunus server template on Railway with persistent state and TCP Proxy for clients.
+icon: Cloud
+---
+
+Railway can host `portunus-server` as a single service: the Web UI and
+operator HTTP API use Railway's public HTTP domain, while the gRPC control
+plane for `portunus-client` uses a Railway TCP Proxy pointed at application
+port `7443`.
+
+## Template shape
+
+The Railway build uses [`deploy/railway/Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/deploy/railway/Dockerfile).
+It builds the React Web UI first, embeds `webui/dist/` into
+`portunus-server`, then runs the server from a small Debian runtime image.
+
+At startup, [`deploy/railway/start-server.sh`](https://github.com/ZingerLittleBee/Portunus/blob/main/deploy/railway/start-server.sh)
+writes a minimal `/var/lib/portunus/server.toml`:
+
+```toml
+control_listen = "0.0.0.0:7443"
+operator_http_listen = "0.0.0.0:${PORT}"
+metrics_listen = "127.0.0.1:7081"
+operator_http_public_origin = "https://${RAILWAY_PUBLIC_DOMAIN}"
+```
+
+`$PORT` is the HTTP port assigned by Railway. The control-plane listener stays
+on `7443` so Railway's TCP Proxy can expose it separately. The public origin is
+derived from Railway's `RAILWAY_PUBLIC_DOMAIN`; override it with
+`PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN` if you attach a custom domain.
+
+## Required Railway resources
+
+Configure these in the Railway project:
+
+| Resource | Value |
+| --- | --- |
+| Service build | Dockerfile, path `deploy/railway/Dockerfile` |
+| Volume mount | `/var/lib/portunus` |
+| Public HTTP networking | enabled, normal Railway generated domain is fine |
+| TCP Proxy | application port `7443` |
+| Service variable | `PORTUNUS_ADVERTISED_ENDPOINT=<tcp-proxy-host>:<tcp-proxy-port>` |
+
+The volume is not optional. It stores `state.db`, generated TLS material, and
+the server config. Without it, redeploys create a fresh server identity and
+lose operator state.
+
+Railway mounts volumes as `root`; the Railway image intentionally runs as
+`root` so the mounted `/var/lib/portunus` path is writable without an extra
+service variable.
+
+Set `PORTUNUS_ADVERTISED_ENDPOINT` after creating the TCP Proxy. Railway shows
+the generated proxy domain and proxy port in the TCP Proxy settings. Use that
+exact `host:port` value; client bundles created before this variable is set
+will advertise the wrong endpoint and should be reissued.
+
+## First-run onboarding
+
+Deploy the service, then open the Railway HTTP domain. The Web UI is served at
+`/`.
+
+If the store is empty, the server logs a setup token:
+
+```sh
+Portunus onboarding setup token: <token>
+```
+
+Paste that token into the Web UI and create the first superadmin account. The
+token expires after 30 minutes and rotates on restart while onboarding is still
+incomplete.
+
+## Client endpoint
+
+After creating a TCP Proxy for application port `7443`, set
+`PORTUNUS_ADVERTISED_ENDPOINT` to the proxy `host:port` and redeploy. Then
+provision clients from the Web UI. The generated bundle will tell
+`portunus-client` to dial the TCP Proxy endpoint.
+
+## Notes
+
+- Railway's HTTP domain should be used only for the Web UI and `/v1/*`
+  operator API.
+- `portunus-client` must dial the TCP Proxy endpoint, not the HTTP domain.
+- Prometheus metrics remain loopback-only on `127.0.0.1:7081`; Railway does
+  not expose them by default.
+- Set `PORTUNUS_CONTROL_LISTEN` only if you deliberately change the TCP Proxy
+  application port. The default is `0.0.0.0:7443`.
+- Set `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN=https://your.custom.domain` when
+  using a custom domain instead of Railway's generated domain.
