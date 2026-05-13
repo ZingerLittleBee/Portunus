@@ -113,7 +113,7 @@ new feature is created via `/speckit-specify`. Historical feature plans
 
 <!-- SPECKIT START -->
 Active feature: `012-tcp-zero-copy-splice` on branch `wellington-v1`
-(work in an isolated worktree). v0.12 adds an internal,
+(work in an isolated worktree). v1.3.0 adds an internal,
 operator-invisible TCP zero-copy fast path on Linux via `splice(2)` +
 a per-connection `pipe2` pair. The
 `tokio::io::copy_bidirectional_with_sizes` userspace path remains the

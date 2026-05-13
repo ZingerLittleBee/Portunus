@@ -272,7 +272,7 @@ relevant splice path **inline in the bench file**, mirroring how
 
 ---
 
-## Open follow-ups (deliberately not blocking v0.12)
+## Open follow-ups (deliberately not blocking v1.3.0)
 
 These were surfaced during research but are out of scope for this
 implementation:

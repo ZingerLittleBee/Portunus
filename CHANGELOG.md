@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-05-13
+
+Linux data-plane release. Single-flow uncapped TCP throughput on the
+v1.2.0 reference bench host doubles (9,954 → 21,922 Mbit/s; 2.20×).
+Operator surface, wire protocol, SQLite schema, and Web UI are
+unchanged.
+
 ### Added
 
 - **Linux TCP zero-copy fast path** — on Linux hosts the

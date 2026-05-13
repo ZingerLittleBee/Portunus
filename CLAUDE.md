@@ -115,7 +115,7 @@ plans (v0.1.0 – v0.11.0) remain in `specs/` for reference.
 
 <!-- SPECKIT START -->
 Active feature: `012-tcp-zero-copy-splice` on branch `wellington-v1`
-(work in an isolated worktree). v0.12 adds an internal, operator-
+(work in an isolated worktree). v1.3.0 adds an internal, operator-
 invisible TCP zero-copy fast path on Linux via `splice(2)` + a
 per-connection `pipe2` pair. The `tokio::io::copy_bidirectional_with_sizes`
 userspace path remains the canonical reference and the fallback for
@@ -179,33 +179,33 @@ Constitution Check, read the current plan:
 
 Inherited baselines (do not re-derive):
 - v0.11.0 — `specs/011-rate-limiting-qos/plan.md`. Per-rule and
-  per-owner rate limiting / QoS. v0.12 consults v0.11's bandwidth-cap
+  per-owner rate limiting / QoS. v1.3.0 consults v0.11's bandwidth-cap
   presence (rule + owner) as the eligibility gate; concurrent /
   new-conn caps remain accept-time gates and stay on the fast path.
 - v0.10.0 — `specs/010-proxy-protocol-and-peek-histogram/plan.md`.
   Per-target PROXY v1/v2 prelude + SNI ClientHello peek-duration
-  histogram. v0.12 runs **after** the PROXY prelude write completes;
+  histogram. v1.3.0 runs **after** the PROXY prelude write completes;
   prelude itself is byte-identical to v1.2.0.
 - v0.9.0 — `specs/009-tls-sni-routing/plan.md`. Per-listener SNI
-  dispatch. v0.12 runs **after** SNI peek+replay; the peeked bytes
+  dispatch. v1.3.0 runs **after** SNI peek+replay; the peeked bytes
   reach the upstream byte-identical and the remaining stream uses
   the fast path.
-- v0.8.0 — `specs/008-sqlite-storage/plan.md`. v0.12 makes no
+- v0.8.0 — `specs/008-sqlite-storage/plan.md`. v1.3.0 makes no
   schema changes; SQLite store untouched.
 - v0.7.0 — `specs/007-multi-target-failover/plan.md`. Multi-target
-  rules; v0.12 selection is per-connection at accept time and does
+  rules; v1.3.0 selection is per-connection at accept time and does
   not interact with failover.
 - v0.6.0 — `specs/006-management-web-ui/plan.md`. React+Vite SPA;
-  v0.12 adds no UI surface.
+  v1.3.0 adds no UI surface.
 - v0.5.0 — `specs/005-multi-user-rbac/plan.md`. RBAC owner is the
-  tenant boundary v0.12's per-owner-bandwidth check keys on.
+  tenant boundary v1.3.0's per-owner-bandwidth check keys on.
 - v0.4.0 — `specs/004-udp-forward/plan.md`. UDP first-packet
-  enforcement; v0.12 is TCP only — UDP rules always use the
+  enforcement; v1.3.0 is TCP only — UDP rules always use the
   existing recv/send path.
 - v0.3.0 — `specs/003-domain-name-forward/plan.md`. DNS resolver
   unchanged.
 - v0.2.0 — `specs/002-port-range-forward/plan.md` (range rules);
-  v0.12 applies per-connection independent of range parent.
+  v1.3.0 applies per-connection independent of range parent.
 - v0.1.0 — `specs/001-tcp-forward-mvp/plan.md` (TCP forwarding MVP).
 
 Project-wide governance: `.specify/memory/constitution.md` (currently
