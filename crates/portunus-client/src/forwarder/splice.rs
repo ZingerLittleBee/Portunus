@@ -21,15 +21,16 @@ use std::sync::OnceLock;
 use portunus_core::RuleId;
 use portunus_proto::v1::Protocol;
 
+use super::rate_limit::scope::{OwnerRateLimitHandle, RuleRateLimitHandle};
+
 /// Per-connection context the splice path consults to decide eligibility.
 ///
-/// Built once at connection-acceptance time in `proxy.rs` and passed by
-/// reference into [`eligible`]. Small POD; `Copy` so callers do not need
-/// to clone.
+/// Built once at connection-acceptance time via [`CopyCtx::build`] and
+/// passed by reference into [`eligible`]. Small POD; `Copy` so callers do
+/// not need to clone.
 //
 // `dead_code` is silenced until the proxy.rs call site lands in T017.
-// Every field is read once T017 wires `CopyCtx::build(...)` and the
-// eligibility branch.
+// Every field is read once T017 wires the eligibility branch.
 //
 // `struct_excessive_bools` is allowed here because these flags are the
 // natural encoding of the eligibility predicate's gates (FR-001..FR-007);
@@ -57,6 +58,48 @@ pub(crate) struct CopyCtx {
     /// `true` if the target had a PROXY-protocol prelude (v0.10) written.
     /// Tracing-event field only — same reasoning as [`Self::has_sni_replay_done`].
     pub(crate) has_proxy_out: bool,
+}
+
+impl CopyCtx {
+    /// Build a [`CopyCtx`] from the runtime state available at connection
+    /// acceptance time.
+    ///
+    /// `has_bandwidth_cap` is the OR of {rule, owner} bandwidth-cap presence
+    /// — see spec FR-001. Per-rule and per-owner `concurrent_connections` /
+    /// `new_connections_per_sec` caps are NOT consulted: those gate at the
+    /// accept stage (v0.11) and never touch the data path, so they remain
+    /// compatible with the splice fast path.
+    ///
+    /// `disable_splice` is sourced from [`disable_splice_env`] — the
+    /// process-wide kill-switch state cached at first read.
+    ///
+    /// This function performs no I/O. Each `has_bandwidth_cap` lookup is
+    /// an `Arc` deref + an `Option` check on the snapshotted limiter.
+    ///
+    /// Per spec FR-005 the result is **per-connection** — once built, the
+    /// `CopyCtx` is not refreshed mid-connection. A subsequent rule
+    /// hot-update via `PUT /v1/rules/{id}` that changes bandwidth-cap
+    /// presence does NOT migrate in-flight connections between paths.
+    #[allow(dead_code)] // wired by T017 (proxy.rs call site)
+    pub(crate) fn build(
+        rule_id: RuleId,
+        protocol: Protocol,
+        rule_handle: Option<&RuleRateLimitHandle>,
+        owner_handle: Option<&OwnerRateLimitHandle>,
+        has_sni_replay_done: bool,
+        has_proxy_out: bool,
+    ) -> Self {
+        let has_bandwidth_cap = rule_handle.is_some_and(RuleRateLimitHandle::has_bandwidth_cap)
+            || owner_handle.is_some_and(OwnerRateLimitHandle::has_bandwidth_cap);
+        Self {
+            rule_id,
+            protocol,
+            has_bandwidth_cap,
+            disable_splice: disable_splice_env(),
+            has_sni_replay_done,
+            has_proxy_out,
+        }
+    }
 }
 
 /// Pure-function eligibility predicate.
@@ -319,5 +362,218 @@ mod eligible_tests {
             ..base_ctx()
         };
         assert!(!eligible(&ctx));
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    //! Tests for [`CopyCtx::build`] — verifies the OR semantics of the
+    //! rule + owner bandwidth-cap query against real handles. US3
+    //! correctness gate (FR-001 / spec acceptance scenarios 1-3 of
+    //! User Story 3).
+
+    use std::sync::Arc;
+
+    use portunus_core::RateLimit;
+
+    use super::*;
+    use crate::forwarder::rate_limit::scope::{
+        OwnerId, OwnerRateLimitScopeManager, RateLimitScopeManager,
+    };
+
+    fn rule_handle_with(rl: Option<&RateLimit>) -> RuleRateLimitHandle {
+        let mgr = Arc::new(RateLimitScopeManager::new());
+        let rid = RuleId(42);
+        mgr.install(rid, rl);
+        RuleRateLimitHandle::new(rid, mgr)
+    }
+
+    fn owner_handle_with(rl: Option<&RateLimit>) -> OwnerRateLimitHandle {
+        let mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let oid = OwnerId::new("alice");
+        mgr.install(&oid, rl);
+        OwnerRateLimitHandle::new(oid, mgr)
+    }
+
+    /// T025 — rule with `bandwidth_in_bps` forces userspace.
+    #[test]
+    fn rule_bandwidth_in_forces_userspace() {
+        let rl = RateLimit {
+            bandwidth_in_bps: Some(1_000_000),
+            ..Default::default()
+        };
+        let handle = rule_handle_with(Some(&rl));
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&handle),
+            None,
+            false,
+            false,
+        );
+        assert!(ctx.has_bandwidth_cap);
+        assert!(!eligible(&ctx));
+    }
+
+    /// T025 pair — same rule with the bandwidth cap removed becomes
+    /// eligible again (on Linux).
+    #[test]
+    fn rule_without_bandwidth_cap_is_eligible_on_linux_only() {
+        let handle = rule_handle_with(None);
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&handle),
+            None,
+            false,
+            false,
+        );
+        assert!(!ctx.has_bandwidth_cap);
+        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+    }
+
+    /// T026 — rule with only `concurrent_connections` does NOT force
+    /// userspace. Concurrent caps gate at accept time (v0.11) and never
+    /// touch the data path.
+    #[test]
+    fn rule_with_concurrent_only_does_not_force_userspace() {
+        let rl = RateLimit {
+            concurrent_connections: Some(100),
+            ..Default::default()
+        };
+        let handle = rule_handle_with(Some(&rl));
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&handle),
+            None,
+            false,
+            false,
+        );
+        assert!(
+            !ctx.has_bandwidth_cap,
+            "concurrent_connections alone must not set has_bandwidth_cap"
+        );
+        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+    }
+
+    /// T026 pair — rule with only `new_connections_per_sec` does NOT
+    /// force userspace either.
+    #[test]
+    fn rule_with_new_conn_rate_only_does_not_force_userspace() {
+        let rl = RateLimit {
+            new_connections_per_sec: Some(50),
+            ..Default::default()
+        };
+        let handle = rule_handle_with(Some(&rl));
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&handle),
+            None,
+            false,
+            false,
+        );
+        assert!(!ctx.has_bandwidth_cap);
+        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+    }
+
+    /// T027 — owner bandwidth cap forces userspace even when the rule
+    /// has no per-rule cap. Multi-tenant isolation invariant.
+    #[test]
+    fn owner_bandwidth_cap_forces_userspace() {
+        let owner_rl = RateLimit {
+            bandwidth_in_bps: Some(5_000_000),
+            ..Default::default()
+        };
+        let owner = owner_handle_with(Some(&owner_rl));
+        // No rule-level cap.
+        let rule = rule_handle_with(None);
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&rule),
+            Some(&owner),
+            false,
+            false,
+        );
+        assert!(ctx.has_bandwidth_cap);
+        assert!(!eligible(&ctx));
+    }
+
+    /// T027 pair — owner with only `concurrent_connections` does not
+    /// force userspace either.
+    #[test]
+    fn owner_concurrent_only_does_not_force_userspace() {
+        let owner_rl = RateLimit {
+            concurrent_connections: Some(1000),
+            ..Default::default()
+        };
+        let owner = owner_handle_with(Some(&owner_rl));
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            None,
+            Some(&owner),
+            false,
+            false,
+        );
+        assert!(!ctx.has_bandwidth_cap);
+        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+    }
+
+    /// Either side (rule OR owner) sets the flag.
+    #[test]
+    fn rule_or_owner_bandwidth_cap_dominates() {
+        // Rule has bw, owner does not → has_bandwidth_cap.
+        let rule_rl = RateLimit {
+            bandwidth_out_bps: Some(2_000_000),
+            ..Default::default()
+        };
+        let rule = rule_handle_with(Some(&rule_rl));
+        let owner = owner_handle_with(None);
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&rule),
+            Some(&owner),
+            false,
+            false,
+        );
+        assert!(ctx.has_bandwidth_cap);
+        assert!(!eligible(&ctx));
+    }
+
+    /// Neither rule nor owner sets a cap → eligible on Linux.
+    #[test]
+    fn no_caps_anywhere_is_eligible_on_linux_only() {
+        let rule = rule_handle_with(None);
+        let owner = owner_handle_with(None);
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            Some(&rule),
+            Some(&owner),
+            false,
+            false,
+        );
+        assert!(!ctx.has_bandwidth_cap);
+        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
+    }
+
+    /// `None` handles (the common steady-state for rules with no
+    /// rate-limit envelope at all) yield `has_bandwidth_cap: false`.
+    #[test]
+    fn no_handles_at_all_is_eligible_on_linux_only() {
+        let ctx = CopyCtx::build(
+            RuleId(1),
+            Protocol::Tcp,
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(!ctx.has_bandwidth_cap);
+        assert_eq!(eligible(&ctx), cfg!(target_os = "linux"));
     }
 }
