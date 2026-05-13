@@ -691,18 +691,27 @@ mod e2e_tests {
         }
     }
 
-    async fn ephemeral_port() -> u16 {
+    // Process-wide lock around the `bind(0) → drop → return port` dance.
+    // Without serialization, two parallel tests can each receive the same
+    // just-freed port from the kernel and race on the subsequent
+    // `apply_push` bind (macOS recycles ephemeral ports aggressively).
+    // Caller holds the returned guard for the lifetime of the test so the
+    // port stays uncontested through `apply_push`.
+    static PORT_ALLOC_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn ephemeral_port() -> (u16, tokio::sync::MutexGuard<'static, ()>) {
+        let guard = PORT_ALLOC_LOCK.lock().await;
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let port = l.local_addr().unwrap().port();
         drop(l);
-        port
+        (port, guard)
     }
 
     #[tokio::test]
     async fn two_exact_sni_rules_fan_out_to_two_backends() {
         let (addr_a, cap_a) = spawn_capture_backend().await;
         let (addr_b, cap_b) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
             make_rule(1, listen_port, addr_a, Some("api.example.com")),
@@ -761,7 +770,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn unmatched_sni_no_fallback_drops_connection() {
         let (addr_a, cap_a) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
             make_rule(1, listen_port, addr_a, Some("api.example.com")),
@@ -790,7 +799,7 @@ mod e2e_tests {
     async fn fallback_catches_unmatched_sni() {
         let (addr_match, cap_match) = spawn_capture_backend().await;
         let (addr_fb, cap_fb) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
@@ -842,7 +851,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn t051_wildcard_route_single_label_only() {
         let (addr_match, cap_match) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
             make_rule(1, listen_port, addr_match, Some("*.web.example.com")),
@@ -927,7 +936,7 @@ mod e2e_tests {
     async fn t070_per_rule_counters_bump() {
         let (addr_exact, _cap_exact) = spawn_capture_backend().await;
         let (addr_fb, _cap_fb) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
@@ -997,7 +1006,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn t071_listener_counters_bump() {
         let (addr_exact, _cap) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
@@ -1061,7 +1070,7 @@ mod e2e_tests {
     async fn t073_remove_by_rule_id_keeps_listener_for_survivor() {
         let (addr_a, cap_a) = spawn_capture_backend().await;
         let (addr_b, cap_b) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
@@ -1152,7 +1161,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn t076_idle_connection_does_not_reach_backend() {
         let (addr_a, cap_a) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
@@ -1184,7 +1193,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn t076_plain_http_is_rejected_at_peek() {
         let (addr_a, cap_a) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
@@ -1263,7 +1272,7 @@ mod e2e_tests {
         // ClientHello reaches a real socket (mirrors the existing
         // helpers in this module).
         let (backend_addr, _cap) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         let mut r = make_rule(1, listen_port, backend_addr, Some("api.example.com"));
@@ -1347,7 +1356,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn t072_hot_reload_preserves_in_flight_and_serves_new() {
         let (addr_a, cap_a) = spawn_capture_backend().await;
-        let listen_port = ephemeral_port().await;
+        let (listen_port, _port_guard) = ephemeral_port().await;
 
         let mut mgr = PortGroupManager::new();
         mgr.apply_push(
