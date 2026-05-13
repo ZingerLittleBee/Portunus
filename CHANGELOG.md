@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-05-14
+
+Deployment + provisioning polish. Adds a Railway one-click hosting
+template and lets operators record a per-client entry address that
+overrides the issuer in the credential bundle.
+
+### Added
+
+- **Client entry address** — Operators can now store a custom entry
+  address per client (`POST /v1/clients/{id}/entry-address`,
+  surfaced on the Web UI client list, detail, and provision pages).
+  Used when clients should connect via a hostname/IP that differs
+  from the credential-bundle issuer (LB, custom DNS, Railway).
+  Backed by SQLite migration `V007__add_client_address.sql`.
+- **Railway deployment template** — Drop-in `deploy/railway/`
+  Dockerfile + `start-server.sh` + root `railway.json`, with
+  English and 中文 docs under `docs/content/docs/{,zh/}deployment/
+  railway.mdx`. Supports one-click portunus-server deployment.
+
+### Fixed
+
+- **Railway TLS certificate SAN** — `deploy/railway/start-server.sh`
+  now injects the `RAILWAY_PUBLIC_DOMAIN` hostname into the auto-
+  generated certificate SAN list, so clients no longer fail TLS
+  hostname verification on first connect.
+
 ## [1.3.0] — 2026-05-13
 
 Linux data-plane release. Single-flow uncapped TCP throughput on the
