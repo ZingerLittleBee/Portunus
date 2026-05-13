@@ -1226,4 +1226,103 @@ mod tests {
         cancel.cancel();
         task.await.unwrap();
     }
+
+    /// T072: per-owner `concurrent_connections` cap on UDP. Source A's
+    /// first packet occupies the single slot and keeps round-tripping;
+    /// source B's first packet must reject under `OwnerConcurrent` while
+    /// the owner gauge stays at 1.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn t072_owner_concurrent_cap_drops_second_source_keeps_first_flow_alive() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        use portunus_core::{RateLimit, RejectReason};
+
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&RateLimit {
+                concurrent_connections: Some(1),
+                // NO new_connections_per_sec — concurrent is the only gate.
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&owner_mgr)));
+        let owner_stats = Arc::new(RateLimitStatsAccumulator::new());
+
+        let echo = spawn_udp_echo().await;
+        let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
+        let listen_port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let stats = RuleStats::new();
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+        let stats_run = Arc::clone(&stats);
+        let task_owner = Arc::clone(&owner_limiter);
+        let task_owner_stats = Arc::clone(&owner_stats);
+        let task = tokio::spawn(async move {
+            run_listener(
+                RuleId(901),
+                listen_port,
+                Target::Ip(echo.ip()),
+                echo.port(),
+                false,
+                1024,
+                Duration::ZERO,
+                stats_run,
+                test_resolver(),
+                cancel_run,
+                None,
+                None,
+                Some(task_owner),
+                Some(task_owner_stats),
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Source A: first packet admits, flow stays alive.
+        let a = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        a.send_to(b"hello-a", (Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .unwrap();
+        let mut buf = [0u8; 64];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), a.recv_from(&mut buf))
+            .await
+            .expect("first source must round-trip")
+            .unwrap();
+        assert_eq!(&buf[..n], b"hello-a");
+
+        assert_eq!(
+            owner_limiter.active_connections(),
+            1,
+            "first flow occupies the slot"
+        );
+        assert_eq!(owner_stats.reject_total(RejectReason::OwnerConcurrent), 0);
+
+        // Source B: first packet must drop on the owner concurrent gate.
+        let b = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        b.send_to(b"hello-b", (Ipv4Addr::LOCALHOST, listen_port))
+            .await
+            .unwrap();
+        let dropped = tokio::time::timeout(Duration::from_millis(300), b.recv_from(&mut buf)).await;
+        assert!(dropped.is_err(), "source B must be dropped, not echoed");
+
+        assert_eq!(
+            owner_limiter.active_connections(),
+            1,
+            "still only source A active"
+        );
+        assert_eq!(
+            owner_stats.reject_total(RejectReason::OwnerConcurrent),
+            1,
+            "source B increments OwnerConcurrent reject counter"
+        );
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
 }
