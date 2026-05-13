@@ -23,8 +23,10 @@
 An operator runs Portunus in front of a mirror cache / intra-DC interconnect /
 VPN tunnel where individual TCP connections sustain 100 MB/s – 1 GB/s and a
 single edge host serves a handful of concurrent flows. Today the
-`portunus-client` data plane is pure-userspace (`tokio::io::copy_bidirectional`
-with 32 KiB buffers); at line rate the CPU is dominated by
+`portunus-client` data plane is pure-userspace
+(`tokio::io::copy_bidirectional_with_sizes` with 64 KiB per-direction
+buffers — `PROXY_COPY_BUF_SIZE` in `forwarder/proxy.rs`); at line rate
+the CPU is dominated by
 `read(2) → memcpy → write(2)` syscall pairs, capping single-core throughput
 well below NIC speed. The operator wants the same rules to forward the same
 bytes at substantially higher per-CPU throughput, **without changing any rule
@@ -226,10 +228,18 @@ on the wire and in metrics are bit-identical.
   to the userspace path (mirrors v0.11 hot-reload semantics for in-flight
   flows).
 - **FR-006**: When the kernel reports that the fast-path syscall is
-  unsupported (`ENOSYS`, `EINVAL`, `EPERM`, `ENOTSUP`) **and zero bytes
-  have moved**, the connection MUST silently fall back to the userspace
-  path. After any byte has moved into the kernel pipe, **no** fallback is
-  permitted — subsequent errors are connection-level and propagate as such.
+  unsupported — explicitly `ENOSYS`, `EINVAL`, `EPERM`, or
+  `EOPNOTSUPP` / `ENOTSUP` (Linux treats them as the same value but
+  `nix` may surface either constant) — **and zero bytes have moved**,
+  the connection MUST fall back to the userspace path in a
+  functionally-transparent way: byte stream and counters identical to a
+  native userspace run, with a single `proxy.splice_unsupported_fallback`
+  tracing event identifying the errno (per FR-011). After any byte has
+  moved into the kernel pipe, **no** fallback is permitted — subsequent
+  errors are connection-level and propagate as such. `EAGAIN` and
+  `EINTR` are **not** fallback conditions: `EAGAIN` is the readiness
+  signal (handled by `TcpStream::try_io`'s WouldBlock contract);
+  `EINTR` is a retry condition. Neither alters the connection's path.
 - **FR-007**: The fast path MUST preserve `copy_bidirectional`'s
   half-close semantics: when one direction EOFs, the write half of the
   reverse direction is shut down and the reverse direction continues
@@ -267,10 +277,12 @@ on the wire and in metrics are bit-identical.
 
 ### Measurable Outcomes
 
-- **SC-001** *(throughput, P1)*: On Linux with a single TCP connection
-  pumping 1 GiB in 1 MiB chunks through a plain rule, the fast path
-  delivers ≥ 1.4× the throughput of `PORTUNUS_DISABLE_SPLICE=1` on the
-  same host. Measured via a criterion bench reproducing the shape of
+- **SC-001** *(throughput, P1)*: On a dedicated Linux perf/bench host
+  (NOT generic CI — CI runners' shared-CPU jitter would render the
+  comparison meaningless), with a single TCP connection pumping 1 GiB
+  in 1 MiB chunks through a plain rule, the fast path delivers ≥ 1.4×
+  the throughput of `PORTUNUS_DISABLE_SPLICE=1` on the same host.
+  Measured via a criterion bench reproducing the shape of
   `forwarder::proxy::proxy` (see also v0.1.0 `data_plane.rs` bench).
 - **SC-002** *(setup latency, P1)*: p99 connection-setup latency (from
   `accept` to first byte forwarded) on the same bench is within ±5 % of
@@ -290,11 +302,18 @@ on the wire and in metrics are bit-identical.
 - **SC-006** *(no cross-platform regression, P1)*: macOS and Windows
   builds compile with no fast-path code in the binary, all existing tests
   pass, no behaviour changes.
-- **SC-007** *(unsupported fallback resilience)*: When the kernel rejects
-  `splice` (simulated via seccomp in a test harness or by mocking the
-  syscall wrapper), every connection transparently falls back to the
-  userspace path. The integration suite passes with zero observable
-  difference in functional outcomes from a normally-supported run.
+- **SC-007** *(unsupported fallback resilience)*: When the **first**
+  fast-path syscall on a connection returns one of the unsupported
+  errnos (`ENOSYS` / `EINVAL` / `EPERM` / `EOPNOTSUPP`) **before any
+  byte has moved** — simulated via seccomp in a test harness, by
+  mocking the syscall wrapper, or by injecting the errno at the
+  `splice.rs` boundary — that connection MUST fall back to the
+  userspace path in a functionally-transparent way (FR-006). Per
+  FR-006, connections that have already moved bytes do not benefit
+  from this scenario and are out of SC-007's scope. The integration
+  suite, when forced to take the fallback path on every connection,
+  passes with zero observable difference in functional outcomes
+  from a normally-supported run.
 
 ## Assumptions
 
@@ -336,6 +355,17 @@ on the wire and in metrics are bit-identical.
   internals.
 - **TLS termination.** This feature operates strictly below TLS; SNI
   remains peek-and-route only.
+- **Kernel TLS (kTLS).** Offloading TLS encrypt/decrypt to the kernel
+  would let SNI-routed flows splice ciphertext directly between
+  kernel buffers without ever touching userspace. Compelling, but
+  requires TLS-key custody in the data plane, which the v2.0
+  Constitution explicitly disallows for portunus-client. Revisit only
+  if the auth/threat model changes.
+- **Global host-wide disable / config surface beyond the env kill
+  switch.** `PORTUNUS_DISABLE_SPLICE=1` is the only off-ramp.
+  Operators do not get a config-file knob, a CLI flag, a per-rule
+  flag, or a Web UI toggle for this. If the fast path is wrong for a
+  deployment, the env var disables it; that is the entire interface.
 
 ## Dependencies
 
