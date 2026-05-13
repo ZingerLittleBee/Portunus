@@ -952,6 +952,56 @@ mod build_tests {
             cfg!(target_os = "linux") && !ctx.disable_splice
         );
     }
+
+    /// T077 — owner with only `new_connections_per_sec` does NOT force
+    /// userspace. New-conn rate caps gate at accept time (v0.11) and
+    /// never touch the data path; mirrors
+    /// `owner_concurrent_only_does_not_force_userspace` but for the
+    /// per-second rate axis.
+    #[test]
+    fn t077_owner_new_connections_per_sec_only_does_not_force_userspace() {
+        let owner_rl = RateLimit {
+            new_connections_per_sec: Some(50),
+            ..Default::default()
+        };
+        let owner = owner_handle_with(Some(&owner_rl));
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, None, Some(&owner), false, false);
+        assert!(
+            !ctx.has_bandwidth_cap,
+            "owner new_connections_per_sec alone must not set has_bandwidth_cap"
+        );
+        // Env-aware: under `PORTUNUS_DISABLE_SPLICE=1` (T029 CI matrix
+        // axis) `disable_splice` is true and `eligible` is false.
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice,
+            "owner new_connections_per_sec must not disable splice"
+        );
+    }
+
+    /// T078 — rule with only `new_connections_per_sec` does NOT force
+    /// userspace. Companion to T077 on the per-rule axis. Mirrors
+    /// `rule_with_new_conn_rate_only_does_not_force_userspace` above and
+    /// is kept under its task-id name for traceability with the owner
+    /// concurrent-limit work plan.
+    #[test]
+    fn t078_rule_new_connections_per_sec_only_does_not_force_userspace() {
+        let rule_rl = RateLimit {
+            new_connections_per_sec: Some(50),
+            ..Default::default()
+        };
+        let rule = rule_handle_with(Some(&rule_rl));
+        let ctx = CopyCtx::build(RuleId(1), Protocol::Tcp, Some(&rule), None, false, false);
+        assert!(
+            !ctx.has_bandwidth_cap,
+            "rule new_connections_per_sec alone must not set has_bandwidth_cap"
+        );
+        assert_eq!(
+            eligible(&ctx),
+            cfg!(target_os = "linux") && !ctx.disable_splice,
+            "rule new_connections_per_sec must not disable splice"
+        );
+    }
 }
 
 // ====================================================================

@@ -2370,4 +2370,117 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
         task.await.unwrap();
     }
+
+    /// T079 — Linux-only: when the splice fast path is selected for a
+    /// plain-TCP single-target rule (no bandwidth caps anywhere; owner
+    /// concurrent cap alone does NOT disable splice, see
+    /// `splice::build_tests::owner_concurrent_only_does_not_force_userspace`),
+    /// the owner concurrent guard installed by the accept loop must
+    /// persist for the entire lifetime of the spliced connection and
+    /// drop precisely when the connection ends.
+    ///
+    /// Gated `#[cfg(target_os = "linux")]` because it exercises the
+    /// real `splice(2)` data path. macOS / other platforms skip at
+    /// compile time and pick up the existing userspace coverage from
+    /// `t030_owner_cap_binds_before_rule_cap_on_tcp_accept`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn t079_owner_concurrent_guard_spans_splice_connection_lifetime() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+
+        let _guard = port_pool_lock().lock().await;
+        let echo = spawn_echo().await;
+        let port = pick_free_port().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let cancel_run = cancel.clone();
+
+        // Owner cap = 1, no bandwidth caps. `has_bandwidth_cap` is
+        // false, so on Linux the splice fast path is selected for
+        // this connection per `splice::eligible`.
+        let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("alice");
+        owner_mgr.install(
+            &owner_id,
+            Some(&portunus_core::RateLimit {
+                concurrent_connections: Some(1),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, Arc::clone(&owner_mgr)));
+
+        // Single-target plain-TCP rule: this dispatches through
+        // `forwarder::run` → single-target TCP path → splice on Linux.
+        // No rule rate-limit, no rule/owner bandwidth caps.
+        let mut rule = single_rule(579, port, echo);
+        rule.owner_rate_limit = Some(Arc::clone(&owner_limiter));
+
+        let task = tokio::spawn(async move {
+            run(
+                rule,
+                ip_resolver(),
+                tx,
+                cancel_run,
+                Duration::from_secs(2),
+                RuleStats::new(),
+            )
+            .await;
+        });
+
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(evt, RuleStatusEvent::Activated { rule_id } if rule_id == RuleId(579)));
+
+        // Open a connection — must echo through the splice path.
+        let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        conn.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(2), conn.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"ping");
+
+        // Splice connection is live — owner active gauge must read 1.
+        // Wait briefly for the accept loop to register the bump.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_limiter.active_connections() < 1 {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "accept loop never reached owner active_connections=1 on splice path"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            owner_limiter.active_connections(),
+            1,
+            "guard must persist for the duration of the splice connection"
+        );
+
+        // Close — guard must drop when the forwarder task observes FIN
+        // on the spliced stream.
+        drop(conn);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while owner_limiter.active_connections() != 0 {
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            owner_limiter.active_connections(),
+            0,
+            "guard must drop when the splice connection closes"
+        );
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await;
+        task.await.unwrap();
+    }
 }
