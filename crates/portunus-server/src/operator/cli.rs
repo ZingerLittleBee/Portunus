@@ -821,15 +821,21 @@ pub async fn push_rule(
                 // never set sni_pattern. The new SNI-aware push path
                 // (added in T026/T043) plumbs this from rule.sni_pattern.
                 sni_pattern: None,
-                // 011-rate-limiting-qos: legacy push helpers never set
-                // a cap. The cap-aware push path (T015/T016) plumbs
-                // this from rule.rate_limit.
+                // 011-rate-limiting-qos: the legacy single-target push
+                // shape rejects per-rule `rate_limit` at the HTTP layer
+                // (`validation.rate_limit_on_legacy_shape` at
+                // operator/http.rs:414-422), so the per-rule cap is
+                // always None here. Owner caps are independent: see
+                // owner_id below.
                 rate_limit: None,
-                // owner_id stays None on the wire when there's no
-                // v0.11 cap signal (per-rule cap or owner cap).
-                // Byte-stable with v0.10 — see proto_rule_from_rule
-                // for the cap-aware emit path.
-                owner_id: None,
+                // Always emit the rule's owner_user_id on the wire so
+                // the client can install the OwnerRateLimitHandle even
+                // when (a) no cap exists at push time, and (b) the
+                // operator PUTs a cap later for this owner. v0.10.x
+                // clients ignore the additive field on decode (proto3
+                // forward-compat). Mirrors push_rule_multi_target at
+                // line 1086.
+                owner_id: Some(rule.owner_user_id.to_string()),
             }),
         })),
     };

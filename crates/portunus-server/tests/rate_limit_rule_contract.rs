@@ -565,6 +565,47 @@ async fn uncapped_rule_emits_owner_id_when_owner_cap_exists() {
     assert_eq!(owner_id, "alice");
 }
 
+// Regression: the legacy single-target wire shape (target_host /
+// target_port, no targets[]) previously hard-coded owner_id: None on
+// the wire even when the rule's owner had an active cap. The client
+// then never installed an OwnerRateLimitHandle for that rule and the
+// cap was silently un-enforced. See operator/cli.rs::push_rule.
+#[tokio::test]
+async fn legacy_target_host_shape_emits_owner_id_on_push() {
+    let f = build_fixture();
+    let updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+
+    let resp = f
+        .router
+        .clone()
+        .oneshot(push(
+            ALICE_TOKEN,
+            serde_json::json!({
+                "client": CLIENT,
+                "listen_port": 30034,
+                "protocol": "tcp",
+                "target_host": "127.0.0.1",
+                "target_port": 9034,
+            }),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let seen = updates.lock().await;
+    let pushed = seen
+        .iter()
+        .find(|u| u.rule.as_ref().is_some_and(|r| r.listen_port == 30034))
+        .expect("rule update captured");
+    let owner_id = pushed
+        .rule
+        .as_ref()
+        .and_then(|r| r.owner_id.clone())
+        .expect("legacy single-target push must emit owner_id");
+    assert_eq!(owner_id, "alice");
+}
+
 #[tokio::test]
 async fn update_rule_rate_limit_persists_and_echoes_in_response() {
     let f = build_fixture();
