@@ -112,56 +112,54 @@ new feature is created via `/speckit-specify`. Historical feature plans
   perf gates).
 
 <!-- SPECKIT START -->
-Active feature: `011-rate-limiting-qos` on branch `011-rate-limiting-qos`.
-v0.11 adds per-rule and per-owner connection rate limiting / QoS:
-bandwidth (bytes/sec, both directions), new-connection rate (TCP
-conn/sec or UDP flow/sec), and concurrent connection / flow count.
-Each cap is independently optional; absent fields preserve v0.10
-behaviour byte-for-byte. Bandwidth caps throttle in-flight flows via
-a token bucket; connection-rate and concurrent caps reject new
-connections (TCP RST after accept; UDP packet drop before NAT bind).
-The rate limiter never closes existing connections — including under
-hot-reload that lowers a concurrent cap below the live count
-(graceful drain). Token-bucket implementation is hand-rolled; zero
-new workspace deps.
+Active feature: `012-tcp-zero-copy-splice` on branch `wellington-v1`
+(work in an isolated worktree). v0.12 adds an internal,
+operator-invisible TCP zero-copy fast path on Linux via `splice(2)` +
+a per-connection `pipe2` pair. The
+`tokio::io::copy_bidirectional_with_sizes` userspace path remains the
+canonical reference and the fallback for non-Linux platforms and
+ineligible rules. No wire / config / Web UI surface; no new workspace
+dependencies.
 
 Key invariants:
-- "Per-client" cap is per-RBAC-owner within a portunus-client (Q1).
-  Cap envelope keyed `(client, owner)`. Node-level aggregate caps
-  are explicitly out of scope for v0.11.
-- Wire fields are additive: `Rule.rate_limit = 12`,
-  `RuleStats.rate_limit = 16`, `StatsReport.owner_rate_limit_stats = 4`,
-  new server-push variant `OwnerRateLimitUpdate`. New messages
-  `RateLimit`, `RateLimitStats`, `OwnerRateLimitStats`, enums
-  `RateLimitRejectReason` (6 values) and `OwnerRateLimitAction`.
-- Capability gate: `rate_limit` push (or any owner-cap mutation)
-  to a pre-v0.11 client → `422 rate_limit_unsupported_by_client`
-  before any rule activates anywhere.
-- Per-owner ceiling binds **before** per-rule cap (FR-013); rejects
-  carry distinct `owner_*` reasons (FR-014).
-- Reject path: TCP accept-then-RST (Q3) — listener-pause was rejected
-  because v0.7/v0.9 share listeners across rules.
-- Burst defaults to `1 × rate`; optional per-cap `*_burst` field
-  overrides (Q2). UI hides burst behind an "Advanced" disclosure.
-- Hot-reload swaps `Arc<RateLimitConfig>`; concurrent cap lowered
-  below live count drains gracefully (Q4) — no forced close.
-- Per-owner cap REST path: `/v1/clients/{id}/owners/{owner_id}/rate-limit`
-  (Q5). Web UI surfaces it as an "Owner quotas" tab on client detail.
-- Data-plane reject/throttle events are tracing-only — they do NOT
-  enter the SQLite operator audit ring (mirrors v0.9 D13 / v0.10
-  invariant).
-- SQLite migration V005 adds nullable cap columns to `rules` plus a
-  new `rate_limit_owner` table; schema-version range
-  `[1,3] → [1,4]`.
+- Eligibility: `cfg(target_os = "linux") && protocol == Tcp &&
+  !disable_splice && !has_bandwidth_cap`. `has_bandwidth_cap` is the OR
+  of {rule.bandwidth_in_bps, rule.bandwidth_out_bps,
+  owner.bandwidth_in_bps, owner.bandwidth_out_bps}.
+- `concurrent_connections` and `new_connections_per_sec` (v0.11) gate at
+  accept time and remain compatible with the fast path.
+- SNI peek+replay (v0.9) and PROXY-out prelude (v0.10) are prefix-only;
+  splice runs for the post-prelude byte stream.
+- Fallback contract: only when the **first** `splice` syscall returns
+  one of {`ENOSYS`, `EINVAL`, `EPERM`, `EOPNOTSUPP`/`ENOTSUP`} AND zero
+  bytes have moved. After any byte moved → terminal `io::Error`, no
+  path switch.
+- Tokio integration: `TcpStream::try_io` + `readable()`/`writable()`;
+  no `AsyncFd`.
+- Per-connection `pipe2(O_NONBLOCK | O_CLOEXEC)` pair with best-effort
+  `F_SETPIPE_SZ = 1 MiB`; failure is `tracing::debug`.
+- Half-close matches `tokio::io::copy_bidirectional`; counters advance
+  on the pipe-to-destination splice return value (delivered bytes).
+- Tracing events under `proxy.*`: `proxy.splice_selected` (info, once
+  per rule), `proxy.splice_unsupported_fallback` (warn, per fallback
+  connection), `proxy.splice_pipe_size_failed` (debug). No new
+  Prometheus metrics.
+- `PORTUNUS_DISABLE_SPLICE=1` env is the only kill switch
+  (internal/triage; not advertised in `--help`).
+- Perf gate (Constitution II): criterion `splice_throughput` bench on
+  dedicated Linux host — ≥ 1.4× throughput on 1 MiB chunks, p99 setup
+  latency within ±5 %; v1.2.0 baseline captured **before** any splice
+  code lands. Byte-stability gate: full integration suite passes
+  identically with and without `PORTUNUS_DISABLE_SPLICE=1`.
 
 For technical context, project structure, dependency choices, and the
 Constitution Check, read the current plan:
-- `specs/011-rate-limiting-qos/plan.md`
+- `specs/012-tcp-zero-copy-splice/plan.md`
 - Supporting artifacts in the same directory: `spec.md`,
-  `research.md` (R-001..R-015 decisions), `data-model.md`,
-  `contracts/wire.md`, `contracts/operator-api.md`, `quickstart.md`,
-  `checklists/requirements.md`.
+  `research.md` (R-001..R-010 decisions), `data-model.md`,
+  `contracts/internal-api.md`, `quickstart.md`.
 
-Project-wide governance: `.specify/memory/constitution.md` (currently v2.0.2 —
-TLS + bearer token, NOT mTLS; SQLite as bundled persistence).
+Project-wide governance: `.specify/memory/constitution.md` (currently
+v2.0.2 — TLS + bearer token, NOT mTLS; SQLite as bundled persistence;
+`splice` permitted as soft optimization under `TODO(KERNEL_OFFLOAD)`).
 <!-- SPECKIT END -->
