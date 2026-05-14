@@ -9,9 +9,6 @@ import type {
   RateLimit,
 } from "@/api/types";
 
-// Forward references for Tasks 4 & 5 — will be used then; keep alive now.
-export type { CreateGrantBody, DeleteGrantResponse };
-
 export interface AccessEntry {
   grant_id: string;
   user_id: string;
@@ -69,10 +66,64 @@ export function joinAccessEntries(
   return out.sort((a, b) => a.client_name.localeCompare(b.client_name));
 }
 
-// Keep value imports live for Tasks 4 and 5 — removed then.
-void apiFetch;
-void ApiError;
+
+export const userAccessEntriesKey = (userId: string) =>
+  ["access-entries", userId] as const;
+export const userAccessCapKey = (userId: string, clientName: string) =>
+  ["access-entries", userId, "cap", clientName] as const;
+
+interface UseAccessEntriesResult {
+  data: AccessEntry[] | undefined;
+  isLoading: boolean;
+  error: unknown;
+}
+
+export function useAccessEntries(userId: string): UseAccessEntriesResult {
+  const grantsQ = useQuery({
+    queryKey: ["grants", "user", userId],
+    queryFn: () => apiFetch<GrantView[]>(`/v1/grants?user_id=${encodeURIComponent(userId)}`),
+    enabled: userId.length > 0,
+  });
+
+  const grants = grantsQ.data ?? [];
+  const uniquePairs = Array.from(
+    new Set(grants.map((g) => `${g.user_id}::${g.client}`)),
+  ).map((k) => {
+    const [u, c] = k.split("::");
+    return { user_id: u!, client_name: c! };
+  });
+
+  const capQueries = useQueries({
+    queries: uniquePairs.map((p) => ({
+      queryKey: userAccessCapKey(p.user_id, p.client_name),
+      queryFn: async (): Promise<OwnerRateLimitView | null> => {
+        try {
+          return await apiFetch<OwnerRateLimitView>(
+            `/v1/clients/${encodeURIComponent(p.client_name)}/owners/${encodeURIComponent(p.user_id)}/rate-limit`,
+          );
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) return null;
+          throw err;
+        }
+      },
+      enabled: userId.length > 0,
+    })),
+  });
+
+  const capsLoading = capQueries.some((q) => q.isLoading);
+  const caps = capQueries
+    .map((q) => q.data)
+    .filter((v): v is OwnerRateLimitView => v != null);
+  const error = grantsQ.error ?? capQueries.find((q) => q.error)?.error;
+
+  return {
+    data: grantsQ.data ? joinAccessEntries(grants, caps) : undefined,
+    isLoading: grantsQ.isLoading || (grants.length > 0 && capsLoading),
+    error,
+  };
+}
+
+// Keep value imports live for Task 5 — removed then.
 void useMutation;
-void useQuery;
-void useQueries;
 void useQueryClient;
+export type { CreateGrantBody, DeleteGrantResponse };
