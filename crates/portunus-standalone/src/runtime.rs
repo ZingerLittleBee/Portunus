@@ -73,7 +73,24 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
 
     for parsed in rules_iter {
         let rule_id = parsed.rule_id;
-        let rule = parsed.into_client_rule();
+        let mut rule = parsed.into_client_rule();
+        // Wire up multi_target_obs for multi-target rules so that
+        // failover_path::run_tcp can find the per-target health state.
+        // Single-target rules leave multi_target_obs = None (hot path).
+        if !rule.targets.is_empty() {
+            use std::sync::atomic::AtomicU64;
+            use portunus_forwarder::forwarder::failover::HealthState;
+            use portunus_forwarder::MultiTargetObservability;
+            let states: Vec<_> = rule
+                .targets
+                .iter()
+                .map(|_| tokio::sync::Mutex::new(HealthState::new()))
+                .collect();
+            rule.multi_target_obs = Some(std::sync::Arc::new(MultiTargetObservability {
+                target_failovers_total: std::sync::Arc::new(AtomicU64::new(0)),
+                states: std::sync::Arc::new(states),
+            }));
+        }
         let listen_range = rule.listen_range; // PortRange: Copy
         // for_range already returns Arc<RuleStats>
         let stats = RuleStats::for_range(listen_range);
