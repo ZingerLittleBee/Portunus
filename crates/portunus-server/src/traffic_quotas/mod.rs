@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 
+pub mod samples;
 pub mod store;
 
 /// One row of `traffic_quotas`. Mirrors the schema 1:1.
