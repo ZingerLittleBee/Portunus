@@ -1,6 +1,6 @@
 # Standalone Forwarder — Design
 
-**Status:** draft v3 · awaiting user review (v3 addresses 7 v2-review findings)
+**Status:** draft v4 · awaiting user review (v4 addresses 5 v3-review findings + 2 small fixes)
 **Branch:** `feat/standalone-forwarder`
 **Target release:** v1.5.0
 **Date:** 2026-05-14
@@ -107,14 +107,25 @@ pub use forwarder::stats::{
 };
 
 // SNI 数据面入口(client 的 port_groups 直接调用,standalone 不用)
+//
+// 当前真实路径:forwarder/sni/listener.rs 内 pub struct。
+// Phase 2 将给 forwarder/sni/mod.rs 加 re-export(`pub use listener::*;`)
+// 让 lib.rs 这条 re-export 编译通过 — 否则要写精确子路径
+// `forwarder::sni::listener::SniListener` 等。
 pub use forwarder::sni::{
     SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
 };
 
 // Rate limit 控制面对象(client 用)
+//
+// 当前真实路径:`scope::RateLimitScopeManager`、
+// `scope::{OwnerRateLimitHandle, OwnerRateLimitStatsRegistry, RuleRateLimitHandle}`、
+// `stats::RateLimitStatsAccumulator`。
+// Phase 2 将给 rate_limit/mod.rs 加 `pub use scope::*; pub use stats::*;`
+// 让顶层导出编译通过。
 pub use forwarder::rate_limit::{
     RateLimitScopeManager,
-    scope::{OwnerRateLimitHandle, OwnerRateLimitStatsRegistry},
+    OwnerRateLimitHandle, OwnerRateLimitStatsRegistry,
     RateLimitStatsAccumulator,
     RuleRateLimitHandle,
 };
@@ -264,7 +275,7 @@ targets        = [
   { host = "primary.internal",   port = 443, priority = 0  },
   { host = "secondary.internal", port = 443, priority = 10 },
 ]
-probe_interval_secs = 5
+health_check_interval_secs = 5
 proxy_protocol      = "v2"        # rule-level apply-all
 
 # UDP
@@ -288,7 +299,7 @@ udp_flow_idle_secs = 120
 | `target` | "host:port" 或 "host:lo-hi" | 见 §4.2.4 条件 desugar | 与 `targets` 互斥 |
 | `targets` | array of `{host,port,priority}` | `rule.targets` 直填 | 与 `target` 互斥;targets + range 不允许 |
 | `prefer_ipv6` | bool | `rule.prefer_ipv6` | 仅 TCP 生效 |
-| `probe_interval_secs` | u32? | `rule.probe_interval_secs` | 仅 TCP 多目标 |
+| `health_check_interval_secs` | u32? | `rule.health_check_interval_secs` | 仅 TCP 多目标 |
 | `proxy_protocol` | "off"\|"v1"\|"v2",默认 "off" | 每个 target 的 `proxy_protocol`(apply-all) | 仅 TCP;§4.2.5 |
 | `udp_max_flows` | u32 | `rule.udp_max_flows` | 仅 UDP |
 | `udp_flow_idle_secs` | u32 | `rule.udp_flow_idle_secs` | 仅 UDP |
@@ -400,15 +411,28 @@ async fn run(cfg: Config) -> ExitCode {
     let shutdown = Shutdown::new();
     let registry = cfg.rule_registry();                       // Arc<HashMap<RuleId, String>>
 
-    tokio::spawn(standalone_signal_handler(shutdown.clone()));
+    // SIGHUP-aware signal handler — install 失败直接 exit 1(不 panic)
+    let signal_task = match install_standalone_signal_handler(shutdown.clone()) {
+        Ok(j) => j,
+        Err(e) => {
+            error!(event = "standalone.signal_install_failed", error = %e);
+            return ExitCode::from(1);
+        }
+    };
 
-    let resolver = Arc::new(
-        LiveResolver::with_system_defaults()                  // §5.6 新增 API
-            .expect("system DNS resolver init")
-    );
+    let resolver = match LiveResolver::with_system_defaults() {        // §5.6
+        Ok(r) => Arc::new(r),
+        Err(e) => {
+            error!(event = "standalone.resolver_init_failed", error = %e);
+            return ExitCode::from(1);
+        }
+    };
+
     let (status_tx, mut status_rx) = mpsc::channel(64);
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<()>(1);
 
+    // finding 3 修订:不动 run_forwarder 签名(stats: Arc<RuleStats> 必填)。
+    // 在循环里就地构造 Arc<RuleStats>,登记到 registry,再传给 forwarder。
     let rule_stats_handles: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let reporter = spawn_standalone_reporter(
@@ -420,11 +444,19 @@ async fn run(cfg: Config) -> ExitCode {
 
     let mut joinset = JoinSet::new();
     let expected: HashSet<RuleId> = registry.keys().copied().collect();
-    for rule in cfg.into_client_rules(&rule_stats_handles) {
+    for parsed in cfg.into_iter_rules() {                              // ParsedRule
+        let rule_id = parsed.rule_id;
+        let stats = Arc::new(RuleStats::new(parsed.is_range()));
+        rule_stats_handles.write().expect("stats registry not poisoned")
+            .insert(rule_id, Arc::clone(&stats));
+        let rule: ClientRule = parsed.into_client_rule();              // 现有签名
         joinset.spawn(run_forwarder(
-            rule, shutdown.token(),
+            rule,
+            resolver.clone(),
+            status_tx.clone(),
+            shutdown.token(),
             Duration::from_secs(cfg.global.shutdown_drain_secs),
-            status_tx.clone(), resolver.clone(),
+            stats,                                                     // 现签名要求
         ));
     }
     drop(status_tx);
@@ -508,6 +540,7 @@ async fn run(cfg: Config) -> ExitCode {
         }
     }
     let _ = reporter.await;
+    let _ = signal_task.await;
     info!(event = "standalone.stopped");
     if fatal_flag { ExitCode::from(1) } else { ExitCode::SUCCESS }
 }
@@ -538,7 +571,15 @@ pub fn spawn_standalone_reporter(
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = tick.tick() => {
-                    let map = rule_stats.read().unwrap();
+                    // 锁中毒(任一 writer panic 后)→ 跳过本 tick,
+                    // 主 select 仍然继续(reporter 不应该把进程拖死)
+                    let map = match rule_stats.read() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            warn!(event = "standalone.reporter_lock_poisoned", error = %e);
+                            continue;
+                        }
+                    };
                     for (rule_id, rs) in map.iter() {
                         let snap = rs.snapshot();           // 调用 forwarder 提供的 getter
                         let name = registry.get(rule_id).map(String::as_str).unwrap_or("?");
@@ -574,19 +615,22 @@ standalone 自实现 signal handler(不污染 client 共享的 `Shutdown::signal
 ```rust
 // portunus-standalone/src/signal.rs
 #[cfg(unix)]
-pub async fn standalone_signal_handler(shutdown: Shutdown) {
+pub fn install_standalone_signal_handler(shutdown: Shutdown) -> io::Result<JoinHandle<()>> {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut sigint  = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-    let mut sighup  = signal(SignalKind::hangup()).expect("install SIGHUP handler");
-    // SIGHUP 永远只 recv 但不 trigger
-    loop {
-        tokio::select! {
-            _ = sigint.recv()  => { tracing::info!(event="shutdown.signal", signal="SIGINT");  shutdown.trigger(); return; }
-            _ = sigterm.recv() => { tracing::info!(event="shutdown.signal", signal="SIGTERM"); shutdown.trigger(); return; }
-            _ = sighup.recv()  => { tracing::info!(event="standalone.sighup_ignored"); /* loop continues */ }
+    // 三个订阅都在 spawn 前同步 install — 失败立即返回 io::Error,
+    // 让 run() 走 error! + ExitCode::from(1) 路径。不 panic。
+    let mut sigint  = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sighup  = signal(SignalKind::hangup())?;
+    Ok(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = sigint.recv()  => { tracing::info!(event="shutdown.signal", signal="SIGINT");  shutdown.trigger(); return; }
+                _ = sigterm.recv() => { tracing::info!(event="shutdown.signal", signal="SIGTERM"); shutdown.trigger(); return; }
+                _ = sighup.recv()  => { tracing::info!(event="standalone.sighup_ignored"); /* loop continues */ }
+            }
         }
-    }
+    }))
 }
 ```
 
@@ -680,14 +724,38 @@ pub struct OwnerRateLimitStatsSnapshot {
 
 #[derive(Clone, Debug, Default)]
 pub struct SniListenerStatsSnapshot {
-    pub listen_port: u16,
-    pub sni_miss_total: u64,
-    pub sni_parse_failures_total: u64,
+    // 对照 proto::v1::SniListenerStats:
+    pub listen_port: u16,                                     // 1
+    pub sni_route_miss_total: u64,                            // 2
+    pub client_hello_parse_failures_total: u64,               // 3
+    /// v1.6 (010-proxy-protocol-and-peek-histogram):
+    /// 每个固定 bucket 的累计计数,顺序与
+    /// `portunus_core::PEEK_HISTOGRAM_BUCKETS_SECS` 一致
+    pub client_hello_peek_bucket_counts: Vec<u64>,            // 4
+    pub client_hello_peek_sum_micros: u64,                    // 5
+    pub client_hello_peek_count: u64,                         // 6
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-#[non_exhaustive]
-pub enum TargetHealth { #[default] Unknown, Healthy, Unhealthy }
+/// 真实 wire 是 `PerTargetStats.health: uint32`(不是 enum),
+/// 当前实现见 `failover.rs::Health` → `as_wire(): Healthy=0, Failed=1`。
+/// 这里镜像该约定,默认 Healthy。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetHealth {
+    #[default]
+    Healthy,
+    Failed,
+}
+
+impl TargetHealth {
+    /// 与 forwarder/failover.rs::Health::as_wire() 1:1 — 写到
+    /// `PerTargetStats.health: uint32`。
+    pub fn as_wire(self) -> u32 {
+        match self {
+            Self::Healthy => 0,
+            Self::Failed => 1,
+        }
+    }
+}
 
 /// 与 proto::v1::RateLimitRejectReason 1:1
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -730,8 +798,10 @@ impl From<OwnerRateLimitStatsSnapshot> for proto::v1::OwnerRateLimitStats { ... 
 impl From<SniListenerStatsSnapshot> for proto::v1::SniListenerStats { ... }
 impl From<PerTargetStatsSnapshot> for proto::v1::PerTargetStats { ... }
 impl From<PerPortStatsSnapshot> for proto::v1::PerPortStats { ... }
-impl From<TargetHealth> for proto::v1::TargetHealth { ... }
+// TargetHealth → u32(proto 字段是 uint32,不是 enum;见 finding 2)
 impl From<RateLimitRejectReason> for proto::v1::RateLimitRejectReason { ... }
+// PerTargetStats.health 的赋值是 snapshot.health.as_wire() (u32),
+// 在 `From<PerTargetStatsSnapshot> for proto::v1::PerTargetStats` 内直接调用。
 ```
 
 **client 的 reporter 不动**(`control.rs:357 stats_tick + send_stats_report` 留在
@@ -850,7 +920,7 @@ Phase 4 — E2E + 文档 (PR 4)
 |------|------|
 | Phase 2 forwarder 遗漏 `portunus_proto` 引用 | Cargo.toml 不含 portunus-proto,任何漏改直接编译失败 |
 | Phase 2 snapshot 字段集偏离 proto | client `From` 翻译 + 现有 `*_wire_compat` 测试字节级比对 |
-| Phase 2 stats hot path 引入抖动 | 数据面仍是原子 fetch_add;`snapshot()` 只在 ticker 内调用;bench 对比 v1.4.0 |
+| Phase 2 stats hot path 引入抖动 | 数据面仍是原子 fetch_add;`snapshot()` 只在 ticker 内调用;bench 对比现有 baseline(`data_plane` → v0.1.0、`splice_throughput` → v1.2.0)零回退 |
 | Protocol 上提牵连 server JSON 兼容 | rule JSON serde 仍 lowercase;wire bytes 不变 |
 | RuleId blake3 冲突 | registry 检测;blake3 64-bit prefix 任意一对碰撞概率 2^-64 |
 | 单目标 + PROXY 走 failover_path 的开销 | 文档明示 opt-in 代价;数据面仍是 splice;影响仅限有 PROXY 需求的单目标 |
@@ -898,6 +968,30 @@ v2 → v3:
    `LiveResolver::with_system_defaults() -> io::Result<Self>`。
 10. **hash 库**(finding 7):不引入 twox-hash;用 workspace 已有 blake3
     取前 8 字节。碰撞数学:单对 2^-64;N 条规则生日界 ≈ N²/2^65。
+
+v3 → v4:
+11. **SniListenerStatsSnapshot peek histogram**(v4 finding 1):snapshot 字段
+    与 proto::v1::SniListenerStats 1-6 字段完全对齐 —— 加
+    `client_hello_peek_bucket_counts: Vec<u64>` + `client_hello_peek_sum_micros: u64`
+    + `client_hello_peek_count: u64`(v1.6 添加的 010 peek histogram)。
+12. **TargetHealth wire 类型**(v4 finding 2):proto 实际是 `uint32`,不是 enum。
+    `TargetHealth` 重定义为 `{ Healthy, Failed }`,默认 Healthy,提供
+    `as_wire() -> u32`(对齐 forwarder/failover.rs::Health::as_wire)。
+    删 `From<TargetHealth> for proto::v1::TargetHealth`。
+13. **RuleStats 句柄传递**(v4 finding 3):保留现有
+    `run_forwarder(rule, resolver, status_tx, cancel, drain, stats: Arc<RuleStats>)`
+    签名,**不改 ClientRule**。standalone runtime 在 spawn 前就地构造
+    `Arc<RuleStats>` 并登记到 `rule_stats_handles` registry。
+14. **re-export 子路径**(v4 finding 4):`§3.3` 用顶层短路径表示
+    *最终意图*。Phase 2 任务把 `rate_limit/mod.rs` 和 `sni/mod.rs` 加
+    `pub use scope::*; pub use stats::*; pub use listener::*;` 让短路径
+    成立;否则 lib.rs 的 re-export 不通过编译。
+15. **expect/unwrap 清退**(v4 finding 5):
+    - `LiveResolver::with_system_defaults()` → 失败 `error!` + `ExitCode::from(1)`,不 panic
+    - signal handler install → 同上,`install_standalone_signal_handler() -> io::Result<JoinHandle<()>>`
+    - reporter 锁中毒 → `warn!` + `continue`(本 tick 跳过,不杀进程)
+16. **字段名修正**:`probe_interval_secs` → `health_check_interval_secs`(对齐
+    `ClientRule::health_check_interval_secs`)。
 
 无未决问题。
 
