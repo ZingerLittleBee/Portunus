@@ -1,5 +1,5 @@
 {
   "title": "运维",
   "icon": "Wrench",
-  "pages": ["backup-restore", "upgrade", "troubleshooting"]
+  "pages": ["backup-restore", "upgrade", "standalone", "runbook-traffic-quotas", "troubleshooting"]
 }

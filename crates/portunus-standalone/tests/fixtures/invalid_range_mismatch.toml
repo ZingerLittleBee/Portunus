@@ -1,0 +1,5 @@
+[[rule]]
+name = "a"
+protocol = "tcp"
+listen_ports = "8000-8009"
+target = "1.1.1.1:8000-8019"

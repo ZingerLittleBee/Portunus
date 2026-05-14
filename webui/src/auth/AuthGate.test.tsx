@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -122,10 +123,15 @@ describe("local password auth UI", () => {
     const { qc } = renderApp("/");
     qc.setQueryData(["clients"], [{ client_name: "secret-edge" }]);
 
+    // The user menu (Administrator name) is the dropdown trigger; opening
+    // it surfaces the Sign out menu item.
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Sign out" })).toBeDefined();
+      expect(screen.getByText("Administrator")).toBeDefined();
     });
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByText("Administrator"));
+    const signOutItem = await screen.findByRole("menuitem", { name: "Sign out" });
+    await user.click(signOutItem);
 
     await waitFor(() => {
       expect(qc.getQueryData(["clients"])).toBeUndefined();

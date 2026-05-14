@@ -1,0 +1,219 @@
+---
+title: Standalone Forwarder
+description: TOML-driven TCP/UDP forwarding without a gRPC control plane — v1.4+.
+icon: Cpu
+---
+
+`portunus-standalone` is a self-contained TCP/UDP forwarder configured
+entirely from a TOML file. It uses the same data-plane code as
+`portunus-client` but requires no running `portunus-server` — suitable for
+single-host deployments, edge devices, and scenarios where a control-plane
+server is unnecessary.
+
+## Quick start
+
+```sh
+cargo build --release -p portunus-standalone
+# →  target/release/portunus-standalone
+```
+
+Create a minimal `portunus.toml`:
+
+```toml
+[[rule]]
+name = "ssh"
+protocol = "tcp"
+listen_port = 2222
+target = "10.0.0.5:22"
+```
+
+Run:
+
+```sh
+./target/release/portunus-standalone --config portunus.toml
+```
+
+Validate without starting:
+
+```sh
+./target/release/portunus-standalone --check --config portunus.toml
+# prints "ok" and exits 0 on success, exits 2 on error
+```
+
+## Config file lookup
+
+When `--config` is omitted the binary searches in order:
+
+1. `$PORTUNUS_STANDALONE_CONFIG` (env var)
+2. `./portunus.toml` (working directory)
+
+Exit 2 with a descriptive message if none of the paths resolve.
+
+## Config schema
+
+```toml
+# [global] section — all fields optional
+[global]
+label              = "my-forwarder"   # human label; informational only
+log_level          = "info"           # tracing EnvFilter directive (default: "info")
+log_format         = "json"           # "json" (default) or "pretty"
+shutdown_drain_secs = 30              # graceful-drain budget on SIGTERM (default: 30)
+
+# [defaults] section — values applied to rules that omit the field
+[defaults]
+protocol          = "tcp"    # optional; rules can still override
+udp_max_flows     = 1024     # per-rule UDP flow table cap (default: 1024)
+udp_flow_idle_secs = 60      # idle-flow expiry in seconds (default: 60)
+prefer_ipv6       = false    # address-family preference (default: false)
+
+# [[rule]] — one or more required
+[[rule]]
+name          = "ssh-tunnel"          # unique, used in log output
+protocol      = "tcp"                 # "tcp" or "udp"
+listen_port   = 2222                  # single port  }  mutually exclusive
+# listen_ports = "8000-8009"          # port range   }
+target        = "10.0.0.5:22"        # single target }  mutually exclusive
+# targets = [...]                     # multi-target  }
+prefer_ipv6   = false                 # per-rule override (optional)
+udp_max_flows = 1024                  # per-rule override for UDP (optional)
+udp_flow_idle_secs = 60              # per-rule override for UDP (optional)
+```
+
+### Port ranges
+
+Use `listen_ports` with a `"lo-hi"` string to map a contiguous listen
+window to the same-offset target window:
+
+```toml
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+```
+
+The listen and target ranges must have the same width.
+
+### Multi-target failover
+
+Use the `targets` list form for priority-ordered failover:
+
+```toml
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+```
+
+Lower `priority` value = higher preference. The forwarder tries the
+highest-priority healthy target; on connection failure it falls back in
+priority order.
+
+### PROXY protocol
+
+Set `proxy_protocol = "v1"` or `"v2"` on any target (single or inside
+`targets = [...]`) to prepend a PROXY protocol header before the upstream
+connection. Useful when the backend needs the original client address.
+
+## CLI flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--config <PATH>` | (auto-search) | Path to the TOML config file |
+| `--check` | false | Validate config and exit (0 = valid, 2 = invalid) |
+| `--log-level <LEVEL>` | from config | Override log level |
+| `--log-format <FMT>` | from config | Override log format (`json` or `pretty`) |
+
+## Signals
+
+| Signal | Behaviour |
+| --- | --- |
+| `SIGTERM` / `SIGINT` | Graceful shutdown — active connections drain for up to `shutdown_drain_secs`, then the process exits 0. |
+| `SIGHUP` | No-op in the current release (config reload is not yet supported). |
+
+## Observability
+
+`portunus-standalone` logs to **stderr** in JSON format by default
+(switch to `log_format = "pretty"` for human-readable output during
+development). Every rule emits structured events on startup, and a
+periodic reporter logs per-rule byte + connection counts every 30 seconds.
+
+There is no embedded HTTP server, Prometheus endpoint, or gRPC stream —
+those surfaces belong to `portunus-server`. Use log aggregation (e.g.
+`journald`, a sidecar log shipper) to collect the JSON output.
+
+## Full example config
+
+```toml
+[global]
+log_level = "debug"
+
+[defaults]
+udp_max_flows = 4096
+
+[[rule]]
+name        = "ssh-tunnel"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+
+[[rule]]
+name             = "game-udp"
+protocol         = "udp"
+listen_port      = 27015
+target           = "10.0.0.20:27015"
+udp_flow_idle_secs = 120
+```
+
+## Differences from portunus-client
+
+| Feature | `portunus-client` | `portunus-standalone` |
+| --- | --- | --- |
+| Control plane | gRPC stream to `portunus-server` | None — TOML only |
+| Dynamic rule updates | Yes (server push) | No — restart required |
+| RBAC / multi-user | Yes | No |
+| Rate limiting / QoS | Yes | No |
+| Prometheus metrics | Yes (loopback HTTP) | No |
+| Audit log | Via server | Structured log to stderr |
+| SNI routing | Yes | No |
+| TCP splice fast path (Linux) | Yes | Yes (same forwarder code) |
+| PROXY protocol out | Yes | Yes |
+
+## systemd unit example
+
+```ini
+[Unit]
+Description=Portunus standalone forwarder
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/portunus-standalone --config /etc/portunus/standalone.toml
+Restart=on-failure
+StandardOutput=journal
+StandardError=journal
+User=portunus
+ProtectSystem=strict
+ReadWritePaths=/etc/portunus
+
+[Install]
+WantedBy=multi-user.target
+```

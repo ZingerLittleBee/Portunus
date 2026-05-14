@@ -58,6 +58,15 @@ message ServerMessage {
     // variant) ignore it; the v0.11 capability gate refuses to emit it
     // toward pre-0.11 clients (HTTP 422 rate_limit_unsupported_by_client).
     OwnerRateLimitUpdate owner_rate_limit_update = 3;
+    // Additive in v1.4 (spec 013-traffic-quotas). Pushed when a quota is
+    // created/updated/deleted, when a billing period rolls over, when the
+    // server first observes cumulative >= monthly_bytes, and during
+    // reconnect replay (in this last case, BEFORE any RuleUpdate so the
+    // QuotaHandle is registry-resident when the rule activates). v1.3
+    // clients (no awareness of this variant) silently drop it; the server
+    // capability gate refuses to emit toward client_version < 1.4.0 and
+    // returns HTTP 422 quota_unsupported_by_client on quota PUT.
+    TrafficQuotaUpdate traffic_quota_update = 4;
   }
 }
 
@@ -524,4 +533,30 @@ message StatsReport {
   // the per-owner reject / throttle counters with reason ∈
   // {OWNER_CONCURRENT, OWNER_CONN_RATE, OWNER_UDP_FLOW_RATE}.
   repeated OwnerRateLimitStats owner_rate_limit_stats = 4;
+}
+
+// ============================================================================
+// 013-traffic-quotas: per-(user, client) monthly traffic quota state push
+// ============================================================================
+
+enum TrafficQuotaAction {
+  TRAFFIC_QUOTA_ACTION_UNSPECIFIED = 0;
+  TRAFFIC_QUOTA_ACTION_SET = 1;     // `state` must be populated
+  TRAFFIC_QUOTA_ACTION_REMOVE = 2;  // `state` MUST be empty
+}
+
+message TrafficQuotaState {
+  int64 monthly_bytes              = 1;
+  int64 budget_remaining_bytes     = 2;  // monthly_bytes - current_period_bytes_used; may be negative when exhausted
+  int64 period_started_at_unix_sec = 3;
+  int64 period_ends_at_unix_sec    = 4;
+  bool  exhausted                  = 5;
+}
+
+message TrafficQuotaUpdate {
+  string request_id        = 1;
+  string user_id           = 2;
+  string client_name       = 3;
+  TrafficQuotaAction action = 4;
+  optional TrafficQuotaState state = 5;
 }

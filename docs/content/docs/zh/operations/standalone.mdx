@@ -1,0 +1,212 @@
+---
+title: 独立转发器
+description: 基于 TOML 配置的 TCP/UDP 转发，无需 gRPC 控制面 — v1.4+。
+icon: Cpu
+---
+
+`portunus-standalone` 是一个完全由 TOML 文件驱动的独立 TCP/UDP 转发器。它与
+`portunus-client` 共享同一套数据面代码，但无需运行 `portunus-server` ——
+适用于单机部署、边缘设备以及不需要控制面服务器的场景。
+
+## 快速上手
+
+```sh
+cargo build --release -p portunus-standalone
+# →  target/release/portunus-standalone
+```
+
+创建一个最简配置 `portunus.toml`：
+
+```toml
+[[rule]]
+name = "ssh"
+protocol = "tcp"
+listen_port = 2222
+target = "10.0.0.5:22"
+```
+
+运行：
+
+```sh
+./target/release/portunus-standalone --config portunus.toml
+```
+
+仅验证配置，不启动服务：
+
+```sh
+./target/release/portunus-standalone --check --config portunus.toml
+# 配置合法时打印 "ok" 并以 0 退出，配置有误时以 2 退出
+```
+
+## 配置文件查找顺序
+
+省略 `--config` 时，按以下顺序查找：
+
+1. `$PORTUNUS_STANDALONE_CONFIG`（环境变量）
+2. `./portunus.toml`（当前工作目录）
+
+如果所有路径均不存在，打印详细错误并以 2 退出。
+
+## 配置文件结构
+
+```toml
+# [global] 节 — 所有字段均可选
+[global]
+label              = "my-forwarder"   # 人类可读标签，仅供参考
+log_level          = "info"           # tracing EnvFilter 指令（默认："info"）
+log_format         = "json"           # "json"（默认）或 "pretty"
+shutdown_drain_secs = 30              # SIGTERM 后的优雅关闭等待时间（默认：30 秒）
+
+# [defaults] 节 — 规则未指定字段时的默认值
+[defaults]
+protocol          = "tcp"    # 可选；规则仍可单独覆盖
+udp_max_flows     = 1024     # 每条规则的 UDP 流表上限（默认：1024）
+udp_flow_idle_secs = 60      # 空闲流过期时间，单位秒（默认：60）
+prefer_ipv6       = false    # 地址族偏好（默认：false，即优先 IPv4）
+
+# [[rule]] — 至少需要一条
+[[rule]]
+name          = "ssh-tunnel"          # 唯一名称，用于日志输出
+protocol      = "tcp"                 # "tcp" 或 "udp"
+listen_port   = 2222                  # 单端口  }  二选一
+# listen_ports = "8000-8009"          # 端口范围 }
+target        = "10.0.0.5:22"        # 单目标   }  二选一
+# targets = [...]                     # 多目标   }
+prefer_ipv6   = false                 # 每条规则的覆盖项（可选）
+udp_max_flows = 1024                  # UDP 规则的覆盖项（可选）
+udp_flow_idle_secs = 60              # UDP 规则的覆盖项（可选）
+```
+
+### 端口范围
+
+使用 `listen_ports` 配合 `"lo-hi"` 字符串，将连续监听端口窗口映射到目标端的同偏移窗口：
+
+```toml
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+```
+
+监听端口范围与目标端口范围的宽度必须相同。
+
+### 多目标故障转移
+
+使用 `targets` 列表形式实现按优先级排列的故障转移：
+
+```toml
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+```
+
+`priority` 值越小优先级越高。转发器会优先尝试优先级最高的健康目标；连接失败时按优先级顺序回退。
+
+### PROXY 协议
+
+在任意目标（单目标或 `targets = [...]` 列表内）设置 `proxy_protocol = "v1"` 或
+`"v2"`，可在上游连接建立前发送 PROXY 协议头，使后端获得原始客户端地址。
+
+## CLI 参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--config <PATH>` | （自动查找） | TOML 配置文件路径 |
+| `--check` | false | 仅验证配置并退出（0 = 合法，2 = 有误） |
+| `--log-level <LEVEL>` | 读取配置 | 覆盖日志级别 |
+| `--log-format <FMT>` | 读取配置 | 覆盖日志格式（`json` 或 `pretty`） |
+
+## 信号处理
+
+| 信号 | 行为 |
+| --- | --- |
+| `SIGTERM` / `SIGINT` | 优雅关闭 — 活跃连接在 `shutdown_drain_secs` 内排空后进程以 0 退出。 |
+| `SIGHUP` | 当前版本为空操作（配置热重载尚未支持）。 |
+
+## 可观测性
+
+`portunus-standalone` 默认将日志以 **JSON** 格式输出到 **stderr**
+（开发时可设置 `log_format = "pretty"` 以获得可读输出）。每条规则在启动时
+发出结构化事件，周期性报告器每隔 30 秒记录各规则的字节数和连接数统计。
+
+本二进制不内嵌 HTTP 服务、Prometheus 端点或 gRPC 流——这些能力属于
+`portunus-server`。请使用日志聚合工具（如 `journald`、sidecar 日志采集器）
+收集 JSON 日志。
+
+## 完整配置示例
+
+```toml
+[global]
+log_level = "debug"
+
+[defaults]
+udp_max_flows = 4096
+
+[[rule]]
+name        = "ssh-tunnel"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+
+[[rule]]
+name             = "game-udp"
+protocol         = "udp"
+listen_port      = 27015
+target           = "10.0.0.20:27015"
+udp_flow_idle_secs = 120
+```
+
+## 与 portunus-client 的差异
+
+| 功能 | `portunus-client` | `portunus-standalone` |
+| --- | --- | --- |
+| 控制面 | 连接 `portunus-server` 的 gRPC 流 | 无——仅 TOML |
+| 动态规则更新 | 是（服务端推送） | 否——需重启 |
+| RBAC / 多用户 | 是 | 否 |
+| 限速 / QoS | 是 | 否 |
+| Prometheus 指标 | 是（本地 HTTP） | 否 |
+| 审计日志 | 经由服务端 | 结构化日志输出到 stderr |
+| SNI 路由 | 是 | 否 |
+| TCP splice 快速路径（Linux） | 是 | 是（共享同一数据面代码） |
+| PROXY 协议输出 | 是 | 是 |
+
+## systemd 单元示例
+
+```ini
+[Unit]
+Description=Portunus standalone forwarder
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/portunus-standalone --config /etc/portunus/standalone.toml
+Restart=on-failure
+StandardOutput=journal
+StandardError=journal
+User=portunus
+ProtectSystem=strict
+ReadWritePaths=/etc/portunus
+
+[Install]
+WantedBy=multi-user.target
+```

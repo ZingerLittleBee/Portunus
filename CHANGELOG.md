@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-05-14
+
+Per-(user, client) monthly traffic quota + history aggregation, plus a
+new `portunus-standalone` binary for self-contained TCP/UDP forwarding.
+Operators can cap monthly bytes per (user, client) pair with bounded
+best-effort hard-kill enforcement on the data plane; the Web UI gains a
+Traffic tab with 1-minute + 1-hour rollup history on both UserDetail
+and ClientDetail.
+
+### Added
+
+- **`portunus-standalone` binary** — TOML-configured TCP/UDP forwarder
+  built on `portunus-forwarder`. Supports single-port, port-range, and
+  multi-target rules; PROXY protocol v1/v2 output; UDP flow table; and
+  all address-family (prefer-IPv6) options from the existing rule model.
+- **`--check` mode** — validates config and exits 0 (valid) or 2 (invalid)
+  without binding any ports. Suitable for CI pre-flight and deployment hooks.
+- **SIGHUP no-op** — signal is accepted and logged; config reload is
+  deferred to a future release.
+- **Periodic reporter** — logs per-rule byte + connection stats to stderr
+  every 30 seconds using `RuleStats::snapshot_basic`.
+- **Config lookup chain** — `--config` flag → `$PORTUNUS_STANDALONE_CONFIG`
+  env var → `./portunus.toml`.
+- **`portunus-forwarder` crate** — shared data-plane library extracted from
+  `portunus-client` so both `portunus-client` and `portunus-standalone` use
+  identical forwarding, resolver, rate-limit, and SNI code paths.
+- **Operator docs** — `docs/content/docs/operations/standalone.mdx`
+  (EN + 中文) covering config schema, signals, and systemd unit example.
+- **Makefile targets** — `make standalone` (build) and
+  `make standalone-check` (validate all `valid_*.toml` fixtures).
+- **Monthly traffic quota** — new `traffic_quotas` SQLite table; CRUD
+  HTTP endpoints `/v1/users/{u}/quotas/{c}` (PUT / PATCH / DELETE / GET)
+  and `/v1/users/{u}/quotas/{c}/status`. Billing-anniversary period
+  progression with Jan-31 calendar-month clamp and multi-month skip on
+  clock jump. Hard-kill enforcement on:
+  - TCP userspace bidirectional copy (`read → write_all → consume(n)`).
+  - Linux `splice(2)` fast path — per-iteration `consume(n)` after
+    `pipe → dst` drain, plus a cheap `is_exhausted` short-circuit at
+    the top of each splice loop.
+  - UDP per-datagram `consume(n)` after every successful `send_to`,
+    inbound and reply-pump directions, with `quota_allows` pre-check.
+- **Traffic history** — two-tier rollup: `traffic_samples_1m` (7-day
+  retention) + `traffic_samples_1h` (90-day retention). Query endpoints
+  `/v1/users/{u}/traffic` and `/v1/clients/{c}/traffic` with
+  `bucket=1m|1h` and auto-selection by time-window size.
+- **Web UI Traffic tab** — UserDetail + ClientDetail each gain a
+  Traffic surface with a stacked-area chart (recharts), per-period
+  progress column on UserQuotaTable, and an exhausted-state banner
+  with `Clear usage` shortcut for superadmins.
+- **Wire** — new `TrafficQuotaUpdate` server-only push variant on
+  `ServerMessage.payload` (field 4) with `SET` / `REMOVE` actions;
+  reconnect replay sends quotas BEFORE rules so the `QuotaHandle`
+  registry is populated before any rule activates. The client→server
+  direction is unchanged — the server aggregates per-(user, client)
+  traffic from the existing `RuleStats` stream.
+- **Prometheus** — 5 new collectors with `{user, client}` labels:
+  `portunus_traffic_quota_bytes_used`, `_bytes_limit`, `_exhausted`,
+  `_period_resets_total`, `_exhausted_total`.
+
+### Changed
+
+- `portunus-client` data-plane code now lives in `portunus-forwarder`;
+  `portunus-client` re-exports it. Wire protocol and behaviour are
+  byte-identical to v1.3.1.
+- Reconnect replay sequence is now: `Welcome` → `TrafficQuotaUpdate(s)`
+  → `RuleUpdate(s)` → `OwnerRateLimitUpdate(s)` (was `Welcome` →
+  `RuleUpdate` → `OwnerRateLimitUpdate`).
+- `RuleStatsCache::observe` now also feeds the `TrafficAggregator` so
+  every observed pair lands in the rollup tables.
+
 ## [1.3.1] — 2026-05-14
 
 Deployment + provisioning polish. Adds a Railway one-click hosting

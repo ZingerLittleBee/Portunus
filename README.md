@@ -185,6 +185,37 @@ The full step-by-step walkthrough — including key fingerprint pinning,
 revocation, and the SC-001 5-minute target — is in
 [`specs/001-tcp-forward-mvp/quickstart.md`](specs/001-tcp-forward-mvp/quickstart.md).
 
+## Standalone forwarder (v1.4+)
+
+`portunus-standalone` is a self-contained TCP/UDP forwarder driven by a
+TOML file — no `portunus-server` required. It uses the same data-plane
+code as `portunus-client`.
+
+```sh
+cargo build --release -p portunus-standalone
+```
+
+Minimal `portunus.toml`:
+
+```toml
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+Run or validate:
+
+```sh
+./target/release/portunus-standalone --config portunus.toml
+./target/release/portunus-standalone --check --config portunus.toml  # exits 0 if valid
+```
+
+See [`docs/content/docs/operations/standalone.mdx`](docs/content/docs/operations/standalone.mdx)
+for the full configuration reference, multi-target failover, PROXY
+protocol, and systemd unit example.
+
 ## Deploy
 
 Production scaffolding lives under [`deploy/`](deploy):

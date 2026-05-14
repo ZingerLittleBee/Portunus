@@ -16,6 +16,8 @@ use crate::store::Store;
 use crate::store::operator_store::SqliteOperatorStore;
 use crate::store::rule_store::SqliteRuleStore;
 use crate::store::token_store::SqliteTokenStore;
+use crate::traffic_quotas::aggregator::TrafficAggregator;
+use crate::traffic_quotas::cache::TrafficQuotaCache;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -84,6 +86,29 @@ pub struct AppState {
     /// cache, and GC-on-rule-removal sweep. REST handlers (T028) and
     /// the gRPC `OwnerRateLimitUpdate` push path (T029) read from this.
     pub owner_caps: OwnerCapService,
+    /// 013-traffic-quotas: in-memory mirror of `traffic_quotas` rows.
+    /// HTTP CRUD writes through it; the stats aggregator (B2) reads +
+    /// writes through it; the gRPC push task (C5) reads from it on
+    /// reconnect replay. Cheap to clone (Arc internal).
+    pub traffic_quotas: TrafficQuotaCache,
+    /// 013-traffic-quotas B2: per-(rule, owner) stats aggregator hooked
+    /// into the gRPC StatsReport path. Owns its own prev map for
+    /// delta computation and emits a `QuotaExhaustedEvent` on first
+    /// crossing (consumed by the gRPC push task spawned in serve.rs).
+    pub traffic_aggregator: TrafficAggregator,
+    /// 013-traffic-quotas B2 → C5: receiver paired with the aggregator's
+    /// exhaust sender. `serve.rs` takes ownership once at boot to spawn
+    /// the consumer that turns `QuotaExhaustedEvent` into a
+    /// `TrafficQuotaUpdate{SET}` push (exhausted=true) toward the
+    /// affected client. Wrapped in `Mutex<Option<…>>` so AppState
+    /// itself stays Clone.
+    pub traffic_quota_exhaust_rx: Arc<
+        std::sync::Mutex<
+            Option<
+                tokio::sync::mpsc::Receiver<crate::traffic_quotas::aggregator::QuotaExhaustedEvent>,
+            >,
+        >,
+    >,
 }
 
 impl AppState {
@@ -113,6 +138,33 @@ impl AppState {
         // missing envelope as "uncapped" anyway, and a corrupted cap row
         // would have failed the migration's CHECK constraint at write
         // time.
+        // 013-traffic-quotas: hydrate the quota cache from the store at
+        // boot. A failed load falls through to an empty cache (the
+        // server still functions; unauthorized clients just don't see
+        // quotas until the next successful CRUD write).
+        let traffic_quotas = match TrafficQuotaCache::load((*store).clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    event = "traffic_quota.cache_hydrate_failed",
+                    error = %e,
+                );
+                return Err(prometheus::Error::Msg(format!(
+                    "traffic_quota_cache_load: {e}"
+                )));
+            }
+        };
+        let (traffic_quota_exhaust_tx, traffic_quota_exhaust_rx_owned) = tokio::sync::mpsc::channel::<
+            crate::traffic_quotas::aggregator::QuotaExhaustedEvent,
+        >(64);
+        let traffic_aggregator = TrafficAggregator::with_metrics(
+            (*store).clone(),
+            traffic_quotas.clone(),
+            traffic_quota_exhaust_tx,
+            Arc::clone(&metrics),
+        );
+        let traffic_quota_exhaust_rx =
+            Arc::new(std::sync::Mutex::new(Some(traffic_quota_exhaust_rx_owned)));
         let owner_caps = match OwnerCapService::open(Arc::clone(&store)) {
             Ok(s) => s,
             Err(e) => {
@@ -150,6 +202,9 @@ impl AppState {
             store,
             rule_store,
             owner_caps,
+            traffic_quotas,
+            traffic_aggregator,
+            traffic_quota_exhaust_rx,
         })
     }
 

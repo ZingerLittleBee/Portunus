@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use portunus_core::{PortRange, RuleId};
 use portunus_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction,
-    PerPortStats as ProtoPerPortStats, PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction,
+    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction, Protocol, RuleAction,
     RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
     client_message, control_client::ControlClient, server_message,
 };
@@ -25,9 +24,9 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{error, info, warn};
 
 use crate::bundle::CredentialBundle;
-use crate::forwarder::stats::RuleStats;
-use crate::forwarder::{self, ClientRule, RuleStatusEvent};
 use crate::port_groups::PortGroupManager;
+use portunus_forwarder::forwarder::stats::RuleStats;
+use portunus_forwarder::forwarder::{self, ClientRule, RuleStatusEvent};
 
 const PROTOCOL_VERSION: &str = "1.0.0";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -206,12 +205,12 @@ pub async fn run_with_reconnect(
     // for the entire process lifetime and is shared across every
     // forwarder. Cache state survives reconnects (DNS is a
     // client-local concern, not bound to the control-plane stream).
-    let resolver = match crate::resolver::HickoryResolver::from_system(
-        &crate::resolver::ResolverConfig::default(),
+    let resolver = match portunus_forwarder::resolver::HickoryResolver::from_system(
+        &portunus_forwarder::resolver::ResolverConfig::default(),
     ) {
-        Ok(r) => Arc::new(crate::resolver::LiveResolver::new(
+        Ok(r) => Arc::new(portunus_forwarder::resolver::LiveResolver::new(
             Arc::new(r),
-            crate::resolver::ResolverConfig::default(),
+            portunus_forwarder::resolver::ResolverConfig::default(),
         )),
         Err(e) => {
             error!(event = "control.resolver_init_failed", error = %e);
@@ -225,10 +224,18 @@ pub async fn run_with_reconnect(
     // reconnects. The server re-pushes the current owner state on
     // reconnect (mirroring the rule-replay convention from v0.1.0)
     // so a stale entry would be overwritten on the next push.
-    let owner_rate_limit_scope =
-        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
+    let owner_rate_limit_scope = Arc::new(
+        portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new(),
+    );
     let rule_rate_limit_scope =
-        Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        Arc::new(portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+    // 013-traffic-quotas D2: per-(user, client) quota registry lives
+    // for the entire process lifetime. Reconnect replay (C5) re-pushes
+    // every quota row BEFORE any rule, so a stale entry would be
+    // overwritten on the next push and a removed quota survives only
+    // until the next reconnect.
+    let quota_scope =
+        Arc::new(portunus_forwarder::forwarder::quota::scope::QuotaScopeManager::new());
     // 011-rate-limiting-qos T032: per-owner stats registry parallels
     // the limiter registry. Aggregation across rules sharing the same
     // owner happens here — multiple rules call `get_or_create` for
@@ -237,8 +244,9 @@ pub async fn run_with_reconnect(
     // `StatsReport.owner_rate_limit_stats` (FR-014). Lives for the
     // process lifetime so cumulative counters persist across
     // reconnects.
-    let owner_rate_limit_stats_registry =
-        Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new());
+    let owner_rate_limit_stats_registry = Arc::new(
+        portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new(),
+    );
 
     let mut attempt: u32 = 0;
     let max_delay = Duration::from_secs(cfg.max_delay_secs);
@@ -255,6 +263,7 @@ pub async fn run_with_reconnect(
                     rule_rate_limit_scope: Arc::clone(&rule_rate_limit_scope),
                     owner_rate_limit_scope: Arc::clone(&owner_rate_limit_scope),
                     owner_rate_limit_stats: Arc::clone(&owner_rate_limit_stats_registry),
+                    quota_scope: Arc::clone(&quota_scope),
                     drain_timeout: cfg.drain_timeout,
                     stats_report_interval: cfg.stats_report_interval,
                 };
@@ -308,29 +317,38 @@ struct RuleSlot {
     /// failover counter. `Some` for multi-target rules, `None` for
     /// single-target — `send_stats_report` keys off this to decide
     /// whether to populate `per_target[]` and `target_failovers_total`.
-    multi_target_obs: Option<Arc<crate::forwarder::MultiTargetObservability>>,
+    multi_target_obs: Option<Arc<portunus_forwarder::forwarder::MultiTargetObservability>>,
     /// 007-multi-target-failover (T038): cached targets list so the
     /// stats reporter can emit per-target host/port/priority alongside
     /// the per-target HealthState snapshot.
-    targets_view: Vec<crate::forwarder::MultiTarget>,
+    targets_view: Vec<portunus_forwarder::forwarder::MultiTarget>,
     /// 011-rate-limiting-qos (T022): per-rule rate-limit accumulator.
     /// `Some` for capped rules; the periodic stats reporter calls
     /// `drain_to_proto()` and stamps the result onto
     /// `RuleStats.rate_limit`. `None` for uncapped rules — the wire
     /// keeps proto3 default-stripping semantics so v0.10 readers see
     /// an unchanged byte stream (T005).
-    rate_limit_stats: Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    rate_limit_stats:
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     /// 011-rate-limiting-qos: dynamic per-rule limiter handle. The
     /// stats drainer snapshots the current limiter so hot-reload swaps
     /// are reflected in later reports.
-    rate_limit_limiter: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+    rate_limit_limiter:
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
 }
 
 struct PumpContext {
-    resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
-    rule_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::RateLimitScopeManager>,
-    owner_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
-    owner_rate_limit_stats: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
+    resolver: Arc<
+        portunus_forwarder::resolver::LiveResolver<portunus_forwarder::resolver::HickoryResolver>,
+    >,
+    rule_rate_limit_scope:
+        Arc<portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager>,
+    owner_rate_limit_scope:
+        Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
+    owner_rate_limit_stats:
+        Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
+    /// 013-traffic-quotas D2: per-(user, client) quota registry.
+    quota_scope: Arc<portunus_forwarder::forwarder::quota::scope::QuotaScopeManager>,
     drain_timeout: Duration,
     stats_report_interval: Duration,
 }
@@ -363,6 +381,7 @@ async fn pump(mut session: LiveSession, context: PumpContext, cancel: &Cancellat
                         &context.rule_rate_limit_scope,
                         &context.owner_rate_limit_scope,
                         &context.owner_rate_limit_stats,
+                        &context.quota_scope,
                         &status_tx,
                         context.drain_timeout,
                         udp_max_flows,
@@ -413,10 +432,17 @@ fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
     port_groups: &mut PortGroupManager,
-    resolver: Arc<crate::resolver::LiveResolver<crate::resolver::HickoryResolver>>,
-    rule_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::RateLimitScopeManager>,
-    owner_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
-    owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
+    resolver: Arc<
+        portunus_forwarder::resolver::LiveResolver<portunus_forwarder::resolver::HickoryResolver>,
+    >,
+    rule_rate_limit_scope: &Arc<
+        portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager,
+    >,
+    owner_rate_limit_scope: &Arc<
+        portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+    >,
+    owner_rate_limit_stats: &portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
+    quota_scope: &portunus_forwarder::forwarder::quota::scope::QuotaScopeManager,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
     udp_max_flows: u32,
@@ -433,6 +459,15 @@ fn handle_server_message(
         // any per-rule cap.
         Some(server_message::Payload::OwnerRateLimitUpdate(update)) => {
             apply_owner_rate_limit_update(update, owner_rate_limit_scope);
+            return;
+        }
+        // 013-traffic-quotas D3: per-(user, client) quota state push.
+        // SET installs or hot-swaps the QuotaHandle's atomic budget;
+        // REMOVE drops the registry entry so the data-plane hooks
+        // short-circuit the consume branch. Reconnect replay (C5)
+        // delivers these BEFORE the first RuleUpdate.
+        Some(server_message::Payload::TrafficQuotaUpdate(update)) => {
+            apply_traffic_quota_update(update, quota_scope);
             return;
         }
         // Welcome is consumed before pump; any other variant is ignored.
@@ -468,7 +503,7 @@ fn handle_server_message(
                 slot.push_request_id = request_id;
                 slot.rate_limit_limiter = incoming_rate_limit.as_ref().map(|_| {
                     Arc::new(
-                        crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
+                        portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
                             rule_id,
                             Arc::clone(rule_rate_limit_scope),
                         ),
@@ -476,7 +511,7 @@ fn handle_server_message(
                 });
                 if slot.rate_limit_stats.is_none() && incoming_rate_limit.is_some() {
                     slot.rate_limit_stats = Some(Arc::new(
-                        crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                        portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
                     ));
                 }
                 let _ = status_tx.try_send(RuleStatusEvent::Activated { rule_id });
@@ -556,10 +591,11 @@ fn handle_server_message(
             // 004-udp-forward T031: decode the wire `protocol` field.
             // Unknown enum integers (proto3 forward-compat) fall back
             // to TCP — same shape v0.3 clients implicitly assumed.
-            let protocol = Protocol::try_from(rule.protocol).unwrap_or(Protocol::Tcp);
-            let protocol = match protocol {
-                Protocol::Udp => Protocol::Udp,
-                _ => Protocol::Tcp,
+            // Convert proto Protocol → core Protocol (T1.3 impl).
+            let proto_protocol = Protocol::try_from(rule.protocol).unwrap_or(Protocol::Tcp);
+            let protocol: portunus_core::Protocol = match proto_protocol {
+                Protocol::Udp => portunus_core::Protocol::Udp,
+                _ => portunus_core::Protocol::Tcp,
             };
             // 007-multi-target-failover T022: when the wire `Rule`
             // carries a non-empty `targets` list, pre-parse each
@@ -570,7 +606,7 @@ fn handle_server_message(
             let multi_targets = if rule.targets.is_empty() {
                 Vec::new()
             } else {
-                let mut out: Vec<crate::forwarder::MultiTarget> =
+                let mut out: Vec<portunus_forwarder::forwarder::MultiTarget> =
                     Vec::with_capacity(rule.targets.len());
                 let mut parse_err: Option<String> = None;
                 for (idx, t) in rule.targets.iter().enumerate() {
@@ -583,7 +619,7 @@ fn handle_server_message(
                                     break;
                                 }
                             };
-                            out.push(crate::forwarder::MultiTarget {
+                            out.push(portunus_forwarder::forwarder::MultiTarget {
                                 spec: portunus_core::RuleTarget {
                                     host: t.host.clone(),
                                     port,
@@ -641,16 +677,18 @@ fn handle_server_message(
                 None
             } else {
                 let states: std::sync::Arc<
-                    Vec<tokio::sync::Mutex<crate::forwarder::failover::HealthState>>,
+                    Vec<tokio::sync::Mutex<portunus_forwarder::forwarder::failover::HealthState>>,
                 > = std::sync::Arc::new(
                     (0..multi_targets.len())
                         .map(|_| {
-                            tokio::sync::Mutex::new(crate::forwarder::failover::HealthState::new())
+                            tokio::sync::Mutex::new(
+                                portunus_forwarder::forwarder::failover::HealthState::new(),
+                            )
                         })
                         .collect(),
                 );
                 Some(std::sync::Arc::new(
-                    crate::forwarder::MultiTargetObservability {
+                    portunus_forwarder::forwarder::MultiTargetObservability {
                         target_failovers_total: std::sync::Arc::new(
                             std::sync::atomic::AtomicU64::new(0),
                         ),
@@ -669,7 +707,7 @@ fn handle_server_message(
             rule_rate_limit_scope.install(rule_id, rate_limit_envelope.as_ref());
             let rate_limit_limiter = rate_limit_envelope.as_ref().map(|_| {
                 Arc::new(
-                    crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
+                    portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle::new(
                         rule_id,
                         Arc::clone(rule_rate_limit_scope),
                     ),
@@ -677,7 +715,7 @@ fn handle_server_message(
             });
             let rate_limit_stats = rate_limit_envelope.as_ref().map(|_| {
                 std::sync::Arc::new(
-                    crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
+                    portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator::new(),
                 )
             });
             // 011-rate-limiting-qos T031: build this rule's dynamic
@@ -689,8 +727,10 @@ fn handle_server_message(
             let owner_id_str = rule.owner_id.as_ref().filter(|s| !s.is_empty()).cloned();
             let owner_rate_limit = owner_id_str.as_ref().map(|owner_id| {
                 Arc::new(
-                    crate::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(
-                        crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                    portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(
+                        portunus_forwarder::forwarder::rate_limit::scope::OwnerId::new(
+                            owner_id.clone(),
+                        ),
                         Arc::clone(owner_rate_limit_scope),
                     ),
                 )
@@ -703,9 +743,22 @@ fn handle_server_message(
             // reject events without rebuilding the rule.
             let rule_owner_rate_limit_stats = owner_id_str.as_ref().map(|owner_id| {
                 owner_rate_limit_stats.get_or_create(
-                    &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                    &portunus_forwarder::forwarder::rate_limit::scope::OwnerId::new(
+                        owner_id.clone(),
+                    ),
                 )
             });
+            // 013-traffic-quotas E2: resolve the per-(user, client)
+            // quota handle from the process-lifetime registry. None
+            // when the rule is unowned OR no quota has been installed
+            // for this owner yet — copy_uncapped then stays on the
+            // byte-identical splice / userspace fast path. Reconnect
+            // replay (C5) re-installs every quota BEFORE any rule, so
+            // an owner_id present here either has a quota or genuinely
+            // has none on the server.
+            let rule_quota = owner_id_str
+                .as_ref()
+                .and_then(|uid| quota_scope.lookup(uid));
             // Hold a clone of the rate-limit handles for the RuleSlot
             // (the periodic stats reporter and SNI/legacy paths both
             // need to keep observing them after `client_rule` moves
@@ -745,6 +798,7 @@ fn handle_server_message(
                 // the v0.10 forwarding path byte-for-byte.
                 owner_rate_limit,
                 owner_rate_limit_stats: rule_owner_rate_limit_stats,
+                quota: rule_quota,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -755,7 +809,7 @@ fn handle_server_message(
             // existing listener). All other shapes (UDP, port-range,
             // and pure-legacy single-port) keep the v0.7 byte-stable
             // per-rule spawn path.
-            let routes_via_sni = matches!(protocol, Protocol::Tcp)
+            let routes_via_sni = matches!(protocol, portunus_core::Protocol::Tcp)
                 && listen_end == listen_port
                 && (client_rule.sni_pattern.is_some() || port_groups.is_sni_port(listen_port));
             if routes_via_sni {
@@ -884,11 +938,64 @@ fn handle_server_message(
 /// (R-008); a fresh `(client, owner)` falls through to a from-envelope
 /// build. REMOVE drops the entry idempotently so the layered cascade
 /// short-circuits the owner branch.
+/// 013-traffic-quotas D3: apply a single `TrafficQuotaUpdate` server
+/// push. SET threads the wire `TrafficQuotaState` into
+/// `QuotaScopeManager::install`, which atomically `replace()`s any
+/// existing entry's `QuotaHandle` state in-place — in-flight
+/// forwarders observe the new budget via the shared `Arc`. REMOVE
+/// drops the registry entry idempotently.
+fn apply_traffic_quota_update(
+    update: portunus_proto::v1::TrafficQuotaUpdate,
+    quota_scope: &portunus_forwarder::forwarder::quota::scope::QuotaScopeManager,
+) {
+    use portunus_proto::v1::TrafficQuotaAction;
+    let action =
+        TrafficQuotaAction::try_from(update.action).unwrap_or(TrafficQuotaAction::Unspecified);
+    match action {
+        TrafficQuotaAction::Set => {
+            let Some(state) = update.state else {
+                warn!(
+                    event = "control.traffic_quota_update_set_without_state",
+                    user = %update.user_id,
+                    client = %update.client_name,
+                );
+                return;
+            };
+            let qs = portunus_forwarder::forwarder::quota::QuotaState {
+                monthly_bytes: state.monthly_bytes,
+                budget_remaining_bytes: state.budget_remaining_bytes,
+                exhausted: state.exhausted,
+            };
+            quota_scope.install(&update.user_id, &update.client_name, qs);
+            info!(
+                event = "control.traffic_quota_set",
+                user = %update.user_id,
+                client = %update.client_name,
+                remaining = state.budget_remaining_bytes,
+                exhausted = state.exhausted,
+            );
+        }
+        TrafficQuotaAction::Remove => {
+            quota_scope.remove(&update.user_id);
+            info!(
+                event = "control.traffic_quota_remove",
+                user = %update.user_id,
+                client = %update.client_name,
+            );
+        }
+        TrafficQuotaAction::Unspecified => warn!(
+            event = "control.traffic_quota_unspecified_action",
+            user = %update.user_id,
+            client = %update.client_name,
+        ),
+    }
+}
+
 fn apply_owner_rate_limit_update(
     update: portunus_proto::v1::OwnerRateLimitUpdate,
-    owner_rate_limit_scope: &crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+    owner_rate_limit_scope: &portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
 ) {
-    use crate::forwarder::rate_limit::scope::OwnerId;
+    use portunus_forwarder::forwarder::rate_limit::scope::OwnerId;
     let owner_id = OwnerId::new(update.owner_id.clone());
     let action =
         OwnerRateLimitAction::try_from(update.action).unwrap_or(OwnerRateLimitAction::Unspecified);
@@ -997,169 +1104,102 @@ async fn relay_status(
     }
 }
 
-/// Snapshot every active rule's counters and emit a single `StatsReport` on
-/// the bidi stream. Sends only when at least one rule exists; an empty report
-/// would be wasteful chatter.
-/// 007-multi-target-failover T033: build the `per_target[]` array for
-/// a multi-target rule. Single-target rules return an empty Vec
-/// (invariant I-3 — single-target rules MUST emit `per_target: []`
-/// regardless of `?per_target=true`).
-fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
-    let Some(obs) = slot.multi_target_obs.as_ref() else {
-        return Vec::new();
+/// Assemble a complete wire-neutral [`portunus_forwarder::RuleStatsSnapshot`]
+/// from a [`RuleSlot`]. Encapsulates the prior inline construction at the
+/// `send_stats_report` call site and centralises the per-target / rate-limit
+/// branches so the standalone reporter can reuse the same snapshot types.
+fn build_rule_stats_snapshot(
+    rule_id: portunus_core::RuleId,
+    slot: &RuleSlot,
+) -> portunus_forwarder::RuleStatsSnapshot {
+    let basic = slot.stats.snapshot_basic();
+    // is_range gates per_port (wire byte-stability with v0.1.0 — single-port
+    // rules emit empty per_port).
+    let per_port = if slot.is_range {
+        basic.per_port
+    } else {
+        Vec::new()
     };
-    let mut out = Vec::with_capacity(slot.targets_view.len());
-    for (idx, t) in slot.targets_view.iter().enumerate() {
-        // try_lock — the mutator (failover_path / probe) holds
-        // the lock briefly. On contention we drop the snapshot for
-        // this target this tick; next tick will pick it up. This
-        // keeps the stats report off the data-plane critical path.
-        let Ok(state) = obs.states[idx].try_lock() else {
-            continue;
-        };
-        let last_failure_at_unix_ms = state
-            .last_failure_at()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let last_success_at_unix_ms = state
-            .last_success_at()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let (bytes_in, bytes_out) = state.snapshot_bytes();
-        let connections_accepted = state.snapshot_connections();
-        out.push(ProtoPerTargetStats {
-            index: u32::try_from(idx).unwrap_or(u32::MAX),
-            host: t.spec.host.clone(),
-            port: u32::from(t.spec.port),
-            priority: t.spec.priority,
-            health: state.health().as_wire(),
-            consecutive_failures: state.consecutive_failures(),
-            last_failure_at_unix_ms,
-            last_success_at_unix_ms,
-            bytes_in,
-            bytes_out,
-            connections_accepted,
-        });
+
+    let (target_failovers_total, per_target) = match slot.multi_target_obs.as_ref() {
+        Some(obs) => obs.snapshot_per_target(&slot.targets_view),
+        None => (0, Vec::new()),
+    };
+
+    let rate_limit = slot.rate_limit_stats.as_ref().and_then(|acc| {
+        if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
+            acc.set_active_connections(limiter.active_connections());
+        }
+        acc.drain()
+    });
+
+    portunus_forwarder::RuleStatsSnapshot {
+        rule_id,
+        bytes_in: basic.bytes_in,
+        bytes_out: basic.bytes_out,
+        active_connections: basic.active_connections,
+        per_port,
+        dns_failures: basic.dns_failures,
+        datagrams_in: basic.datagrams_in,
+        datagrams_out: basic.datagrams_out,
+        active_flows: basic.active_flows,
+        flows_dropped_overflow: basic.flows_dropped_overflow,
+        target_failovers_total,
+        per_target,
+        sni_route_exact_total: basic.sni_route_exact_total,
+        sni_route_wildcard_total: basic.sni_route_wildcard_total,
+        sni_route_fallback_total: basic.sni_route_fallback_total,
+        rate_limit,
     }
-    out
 }
 
 async fn send_stats_report(
     rules: &HashMap<RuleId, RuleSlot>,
     port_groups: &PortGroupManager,
-    owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
+    owner_rate_limit_stats: &portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
-    use std::sync::atomic::Ordering;
     if rules.is_empty() && !port_groups.has_any_listener() {
         return;
     }
     let stats: Vec<ProtoRuleStats> = rules
         .iter()
         .map(|(rule_id, slot)| {
-            let (bin, bout, active) = slot.stats.snapshot();
-            // Per-port detail (002-port-range-forward, T042). Range
-            // rules emit one slot per listen port; single-port rules
-            // emit empty for wire-shape stability with v0.1.0.
-            let per_port = if slot.is_range {
-                slot.stats
-                    .snapshot_per_port_with_udp()
-                    .into_iter()
-                    .map(|(port, bin, bout, active, dgin, dgout)| ProtoPerPortStats {
-                        listen_port: u32::from(port),
-                        bytes_in: bin,
-                        bytes_out: bout,
-                        active_connections: active,
-                        datagrams_in: dgin,
-                        datagrams_out: dgout,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            ProtoRuleStats {
-                rule_id: rule_id.0,
-                bytes_in: bin,
-                bytes_out: bout,
-                active_connections: active,
-                per_port,
-                // 003-domain-name-forward T048: monotonic per-rule
-                // DNS-failure counter (FR-008). For IP-target rules
-                // this is always 0 (resolver layer is short-circuited);
-                // proto field 6 with default-zero stays absent on the
-                // wire (verified by `dns_wire_compat::v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero`).
-                dns_failures: slot.stats.snapshot_dns_failures(),
-                // 004-udp-forward T032: UDP counters. For TCP rules
-                // these all stay at the proto3 default-zero (the UDP
-                // helpers are never called) so
-                // `udp_wire_compat::tcp_rule_stats_byte_compatible_when_udp_fields_zero`
-                // (T005) holds for legacy traffic.
-                datagrams_in: slot.stats.snapshot_datagrams_in(),
-                datagrams_out: slot.stats.snapshot_datagrams_out(),
-                active_flows: slot.stats.snapshot_active_flows(),
-                flows_dropped_overflow: slot.stats.snapshot_flows_dropped_overflow(),
-                // 007-multi-target-failover T033: multi-target rules
-                // emit per-target snapshots from the shared
-                // observability handle. Single-target rules emit 0 /
-                // empty per the wire-compat invariant I-3.
-                target_failovers_total: slot
-                    .multi_target_obs
-                    .as_ref()
-                    .map_or(0, |o| o.target_failovers_total.load(Ordering::Relaxed)),
-                per_target: build_per_target(slot),
-                // 009-tls-sni-routing T077: per-rule SNI hit counters.
-                // Legacy plain-TCP rules and UDP rules see all three at
-                // 0 (the listener never bumps them) → proto3 default-
-                // stripping keeps the wire shape byte-identical with
-                // v0.8 (verified by
-                // sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
-                sni_route_exact_total: slot.stats.sni_route_exact_total.load(Ordering::Relaxed),
-                sni_route_wildcard_total: slot
-                    .stats
-                    .sni_route_wildcard_total
-                    .load(Ordering::Relaxed),
-                sni_route_fallback_total: slot
-                    .stats
-                    .sni_route_fallback_total
-                    .load(Ordering::Relaxed),
-                // 011-rate-limiting-qos T019/T022: drain the per-rule
-                // accumulator into the wire field. Returns `None` for
-                // uncapped rules (or capped rules whose counters are
-                // all still zero) so v0.10 wire shape stays byte-
-                // identical. Capped rules with any reject / throttle
-                // event get a populated payload; the gauge is mirrored
-                // from the limiter's source-of-truth atomic.
-                rate_limit: slot.rate_limit_stats.as_ref().and_then(|acc| {
-                    if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
-                        acc.set_active_connections(limiter.active_connections());
-                    }
-                    acc.drain_to_proto()
-                }),
-            }
+            crate::wire::rule_stats_to_proto(build_rule_stats_snapshot(*rule_id, slot))
         })
         .collect();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
-    let sni_listener_stats = port_groups.snapshot_listener_stats();
+    // 009-tls-sni-routing T078: per-listener SNI counters (miss,
+    // parse_failures) snapshotted from the manager. Empty when no SNI
+    // listener has bound yet — proto3 default-stripping keeps wire
+    // byte-stable with v0.8.
+    let sni_listener_stats: Vec<portunus_proto::v1::SniListenerStats> = port_groups
+        .snapshot_listener_stats()
+        .into_iter()
+        .map(crate::wire::sni_listener_stats_to_proto)
+        .collect();
+    // 011-rate-limiting-qos T032: drain per-owner counters from the
+    // shared registry. Owners whose accumulators are empty (no event
+    // ever fired and gauge zero) are skipped by `drain()`, so a
+    // deployment with no owner caps emits an empty Vec → proto3
+    // default-stripping keeps the wire byte-identical with v0.10
+    // (validated by
+    // rate_limit_wire_compat::t005_v010_stats_report_byte_identical_when_owner_stats_empty).
+    let owner_rate_limit_stats: Vec<portunus_proto::v1::OwnerRateLimitStats> =
+        owner_rate_limit_stats
+            .drain()
+            .into_iter()
+            .map(crate::wire::owner_rate_limit_stats_to_proto)
+            .collect();
     let msg = ClientMessage {
         payload: Some(client_message::Payload::StatsReport(StatsReport {
             sent_at_unix_ms: now_ms,
             stats,
-            // 009-tls-sni-routing T078: per-listener SNI counters
-            // (miss, parse_failures) snapshotted from the manager.
-            // Empty when no SNI listener has bound yet — proto3
-            // default-stripping keeps wire byte-stable with v0.8.
             sni_listener_stats,
-            // 011-rate-limiting-qos T032: drain per-owner counters
-            // from the shared registry. Owners whose accumulators are
-            // empty (no event ever fired and gauge zero) are skipped
-            // by `drain_to_proto`, so a deployment with no owner caps
-            // emits an empty Vec → proto3 default-stripping keeps the
-            // wire byte-identical with v0.10 (validated by
-            // rate_limit_wire_compat::t005_v010_stats_report_byte_identical_when_owner_stats_empty).
-            owner_rate_limit_stats: owner_rate_limit_stats.drain_to_proto(),
+            owner_rate_limit_stats,
         })),
     };
     if let Err(e) = outbound.send(msg).await {
@@ -1173,7 +1213,7 @@ mod tests {
     //! the `OwnerRateLimitUpdate` server-push variant.
 
     use super::*;
-    use crate::forwarder::rate_limit::scope::{OwnerId, OwnerRateLimitScopeManager};
+    use portunus_forwarder::forwarder::rate_limit::scope::{OwnerId, OwnerRateLimitScopeManager};
     use portunus_proto::v1::{OwnerRateLimitAction, OwnerRateLimitUpdate, RateLimit};
 
     fn full_envelope() -> RateLimit {
@@ -1326,5 +1366,127 @@ mod tests {
             &mgr,
         );
         assert!(mgr.is_empty());
+    }
+
+    // 013-traffic-quotas D3 tests --------------------------------------------
+
+    use portunus_forwarder::forwarder::quota::scope::QuotaScopeManager;
+    use portunus_proto::v1::{TrafficQuotaAction, TrafficQuotaState, TrafficQuotaUpdate};
+
+    fn quota_state(monthly: i64, remaining: i64, exhausted: bool) -> TrafficQuotaState {
+        TrafficQuotaState {
+            monthly_bytes: monthly,
+            budget_remaining_bytes: remaining,
+            period_started_at_unix_sec: 0,
+            period_ends_at_unix_sec: 0,
+            exhausted,
+        }
+    }
+
+    #[test]
+    fn d3_set_installs_quota_handle() {
+        let mgr = QuotaScopeManager::new();
+        let update = TrafficQuotaUpdate {
+            request_id: "r1".into(),
+            user_id: "alice".into(),
+            client_name: "edge-01".into(),
+            action: TrafficQuotaAction::Set as i32,
+            state: Some(quota_state(1_000, 750, false)),
+        };
+        apply_traffic_quota_update(update, &mgr);
+        let h = mgr.lookup("alice").expect("installed");
+        assert_eq!(h.remaining(), 750);
+        assert!(!h.is_exhausted());
+    }
+
+    #[test]
+    fn d3_set_hot_swaps_handle_in_place() {
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: Some(quota_state(1_000, 100, false)),
+            },
+            &mgr,
+        );
+        let h1 = mgr.lookup("alice").unwrap();
+
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r2".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: Some(quota_state(10_000, 10_000, false)),
+            },
+            &mgr,
+        );
+        let h2 = mgr.lookup("alice").unwrap();
+        assert!(Arc::ptr_eq(&h1, &h2));
+        assert_eq!(h1.remaining(), 10_000);
+    }
+
+    #[test]
+    fn d3_remove_drops_handle() {
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: Some(quota_state(1_000, 750, false)),
+            },
+            &mgr,
+        );
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r2".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Remove as i32,
+                state: None,
+            },
+            &mgr,
+        );
+        assert!(mgr.lookup("alice").is_none());
+    }
+
+    #[test]
+    fn d3_set_without_state_is_warning_only() {
+        // SET payload that lost its `state` field on the wire must not
+        // panic — the contract says the server always carries state for
+        // SET, but a malformed push must degrade safely.
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: None,
+            },
+            &mgr,
+        );
+        assert!(mgr.lookup("alice").is_none());
+    }
+
+    #[test]
+    fn d3_unspecified_action_is_ignored() {
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Unspecified as i32,
+                state: Some(quota_state(1_000, 750, false)),
+            },
+            &mgr,
+        );
+        assert!(mgr.lookup("alice").is_none());
     }
 }

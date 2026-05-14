@@ -15,9 +15,10 @@ name = "portunus-client"
 path = "src/main.rs"
 
 [dependencies]
-portunus-core = { workspace = true }
-portunus-auth = { workspace = true }
-portunus-proto = { workspace = true }
+portunus-core      = { workspace = true }
+portunus-auth      = { workspace = true }
+portunus-proto     = { workspace = true }
+portunus-forwarder = { workspace = true }
 
 # UDP forwarding (v0.4.0) uses `tokio::net::UdpSocket` from the existing `net` feature — no new dep.
 tokio = { workspace = true }
@@ -37,39 +38,15 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 tokio-stream = { workspace = true }
-nix = { workspace = true }
-
-# Async DNS resolver (system-resolv.conf, no DoT/DoH per v0.3.0 OOS).
-hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }
 # `async fn` in trait still uses async-trait under the hood for trait
 # objects (the resolver layer holds `Arc<R>` generically but tests use
 # `dyn Resolve` indirectly through the trait, so we keep async-trait
 # for forward-compat with the US2 single-flight wait machinery).
 async-trait = "0.1"
+# Removed in v1.4.0: nix / hickory-resolver
+# (data-plane uses moved to portunus-forwarder)
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 assert_cmd = { workspace = true }
-criterion = { workspace = true }
-
-[[bench]]
-name = "data_plane"
-harness = false
-
-[[bench]]
-name = "range_install"
-harness = false
-
-[[bench]]
-name = "dns_resolver"
-harness = false
-
-[[bench]]
-name = "udp_data_plane"
-harness = false
-
-# 009-tls-sni-routing T005 (placeholder); T087/T088 land the real benches.
-[[bench]]
-name = "sni_route"
-harness = false

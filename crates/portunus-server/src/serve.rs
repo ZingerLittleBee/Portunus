@@ -298,11 +298,86 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         }
     });
 
+    // 013-traffic-quotas: hourly rollup + retention pruning. Fire-and-
+    // forget — `run_forever` is an infinite loop with a sleep; the
+    // shutdown token cancels the surrounding `select` so the task
+    // returns cleanly when the server drains.
+    let rollup_store: crate::store::Store = (*store).clone();
+    let rollup_shutdown = shutdown.token();
+    let rollup_task = tokio::spawn(async move {
+        tokio::select! {
+            () = crate::traffic_quotas::rollup::run_forever(rollup_store) => {}
+            () = rollup_shutdown.cancelled() => {}
+        }
+    });
+
+    // 013-traffic-quotas C4: per-minute period rollover tick. Same
+    // shutdown semantics as rollup_task.
+    let rollover_state = Arc::clone(&state);
+    let rollover_shutdown = shutdown.token();
+    let rollover_task = tokio::spawn(async move {
+        tokio::select! {
+            () = crate::traffic_quotas::rollover::run_forever(rollover_state) => {}
+            () = rollover_shutdown.cancelled() => {}
+        }
+    });
+
+    // 013-traffic-quotas B2 → C5: consume aggregator exhaust events
+    // and push `TrafficQuotaUpdate{SET}` (exhausted=true) toward the
+    // affected client. Pulling the receiver here ties exhaust delivery
+    // to the connected session via `state.clients.handles()`.
+    let exhaust_rx = state
+        .traffic_quota_exhaust_rx
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    let exhaust_state = Arc::clone(&state);
+    let exhaust_shutdown = shutdown.token();
+    let exhaust_task = tokio::spawn(async move {
+        let Some(mut rx) = exhaust_rx else {
+            return;
+        };
+        loop {
+            tokio::select! {
+                () = exhaust_shutdown.cancelled() => break,
+                evt = rx.recv() => {
+                    let Some(evt) = evt else { break };
+                    if let Some(row) = exhaust_state
+                        .traffic_quotas
+                        .get(&evt.user_id, &evt.client_name)
+                        && let Ok(client) = portunus_core::ClientName::new(evt.client_name.clone())
+                        && let Some((outbound, _waiters)) =
+                            exhaust_state.clients.handles(&client).await
+                    {
+                        let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
+                            &row,
+                            format!("quota-exhaust-{}", ulid::Ulid::new()),
+                        );
+                        if outbound.send(Ok(msg)).await.is_err() {
+                            tracing::warn!(
+                                event = "traffic_quota.exhaust_push_failed",
+                                user = %evt.user_id,
+                                client = %evt.client_name,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Wait for shutdown signal, then drain.
     let _ = signal_task.await;
     info!(event = "server.draining");
     clients.shutdown();
-    let _ = tokio::join!(grpc_task, http_task, metrics_task);
+    let _ = tokio::join!(
+        grpc_task,
+        http_task,
+        metrics_task,
+        rollup_task,
+        rollover_task,
+        exhaust_task,
+    );
     info!(event = "server.stopped");
     Ok(())
 }

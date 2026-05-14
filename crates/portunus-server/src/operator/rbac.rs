@@ -28,8 +28,8 @@ pub struct PushRequest<'a> {
     pub protocol: PushProtocol,
 }
 
-/// Mirror of `portunus_server::rules::Protocol` projected onto the
-/// rbac layer's bitflags. We translate at the call site.
+/// Mirror of `portunus_core::Protocol` projected onto the rbac
+/// layer's bitflags. We translate at the call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushProtocol {
     Tcp,

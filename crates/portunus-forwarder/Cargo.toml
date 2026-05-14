@@ -1,0 +1,59 @@
+[package]
+name = "portunus-forwarder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portunus data-plane library — TCP/UDP forwarding shared by portunus-client and portunus-standalone."
+
+[lints]
+workspace = true
+
+[dependencies]
+portunus-core = { workspace = true }
+portunus-auth = { workspace = true }
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+tokio-rustls = { workspace = true }
+tokio-stream = { workspace = true }
+rustls       = { workspace = true }
+nix          = { workspace = true }
+tracing      = { workspace = true }
+thiserror    = { workspace = true }
+rand         = { workspace = true }
+serde        = { workspace = true }
+
+# Async DNS resolver (system-resolv.conf, no DoT/DoH per v0.3.0 OOS).
+hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }
+# `async fn` in trait still uses async-trait under the hood for trait
+# objects (the resolver layer holds `Arc<R>` generically but tests use
+# `dyn Resolve` indirectly through the trait, so we keep async-trait
+# for forward-compat with the US2 single-flight wait machinery).
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile           = { workspace = true }
+tokio-test         = { workspace = true }
+criterion          = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "data_plane"
+harness = false
+
+[[bench]]
+name = "dns_resolver"
+harness = false
+
+[[bench]]
+name = "range_install"
+harness = false
+
+[[bench]]
+name = "sni_route"
+harness = false
+
+[[bench]]
+name = "udp_data_plane"
+harness = false

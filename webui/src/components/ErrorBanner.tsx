@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
 /// Single global banner that surfaces TanStack Query failures so they
@@ -32,19 +34,23 @@ export function ErrorBanner() {
   if (!error || dismissed) return null;
 
   return (
-    <div className="flex items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm">
-      <AlertTriangle className="h-4 w-4 shrink-0" />
-      <span className="flex-1 truncate">
-        {t("errorBanner.label")}: {error}
-      </span>
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={t("errorBanner.dismiss")}
-        onClick={() => setDismissed(true)}
-      >
-        <X className="h-4 w-4" />
-      </Button>
+    <div className="px-4 pt-4">
+      <Alert variant="destructive" className="flex items-start gap-3 pr-2">
+        <AlertTriangle className="h-4 w-4" />
+        <div className="min-w-0 flex-1">
+          <AlertTitle>{t("errorBanner.label")}</AlertTitle>
+          <AlertDescription className="truncate">{error}</AlertDescription>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="-mt-1 -mr-1 size-7"
+          aria-label={t("errorBanner.dismiss")}
+          onClick={() => setDismissed(true)}
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </Alert>
     </div>
   );
 }

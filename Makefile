@@ -212,3 +212,14 @@ test-csrf:  ## Run just the CSRF unit tests (fast)
 # Does NOT touch target/ — use `cargo clean` for that.
 clean:  ## Remove $(DATA_DIR) (forces re-bootstrap on next run)
 	rm -rf $(DATA_DIR)
+
+## --- standalone ---------------------------------------------------------------
+
+standalone:  ## Build portunus-standalone binary (CARGO_PROFILE=release|dev)
+	PORTUNUS_SKIP_WEBUI=1 cargo build $(CARGO_FLAGS) -p portunus-standalone
+
+standalone-check:  ## Validate all valid_*.toml fixtures via --check (expects "ok" × 3)
+	@for f in crates/portunus-standalone/tests/fixtures/valid_*.toml; do \
+	  result=$$(PORTUNUS_SKIP_WEBUI=1 cargo run $(CARGO_FLAGS) -p portunus-standalone --quiet -- --check --config "$$f" 2>/dev/null); \
+	  echo "$$f: $$result"; \
+	done

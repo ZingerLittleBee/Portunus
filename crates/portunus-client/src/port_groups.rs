@@ -48,13 +48,13 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::forwarder::ClientRule;
-use crate::forwarder::sni::listener::{
+use portunus_forwarder::forwarder::ClientRule;
+use portunus_forwarder::forwarder::sni::listener::{
     SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
 };
-use crate::forwarder::sni::route_table::SniRoutingTable;
-use crate::forwarder::stats::RuleStats;
-use crate::resolver::{LiveResolver, Resolve};
+use portunus_forwarder::forwarder::sni::route_table::SniRoutingTable;
+use portunus_forwarder::forwarder::stats::RuleStats;
+use portunus_forwarder::resolver::{LiveResolver, Resolve};
 
 #[derive(Debug)]
 pub enum PortGroupError {
@@ -91,17 +91,22 @@ pub(crate) struct GroupMember {
     /// 011-rate-limiting-qos: per-rule data-plane limiter. Carried
     /// verbatim from `ClientRule.rate_limit` so the SNI dispatcher
     /// can apply the same admission gate as the legacy accept path.
-    pub(crate) rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+    pub(crate) rate_limit:
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
     /// 011-rate-limiting-qos: per-rule reject/active stats accumulator.
     pub(crate) rate_limit_stats:
-        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     /// 011-rate-limiting-qos: per-owner data-plane limiter. Threaded
     /// through so capped SNI rules enforce the owner-scope cap.
     pub(crate) owner_rate_limit:
-        Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
     /// 011-rate-limiting-qos: per-owner reject/active stats accumulator.
     pub(crate) owner_rate_limit_stats:
-        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 013-traffic-quotas E2: per-(user, client) byte budget handle
+    /// flowing from `ClientRule.quota` into the per-port `GroupMember`
+    /// and onward into `SniRuleSlot.quota` on every rebuild.
+    pub(crate) quota: Option<Arc<portunus_forwarder::forwarder::quota::QuotaHandle>>,
 }
 
 /// Per-port runtime: the bound listener task, the table watch
@@ -189,6 +194,7 @@ impl PortGroupManager {
             rate_limit_stats: rule.rate_limit_stats.clone(),
             owner_rate_limit: rule.owner_rate_limit.clone(),
             owner_rate_limit_stats: rule.owner_rate_limit_stats.clone(),
+            quota: rule.quota.clone(),
         };
 
         match self.groups.get_mut(&listen_port) {
@@ -211,13 +217,14 @@ impl PortGroupManager {
             None => {
                 // First member — bind both IPv4 and IPv6 listeners where the
                 // platform supports them, sharing one routing table.
-                let listeners = crate::forwarder::range::bind_all(&PortRange::single(listen_port))
-                    .map_err(|err| {
-                        PortGroupError::BindFailed(std::io::Error::new(
-                            std::io::ErrorKind::AddrInUse,
-                            err.reason,
-                        ))
-                    })?;
+                let listeners =
+                    portunus_forwarder::forwarder::range::bind_all(&PortRange::single(listen_port))
+                        .map_err(|err| {
+                            PortGroupError::BindFailed(std::io::Error::new(
+                                std::io::ErrorKind::AddrInUse,
+                                err.reason,
+                            ))
+                        })?;
                 let counters = Arc::new(SniListenerCounters::default());
                 let cancel = CancellationToken::new();
                 let (table_tx, table_rx) = watch::channel(Arc::new(SniRoutingTable::default()));
@@ -351,25 +358,10 @@ impl PortGroupManager {
     /// Empty Vec when no listener is bound — proto3 default-stripping
     /// keeps the wire shape byte-identical with v0.8.
     #[must_use]
-    pub fn snapshot_listener_stats(&self) -> Vec<portunus_proto::v1::SniListenerStats> {
-        use std::sync::atomic::Ordering;
+    pub fn snapshot_listener_stats(&self) -> Vec<portunus_forwarder::SniListenerStatsSnapshot> {
         self.groups
             .iter()
-            .map(|(port, group)| {
-                let (peek_buckets, peek_sum_micros, peek_count) =
-                    group.counters.peek_histogram.snapshot();
-                portunus_proto::v1::SniListenerStats {
-                    client_hello_peek_bucket_counts: peek_buckets,
-                    client_hello_peek_sum_micros: peek_sum_micros,
-                    client_hello_peek_count: peek_count,
-                    listen_port: u32::from(*port),
-                    sni_route_miss_total: group.counters.miss.load(Ordering::Relaxed),
-                    client_hello_parse_failures_total: group
-                        .counters
-                        .parse_failures
-                        .load(Ordering::Relaxed),
-                }
-            })
+            .map(|(port, group)| group.counters.snapshot(*port))
             .collect()
     }
 }
@@ -420,6 +412,7 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
                 rate_limit_stats: m.rate_limit_stats.clone(),
                 owner_rate_limit: m.owner_rate_limit.clone(),
                 owner_rate_limit_stats: m.owner_rate_limit_stats.clone(),
+                quota: m.quota.clone(),
             },
         );
     }
@@ -437,9 +430,8 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
-    use portunus_core::{Hostname, PortRange, RuleId};
-    use portunus_proto::v1::Protocol;
+    use portunus_core::{Hostname, PortRange, Protocol, RuleId};
+    use portunus_forwarder::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
     use std::net::Ipv4Addr;
 
     #[derive(Default)]
@@ -470,6 +462,7 @@ mod tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         }
     }
 
@@ -505,7 +498,7 @@ mod tests {
         for port in 50_100..50_200 {
             let mut mgr = PortGroupManager::new();
             let mut rule = rule(1, port, 9001, Some("api.example.com"));
-            rule.targets = vec![crate::forwarder::MultiTarget {
+            rule.targets = vec![portunus_forwarder::forwarder::MultiTarget {
                 spec: portunus_core::RuleTarget {
                     host: "127.0.0.1".into(),
                     port: 9001,
@@ -566,10 +559,10 @@ mod tests {
     /// `SniRuleSlot` and `proxy_with_preread_and_prelude`.
     #[tokio::test]
     async fn t074_apply_push_carries_owner_rate_limit_into_group_member() {
-        use crate::forwarder::rate_limit::scope::{
+        use portunus_core::RateLimit;
+        use portunus_forwarder::forwarder::rate_limit::scope::{
             OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
         };
-        use portunus_core::RateLimit;
 
         for port in 50_200..50_300 {
             let mut mgr = PortGroupManager::new();
@@ -619,10 +612,9 @@ mod tests {
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use crate::forwarder::sni::client_hello::build_client_hello;
-    use crate::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
-    use portunus_core::{Hostname, PortRange, RuleId, Target};
-    use portunus_proto::v1::Protocol;
+    use portunus_core::{Hostname, PortRange, Protocol, RuleId, Target};
+    use portunus_forwarder::forwarder::sni::client_hello::build_client_hello;
+    use portunus_forwarder::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
     use std::net::{Ipv4Addr, SocketAddr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -688,6 +680,7 @@ mod e2e_tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         }
     }
 
@@ -1042,9 +1035,7 @@ mod e2e_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             let snap = mgr.snapshot_listener_stats();
-            let row = snap
-                .iter()
-                .find(|r| r.listen_port == u32::from(listen_port));
+            let row = snap.iter().find(|r| r.listen_port == listen_port);
             if let Some(r) = row {
                 if r.sni_route_miss_total >= 4 && r.client_hello_parse_failures_total >= 3 {
                     assert_eq!(r.sni_route_miss_total, 4);
@@ -1218,9 +1209,7 @@ mod e2e_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let snap = mgr.snapshot_listener_stats();
-            let row = snap
-                .iter()
-                .find(|r| r.listen_port == u32::from(listen_port));
+            let row = snap.iter().find(|r| r.listen_port == listen_port);
             if let Some(r) = row {
                 if r.client_hello_parse_failures_total >= 1 {
                     break;
@@ -1249,11 +1238,11 @@ mod e2e_tests {
     /// and `OwnerConcurrent` must tick exactly once.
     #[tokio::test]
     async fn t075_sni_dispatcher_enforces_owner_concurrent_cap_end_to_end() {
-        use crate::forwarder::rate_limit::scope::{
+        use portunus_core::{RateLimit, RejectReason};
+        use portunus_forwarder::forwarder::rate_limit::scope::{
             OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
         };
-        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
-        use portunus_core::{RateLimit, RejectReason};
+        use portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         use std::time::Duration;
 
         let owner_mgr = Arc::new(OwnerRateLimitScopeManager::new());
