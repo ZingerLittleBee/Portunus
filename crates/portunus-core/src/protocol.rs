@@ -9,6 +9,11 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Transport-layer protocol selector, canonical across the workspace.
+///
+/// `Display` and `FromStr` use lowercase `"tcp"` / `"udp"`.
+/// `FromStr` is **case-sensitive**: `"TCP"` and `"Tcp"` are rejected.
+/// JSON serialization (`serde`) also uses lowercase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
@@ -34,7 +39,7 @@ impl fmt::Display for Protocol {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("unknown protocol {0:?}; expected one of: tcp, udp")]
-pub struct ParseProtocolError(pub String);
+pub struct ParseProtocolError(String);
 
 impl FromStr for Protocol {
     type Err = ParseProtocolError;
@@ -50,7 +55,6 @@ impl FromStr for Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
 
     #[test]
     fn serde_round_trips_lowercase() {
@@ -63,15 +67,27 @@ mod tests {
 
     #[test]
     fn from_str_accepts_lowercase_only() {
-        assert_eq!(Protocol::from_str("tcp").unwrap(), Protocol::Tcp);
-        assert_eq!(Protocol::from_str("udp").unwrap(), Protocol::Udp);
-        assert!(Protocol::from_str("TCP").is_err());
-        assert!(Protocol::from_str("http").is_err());
+        assert_eq!("tcp".parse::<Protocol>().unwrap(), Protocol::Tcp);
+        assert_eq!("udp".parse::<Protocol>().unwrap(), Protocol::Udp);
+        assert!("TCP".parse::<Protocol>().is_err());
+        assert!("http".parse::<Protocol>().is_err());
     }
 
     #[test]
     fn display_matches_serde_repr() {
         assert_eq!(Protocol::Tcp.to_string(), "tcp");
         assert_eq!(Protocol::Udp.to_string(), "udp");
+    }
+
+    #[test]
+    fn display_round_trips_through_from_str() {
+        for p in [Protocol::Tcp, Protocol::Udp] {
+            assert_eq!(p.to_string().parse::<Protocol>().unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn empty_string_rejected() {
+        assert!("".parse::<Protocol>().is_err());
     }
 }
