@@ -394,5 +394,14 @@
   "notFound": {
     "title": "页面不存在",
     "back": "返回仪表盘"
+  },
+  "userQuota": {
+    "combobox": {
+      "placeholder": "选择 client…",
+      "search": "搜索 client…",
+      "empty": "未找到 client。",
+      "offline": "离线",
+      "alreadyAssigned": "已分配"
+    }
   }
 }

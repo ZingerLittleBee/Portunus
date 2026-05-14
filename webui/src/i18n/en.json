@@ -394,5 +394,14 @@
   "notFound": {
     "title": "Page not found",
     "back": "Back to dashboard"
+  },
+  "userQuota": {
+    "combobox": {
+      "placeholder": "Select a client…",
+      "search": "Search clients…",
+      "empty": "No clients found.",
+      "offline": "offline",
+      "alreadyAssigned": "already assigned"
+    }
   }
 }
