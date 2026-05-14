@@ -356,25 +356,10 @@ impl PortGroupManager {
     /// Empty Vec when no listener is bound — proto3 default-stripping
     /// keeps the wire shape byte-identical with v0.8.
     #[must_use]
-    pub fn snapshot_listener_stats(&self) -> Vec<portunus_proto::v1::SniListenerStats> {
-        use std::sync::atomic::Ordering;
+    pub fn snapshot_listener_stats(&self) -> Vec<portunus_forwarder::SniListenerStatsSnapshot> {
         self.groups
             .iter()
-            .map(|(port, group)| {
-                let (peek_buckets, peek_sum_micros, peek_count) =
-                    group.counters.peek_histogram.snapshot();
-                portunus_proto::v1::SniListenerStats {
-                    client_hello_peek_bucket_counts: peek_buckets,
-                    client_hello_peek_sum_micros: peek_sum_micros,
-                    client_hello_peek_count: peek_count,
-                    listen_port: u32::from(*port),
-                    sni_route_miss_total: group.counters.miss.load(Ordering::Relaxed),
-                    client_hello_parse_failures_total: group
-                        .counters
-                        .parse_failures
-                        .load(Ordering::Relaxed),
-                }
-            })
+            .map(|(port, group)| group.counters.snapshot(*port))
             .collect()
     }
 }

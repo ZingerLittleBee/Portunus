@@ -9,7 +9,7 @@ use std::time::Duration;
 use portunus_core::{PortRange, RuleId};
 use portunus_proto::v1::{
     ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction,
-    PerPortStats as ProtoPerPortStats, PerTargetStats as ProtoPerTargetStats, Protocol, RuleAction,
+    Protocol, RuleAction,
     RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
     client_message, control_client::ControlClient, server_message,
 };
@@ -576,10 +576,11 @@ fn handle_server_message(
             // 004-udp-forward T031: decode the wire `protocol` field.
             // Unknown enum integers (proto3 forward-compat) fall back
             // to TCP — same shape v0.3 clients implicitly assumed.
-            let protocol = Protocol::try_from(rule.protocol).unwrap_or(Protocol::Tcp);
-            let protocol = match protocol {
-                Protocol::Udp => Protocol::Udp,
-                _ => Protocol::Tcp,
+            // Convert proto Protocol → core Protocol (T1.3 impl).
+            let proto_protocol = Protocol::try_from(rule.protocol).unwrap_or(Protocol::Tcp);
+            let protocol: portunus_core::Protocol = match proto_protocol {
+                Protocol::Udp => portunus_core::Protocol::Udp,
+                _ => portunus_core::Protocol::Tcp,
             };
             // 007-multi-target-failover T022: when the wire `Rule`
             // carries a non-empty `targets` list, pre-parse each
@@ -787,7 +788,7 @@ fn handle_server_message(
             // existing listener). All other shapes (UDP, port-range,
             // and pure-legacy single-port) keep the v0.7 byte-stable
             // per-rule spawn path.
-            let routes_via_sni = matches!(protocol, Protocol::Tcp)
+            let routes_via_sni = matches!(protocol, portunus_core::Protocol::Tcp)
                 && listen_end == listen_port
                 && (client_rule.sni_pattern.is_some() || port_groups.is_sni_port(listen_port));
             if routes_via_sni {
@@ -1082,51 +1083,49 @@ async fn relay_status(
     }
 }
 
-/// Snapshot every active rule's counters and emit a single `StatsReport` on
-/// the bidi stream. Sends only when at least one rule exists; an empty report
-/// would be wasteful chatter.
-/// 007-multi-target-failover T033: build the `per_target[]` array for
-/// a multi-target rule. Single-target rules return an empty Vec
-/// (invariant I-3 — single-target rules MUST emit `per_target: []`
-/// regardless of `?per_target=true`).
-fn build_per_target(slot: &RuleSlot) -> Vec<ProtoPerTargetStats> {
-    let Some(obs) = slot.multi_target_obs.as_ref() else {
-        return Vec::new();
+/// Assemble a complete wire-neutral [`portunus_forwarder::RuleStatsSnapshot`]
+/// from a [`RuleSlot`]. Encapsulates the prior inline construction at the
+/// `send_stats_report` call site and centralises the per-target / rate-limit
+/// branches so the standalone reporter can reuse the same snapshot types.
+fn build_rule_stats_snapshot(
+    rule_id: portunus_core::RuleId,
+    slot: &RuleSlot,
+) -> portunus_forwarder::RuleStatsSnapshot {
+    let basic = slot.stats.snapshot_basic();
+    // is_range gates per_port (wire byte-stability with v0.1.0 — single-port
+    // rules emit empty per_port).
+    let per_port = if slot.is_range { basic.per_port } else { Vec::new() };
+
+    let (target_failovers_total, per_target) = match slot.multi_target_obs.as_ref() {
+        Some(obs) => obs.snapshot_per_target(&slot.targets_view),
+        None => (0, Vec::new()),
     };
-    let mut out = Vec::with_capacity(slot.targets_view.len());
-    for (idx, t) in slot.targets_view.iter().enumerate() {
-        // try_lock — the mutator (failover_path / probe) holds
-        // the lock briefly. On contention we drop the snapshot for
-        // this target this tick; next tick will pick it up. This
-        // keeps the stats report off the data-plane critical path.
-        let Ok(state) = obs.states[idx].try_lock() else {
-            continue;
-        };
-        let last_failure_at_unix_ms = state
-            .last_failure_at()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let last_success_at_unix_ms = state
-            .last_success_at()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let (bytes_in, bytes_out) = state.snapshot_bytes();
-        let connections_accepted = state.snapshot_connections();
-        out.push(ProtoPerTargetStats {
-            index: u32::try_from(idx).unwrap_or(u32::MAX),
-            host: t.spec.host.clone(),
-            port: u32::from(t.spec.port),
-            priority: t.spec.priority,
-            health: state.health().as_wire(),
-            consecutive_failures: state.consecutive_failures(),
-            last_failure_at_unix_ms,
-            last_success_at_unix_ms,
-            bytes_in,
-            bytes_out,
-            connections_accepted,
-        });
+
+    let rate_limit = slot.rate_limit_stats.as_ref().and_then(|acc| {
+        if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
+            acc.set_active_connections(limiter.active_connections());
+        }
+        acc.drain()
+    });
+
+    portunus_forwarder::RuleStatsSnapshot {
+        rule_id,
+        bytes_in: basic.bytes_in,
+        bytes_out: basic.bytes_out,
+        active_connections: basic.active_connections,
+        per_port,
+        dns_failures: basic.dns_failures,
+        datagrams_in: basic.datagrams_in,
+        datagrams_out: basic.datagrams_out,
+        active_flows: basic.active_flows,
+        flows_dropped_overflow: basic.flows_dropped_overflow,
+        target_failovers_total,
+        per_target,
+        sni_route_exact_total: basic.sni_route_exact_total,
+        sni_route_wildcard_total: basic.sni_route_wildcard_total,
+        sni_route_fallback_total: basic.sni_route_fallback_total,
+        rate_limit,
     }
-    out
 }
 
 async fn send_stats_report(
@@ -1135,116 +1134,47 @@ async fn send_stats_report(
     owner_rate_limit_stats: &portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     outbound: &mpsc::Sender<ClientMessage>,
 ) {
-    use std::sync::atomic::Ordering;
     if rules.is_empty() && !port_groups.has_any_listener() {
         return;
     }
     let stats: Vec<ProtoRuleStats> = rules
         .iter()
         .map(|(rule_id, slot)| {
-            let (bin, bout, active) = slot.stats.snapshot();
-            // Per-port detail (002-port-range-forward, T042). Range
-            // rules emit one slot per listen port; single-port rules
-            // emit empty for wire-shape stability with v0.1.0.
-            let per_port = if slot.is_range {
-                slot.stats
-                    .snapshot_per_port_with_udp()
-                    .into_iter()
-                    .map(|(port, bin, bout, active, dgin, dgout)| ProtoPerPortStats {
-                        listen_port: u32::from(port),
-                        bytes_in: bin,
-                        bytes_out: bout,
-                        active_connections: active,
-                        datagrams_in: dgin,
-                        datagrams_out: dgout,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            ProtoRuleStats {
-                rule_id: rule_id.0,
-                bytes_in: bin,
-                bytes_out: bout,
-                active_connections: active,
-                per_port,
-                // 003-domain-name-forward T048: monotonic per-rule
-                // DNS-failure counter (FR-008). For IP-target rules
-                // this is always 0 (resolver layer is short-circuited);
-                // proto field 6 with default-zero stays absent on the
-                // wire (verified by `dns_wire_compat::v0_2_0_rule_stats_byte_compatible_when_dns_failures_zero`).
-                dns_failures: slot.stats.snapshot_dns_failures(),
-                // 004-udp-forward T032: UDP counters. For TCP rules
-                // these all stay at the proto3 default-zero (the UDP
-                // helpers are never called) so
-                // `udp_wire_compat::tcp_rule_stats_byte_compatible_when_udp_fields_zero`
-                // (T005) holds for legacy traffic.
-                datagrams_in: slot.stats.snapshot_datagrams_in(),
-                datagrams_out: slot.stats.snapshot_datagrams_out(),
-                active_flows: slot.stats.snapshot_active_flows(),
-                flows_dropped_overflow: slot.stats.snapshot_flows_dropped_overflow(),
-                // 007-multi-target-failover T033: multi-target rules
-                // emit per-target snapshots from the shared
-                // observability handle. Single-target rules emit 0 /
-                // empty per the wire-compat invariant I-3.
-                target_failovers_total: slot
-                    .multi_target_obs
-                    .as_ref()
-                    .map_or(0, |o| o.target_failovers_total.load(Ordering::Relaxed)),
-                per_target: build_per_target(slot),
-                // 009-tls-sni-routing T077: per-rule SNI hit counters.
-                // Legacy plain-TCP rules and UDP rules see all three at
-                // 0 (the listener never bumps them) → proto3 default-
-                // stripping keeps the wire shape byte-identical with
-                // v0.8 (verified by
-                // sni_wire_compat::t008_rule_stats_sni_counters_zero_omits_tags).
-                sni_route_exact_total: slot.stats.sni_route_exact_total.load(Ordering::Relaxed),
-                sni_route_wildcard_total: slot
-                    .stats
-                    .sni_route_wildcard_total
-                    .load(Ordering::Relaxed),
-                sni_route_fallback_total: slot
-                    .stats
-                    .sni_route_fallback_total
-                    .load(Ordering::Relaxed),
-                // 011-rate-limiting-qos T019/T022: drain the per-rule
-                // accumulator into the wire field. Returns `None` for
-                // uncapped rules (or capped rules whose counters are
-                // all still zero) so v0.10 wire shape stays byte-
-                // identical. Capped rules with any reject / throttle
-                // event get a populated payload; the gauge is mirrored
-                // from the limiter's source-of-truth atomic.
-                rate_limit: slot.rate_limit_stats.as_ref().and_then(|acc| {
-                    if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
-                        acc.set_active_connections(limiter.active_connections());
-                    }
-                    acc.drain_to_proto()
-                }),
-            }
+            crate::wire::rule_stats_to_proto(build_rule_stats_snapshot(*rule_id, slot))
         })
         .collect();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
-    let sni_listener_stats = port_groups.snapshot_listener_stats();
+    // 009-tls-sni-routing T078: per-listener SNI counters (miss,
+    // parse_failures) snapshotted from the manager. Empty when no SNI
+    // listener has bound yet — proto3 default-stripping keeps wire
+    // byte-stable with v0.8.
+    let sni_listener_stats: Vec<portunus_proto::v1::SniListenerStats> = port_groups
+        .snapshot_listener_stats()
+        .into_iter()
+        .map(crate::wire::sni_listener_stats_to_proto)
+        .collect();
+    // 011-rate-limiting-qos T032: drain per-owner counters from the
+    // shared registry. Owners whose accumulators are empty (no event
+    // ever fired and gauge zero) are skipped by `drain()`, so a
+    // deployment with no owner caps emits an empty Vec → proto3
+    // default-stripping keeps the wire byte-identical with v0.10
+    // (validated by
+    // rate_limit_wire_compat::t005_v010_stats_report_byte_identical_when_owner_stats_empty).
+    let owner_rate_limit_stats: Vec<portunus_proto::v1::OwnerRateLimitStats> =
+        owner_rate_limit_stats
+            .drain()
+            .into_iter()
+            .map(crate::wire::owner_rate_limit_stats_to_proto)
+            .collect();
     let msg = ClientMessage {
         payload: Some(client_message::Payload::StatsReport(StatsReport {
             sent_at_unix_ms: now_ms,
             stats,
-            // 009-tls-sni-routing T078: per-listener SNI counters
-            // (miss, parse_failures) snapshotted from the manager.
-            // Empty when no SNI listener has bound yet — proto3
-            // default-stripping keeps wire byte-stable with v0.8.
             sni_listener_stats,
-            // 011-rate-limiting-qos T032: drain per-owner counters
-            // from the shared registry. Owners whose accumulators are
-            // empty (no event ever fired and gauge zero) are skipped
-            // by `drain_to_proto`, so a deployment with no owner caps
-            // emits an empty Vec → proto3 default-stripping keeps the
-            // wire byte-identical with v0.10 (validated by
-            // rate_limit_wire_compat::t005_v010_stats_report_byte_identical_when_owner_stats_empty).
-            owner_rate_limit_stats: owner_rate_limit_stats.drain_to_proto(),
+            owner_rate_limit_stats,
         })),
     };
     if let Err(e) = outbound.send(msg).await {
