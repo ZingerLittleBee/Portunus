@@ -14,6 +14,7 @@
     reason = "QuotaHandle / QuotaState / ConsumeOutcome are consumed by D2 QuotaScopeManager and the E-phase data-plane hooks; this module ships first to land the atomic primitive in isolation."
 )]
 
+pub mod copy;
 pub mod scope;
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
