@@ -30,6 +30,7 @@ export function joinAccessEntries(
   grants: GrantView[],
   caps: OwnerRateLimitView[],
 ): AccessEntry[] {
+  // owner_id in OwnerRateLimitView is the same user namespace as user_id in GrantView.
   const capByPair = new Map<string, OwnerRateLimitView>();
   for (const c of caps) {
     capByPair.set(`${c.owner_id}::${c.client_name}`, c);
@@ -46,7 +47,11 @@ export function joinAccessEntries(
 
   const out: AccessEntry[] = [];
   for (const [, gs] of groups) {
-    const sorted = [...gs].sort((a, b) => rangeWidth(b) - rangeWidth(a));
+    const sorted = [...gs].sort(
+      (a, b) =>
+        rangeWidth(b) - rangeWidth(a) ||
+        b.created_at.localeCompare(a.created_at),
+    );
     const primary = sorted[0];
     if (!primary) continue;
     const capEntry = capByPair.get(`${primary.user_id}::${primary.client}`);
@@ -72,7 +77,7 @@ export const userAccessEntriesKey = (userId: string) =>
 export const userAccessCapKey = (userId: string, clientName: string) =>
   ["access-entries", userId, "cap", clientName] as const;
 
-interface UseAccessEntriesResult {
+export interface UseAccessEntriesResult {
   data: AccessEntry[] | undefined;
   isLoading: boolean;
   error: unknown;
@@ -80,7 +85,7 @@ interface UseAccessEntriesResult {
 
 export function useAccessEntries(userId: string): UseAccessEntriesResult {
   const grantsQ = useQuery({
-    queryKey: ["grants", "user", userId],
+    queryKey: userAccessEntriesKey(userId),
     queryFn: () => apiFetch<GrantView[]>(`/v1/grants?user_id=${encodeURIComponent(userId)}`),
     enabled: userId.length > 0,
   });
