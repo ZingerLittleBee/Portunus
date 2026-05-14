@@ -336,6 +336,141 @@ impl RuleStats {
     }
 }
 
+use portunus_core::RuleId;
+
+/// Per-port detail for range rules. Single-port rules still emit one slot
+/// for symmetry. Empty `per_port` keeps proto3 default-strip semantics
+/// at the wire-translation layer.
+#[derive(Clone, Debug, Default)]
+pub struct PerPortStatsSnapshot {
+    pub listen_port: u16,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub active_connections: u32,
+    pub datagrams_in: u64,
+    pub datagrams_out: u64,
+}
+
+/// Per-target detail for multi-target rules. Lives in this struct because
+/// the wire translation (`From<PerTargetStatsSnapshot> for proto::v1::PerTargetStats`)
+/// needs to encode `health` as a `uint32` via `TargetHealth::as_wire()`.
+#[derive(Clone, Debug, Default)]
+pub struct PerTargetStatsSnapshot {
+    pub index: u32,
+    pub host: String,
+    pub port: u16,
+    pub priority: u32,
+    pub health: TargetHealth,
+    pub consecutive_failures: u32,
+    pub last_failure_at_unix_ms: u64,
+    pub last_success_at_unix_ms: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub connections_accepted: u64,
+}
+
+/// Mirrors `forwarder::failover::Health` for the wire snapshot path.
+/// Healthy=0, Failed=1 — kept stable so `proto::v1::PerTargetStats.health: uint32`
+/// stays byte-identical across the client and standalone reporters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetHealth {
+    #[default]
+    Healthy,
+    Failed,
+}
+
+impl TargetHealth {
+    /// Stable uint32 mapping written to the wire.
+    #[must_use]
+    pub fn as_wire(self) -> u32 {
+        match self {
+            Self::Healthy => 0,
+            Self::Failed => 1,
+        }
+    }
+}
+
+/// Basic per-rule counters owned by `RuleStats`. Excludes per-target,
+/// rate-limit, and target-failovers state — those live alongside on
+/// the client `RuleSlot` and are stitched together in
+/// `portunus-client::control::build_rule_stats_snapshot`.
+#[derive(Clone, Debug, Default)]
+pub struct RuleStatsSnapshotBasic {
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub active_connections: u32,
+    pub per_port: Vec<PerPortStatsSnapshot>,
+    pub dns_failures: u64,
+    pub datagrams_in: u64,
+    pub datagrams_out: u64,
+    pub active_flows: u32,
+    pub flows_dropped_overflow: u64,
+    pub sni_route_exact_total: u64,
+    pub sni_route_wildcard_total: u64,
+    pub sni_route_fallback_total: u64,
+}
+
+/// Complete per-rule snapshot used by the wire-translation layer.
+/// Assembled by `build_rule_stats_snapshot(rule_id, &slot)` in
+/// portunus-client::control; the standalone reporter constructs an
+/// equivalent value without needing a client `RuleSlot`.
+#[derive(Clone, Debug)]
+pub struct RuleStatsSnapshot {
+    pub rule_id: RuleId,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub active_connections: u32,
+    pub per_port: Vec<PerPortStatsSnapshot>,
+    pub dns_failures: u64,
+    pub datagrams_in: u64,
+    pub datagrams_out: u64,
+    pub active_flows: u32,
+    pub flows_dropped_overflow: u64,
+    pub target_failovers_total: u64,
+    pub per_target: Vec<PerTargetStatsSnapshot>,
+    pub sni_route_exact_total: u64,
+    pub sni_route_wildcard_total: u64,
+    pub sni_route_fallback_total: u64,
+    pub rate_limit: Option<RateLimitStatsSnapshot>,
+}
+
+impl RuleStats {
+    /// proto-free snapshot of this struct's basic counters. Excludes
+    /// per-target / rate-limit / target-failovers (assembled by caller).
+    #[must_use]
+    pub fn snapshot_basic(&self) -> RuleStatsSnapshotBasic {
+        let (bytes_in, bytes_out, active_connections) = self.snapshot();
+        let per_port = self
+            .snapshot_per_port_with_udp()
+            .into_iter()
+            .map(
+                |(listen_port, bin, bout, active, dgin, dgout)| PerPortStatsSnapshot {
+                    listen_port,
+                    bytes_in: bin,
+                    bytes_out: bout,
+                    active_connections: active,
+                    datagrams_in: dgin,
+                    datagrams_out: dgout,
+                },
+            )
+            .collect();
+        RuleStatsSnapshotBasic {
+            bytes_in,
+            bytes_out,
+            active_connections,
+            per_port,
+            dns_failures: self.snapshot_dns_failures(),
+            datagrams_in: self.snapshot_datagrams_in(),
+            datagrams_out: self.snapshot_datagrams_out(),
+            active_flows: self.snapshot_active_flows(),
+            flows_dropped_overflow: self.snapshot_flows_dropped_overflow(),
+            sni_route_exact_total: self.sni_route_exact_total.load(Ordering::Relaxed),
+            sni_route_wildcard_total: self.sni_route_wildcard_total.load(Ordering::Relaxed),
+            sni_route_fallback_total: self.sni_route_fallback_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +524,23 @@ mod tests {
         assert_eq!(per_port.len(), 2);
         assert_eq!(per_port[0].1, 0);
         assert_eq!(per_port[1].1, 0);
+    }
+
+    #[test]
+    fn snapshot_basic_zeroed_for_fresh_stats() {
+        use portunus_core::PortRange;
+        let stats = RuleStats::for_range(PortRange::single(8080));
+        let snap = stats.snapshot_basic();
+        assert_eq!(snap.bytes_in, 0);
+        assert_eq!(snap.bytes_out, 0);
+        assert_eq!(snap.active_connections, 0);
+        assert_eq!(snap.dns_failures, 0);
+        assert_eq!(snap.datagrams_in, 0);
+        assert_eq!(
+            snap.per_port.len(),
+            1,
+            "single-port rule still allocates one per-port slot"
+        );
+        assert_eq!(snap.per_port[0].listen_port, 8080);
     }
 }
