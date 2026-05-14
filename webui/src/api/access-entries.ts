@@ -5,9 +5,11 @@ import type {
   CreateGrantBody,
   DeleteGrantResponse,
   GrantView,
+  MonthlyQuotaView,
   OwnerRateLimitView,
   RateLimit,
 } from "@/api/types";
+import { userQuotasKey } from "@/api/quotas";
 
 export interface AccessEntry {
   grant_id: string;
@@ -18,6 +20,11 @@ export interface AccessEntry {
   protocols: ("tcp" | "udp")[];
   unlimited: boolean;
   cap?: RateLimit;
+  /// 013-traffic-quotas v1.4.0: per-(user, client) monthly byte budget.
+  /// Absent when no quota row exists; the AccessEntry view treats absence
+  /// as "unlimited monthly traffic" (independent of the `unlimited`
+  /// rate-limit flag above — quotas and rate-limits are orthogonal).
+  quota?: MonthlyQuotaView;
   /// Set when the backend has >1 grant for this (user, client).
   legacy_duplicates?: GrantView[];
 }
@@ -29,11 +36,17 @@ function rangeWidth(g: GrantView): number {
 export function joinAccessEntries(
   grants: GrantView[],
   caps: OwnerRateLimitView[],
+  quotas: MonthlyQuotaView[] = [],
 ): AccessEntry[] {
   // owner_id in OwnerRateLimitView is the same user namespace as user_id in GrantView.
   const capByPair = new Map<string, OwnerRateLimitView>();
   for (const c of caps) {
     capByPair.set(`${c.owner_id}::${c.client_name}`, c);
+  }
+
+  const quotaByPair = new Map<string, MonthlyQuotaView>();
+  for (const q of quotas) {
+    quotaByPair.set(`${q.user_id}::${q.client_name}`, q);
   }
 
   // Group grants by (user, client)
@@ -54,7 +67,9 @@ export function joinAccessEntries(
     );
     const primary = sorted[0];
     if (!primary) continue;
-    const capEntry = capByPair.get(`${primary.user_id}::${primary.client}`);
+    const pairKey = `${primary.user_id}::${primary.client}`;
+    const capEntry = capByPair.get(pairKey);
+    const quotaEntry = quotaByPair.get(pairKey);
     const entry: AccessEntry = {
       grant_id: primary.grant_id,
       user_id: primary.user_id,
@@ -64,6 +79,7 @@ export function joinAccessEntries(
       protocols: primary.protocols,
       unlimited: !capEntry,
       ...(capEntry !== undefined ? { cap: capEntry.rate_limit } : {}),
+      ...(quotaEntry !== undefined ? { quota: quotaEntry } : {}),
       ...(sorted.length > 1 ? { legacy_duplicates: sorted.slice(1) } : {}),
     };
     out.push(entry);
@@ -123,11 +139,28 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   const caps = capQueries
     .map((q) => q.data)
     .filter((v): v is OwnerRateLimitView => v != null);
-  const error = grantsQ.error ?? capQueries.find((q) => q.error)?.error;
+
+  // 013-traffic-quotas F2: parallel quotas fetch keyed identically to
+  // `useUserQuotas` so a quota mutation invalidates this view's cached
+  // shape via the shared queryKey.
+  const quotasQ = useQuery({
+    queryKey: userQuotasKey(userId),
+    queryFn: () =>
+      apiFetch<MonthlyQuotaView[]>(
+        `/v1/users/${encodeURIComponent(userId)}/quotas`,
+      ),
+    enabled: userId.length > 0,
+  });
+
+  const error =
+    grantsQ.error ?? capQueries.find((q) => q.error)?.error ?? quotasQ.error;
 
   return {
-    data: grantsQ.data ? joinAccessEntries(grants, caps) : undefined,
-    isLoading: grantsQ.isLoading || (grants.length > 0 && capsLoading),
+    data: grantsQ.data
+      ? joinAccessEntries(grants, caps, quotasQ.data ?? [])
+      : undefined,
+    isLoading:
+      grantsQ.isLoading || (grants.length > 0 && capsLoading) || quotasQ.isLoading,
     error,
   };
 }

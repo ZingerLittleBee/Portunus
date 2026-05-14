@@ -1,7 +1,11 @@
 // webui/src/api/access-entries.test.ts
 import { describe, expect, it } from "vitest";
 import { joinAccessEntries } from "./access-entries";
-import type { GrantView, OwnerRateLimitView } from "@/api/types";
+import type {
+  GrantView,
+  MonthlyQuotaView,
+  OwnerRateLimitView,
+} from "@/api/types";
 
 const g = (overrides: Partial<GrantView> = {}): GrantView => ({
   grant_id: "g1",
@@ -57,5 +61,32 @@ describe("joinAccessEntries", () => {
     const grants = [g({ client: "edge-tokyo" }), g({ grant_id: "g2", client: "edge-sg" })];
     const res = joinAccessEntries(grants, []);
     expect(res).toHaveLength(2);
+  });
+
+  it("attaches quota to matching (user, client) pair", () => {
+    const grants = [g()];
+    const quota: MonthlyQuotaView = {
+      user_id: "alice",
+      client_name: "edge-tokyo",
+      monthly_bytes: 1_000_000_000,
+      billing_anchor: 1_700_000_000,
+      current_period_started_at: 1_700_000_000,
+      current_period_ends_at: 1_702_678_400,
+      current_period_bytes_used: 250_000_000,
+      budget_remaining_bytes: 750_000_000,
+      exhausted_at: null,
+      exhausted: false,
+      created_at: 1_700_000_000,
+      updated_at: 1_700_000_000,
+    };
+    const res = joinAccessEntries(grants, [], [quota]);
+    expect(res[0]!.quota?.monthly_bytes).toBe(1_000_000_000);
+    expect(res[0]!.quota?.budget_remaining_bytes).toBe(750_000_000);
+  });
+
+  it("leaves quota undefined when no row matches the pair", () => {
+    const grants = [g()];
+    const res = joinAccessEntries(grants, [], []);
+    expect(res[0]!.quota).toBeUndefined();
   });
 });
