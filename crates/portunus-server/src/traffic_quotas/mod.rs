@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 
+pub mod aggregator;
 pub mod cache;
 pub mod samples;
 pub mod store;
@@ -24,10 +25,12 @@ pub struct TrafficQuotaRow {
 }
 
 impl TrafficQuotaRow {
+    #[must_use]
     pub fn budget_remaining(&self) -> i64 {
         self.monthly_bytes
             .saturating_sub(self.current_period_bytes_used)
     }
+    #[must_use]
     pub fn is_exhausted(&self) -> bool {
         self.exhausted_at.is_some()
     }

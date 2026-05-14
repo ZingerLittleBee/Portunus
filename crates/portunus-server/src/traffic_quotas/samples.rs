@@ -18,6 +18,7 @@ pub enum SampleBucket {
 }
 
 impl SampleBucket {
+    #[must_use]
     pub const fn retention_seconds(self) -> i64 {
         match self {
             SampleBucket::M1 => 7 * 24 * 3600,
@@ -25,6 +26,7 @@ impl SampleBucket {
         }
     }
 
+    #[must_use]
     pub const fn align(self, ts_unix_sec: i64) -> i64 {
         match self {
             SampleBucket::M1 => ts_unix_sec - (ts_unix_sec % 60),

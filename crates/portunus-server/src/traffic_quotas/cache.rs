@@ -36,6 +36,7 @@ impl TrafficQuotaCache {
         })
     }
 
+    #[must_use]
     pub fn get(&self, user_id: &str, client_name: &str) -> Option<TrafficQuotaRow> {
         self.inner
             .cache
@@ -47,6 +48,7 @@ impl TrafficQuotaCache {
             })
     }
 
+    #[must_use]
     pub fn list_for_client(&self, client_name: &str) -> Vec<TrafficQuotaRow> {
         self.inner
             .cache
@@ -61,6 +63,7 @@ impl TrafficQuotaCache {
             .unwrap_or_default()
     }
 
+    #[must_use]
     pub fn list_for_user(&self, user_id: &str) -> Vec<TrafficQuotaRow> {
         self.inner
             .cache
@@ -75,6 +78,7 @@ impl TrafficQuotaCache {
             .unwrap_or_default()
     }
 
+    #[must_use]
     pub fn list_all(&self) -> Vec<TrafficQuotaRow> {
         self.inner
             .cache
@@ -101,14 +105,24 @@ impl TrafficQuotaCache {
         Ok(removed)
     }
 
-    /// Accumulate cumulative byte delta into the current period (write-through).
+    /// Accumulate cumulative byte delta into the current period
+    /// (write-through). Returns `(post_row, just_exhausted)` where
+    /// `just_exhausted` is true iff THIS call transitioned the row from
+    /// non-exhausted to exhausted. Compares pre vs post `exhausted_at`
+    /// using the cached snapshot, so callers can detect the first
+    /// crossing without relying on `exhausted_at == now_unix_sec`
+    /// (which is ambiguous when multiple deltas land within the same
+    /// second).
     pub fn accumulate(
         &self,
         user_id: &str,
         client_name: &str,
         delta: i64,
         now_unix_sec: i64,
-    ) -> Result<Option<TrafficQuotaRow>, StoreError> {
+    ) -> Result<Option<(TrafficQuotaRow, bool)>, StoreError> {
+        let pre_exhausted = self
+            .get(user_id, client_name)
+            .map(|r| r.exhausted_at.is_some());
         let updated = quota_store::accumulate_bytes_used(
             &self.inner.store,
             user_id,
@@ -116,18 +130,21 @@ impl TrafficQuotaCache {
             delta,
             now_unix_sec,
         )?;
-        if let Some(ref row) = updated {
+        if let Some(row) = updated {
+            let post_exhausted = row.exhausted_at.is_some();
+            let just_exhausted = post_exhausted && pre_exhausted == Some(false);
             if let Ok(mut m) = self.inner.cache.write() {
                 m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
             }
+            Ok(Some((row, just_exhausted)))
         } else {
             warn!(
                 event = "traffic_quota.accumulate_missing",
                 user_id, client_name, delta,
                 "accumulate found no row; cache may be stale"
             );
+            Ok(None)
         }
-        Ok(updated)
     }
 
     pub fn clear_period_usage(
@@ -137,10 +154,10 @@ impl TrafficQuotaCache {
         now: i64,
     ) -> Result<Option<TrafficQuotaRow>, StoreError> {
         let updated = quota_store::clear_period_usage(&self.inner.store, user_id, client_name, now)?;
-        if let Some(ref row) = updated {
-            if let Ok(mut m) = self.inner.cache.write() {
-                m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
-            }
+        if let Some(ref row) = updated
+            && let Ok(mut m) = self.inner.cache.write()
+        {
+            m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
         }
         Ok(updated)
     }
@@ -159,10 +176,10 @@ impl TrafficQuotaCache {
             new_period_started_at,
             now,
         )?;
-        if let Some(ref row) = updated {
-            if let Ok(mut m) = self.inner.cache.write() {
-                m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
-            }
+        if let Some(ref row) = updated
+            && let Ok(mut m) = self.inner.cache.write()
+        {
+            m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
         }
         Ok(updated)
     }
@@ -221,9 +238,25 @@ mod tests {
     fn accumulate_increments_cache() {
         let (_d, cache) = make_cache();
         cache.upsert(sample_row()).unwrap();
-        cache.accumulate("alice", "edge-01", 100, 1).unwrap();
+        let (row, just) = cache.accumulate("alice", "edge-01", 100, 1).unwrap().unwrap();
+        assert_eq!(row.current_period_bytes_used, 100);
+        assert!(!just);
         let got = cache.get("alice", "edge-01").unwrap();
         assert_eq!(got.current_period_bytes_used, 100);
+    }
+
+    #[test]
+    fn accumulate_flags_just_exhausted_once() {
+        let (_d, cache) = make_cache();
+        let mut r = sample_row();
+        r.monthly_bytes = 100;
+        cache.upsert(r).unwrap();
+        // First crossing -> just_exhausted=true.
+        let (_row, just) = cache.accumulate("alice", "edge-01", 200, 5).unwrap().unwrap();
+        assert!(just);
+        // Already exhausted -> just_exhausted=false even with the same `now`.
+        let (_row, just2) = cache.accumulate("alice", "edge-01", 50, 5).unwrap().unwrap();
+        assert!(!just2);
     }
 
     #[test]
