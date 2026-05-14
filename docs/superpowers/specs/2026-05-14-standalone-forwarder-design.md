@@ -1,6 +1,6 @@
 # Standalone Forwarder — Design
 
-**Status:** draft v5 · awaiting user review (v5 addresses 3 v4-review findings + 2 small fixes)
+**Status:** draft v6 · awaiting user review (v6 addresses 3 v5-review findings + 3 small fixes)
 **Branch:** `feat/standalone-forwarder`
 **Target release:** v1.5.0
 **Date:** 2026-05-14
@@ -100,7 +100,8 @@ pub use forwarder::quota::QuotaHandle;
 // (无 StatsSink trait;每个 binary 拥有自己的 reporter,见 §5.2)
 pub use forwarder::stats::{
     RuleStats,
-    RuleStatsSnapshot, PerPortStatsSnapshot, PerTargetStatsSnapshot,
+    RuleStatsSnapshot, RuleStatsSnapshotBasic,                // v6 finding 3
+    PerPortStatsSnapshot, PerTargetStatsSnapshot,
     RateLimitStatsSnapshot, OwnerRateLimitStatsSnapshot,
     SniListenerStatsSnapshot,
     RateLimitRejectReason, TargetHealth,
@@ -187,7 +188,7 @@ impl From<PerPortStatsSnapshot> for proto::v1::PerPortStats { ... }
 |------|------|--------|------------|
 | 规则输入 | `ClientRule` 值 | gRPC `Rule` → ClientRule | TOML → ClientRule |
 | 生命周期 | `run_forwarder(...)` | 同 | 同 |
-| Stats 暴露 | snapshot getter (`RuleStats::snapshot()` 等) | client reporter 拼 `StatsReport` 并通过 `From<Snapshot>` 转 proto | standalone 简化 reporter 直接 `tracing::info!` |
+| Stats 暴露 | snapshot getter (`RuleStats::snapshot_basic()` + `MultiTargetObservability::snapshot_per_target()` + `RateLimitStatsAccumulator::drain()`) | client `build_rule_stats_snapshot(rule_id, &slot)` 装配完整 snapshot,通过 `From<Snapshot>` 转 proto | standalone reporter 仅消费 `snapshot_basic()`,直接 `tracing::info!` |
 | 配额 | `ClientRule.quota: Option<Arc<QuotaHandle>>` | `QuotaScopeManager` 构造并替换 | 永远 `None`(短路) |
 
 每个 binary 自己写 reporter(无共享 `spawn_stats_reporter` API)—— 因为 client
@@ -308,6 +309,10 @@ udp_flow_idle_secs = 120
 (sni_routes / rate_limit / quota / bandwidth_* / listen_addr / bind_addr)
 立即报错。
 
+**v6 finding 2:`[[rule]]` 至少 1 条**。空 TOML(或 0 条 rule)在 `Config::load`
+校验阶段直接 `exit 2`,错误信息 `error: configuration must define at least
+one [[rule]]`。这是规则:不允许"启动了一个什么都不转发的进程"。
+
 #### 4.2.2 listen 地址绑定
 
 v1.5 结论:`listen_port` / `listen_ports` 是**纯端口**,**永远 wildcard 双栈
@@ -323,10 +328,11 @@ bind**(IPv4 + IPv6,与现状 `range.rs::bind_port` 一致)。不接受 `listen_a
 ```rust
 // portunus-standalone/src/config.rs
 fn derive_rule_id(name: &str) -> RuleId {
+    // blake3::hash 返回 [u8; 32] —— 用 copy_from_slice 静态保证前 8 字节存在,
+    // 无 panic 路径(v6 small fix:不再用 try_into().expect(...))
     let h = blake3::hash(name.as_bytes());
-    let bytes = h.as_bytes();
-    // 取前 8 字节作为 u64(little-endian)
-    let arr: [u8; 8] = bytes[..8].try_into().expect("blake3 hash >= 32 bytes");
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(&h.as_bytes()[..8]);
     RuleId(u64::from_le_bytes(arr))
 }
 
@@ -355,9 +361,9 @@ fn build_registry(rules: &[ParsedRule]) -> Result<HashMap<RuleId, String>, Confi
 日志在 RuleId 之外**强制带 `rule_name`**:
 
 ```rust
-// standalone reporter 内:
+// standalone reporter 内(v6 finding small fix:snapshot → snapshot_basic):
 for (rule_id, rs) in registry.iter() {
-    let snap = rs.snapshot();
+    let snap = rs.snapshot_basic();
     info!(event="standalone.stats", rule=%rule_id, rule_name=%name, ...);
 }
 ```
@@ -554,6 +560,12 @@ async fn run(cfg: Config) -> ExitCode {
             }
         }
     }
+    // v6 finding 2:无论以何路径退出主 loop(fatal / 所有任务自然结束 /
+    // joinset 空),都先 trigger shutdown,确保 reporter 和 signal task
+    // 一定能收到 cancel 信号后退出 await。不依赖 fatal 路径自身的 trigger。
+    if !shutdown.token().is_cancelled() {
+        shutdown.trigger();
+    }
     let _ = reporter.await;
     let _ = signal_task.await;
     info!(event = "standalone.stopped");
@@ -617,8 +629,8 @@ pub fn spawn_standalone_reporter(
 ```
 
 **关键**:
-- 仅消费 `RuleStats::snapshot() -> RuleStatsSnapshot`(forwarder 提供的 getter,
-  finding 2)。不需要 RuleSlot 周边状态。
+- 仅消费 `RuleStats::snapshot_basic() -> RuleStatsSnapshotBasic`(forwarder
+  提供的基础 getter,v5 finding 2)。不需要 RuleSlot 周边状态。
 - per_target / SNI / rate-limit / per_port snapshot 字段在 standalone reporter
   里**不展开**(平衡套餐不启用 SNI / rate-limit;per_target / per_port 信息
   在数据面发生事件时由 forwarder 自己 `tracing::warn!` 出来,reporter 无需周期 dump)。
@@ -682,23 +694,24 @@ client 侧 `Shutdown::signal_handler` 不动。
 // portunus-forwarder/src/forwarder/stats.rs
 
 // ─── per-rule(对照 proto::v1::RuleStats 字段)───
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RuleStatsSnapshot {
-    pub bytes_in: u64,
-    pub bytes_out: u64,
-    pub active_connections: u32,
-    pub per_port: Vec<PerPortStatsSnapshot>,                  // range rule
-    pub dns_failures: u64,                                    // v0.3
-    pub datagrams_in: u64,                                    // v0.4 UDP
+    pub rule_id: RuleId,                                      // proto field 1 — v6 finding 1
+    pub bytes_in: u64,                                        // field 2
+    pub bytes_out: u64,                                       // field 3
+    pub active_connections: u32,                              // field 4
+    pub per_port: Vec<PerPortStatsSnapshot>,                  // field 5 (range rule)
+    pub dns_failures: u64,                                    // field 6 (v0.3)
+    pub datagrams_in: u64,                                    // field 7+ (v0.4 UDP)
     pub datagrams_out: u64,
     pub active_flows: u32,
     pub flows_dropped_overflow: u64,
-    pub target_failovers_total: u64,                          // v0.7 multi-target
-    pub per_target: Vec<PerTargetStatsSnapshot>,
-    pub sni_route_exact_total: u64,                           // v0.9 SNI
+    pub target_failovers_total: u64,                          // field 11 (v0.7 multi-target)
+    pub per_target: Vec<PerTargetStatsSnapshot>,              // field 12
+    pub sni_route_exact_total: u64,                           // (v0.9 SNI)
     pub sni_route_wildcard_total: u64,
     pub sni_route_fallback_total: u64,
-    pub rate_limit: Option<RateLimitStatsSnapshot>,           // v0.11
+    pub rate_limit: Option<RateLimitStatsSnapshot>,           // (v0.11)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -884,6 +897,7 @@ fn build_rule_stats_snapshot(
     });
 
     RuleStatsSnapshot {
+        rule_id,                                              // v6 finding 1 — proto field 1
         bytes_in: basic.bytes_in,
         bytes_out: basic.bytes_out,
         active_connections: basic.active_connections,
@@ -924,8 +938,9 @@ impl From<RateLimitRejectReason> for proto::v1::RateLimitRejectReason { ... }
 **client 的 reporter 不动**(`control.rs:357 stats_tick + send_stats_report` 留在
 client):它本来就需要消费 RuleSlot 周边状态(`is_range / multi_target_obs /
 targets_view / rate_limit_limiter / rate_limit_stats`),那些字段是 client 私有
-的。只是把"构造 proto 字段"改成"调用 `Arc<RuleStats>::snapshot()` 拿 wire-neutral
-snapshot 再 `Into::into()`"。
+的。只是把"构造 proto 字段"改成"`build_rule_stats_snapshot(rule_id, &slot)
+.into()`"(装配函数内部调 `snapshot_basic()` + `snapshot_per_target()` +
+`acc.drain()`)。
 
 ### 5.3 `Protocol` 上提
 见 §3.5。Phase 1 触动 ~20 个文件,纯类型重定向。
@@ -1040,7 +1055,7 @@ Phase 4 — E2E + 文档 (PR 4)
 |------|------|
 | Phase 2 forwarder 遗漏 `portunus_proto` 引用 | Cargo.toml 不含 portunus-proto,任何漏改直接编译失败 |
 | Phase 2 snapshot 字段集偏离 proto | client `From` 翻译 + 现有 `*_wire_compat` 测试字节级比对 |
-| Phase 2 stats hot path 引入抖动 | 数据面仍是原子 fetch_add;`snapshot()` 只在 ticker 内调用;bench 对比现有 baseline(`data_plane` → v0.1.0、`splice_throughput` → v1.2.0)零回退 |
+| Phase 2 stats hot path 引入抖动 | 数据面仍是原子 fetch_add;`snapshot_basic()` 等 getter 只在 ticker 内调用;bench 对比现有 baseline(`data_plane` → v0.1.0、`splice_throughput` → v1.2.0)零回退 |
 | Protocol 上提牵连 server JSON 兼容 | rule JSON serde 仍 lowercase;wire bytes 不变 |
 | RuleId blake3 冲突 | registry 检测;blake3 64-bit prefix 任意一对碰撞概率 2^-64 |
 | 单目标 + PROXY 走 failover_path 的开销 | 文档明示 opt-in 代价;数据面仍是 splice;影响仅限有 PROXY 需求的单目标 |
@@ -1074,7 +1089,8 @@ v1 → v2:
 v2 → v3:
 4. **StatsSink trait 取消**(finding 2):forwarder 仅暴露 wire-neutral
    snapshot getter,reporter 由各 binary 自己拥有。Client 的 reporter 仍在
-   `control.rs:357`,只把"直接构造 proto"改成"`snapshot().into()`"。
+   `control.rs:357`,只把"直接构造 proto"改成"`build_rule_stats_snapshot(...)
+   .into()`"。
 5. **单目标 PROXY desugar 策略**(finding 3):无 PROXY 单目标保留 `targets=[]`
    fast path;带 PROXY 单目标 desugar 成 1-element targets。文档明示 opt-in 代价。
 6. **PROXY 类型名**(finding 5):用真实 `ProxyProtocolVersion`(已在 core)+
@@ -1133,6 +1149,25 @@ v4 → v5:
     不 panic、不 expect。
 21. **去除 LoggingStatsSink 残留称呼**:文档统一叫"standalone reporter",
     没有"sink"类型(无 trait,无独立结构)。
+
+v5 → v6:
+22. **RuleStatsSnapshot 加 rule_id**(v6 finding 1):proto `RuleStats.rule_id = 1`
+    是必填字段。snapshot 新增 `pub rule_id: RuleId`,`build_rule_stats_snapshot
+    (rule_id, &slot)` 把入参写进 snapshot;`From<RuleStatsSnapshot> for
+    proto::v1::RuleStats` 自然可填 field 1。
+23. **配置至少 1 条 rule**(v6 finding 2):空 TOML 或 0 条 [[rule]] 在 config
+    load 阶段直接 exit 2。同时 runtime tail 加 `if !shutdown.is_cancelled()
+    { shutdown.trigger() }` 兜底,确保任何路径退出主 loop 都能让 reporter /
+    signal task 收到 cancel 后退出 await,不依赖 fatal 路径自身的 trigger。
+24. **`RuleStatsSnapshotBasic` 进 public 表面**(v6 finding 3):§3.3 的
+    `pub use forwarder::stats::{ ..., RuleStatsSnapshotBasic, ... };`
+    与 `RuleStats::snapshot_basic()` 返回类型保持一致。
+25. **去除 expect/unwrap 的最后一处**(v6 small fix):blake3 hash 取前 8 字节
+    从 `try_into().expect("blake3 hash >= 32 bytes")` 改成
+    `copy_from_slice(&h.as_bytes()[..8])`,静态尺寸保证、无 panic 路径。
+26. **所有 `RuleStats::snapshot()` 残留 → `snapshot_basic()`**(v6 small fix):
+    §3.4 接缝表、§4.2.3 reporter 样例、§4.4 描述、§5.2 client 段、风险表、
+    §10 finding 4 旧描述,全部口径统一。
 
 无未决问题。
 
