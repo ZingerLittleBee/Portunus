@@ -48,13 +48,13 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::forwarder::ClientRule;
-use crate::forwarder::sni::listener::{
+use portunus_forwarder::forwarder::ClientRule;
+use portunus_forwarder::forwarder::sni::listener::{
     SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
 };
-use crate::forwarder::sni::route_table::SniRoutingTable;
-use crate::forwarder::stats::RuleStats;
-use crate::resolver::{LiveResolver, Resolve};
+use portunus_forwarder::forwarder::sni::route_table::SniRoutingTable;
+use portunus_forwarder::forwarder::stats::RuleStats;
+use portunus_forwarder::resolver::{LiveResolver, Resolve};
 
 #[derive(Debug)]
 pub enum PortGroupError {
@@ -91,21 +91,21 @@ pub(crate) struct GroupMember {
     /// 011-rate-limiting-qos: per-rule data-plane limiter. Carried
     /// verbatim from `ClientRule.rate_limit` so the SNI dispatcher
     /// can apply the same admission gate as the legacy accept path.
-    pub(crate) rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+    pub(crate) rate_limit: Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
     /// 011-rate-limiting-qos: per-rule reject/active stats accumulator.
     pub(crate) rate_limit_stats:
-        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     /// 011-rate-limiting-qos: per-owner data-plane limiter. Threaded
     /// through so capped SNI rules enforce the owner-scope cap.
     pub(crate) owner_rate_limit:
-        Option<Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitHandle>>,
     /// 011-rate-limiting-qos: per-owner reject/active stats accumulator.
     pub(crate) owner_rate_limit_stats:
-        Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     /// 013-traffic-quotas E2: per-(user, client) byte budget handle
     /// flowing from `ClientRule.quota` into the per-port `GroupMember`
     /// and onward into `SniRuleSlot.quota` on every rebuild.
-    pub(crate) quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
+    pub(crate) quota: Option<Arc<portunus_forwarder::forwarder::quota::QuotaHandle>>,
 }
 
 /// Per-port runtime: the bound listener task, the table watch
@@ -216,7 +216,7 @@ impl PortGroupManager {
             None => {
                 // First member — bind both IPv4 and IPv6 listeners where the
                 // platform supports them, sharing one routing table.
-                let listeners = crate::forwarder::range::bind_all(&PortRange::single(listen_port))
+                let listeners = portunus_forwarder::forwarder::range::bind_all(&PortRange::single(listen_port))
                     .map_err(|err| {
                         PortGroupError::BindFailed(std::io::Error::new(
                             std::io::ErrorKind::AddrInUse,
@@ -443,7 +443,7 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
+    use portunus_forwarder::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
     use portunus_core::{Hostname, PortRange, RuleId};
     use portunus_proto::v1::Protocol;
     use std::net::Ipv4Addr;
@@ -512,7 +512,7 @@ mod tests {
         for port in 50_100..50_200 {
             let mut mgr = PortGroupManager::new();
             let mut rule = rule(1, port, 9001, Some("api.example.com"));
-            rule.targets = vec![crate::forwarder::MultiTarget {
+            rule.targets = vec![portunus_forwarder::forwarder::MultiTarget {
                 spec: portunus_core::RuleTarget {
                     host: "127.0.0.1".into(),
                     port: 9001,
@@ -573,7 +573,7 @@ mod tests {
     /// `SniRuleSlot` and `proxy_with_preread_and_prelude`.
     #[tokio::test]
     async fn t074_apply_push_carries_owner_rate_limit_into_group_member() {
-        use crate::forwarder::rate_limit::scope::{
+        use portunus_forwarder::forwarder::rate_limit::scope::{
             OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
         };
         use portunus_core::RateLimit;
@@ -626,8 +626,8 @@ mod tests {
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use crate::forwarder::sni::client_hello::build_client_hello;
-    use crate::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
+    use portunus_forwarder::forwarder::sni::client_hello::build_client_hello;
+    use portunus_forwarder::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
     use portunus_core::{Hostname, PortRange, RuleId, Target};
     use portunus_proto::v1::Protocol;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -1257,10 +1257,10 @@ mod e2e_tests {
     /// and `OwnerConcurrent` must tick exactly once.
     #[tokio::test]
     async fn t075_sni_dispatcher_enforces_owner_concurrent_cap_end_to_end() {
-        use crate::forwarder::rate_limit::scope::{
+        use portunus_forwarder::forwarder::rate_limit::scope::{
             OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
         };
-        use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
+        use portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
         use portunus_core::{RateLimit, RejectReason};
         use std::time::Duration;
 

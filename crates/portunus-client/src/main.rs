@@ -2,10 +2,7 @@
 
 mod bundle;
 mod control;
-mod forwarder;
 mod port_groups;
-mod resolver;
-mod shutdown;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -17,7 +14,7 @@ use tracing::{error, info};
 
 use crate::bundle::{CredentialBundle, resolve_bundle_path};
 use crate::control::ReconnectConfig;
-use crate::shutdown::Shutdown;
+use portunus_forwarder::shutdown::Shutdown;
 
 #[derive(Parser, Debug)]
 #[command(name = "portunus-client", version, about = "Portunus edge client")]

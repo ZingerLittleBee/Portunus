@@ -1803,6 +1803,7 @@ dependencies = [
  "nix",
  "portunus-auth",
  "portunus-core",
+ "portunus-forwarder",
  "portunus-proto",
  "prost",
  "rand 0.8.6",
@@ -1856,6 +1857,25 @@ dependencies = [
 [[package]]
 name = "portunus-forwarder"
 version = "1.4.0"
+dependencies = [
+ "async-trait",
+ "criterion",
+ "hickory-resolver",
+ "nix",
+ "portunus-auth",
+ "portunus-core",
+ "rand 0.8.6",
+ "rustls",
+ "serde",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "portunus-proto"
