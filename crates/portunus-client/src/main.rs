@@ -3,6 +3,7 @@
 mod bundle;
 mod control;
 mod port_groups;
+mod wire;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
