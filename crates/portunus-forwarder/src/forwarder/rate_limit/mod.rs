@@ -19,3 +19,6 @@ pub mod bucket;
 pub mod copy;
 pub mod scope;
 pub mod stats;
+
+pub use scope::*;
+pub use stats::*;

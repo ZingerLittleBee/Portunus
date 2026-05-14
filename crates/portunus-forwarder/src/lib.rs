@@ -4,3 +4,44 @@
 pub mod forwarder;
 pub mod resolver;
 pub mod shutdown;
+
+// Rules and lifecycle
+pub use forwarder::{
+    ClientRule, MultiTarget, MultiTargetObservability,
+    RuleStatusEvent, run as run_forwarder,
+};
+
+// Quota (client constructs; standalone never instantiates)
+pub use forwarder::quota::QuotaHandle;
+
+// Wire-neutral stats snapshot types + getters
+pub use forwarder::stats::{
+    RuleStats,
+    RuleStatsSnapshot, RuleStatsSnapshotBasic,
+    PerPortStatsSnapshot, PerTargetStatsSnapshot,
+    RateLimitStatsSnapshot, OwnerRateLimitStatsSnapshot,
+    SniListenerStatsSnapshot,
+    RateLimitRejectReason, TargetHealth,
+};
+
+// SNI data-plane entry points (client port_groups consumes)
+pub use forwarder::sni::{
+    SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
+};
+
+// Rate limit control-plane handles (client constructs)
+pub use forwarder::rate_limit::{
+    RateLimitScopeManager,
+    OwnerRateLimitHandle, OwnerRateLimitStatsRegistry,
+    RateLimitStatsAccumulator,
+    RuleRateLimitHandle,
+};
+
+// PROXY protocol prelude
+pub use forwarder::proxy_protocol::ProxyProtocolPrelude;
+
+// Resolver
+pub use resolver::{Resolve, LiveResolver, HickoryResolver};
+
+// Shutdown primitive
+pub use shutdown::Shutdown;
