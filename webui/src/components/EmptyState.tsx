@@ -1,5 +1,14 @@
 import { type LucideIcon, Inbox } from "lucide-react";
 
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+
 interface EmptyStateProps {
   Icon?: LucideIcon;
   title: string;
@@ -9,11 +18,15 @@ interface EmptyStateProps {
 
 export function EmptyState({ Icon = Inbox, title, description, action }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 p-12 text-center">
-      <Icon className="h-10 w-10 text-muted-foreground" aria-hidden />
-      <h3 className="text-lg font-medium">{title}</h3>
-      {description && <p className="max-w-md text-sm text-muted-foreground">{description}</p>}
-      {action && <div className="mt-2">{action}</div>}
-    </div>
+    <Empty>
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <Icon aria-hidden />
+        </EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+        {description && <EmptyDescription>{description}</EmptyDescription>}
+      </EmptyHeader>
+      {action && <EmptyContent>{action}</EmptyContent>}
+    </Empty>
   );
 }
