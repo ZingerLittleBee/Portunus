@@ -8,9 +8,10 @@
 //!       one `QuotaExhaustedEvent` per pair the first time bytes_used
 //!       crosses monthly_bytes.
 
+use crate::metrics::Metrics;
+use crate::store::Store;
 use crate::traffic_quotas::cache::TrafficQuotaCache;
 use crate::traffic_quotas::samples;
-use crate::store::Store;
 use portunus_core::RuleId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,6 +48,7 @@ struct Inner {
     cache: TrafficQuotaCache,
     exhaust_tx: mpsc::Sender<QuotaExhaustedEvent>,
     prev: Mutex<PrevMap>,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl TrafficAggregator {
@@ -62,6 +64,25 @@ impl TrafficAggregator {
                 cache,
                 exhaust_tx,
                 prev: Mutex::new(PrevMap::default()),
+                metrics: None,
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn with_metrics(
+        store: Store,
+        cache: TrafficQuotaCache,
+        exhaust_tx: mpsc::Sender<QuotaExhaustedEvent>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                store,
+                cache,
+                exhaust_tx,
+                prev: Mutex::new(PrevMap::default()),
+                metrics: Some(metrics),
             }),
         }
     }
@@ -133,6 +154,27 @@ impl TrafficAggregator {
             .accumulate(owner_user_id, client_name, delta_total, now_unix_sec)
         {
             Ok(Some((row, just_exhausted))) => {
+                if let Some(metrics) = self.inner.metrics.as_ref() {
+                    let labels = [row.user_id.as_str(), row.client_name.as_str()];
+                    metrics
+                        .traffic_quota_bytes_used
+                        .with_label_values(&labels)
+                        .set(row.current_period_bytes_used);
+                    metrics
+                        .traffic_quota_bytes_limit
+                        .with_label_values(&labels)
+                        .set(row.monthly_bytes);
+                    metrics
+                        .traffic_quota_exhausted
+                        .with_label_values(&labels)
+                        .set(i64::from(row.is_exhausted()));
+                    if just_exhausted {
+                        metrics
+                            .traffic_quota_exhausted_total
+                            .with_label_values(&labels)
+                            .inc();
+                    }
+                }
                 if just_exhausted {
                     // First-time exhausted. Emit one event; downstream
                     // pushes TrafficQuotaUpdate{exhausted=true} to client.
