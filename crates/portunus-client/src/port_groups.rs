@@ -429,8 +429,7 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
 mod tests {
     use super::*;
     use portunus_forwarder::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
-    use portunus_core::{Hostname, PortRange, RuleId};
-    use portunus_proto::v1::Protocol;
+    use portunus_core::{Hostname, PortRange, Protocol, RuleId};
     use std::net::Ipv4Addr;
 
     #[derive(Default)]
@@ -613,8 +612,7 @@ mod e2e_tests {
     use super::*;
     use portunus_forwarder::forwarder::sni::client_hello::build_client_hello;
     use portunus_forwarder::resolver::{Resolve, ResolveAnswer, ResolverConfig, ResolverError};
-    use portunus_core::{Hostname, PortRange, RuleId, Target};
-    use portunus_proto::v1::Protocol;
+    use portunus_core::{Hostname, PortRange, Protocol, RuleId, Target};
     use std::net::{Ipv4Addr, SocketAddr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -1037,7 +1035,7 @@ mod e2e_tests {
             let snap = mgr.snapshot_listener_stats();
             let row = snap
                 .iter()
-                .find(|r| r.listen_port == u32::from(listen_port));
+                .find(|r| r.listen_port == listen_port);
             if let Some(r) = row {
                 if r.sni_route_miss_total >= 4 && r.client_hello_parse_failures_total >= 3 {
                     assert_eq!(r.sni_route_miss_total, 4);
@@ -1213,7 +1211,7 @@ mod e2e_tests {
             let snap = mgr.snapshot_listener_stats();
             let row = snap
                 .iter()
-                .find(|r| r.listen_port == u32::from(listen_port));
+                .find(|r| r.listen_port == listen_port);
             if let Some(r) = row {
                 if r.client_hello_parse_failures_total >= 1 {
                     break;

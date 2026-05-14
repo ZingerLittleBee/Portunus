@@ -265,9 +265,9 @@ impl<'a> Cursor<'a> {
 /// The width-clamping casts (`as u16`, `as u8`) are intentional:
 /// fixture inputs are bounded short hostnames so truncation is
 /// structurally impossible.
-#[cfg(test)]
+#[doc(hidden)]
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn build_client_hello(sni: Option<&str>) -> Vec<u8> {
+pub fn build_client_hello(sni: Option<&str>) -> Vec<u8> {
     let mut body = Vec::with_capacity(256);
     body.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
     body.extend_from_slice(&[0xab; 32]); // random
