@@ -405,7 +405,8 @@
       "collapse": "收起",
       "duplicateTooltip": "后端存在该用户在此 client 上的额外 grant；编辑保存将合并它们。",
       "duplicateBanner": "检测到 {{count}} 条额外的历史 grant。保存编辑将合并为 1 条。",
-      "readOnlyHint": "请到用户详情页编辑此条目。"
+      "readOnlyHint": "请到用户详情页编辑此条目。",
+      "staleAfterDeleteHint": "更新部分生效：旧的 grant 已删除但新 grant 创建失败，请重新添加该条目。"
     },
     "combobox": {
       "placeholder": "选择 client…",

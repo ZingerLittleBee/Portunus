@@ -405,7 +405,8 @@
       "collapse": "Collapse row",
       "duplicateTooltip": "Backend has additional grants for this user+client; editing will merge them.",
       "duplicateBanner": "Detected {{count}} extra legacy grant(s). Saving here will merge them into one.",
-      "readOnlyHint": "Edit this entry from the user detail page."
+      "readOnlyHint": "Edit this entry from the user detail page.",
+      "staleAfterDeleteHint": "Update partially applied: previous grants were removed but the new one failed to create. Please re-add the entry."
     },
     "combobox": {
       "placeholder": "Select a client…",

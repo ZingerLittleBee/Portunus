@@ -32,6 +32,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [staleFailure, setStaleFailure] = useState<string | null>(null);
   const update = useUpdateAccessEntry(userId);
   const del = useDeleteAccessEntry(userId);
 
@@ -62,6 +63,14 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
         err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
       setServerError(msg);
       toast.error(t("userQuota.toast.updateFailed"));
+
+      // If the recreate-after-delete leg failed, the user's access is now
+      // gone with no automatic recovery. Persist a row-level banner so
+      // the operator sees the inconsistency even after the row re-renders.
+      const stage = (err as { stage?: string }).stage;
+      if (stage === "grant_create") {
+        setStaleFailure(t("userQuota.row.staleAfterDeleteHint"));
+      }
     }
   }
 
@@ -135,6 +144,11 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
               <AlertTriangle className="inline ml-2 h-4 w-4 text-amber-500" />
             </span>
           )}
+          {staleFailure && (
+            <span title={staleFailure} className="ml-2 inline-flex">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+            </span>
+          )}
         </TableCell>
         <TableCell>
           {!readOnly && (
@@ -152,6 +166,12 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
       {expanded && (
         <TableRow>
           <TableCell colSpan={10} className="bg-muted/30">
+            {staleFailure && (
+              <Alert variant="destructive" className="mb-3">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>{staleFailure}</AlertDescription>
+              </Alert>
+            )}
             {entry.legacy_duplicates && (
               <Alert className="mb-3">
                 <AlertTriangle className="h-4 w-4" />

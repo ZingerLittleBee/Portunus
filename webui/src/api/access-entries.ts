@@ -90,7 +90,11 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
     enabled: userId.length > 0,
   });
 
-  const grants = grantsQ.data ?? [];
+  // Filter wildcard grants — they cannot be edited via the user-centric
+  // flow (no specific client to attach a cap to). The legacy /grants
+  // surface is gone, so wildcard grants effectively become invisible
+  // here; that is an acceptable v1.3 limitation.
+  const grants = (grantsQ.data ?? []).filter((g) => g.client !== "*");
   const uniquePairs = Array.from(
     new Set(grants.map((g) => `${g.user_id}::${g.client}`)),
   ).map((k) => {
