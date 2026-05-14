@@ -34,9 +34,6 @@ fn serialize_prefer_ipv6_as_bool<S: serde::Serializer>(
     s.serialize_bool(v.unwrap_or(false))
 }
 
-// Phase 1 of the standalone-forwarder spec — single authoritative
-// `Protocol` enum now lives in portunus_core. JSON wire shape unchanged
-// (still `"tcp"` / `"udp"` lowercase via serde rename_all).
 pub use portunus_core::Protocol;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
