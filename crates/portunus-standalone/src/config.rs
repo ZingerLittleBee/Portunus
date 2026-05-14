@@ -97,9 +97,15 @@ impl Default for GlobalConfig {
     }
 }
 
-fn default_log_level() -> String { "info".into() }
-fn default_log_format() -> String { "json".into() }
-fn default_shutdown_drain_secs() -> u64 { 30 }
+fn default_log_level() -> String {
+    "info".into()
+}
+fn default_log_format() -> String {
+    "json".into()
+}
+fn default_shutdown_drain_secs() -> u64 {
+    30
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,8 +132,12 @@ impl Default for DefaultsConfig {
     }
 }
 
-fn default_udp_max_flows() -> u32 { 1024 }
-fn default_udp_flow_idle_secs() -> u32 { 60 }
+fn default_udp_max_flows() -> u32 {
+    1024
+}
+fn default_udp_flow_idle_secs() -> u32 {
+    60
+}
 
 /// Raw TOML representation of a single forwarding rule.
 /// Both `listen_port` and `listen_ports` are optional here; XOR is

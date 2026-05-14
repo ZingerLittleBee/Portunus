@@ -125,7 +125,7 @@ pub enum ResolveFailReason {
 }
 
 impl ResolveFailReason {
-    #[must_use] 
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NxDomain => "nxdomain",
@@ -142,7 +142,7 @@ impl ResolveFailReason {
     /// error message for SOA-class strings — cheap, no extra deps —
     /// because hickory's error type doesn't expose a stable
     /// programmatic discriminator across versions.
-    #[must_use] 
+    #[must_use]
     pub fn classify(err: &ResolverError) -> Self {
         match err {
             ResolverError::EmptyAnswer => Self::AllAddrsUnreachable,
@@ -185,7 +185,7 @@ impl ConnectError {
     /// The richer classification is consumed before this point by
     /// `proxy::proxy` which emits the structured `rule.dns_failed`
     /// event when applicable.
-    #[must_use] 
+    #[must_use]
     pub fn into_io(self) -> io::Error {
         match self {
             Self::Resolution(e) => io::Error::other(format!("dns_resolution_failed: {e}")),

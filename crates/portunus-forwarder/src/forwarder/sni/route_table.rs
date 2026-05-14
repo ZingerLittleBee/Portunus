@@ -127,7 +127,7 @@ impl SniRoutingTable {
     /// Precedence: exact → wildcard (longest first) → fallback.
     /// `None` skips exact and wildcard (those require a host); a
     /// no-SNI peer can only land on the fallback.
-    #[must_use] 
+    #[must_use]
     pub fn lookup(&self, sni: Option<&str>) -> SniMatch {
         if let Some(host) = sni {
             // Lowercased + dot-stripped by `client_hello::parse`,

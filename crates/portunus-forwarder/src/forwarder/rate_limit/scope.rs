@@ -348,7 +348,7 @@ pub enum LayeredAcquire {
 /// first, then rule. Both layers are independently optional so
 /// uncapped rules / owners short-circuit through (and the v0.10
 /// byte-stable hot path is preserved when both are `None`).
-#[must_use] 
+#[must_use]
 pub fn try_acquire_layered(
     owner: Option<&Arc<OwnerRateLimitHandle>>,
     rule: Option<&Arc<RuleRateLimitHandle>>,

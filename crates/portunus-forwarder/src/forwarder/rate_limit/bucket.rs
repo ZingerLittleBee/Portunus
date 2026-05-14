@@ -56,7 +56,7 @@ pub enum Acquire {
 
 impl TokenBucket {
     /// Construct a fresh bucket with the pool full at `burst`.
-    #[must_use] 
+    #[must_use]
     pub fn new(rate_per_sec: u64, burst: u64) -> Self {
         debug_assert!(rate_per_sec > 0, "rate must be > 0 (validated upstream)");
         debug_assert!(burst > 0, "burst must be > 0 (validated upstream)");
