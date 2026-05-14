@@ -461,6 +461,21 @@ impl Resolve for HickoryResolver {
     }
 }
 
+impl LiveResolver<HickoryResolver> {
+    /// Build a resolver wired to the system `/etc/resolv.conf` with default
+    /// transport options. Convenience for callers that don't want to wire
+    /// `HickoryResolver::from_system(&ResolverConfig::default())` + `LiveResolver::new`
+    /// themselves.
+    ///
+    /// Returns an error if the system resolver config cannot be loaded (e.g.
+    /// malformed `/etc/resolv.conf`). Never panics.
+    pub fn with_system_defaults() -> io::Result<Self> {
+        let config = ResolverConfig::default();
+        let inner = Arc::new(HickoryResolver::from_system(&config)?);
+        Ok(Self::new(inner, config))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,5 +857,16 @@ mod tests {
             .await
             .expect("v6-preferred dial MUST fall back to v4 echo, not error");
         drop(stream);
+    }
+
+    #[tokio::test]
+    async fn with_system_defaults_constructs_resolver() {
+        let r = LiveResolver::<HickoryResolver>::with_system_defaults();
+        // CI hosts can have weird /etc/resolv.conf; we only assert "constructed".
+        assert!(
+            r.is_ok(),
+            "system-default LiveResolver should construct in test env: {:?}",
+            r.err()
+        );
     }
 }
