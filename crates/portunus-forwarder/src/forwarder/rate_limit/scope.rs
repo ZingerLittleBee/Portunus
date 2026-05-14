@@ -781,20 +781,20 @@ impl OwnerRateLimitStatsRegistry {
         acc
     }
 
-    /// Snapshot every owner's current counters as a wire-shape
-    /// `repeated OwnerRateLimitStats` payload. Owners whose
-    /// accumulator drains to `None` (no event ever fired and gauge
-    /// zero) are skipped — proto3 default-stripping keeps the wire
-    /// shape byte-stable with v0.10 when no owner caps have fired.
+    /// Snapshot every owner's current counters as a wire-neutral
+    /// `Vec<OwnerRateLimitStatsSnapshot>`. Owners whose accumulator
+    /// drains to `None` (no event ever fired and gauge zero) are
+    /// skipped — preserves byte-stability with v0.10 when no owner
+    /// caps have fired.
     #[must_use]
-    pub fn drain_to_proto(&self) -> Vec<portunus_proto::v1::OwnerRateLimitStats> {
+    pub fn drain(&self) -> Vec<crate::forwarder::stats::OwnerRateLimitStatsSnapshot> {
         let guard = self.owners.read().expect("owner-stats registry poisoned");
         let mut out = Vec::with_capacity(guard.len());
         for (owner_id, acc) in guard.iter() {
-            if let Some(stats) = acc.drain_to_proto() {
-                out.push(portunus_proto::v1::OwnerRateLimitStats {
+            if let Some(stats) = acc.drain() {
+                out.push(crate::forwarder::stats::OwnerRateLimitStatsSnapshot {
                     owner_id: owner_id.0.clone(),
-                    stats: Some(stats),
+                    stats,
                 });
             }
         }
@@ -1493,29 +1493,26 @@ mod tests {
         assert_eq!(reg.len(), 2);
     }
 
-    /// T032: drain emits one OwnerRateLimitStats entry per owner with
-    /// non-empty counters; owners whose accumulators have no events
+    /// T032: drain emits one OwnerRateLimitStatsSnapshot entry per owner
+    /// with non-empty counters; owners whose accumulators have no events
     /// are skipped (proto3 default-stripping preserves byte-stability
     /// with v0.10).
     #[test]
     fn t032_stats_registry_drain_skips_idle_owners() {
-        use crate::forwarder::rate_limit::scope::RejectReason;
+        use crate::forwarder::stats::RateLimitRejectReason;
         let reg = OwnerRateLimitStatsRegistry::new();
         let alice = reg.get_or_create(&OwnerId::new("alice"));
         let _bob = reg.get_or_create(&OwnerId::new("bob"));
         // Alice has activity; Bob is idle.
         alice.record_reject(RejectReason::OwnerConcurrent);
 
-        let drained = reg.drain_to_proto();
+        let drained = reg.drain();
         assert_eq!(drained.len(), 1, "only owners with activity drain");
         assert_eq!(drained[0].owner_id, "alice");
-        let stats = drained[0].stats.as_ref().expect("stats present");
+        let stats = &drained[0].stats;
         assert_eq!(stats.reject_total.len(), 1);
-        assert_eq!(
-            stats.reject_total[0].reason,
-            portunus_proto::v1::RateLimitRejectReason::OwnerConcurrent as i32,
-        );
-        assert_eq!(stats.reject_total[0].total, 1);
+        assert_eq!(stats.reject_total[0].0, RateLimitRejectReason::OwnerConcurrent);
+        assert_eq!(stats.reject_total[0].1, 1);
     }
 
     /// T032: drain on an empty registry is a no-op — keeps the
@@ -1524,7 +1521,28 @@ mod tests {
     #[test]
     fn t032_stats_registry_drain_empty_when_no_owners() {
         let reg = OwnerRateLimitStatsRegistry::new();
-        assert!(reg.drain_to_proto().is_empty());
+        assert!(reg.drain().is_empty());
+    }
+
+    /// registry_drain_is_empty_for_unused_owners: new wire-neutral drain
+    /// contract — empty registry → empty Vec.
+    #[test]
+    fn registry_drain_is_empty_for_unused_owners() {
+        let reg = OwnerRateLimitStatsRegistry::default();
+        assert!(reg.drain().is_empty());
+    }
+
+    /// registry_drain_returns_owner_with_active_count: non-default
+    /// accumulator must appear in the drain output.
+    #[test]
+    fn registry_drain_returns_owner_with_active_count() {
+        let reg = OwnerRateLimitStatsRegistry::default();
+        let acc = reg.get_or_create(&OwnerId::new("owner-a"));
+        acc.set_active_connections(3);
+        let snaps = reg.drain();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].owner_id, "owner-a");
+        assert_eq!(snaps[0].stats.active_connections, 3);
     }
 
     /// T076 / R-008: hot-lowering an owner concurrent cap must not

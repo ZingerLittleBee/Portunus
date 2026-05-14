@@ -45,6 +45,33 @@ pub struct RateLimitStatsSnapshot {
     pub active_connections: u32,
 }
 
+/// Wire-neutral mirror of `proto::v1::OwnerRateLimitStats`. Pairs an owner
+/// identifier with its drained `RateLimitStatsSnapshot` so the client crate
+/// can translate via `From<OwnerRateLimitStatsSnapshot>` without touching
+/// proto types in the data plane.
+#[derive(Clone, Debug, Default)]
+pub struct OwnerRateLimitStatsSnapshot {
+    pub owner_id: String,
+    pub stats: RateLimitStatsSnapshot,
+}
+
+impl RateLimitRejectReason {
+    /// Stable mapping to proto enum integer values. Lets the data plane
+    /// key a `[u64; N]` counter array without pulling in proto types.
+    #[must_use]
+    pub fn as_index(self) -> usize {
+        match self {
+            Self::Unspecified => 0,
+            Self::ConnConcurrent => 1,
+            Self::ConnRate => 2,
+            Self::UdpFlowRate => 3,
+            Self::OwnerConcurrent => 4,
+            Self::OwnerConnRate => 5,
+            Self::OwnerUdpFlowRate => 6,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PerPortCounters {
     pub bytes_in: AtomicU64,
