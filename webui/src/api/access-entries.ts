@@ -142,7 +142,7 @@ export interface AccessEntryError extends Error {
   recoverable: boolean;
 }
 
-function makeError(
+export function makeError(
   stage: "grant" | "cap" | "rollback",
   cause: unknown,
   recoverable: boolean,
