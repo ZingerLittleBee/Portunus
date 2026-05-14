@@ -364,7 +364,9 @@
     "addOwnerIdLabel": "所有者 (用户 ID)",
     "addOwnerIdPlaceholder": "例如 alice",
     "addContinue": "继续",
-    "addErrorEmpty": "请输入用户 ID。"
+    "addErrorEmpty": "请输入用户 ID。",
+    "openInUser": "在用户页编辑",
+    "movedHint": "Owner 配额编辑已迁移到用户详情页。"
   },
   "audit": {
     "title": "审计日志",

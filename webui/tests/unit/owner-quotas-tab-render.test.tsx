@@ -1,13 +1,15 @@
 /// 011-rate-limiting-qos T037: integration test for the Owner quotas
 /// tab on the client detail page. Stubs `fetch` so the TanStack
 /// Query hooks see realistic shapes; asserts the empty state, list
-/// rendering, and editor open flow. Renders `OwnerQuotasTab` directly
-/// rather than driving Radix Tabs in jsdom (which doesn't dispatch
-/// the pointer events Radix listens for) — the tab wiring is itself
-/// trivial enough to validate manually.
+/// rendering, and the "Open in user" navigation button.
+///
+/// Updated for Task 12: OwnerQuotasTab is now read-only — the inline
+/// editor and "Add owner cap" dialog have been removed. Each row now
+/// shows an "Open in user" button that navigates to /users/<owner_id>.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "@/i18n";
@@ -42,9 +44,11 @@ function renderTab(clientName: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   globalThis.localStorage?.clear?.();
   return render(
-    <QueryClientProvider client={qc}>
-      <OwnerQuotasTab clientName={clientName} />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={qc}>
+        <OwnerQuotasTab clientName={clientName} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -95,47 +99,31 @@ describe("OwnerQuotasTab", () => {
     expect(screen.getByText(/^uncapped$/i)).toBeDefined();
   });
 
-  it("opens the editor with hydrated cap summary when an owner has a cap", async () => {
+  it("renders an 'Open in user' button for each owner row", async () => {
     mockFetchByPath({
       "/v1/clients/edge-01/owners": {
-        body: [{ owner_id: "alice", rule_count: 2, has_rate_limit: true }],
-      },
-      "/v1/clients/edge-01/owners/alice/rate-limit": {
-        body: {
-          client_name: "edge-01",
-          owner_id: "alice",
-          rate_limit: { bandwidth_in_bps: 1048576, concurrent_connections: 100 },
-          updated_at_unix_ms: 1715292000000,
-        },
+        body: [
+          { owner_id: "alice", rule_count: 2, has_rate_limit: true },
+          { owner_id: "bob", rule_count: 1, has_rate_limit: false },
+        ],
       },
     });
     renderTab("edge-01");
     await waitFor(() => screen.getByText("alice"));
-    fireEvent.click(screen.getByText(/Edit cap/i));
-    await waitFor(() => {
-      expect(screen.getByText(/Edit owner cap/i)).toBeDefined();
-    });
-    // The "Current cap" summary depends on the GET .../rate-limit
-    // resolving — wrap the assertion in waitFor so we don't race.
-    await waitFor(() => {
-      expect(screen.getByText(/↓1\.0M · ≤100/)).toBeDefined();
-    });
+    const buttons = screen.getAllByRole("button", { name: /open in user/i });
+    expect(buttons).toHaveLength(2);
   });
 
-  it("opens an empty editor when the owner has no envelope (404)", async () => {
+  it("shows the movedHint paragraph and no 'Add owner cap' button", async () => {
     mockFetchByPath({
-      "/v1/clients/edge-01/owners": {
-        body: [{ owner_id: "bob", rule_count: 1, has_rate_limit: false }],
-      },
-      "/v1/clients/edge-01/owners/bob/rate-limit": {
-        status: 404,
-        body: { error: { code: "owner_rate_limit_not_found", message: "no envelope" } },
-      },
+      "/v1/clients/edge-01/owners": { body: [] },
     });
     renderTab("edge-01");
-    await waitFor(() => screen.getByText("bob"));
-    fireEvent.click(screen.getByText(/Set cap/i));
-    await waitFor(() => screen.getByText(/Edit owner cap/i));
-    expect(screen.queryByText(/Current cap:/i)).toBeNull();
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Owner quota editing has moved to the user detail page/i),
+      ).toBeDefined();
+    });
+    expect(screen.queryByRole("button", { name: /add owner cap/i })).toBeNull();
   });
 });

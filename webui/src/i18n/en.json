@@ -364,7 +364,9 @@
     "addOwnerIdLabel": "Owner (user ID)",
     "addOwnerIdPlaceholder": "e.g. alice",
     "addContinue": "Continue",
-    "addErrorEmpty": "Please enter a user ID."
+    "addErrorEmpty": "Please enter a user ID.",
+    "openInUser": "Open in user",
+    "movedHint": "Owner quota editing has moved to the user detail page."
   },
   "audit": {
     "title": "Audit log",
