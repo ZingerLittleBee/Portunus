@@ -123,6 +123,7 @@ nix = { version = "0.29", default-features = false, features = ["fs", "net", "so
 portunus-proto = { path = "crates/portunus-proto" }
 portunus-core = { path = "crates/portunus-core" }
 portunus-auth = { path = "crates/portunus-auth" }
+portunus-forwarder = { path = "crates/portunus-forwarder" }
 
 # Dev dependencies
 criterion = { version = "0.5", features = ["html_reports"] }

@@ -18,7 +18,7 @@ path = "src/main.rs"
 portunus-core      = { workspace = true }
 portunus-auth      = { workspace = true }
 portunus-proto     = { workspace = true }
-portunus-forwarder = { path = "../portunus-forwarder" }
+portunus-forwarder = { workspace = true }
 
 # UDP forwarding (v0.4.0) uses `tokio::net::UdpSocket` from the existing `net` feature — no new dep.
 tokio = { workspace = true }

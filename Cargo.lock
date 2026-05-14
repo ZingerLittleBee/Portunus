@@ -1936,6 +1936,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "portunus-standalone"
+version = "1.4.0"
+dependencies = [
+ "assert_cmd",
+ "blake3",
+ "clap",
+ "libc",
+ "portunus-core",
+ "portunus-forwarder",
+ "serde",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
