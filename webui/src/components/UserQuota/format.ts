@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export function formatBps(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "—";
   if (n < 1_000) return `${n} bps`;
   if (n < 1_000_000) return `${(n / 1_000).toFixed(1)} KB/s`;
   if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)} MB/s`;
@@ -10,7 +11,7 @@ export function formatBps(n: number): string {
 export function parseBpsInput(raw: string): number | null {
   const s = raw.trim();
   if (!s) return null;
-  const m = s.match(/^(\d+(?:\.\d+)?)\s*([KMG]?)B?\/?s?$/i);
+  const m = s.match(/^(\d+(?:\.\d+)?)\s*([KMG]?)B?(?:\/s)?$/i);
   if (!m) {
     const n = Number(s);
     return Number.isFinite(n) && n >= 0 ? n : null;
@@ -43,6 +44,11 @@ const baseShape = {
   new_connections_burst: positiveOrNull,
 };
 
+/// Validation schema for the user-quota form: combines a grant (client +
+/// port range + protocols) with an optional rate-limit cap. When
+/// `unlimited` is true, all cap fields must be empty/null; otherwise at
+/// least one of the four caps must be > 0. Burst values require their
+/// matching rate to be set.
 export const accessEntrySchema = z
   .object(baseShape)
   .refine((d) => d.listen_port_start <= d.listen_port_end, {

@@ -6,6 +6,8 @@ describe("formatBps", () => {
   it("formats 1500 as 1.5 KB/s", () => expect(formatBps(1500)).toBe("1.5 KB/s"));
   it("formats 12_500_000 as 12.5 MB/s", () => expect(formatBps(12_500_000)).toBe("12.5 MB/s"));
   it("formats 5_000_000_000 as 5.0 GB/s", () => expect(formatBps(5_000_000_000)).toBe("5.0 GB/s"));
+  it("returns dash for negative", () => expect(formatBps(-1)).toBe("—"));
+  it("returns dash for NaN", () => expect(formatBps(NaN)).toBe("—"));
 });
 
 describe("parseBpsInput", () => {
@@ -14,6 +16,9 @@ describe("parseBpsInput", () => {
   it("parses bare number as raw bps", () => expect(parseBpsInput("42")).toBe(42));
   it("returns null on garbage", () => expect(parseBpsInput("abc")).toBeNull());
   it("returns null on empty", () => expect(parseBpsInput("")).toBeNull());
+  it("rejects bare s suffix", () => expect(parseBpsInput("100s")).toBeNull());
+  it("rejects bare Ms suffix", () => expect(parseBpsInput("1.5Ms")).toBeNull());
+  it("accepts MB/s without space", () => expect(parseBpsInput("1.5MB/s")).toBe(1_500_000));
 });
 
 describe("accessEntrySchema", () => {
