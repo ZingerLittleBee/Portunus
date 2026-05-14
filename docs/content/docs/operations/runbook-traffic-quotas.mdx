@@ -1,0 +1,259 @@
+---
+title: Traffic Quotas Runbook
+description: Per-(user, client) monthly byte budgets — enabling, anchoring billing periods, reading exhausted state, and understanding the bounded best-effort semantics.
+icon: Activity
+---
+
+Available since v1.4.0. Traffic quotas cap monthly bytes for each
+`(user, client)` pair. Enforcement is **bounded best-effort hard
+kill** on the data plane (see §4 below); the SQLite row in
+`traffic_quotas` is server-authoritative.
+
+A `(user, client)` pair without a row is **unlimited** — no quota
+push, no enforcement overhead. You opt in pair-by-pair.
+
+## 1. Enabling monthly quotas
+
+Quotas hang off the existing user resource. To enable a 1 TiB
+monthly budget for `alice` on client `edge-tokyo`:
+
+```sh
+curl -sS -X PUT \
+  -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+  -d '{"monthly_bytes": 1099511627776, "billing_anchor": 1717200000}'
+```
+
+Body fields:
+
+- `monthly_bytes` (required) — i64 byte cap. `0` is legal and means
+  "exhausted on first packet". The server rejects negative values and
+  values above `i64::MAX` with `400 invalid_quota_size`.
+- `billing_anchor` (optional) — unix seconds UTC marking the start
+  of the **first** period. Defaults to the server's current time at
+  PUT. **Immutable** afterwards (see §2). If you need to change it,
+  `DELETE` the quota and `PUT` a fresh one; this produces two audit
+  events and resets `current_period_bytes_used` to 0.
+
+The `(user, client)` pair must already have a grant; otherwise the
+server returns `422 quota_target_not_found`. If the target client is
+running a binary older than v1.4.0 the server returns
+`422 quota_unsupported_by_client` (capability gated on
+`Hello.client_version`).
+
+<Callout type="info">
+  PATCH-ing `monthly_bytes` later changes the cap without touching
+  the period boundary or `current_period_bytes_used`. See §5.
+</Callout>
+
+## 2. Billing anchor strategies
+
+`billing_anchor` is **immutable** and every period start is computed
+as an offset from the original anchor (not relative to the previous
+period). This prevents drift like `Jan 31 → Feb 28 → Mar 28 → …`.
+
+Two common strategies:
+
+**Fixed-on-1st** — uniform invoice cycle.
+
+```sh
+# 2026-01-01T00:00:00 UTC
+billing_anchor = 1735689600
+```
+
+Every period starts on the 1st at midnight UTC. Trivial to reconcile
+against external billing systems.
+
+**Provisioning anniversary** — each customer's period starts on the
+day they signed up.
+
+```sh
+billing_anchor = $(date -u +%s)   # right now
+```
+
+Spreads server-side rollovers across the calendar — useful if you
+have thousands of pairs and prefer not to schedule them all to flip
+at the same UTC midnight.
+
+**Calendar edge cases:**
+
+- **Jan 31 clamp** — `billing_anchor = 2026-01-31` produces period
+  starts `01-31, 02-28, 03-31, 04-30, 05-31, …` (each month clamped
+  to its last day, but always recomputed from the original anchor
+  day=31 so March still lands on the 31st).
+- **Leap year** — `billing_anchor = 2024-02-29` produces
+  `2025-02-28` (clamped), `2026-02-28`, `2027-02-28`, then
+  `2028-02-29` (leap year, day 29 honoured again).
+- **Server clock jump forward** (e.g. NTP correction past several
+  period boundaries) — the period-advance loop catches up to the
+  current period in one tick. Intermediate periods produce no
+  `bytes_used` snapshot but the 1m / 1h history samples are
+  unaffected.
+- **Server clock rewinds** — `next_start > now` stays true, no
+  rollover fires. Period progression is monotonic.
+
+## 3. Reading exhausted state
+
+Three ways to check whether a quota is exhausted.
+
+**HTTP**:
+
+```sh
+curl -sS \
+  -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+  https://portunus.example.com/v1/users/alice/quotas/edge-tokyo/status
+```
+
+```json
+{
+  "monthly_bytes": 1099511627776,
+  "current_period_bytes_used": 1099511627776,
+  "current_period_started_at": 1717200000,
+  "current_period_ends_at": 1719878400,
+  "exhausted": true,
+  "exhausted_at": 1717800000,
+  "last_report_at": 1717800003
+}
+```
+
+`exhausted_at` is `null` while the quota has remaining budget; it
+becomes a unix-seconds timestamp on the first server-side report
+that crossed the cap.
+
+**Prometheus** (server's `/metrics` endpoint):
+
+```text
+portunus_traffic_quota_exhausted{user="alice",client="edge-tokyo"} 1
+portunus_traffic_quota_bytes_used{user="alice",client="edge-tokyo"} 1099511627776
+portunus_traffic_quota_bytes_limit{user="alice",client="edge-tokyo"} 1099511627776
+portunus_traffic_quota_period_resets_total{user="alice",client="edge-tokyo"} 4
+portunus_traffic_quota_exhausted_total{user="alice",client="edge-tokyo"} 1
+```
+
+`_exhausted` is the live 0/1 gauge — alert on `== 1` for paging.
+`_exhausted_total` is monotonic; rate-of-change tells you how often
+the pair runs out across periods.
+
+**Web UI** — the AccessEntry row in `UserDetail` shows a per-period
+progress bar and an `EXHAUSTED` banner when the quota is consumed.
+
+## 4. What "bounded best-effort" means
+
+The data plane stops within **approximately one IO buffer or
+datagram** of the cap — not bit-exact. Spec §9.1 quantifies the
+overrun:
+
+| Data plane path                  | Per-connection steady-state overrun |
+| -------------------------------- | ----------------------------------- |
+| TCP userspace copy               | one `write_all` chunk (typically 64 KiB) |
+| TCP splice (Linux)               | one splice iteration (≤ 1 MiB, pipe size) |
+| UDP datagram                     | one datagram payload (≤ 65 KiB) |
+
+Steady-state overrun is bounded by `chunk_size × concurrent_flows`
+and is independent of bandwidth. A pair with 100 concurrent TCP
+connections crossing the cap at the same instant tops out at
+`100 × 64 KiB = 6.4 MiB` over-the-cap.
+
+A separate **recovery overrun** applies after a client restart:
+in-memory counters are lost, the server's view lags the link by up
+to one `StatsReport` interval (5 s), and the replayed
+`TrafficQuotaUpdate` may credit the difference. The window is:
+
+| Link bandwidth | Per-pair recovery overrun (StatsReport + RTT) |
+| -------------- | --------------------------------------------- |
+| 100 Mbps       | ~63 MiB                                       |
+| 1 Gbps         | ~630 MiB                                      |
+| 10 Gbps        | ~6.4 GiB                                      |
+
+**Buffer recommendation.** Provision the quota slightly under the
+contract:
+
+```text
+recommended_threshold =
+    monthly_bytes - max(monthly_bytes / 100,
+                        StatsReport_period × link_bytes_per_sec,
+                        65_536)
+```
+
+In words: set the cap at the lower of (a) 99 % of the contract, (b)
+the recovery overrun for the pair's expected peak bandwidth, or (c)
+64 KiB — whichever is largest. For most pairs the 1 % headroom (a)
+wins; for small caps on high-speed links (b) wins.
+
+<Callout type="warn">
+  Traffic quotas are **not bit-perfect billing**. Invoice-grade
+  per-byte accounting requires client-side counter persistence and a
+  cumulative ack protocol, both explicitly out of scope for v1.4.
+  Treat the cap as a hard ceiling with a known overrun envelope, not
+  as a meter.
+</Callout>
+
+## 5. Resetting usage mid-period
+
+The PATCH endpoint takes two independent operations that can be
+combined in one request:
+
+```sh
+curl -sS -X PATCH \
+  -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+  -d '{"clear_period_usage": true}'
+```
+
+`clear_period_usage: true` zeroes `current_period_bytes_used` and
+clears `exhausted_at`. The server immediately pushes a fresh
+`TrafficQuotaUpdate { action: SET, state: ... }` to the client so
+forwarding resumes without a reconnect.
+
+**What is NOT reset:**
+
+- `billing_anchor` — immutable.
+- `current_period_started_at` / `current_period_ends_at` — the
+  period boundary is unchanged. The next rollover still fires at the
+  same anniversary instant.
+- `traffic_samples_1m` / `traffic_samples_1h` history — clearing
+  usage does not retroactively delete samples; the chart shows the
+  bytes that flowed even though the counter was reset.
+
+To bump the cap and clear in one shot:
+
+```json
+{"monthly_bytes": 2199023255552, "clear_period_usage": true}
+```
+
+The server applies the new limit first, then clears, and pushes a
+single `TrafficQuotaUpdate` carrying the final state.
+
+<Callout type="info">
+  Use `clear_period_usage` to issue "extra bytes this period"
+  goodwill credits or to correct a mis-measured incident. To
+  permanently change the period boundary, `DELETE` + `PUT` with a
+  new `billing_anchor` — that produces two distinct audit events.
+</Callout>
+
+## 6. Migrating an unconfigured deployment
+
+There is no required migration. The v1.4 server's V008 SQLite
+migration only creates the `traffic_quotas`, `traffic_samples_1m`,
+`traffic_samples_1h`, and `traffic_rollup_state` tables — no
+backfill, no default rows.
+
+Upgrade ordering:
+
+1. Roll the server to v1.4.0. Existing pairs continue to forward
+   exactly as before — no `traffic_quotas` row, no `QuotaHandle`
+   installed on the client, no per-IO cost.
+2. Roll clients to v1.4.0 at your own pace. v1.3.x and earlier
+   clients reject any PUT that targets them with
+   `422 quota_unsupported_by_client`; rules continue working.
+3. Once a `(user, client)` pair is on v1.4 end-to-end, `PUT` a quota
+   on the pairs you want metered. The server pushes
+   `TrafficQuotaUpdate { action: SET }` immediately and the client
+   begins consuming the budget.
+
+A pair you never PUT remains unmetered forever. To stop metering a
+configured pair without keeping the row, `DELETE` the quota — the
+server pushes `TrafficQuotaUpdate { action: REMOVE }` and the
+client tears down the `QuotaHandle`.

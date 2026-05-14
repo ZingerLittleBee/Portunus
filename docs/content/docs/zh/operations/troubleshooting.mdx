@@ -179,6 +179,103 @@ histogram_quantile(0.99,
 长尾（接近 3 s）通常意味着 client 在慢网络下分片发送 ClientHello —— 不是
 Portunus 的问题。
 
+## 流量配额（v1.4+）
+
+完整说明见 [流量配额运维手册](/zh/docs/operations/runbook-traffic-quotas)。
+
+### "终端用户报告连接在 GB 边界被断开"
+
+怀疑这个 pair 撞到了月配额。先看实时 gauge：
+
+```text
+portunus_traffic_quota_exhausted{user="alice", client="edge-tokyo"} 1
+```
+
+值为 `1` 表示数据面已经把这个 pair 的转发硬杀，并拒绝新连接。用
+HTTP status 端点二次确认：
+
+```sh
+curl -sS \
+  -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+  https://portunus.example.com/v1/users/alice/quotas/edge-tokyo/status
+```
+
+`exhausted: true` 且 `exhausted_at` 非 null 即可确认。
+
+**修复**——二选一：
+
+- 一次性补发本期额度（period 边界不变）：
+
+  ```sh
+  curl -sS -X PATCH \
+    -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+    -d '{"clear_period_usage": true}'
+  ```
+
+- 或者永久抬高月上限：
+
+  ```sh
+  curl -sS -X PUT \
+    -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+    -d '{"monthly_bytes": 2199023255552}'
+  ```
+
+Server 会立刻下发新的 `TrafficQuotaUpdate { action: SET }`，client
+不需要重连即可恢复接受连接。
+
+### "配额状态卡住不动"
+
+症状：PUT / PATCH 看起来成功，但 client 仍然在断连接（或仍然在放过
+连接）。
+
+检查 1 —— client 会话还活着吗？
+
+```text
+portunus_clients_connected{client="edge-tokyo"} 1
+```
+
+值为 `0` 说明 control-plane 流断了；server 的配额变更已经排队，
+等 client 重连时会被 replay 下发。
+
+检查 2 —— client 真的处理了 update 吗？grep client 日志：
+
+```sh
+journalctl -u portunus-client | grep traffic_quota.applied_set
+```
+
+`traffic_quota.applied_set` 事件行表示 `QuotaHandle` 已被装载或替换。
+没有这行说明 `TrafficQuotaUpdate` 根本没到 —— 确认 client 二进制是
+v1.4.0+。
+
+如果 client 确实重连了，内存里的 `QuotaHandle` 会由 server 的
+`TrafficQuotaUpdate` replay 步骤重建（这一步**先于 rule replay**，
+所以第一条 rule 绑定 listener 时 handle 已经就位）。无需运维介入
+—— 重连后的 StatsReport 周期内，server 端 `bytes_used` 可能短暂
+比实际已送达字节略高。
+
+### "流量图表是空的"
+
+Traffic tab 的图表来自 `traffic_samples_1m` / `traffic_samples_1h`。
+空有两种可能：根本没生成样本，或查询窗口超出 retention。
+
+- **没生成样本** —— rollup 任务只在 pair 那一分钟 / 那一小时实际
+  转发过字节时才写 sample 行。空闲 pair 就是会有缺口。把查询指向
+  你确定有流量的时段验证一下。
+- **超出 retention** —— `bucket=1m` 行保留 **7 天**；`bucket=1h`
+  行保留 **90 天**。`from` 超过对应 retention 的查询会返回
+  `422 quota_bucket_out_of_retention`。缩小窗口或切换到大 bucket。
+- **刚过去那个小时** —— rollup 任务在 `H+1 min` 运行。`H` 到
+  `H+1 min` 之间，小时 `H` 对应的 `1h` 行还不存在；这个范围请用
+  `bucket=1m` 查询。
+
+如果底层 gauge（`portunus_traffic_quota_bytes_used` 在涨）显示有
+流量但图表是空的，把 bucket 切到 `1m`，并把查询窗口缩到覆盖那段活动
+即可。
+
 ## 在排错时关闭 Linux 快路径
 
 在 Linux 上，`portunus-client` 默认对没有 `bandwidth_in_bps` /
