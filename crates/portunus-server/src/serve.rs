@@ -298,11 +298,24 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         }
     });
 
+    // 013-traffic-quotas: hourly rollup + retention pruning. Fire-and-
+    // forget — `run_forever` is an infinite loop with a sleep; the
+    // shutdown token cancels the surrounding `select` so the task
+    // returns cleanly when the server drains.
+    let rollup_store: crate::store::Store = (*store).clone();
+    let rollup_shutdown = shutdown.token();
+    let rollup_task = tokio::spawn(async move {
+        tokio::select! {
+            () = crate::traffic_quotas::rollup::run_forever(rollup_store) => {}
+            () = rollup_shutdown.cancelled() => {}
+        }
+    });
+
     // Wait for shutdown signal, then drain.
     let _ = signal_task.await;
     info!(event = "server.draining");
     clients.shutdown();
-    let _ = tokio::join!(grpc_task, http_task, metrics_task);
+    let _ = tokio::join!(grpc_task, http_task, metrics_task, rollup_task);
     info!(event = "server.stopped");
     Ok(())
 }

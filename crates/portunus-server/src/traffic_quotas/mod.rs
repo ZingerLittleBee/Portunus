@@ -7,6 +7,7 @@ use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 
 pub mod aggregator;
 pub mod cache;
+pub mod rollup;
 pub mod samples;
 pub mod store;
 
