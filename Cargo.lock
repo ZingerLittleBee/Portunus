@@ -1798,7 +1798,6 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
- "criterion",
  "portunus-auth",
  "portunus-core",
  "portunus-forwarder",

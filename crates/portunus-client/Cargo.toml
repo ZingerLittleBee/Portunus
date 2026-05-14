@@ -50,25 +50,3 @@ async-trait = "0.1"
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 assert_cmd = { workspace = true }
-criterion = { workspace = true }
-
-[[bench]]
-name = "data_plane"
-harness = false
-
-[[bench]]
-name = "range_install"
-harness = false
-
-[[bench]]
-name = "dns_resolver"
-harness = false
-
-[[bench]]
-name = "udp_data_plane"
-harness = false
-
-# 009-tls-sni-routing T005 (placeholder); T087/T088 land the real benches.
-[[bench]]
-name = "sni_route"
-harness = false
