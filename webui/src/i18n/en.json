@@ -402,6 +402,20 @@
       "empty": "No clients found.",
       "offline": "offline",
       "alreadyAssigned": "already assigned"
+    },
+    "form": {
+      "client": "Client",
+      "portStart": "Port start",
+      "portEnd": "Port end",
+      "protocols": "Protocols",
+      "unlimited": "Unlimited",
+      "unlimitedHelp": "No rate-limit caps applied.",
+      "bandwidthIn": "Bandwidth in (bytes/sec)",
+      "bandwidthOut": "Bandwidth out (bytes/sec)",
+      "concurrent": "Concurrent connections",
+      "newConnPerSec": "New connections / sec",
+      "uncapped": "uncapped",
+      "save": "Save"
     }
   }
 }
