@@ -396,7 +396,12 @@ mod tests {
         assert!(store.schema_version().unwrap() >= 8);
         store
             .with_conn(|c| {
-                let names = ["traffic_quotas", "traffic_samples_1m", "traffic_samples_1h", "traffic_rollup_state"];
+                let names = [
+                    "traffic_quotas",
+                    "traffic_samples_1m",
+                    "traffic_samples_1h",
+                    "traffic_rollup_state",
+                ];
                 for n in names {
                     let cnt: i64 = c
                         .query_row(

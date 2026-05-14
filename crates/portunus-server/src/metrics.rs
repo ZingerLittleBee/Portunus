@@ -1863,10 +1863,15 @@ mod tests {
             "portunus_traffic_quota_period_resets_total",
             "portunus_traffic_quota_exhausted_total",
         ] {
-            assert!(body.contains(name), "missing {name} in rendered metrics: {body}");
+            assert!(
+                body.contains(name),
+                "missing {name} in rendered metrics: {body}"
+            );
         }
         assert!(
-            body.contains("portunus_traffic_quota_bytes_used{client=\"edge-01\",user=\"alice\"} 123"),
+            body.contains(
+                "portunus_traffic_quota_bytes_used{client=\"edge-01\",user=\"alice\"} 123"
+            ),
             "bytes_used must show 123 in: {body}"
         );
     }

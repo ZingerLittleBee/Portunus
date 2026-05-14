@@ -141,14 +141,16 @@ fn spawn_echo() -> (String, u16) {
 /// payload should round-trip; when budget straddles zero the echo
 /// stops short and the proxy half-closes.
 fn drive_through(listen_port: u16, bytes: usize, timeout: Duration) -> Vec<u8> {
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port))
-        .expect("connect to proxy listener");
+    let mut stream =
+        TcpStream::connect((Ipv4Addr::LOCALHOST, listen_port)).expect("connect to proxy listener");
     stream.set_read_timeout(Some(timeout)).unwrap();
     stream.set_write_timeout(Some(timeout)).unwrap();
 
     // Build a payload with a recognisable pattern so we can spot
     // misroutes (not strictly necessary here but cheap insurance).
-    let payload: Vec<u8> = (0..bytes).map(|i| u8::try_from(i % 251).unwrap_or(0)).collect();
+    let payload: Vec<u8> = (0..bytes)
+        .map(|i| u8::try_from(i % 251).unwrap_or(0))
+        .collect();
 
     // Write in a dedicated thread so we don't deadlock on a tiny
     // socket buffer when the echo gets cut off mid-stream.
@@ -298,10 +300,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
             "protocol": "tcp",
         }),
     );
-    assert!(
-        st.is_success(),
-        "push rule as alice; got {st} body={body}"
-    );
+    assert!(st.is_success(), "push rule as alice; got {st} body={body}");
     let rule_id = body
         .get("rule_id")
         .and_then(Value::as_u64)
@@ -342,11 +341,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
     // status endpoint with a generous wall clock to absorb scheduling
     // jitter on slow CI.
     let exhausted = common::wait_for(Duration::from_secs(15), || {
-        let (st, body) = get(
-            &http_addr,
-            "/v1/users/alice/quotas/edge-test/status",
-            SUPER,
-        );
+        let (st, body) = get(&http_addr, "/v1/users/alice/quotas/edge-test/status", SUPER);
         if !st.is_success() {
             return None;
         }
@@ -371,10 +366,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
         "GET /quotas/.../status must report exhausted=true within 15s after over-budget transfer",
     );
     assert!(
-        exhausted["current_period_bytes_used"]
-            .as_i64()
-            .unwrap_or(0)
-            >= quota_cap,
+        exhausted["current_period_bytes_used"].as_i64().unwrap_or(0) >= quota_cap,
         "bytes_used must have reached the cap; got {exhausted}"
     );
 
@@ -406,11 +398,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
 
     // Sanity: server still reports a sane (non-exhausted) snapshot;
     // bytes_used has begun accumulating again.
-    let (st, body) = get(
-        &http_addr,
-        "/v1/users/alice/quotas/edge-test/status",
-        SUPER,
-    );
+    let (st, body) = get(&http_addr, "/v1/users/alice/quotas/edge-test/status", SUPER);
     assert_eq!(st, StatusCode::OK);
     assert_eq!(
         body["exhausted"].as_bool(),

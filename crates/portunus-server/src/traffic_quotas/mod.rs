@@ -19,8 +19,8 @@ pub struct TrafficQuotaRow {
     pub user_id: String,
     pub client_name: String,
     pub monthly_bytes: i64,
-    pub billing_anchor: i64,                 // unix sec UTC
-    pub current_period_started_at: i64,      // unix sec UTC
+    pub billing_anchor: i64,            // unix sec UTC
+    pub current_period_started_at: i64, // unix sec UTC
     pub current_period_bytes_used: i64,
     pub exhausted_at: Option<i64>,
     pub created_at: i64,
@@ -53,8 +53,7 @@ pub fn period_start_at(billing_anchor: DateTime<Utc>, n: u32) -> DateTime<Utc> {
         billing_anchor.second(),
     );
 
-    let total_months = i64::from(billing_anchor.year()) * 12
-        + i64::from(billing_anchor.month())
+    let total_months = i64::from(billing_anchor.year()) * 12 + i64::from(billing_anchor.month())
         - 1
         + i64::from(n);
     let target_year = i32::try_from(total_months / 12).expect("year fits i32");
@@ -93,7 +92,10 @@ pub fn compute_period_end(billing_anchor: i64, started: i64) -> i64 {
 /// (rollover.rs), aggregator exhaust handling, and reconnect replay
 /// (grpc/service.rs).
 #[must_use]
-pub fn make_traffic_quota_set_msg(row: &TrafficQuotaRow, request_id: String) -> proto::ServerMessage {
+pub fn make_traffic_quota_set_msg(
+    row: &TrafficQuotaRow,
+    request_id: String,
+) -> proto::ServerMessage {
     let ends_at = compute_period_end(row.billing_anchor, row.current_period_started_at);
     proto::ServerMessage {
         payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
@@ -202,7 +204,9 @@ mod tests {
     use super::*;
 
     fn anchor(yyyy: i32, mm: u32, dd: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(yyyy, mm, dd, 0, 0, 0).single().unwrap()
+        Utc.with_ymd_and_hms(yyyy, mm, dd, 0, 0, 0)
+            .single()
+            .unwrap()
     }
 
     #[test]

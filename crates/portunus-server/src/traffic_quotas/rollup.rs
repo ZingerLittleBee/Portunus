@@ -60,12 +60,19 @@ pub async fn run_forever(store: Store) {
 /// On a fresh DB (watermark = 0) we start at `now_hour - 1h` so we
 /// don't try to backfill all of history; older rows would be pruned by
 /// the retention sweep anyway.
-#[allow(clippy::similar_names, reason = "deleted_1m / deleted_1h are intentional parallel naming")]
+#[allow(
+    clippy::similar_names,
+    reason = "deleted_1m / deleted_1h are intentional parallel naming"
+)]
 pub fn run_once(store: &Store, now_unix_sec: i64) -> Result<RollupStats, StoreError> {
     let now_hour = now_unix_sec - now_unix_sec.rem_euclid(HOUR);
 
     let last = samples::get_last_rolled_up_hour(store)?;
-    let mut next = if last == 0 { now_hour - HOUR } else { last + HOUR };
+    let mut next = if last == 0 {
+        now_hour - HOUR
+    } else {
+        last + HOUR
+    };
     let mut rolled = 0usize;
     while next < now_hour {
         samples::rollup_hour(store, next)?;
@@ -107,7 +114,14 @@ mod tests {
         (dir, store)
     }
 
-    fn insert_minute(store: &Store, user: &str, client: &str, ts_minute: i64, b_in: i64, b_out: i64) {
+    fn insert_minute(
+        store: &Store,
+        user: &str,
+        client: &str,
+        ts_minute: i64,
+        b_in: i64,
+        b_out: i64,
+    ) {
         samples::upsert_1m_delta(store, user, client, ts_minute, b_in, b_out).unwrap();
     }
 

@@ -47,11 +47,7 @@ where
     Ok((a, b))
 }
 
-async fn copy_one_dir<R, W>(
-    reader: &mut R,
-    writer: &mut W,
-    quota: &QuotaHandle,
-) -> io::Result<u64>
+async fn copy_one_dir<R, W>(reader: &mut R, writer: &mut W, quota: &QuotaHandle) -> io::Result<u64>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -116,9 +112,8 @@ mod tests {
             writer_a.write_all(&[7u8; 1_000]).await.unwrap();
             drop(writer_a);
         });
-        let copier = tokio::spawn(async move {
-            copy_one_dir(&mut reader_a, &mut writer_b, &q).await
-        });
+        let copier =
+            tokio::spawn(async move { copy_one_dir(&mut reader_a, &mut writer_b, &q).await });
         // Drain so writer_b's buffer is consumed; otherwise write_all
         // blocks once the buffer fills.
         let drainer = tokio::spawn(async move {
@@ -149,9 +144,8 @@ mod tests {
             writer_a.write_all(&[7u8; 200]).await.unwrap();
             drop(writer_a);
         });
-        let copier = tokio::spawn(async move {
-            copy_one_dir(&mut reader_a, &mut writer_b, &q).await
-        });
+        let copier =
+            tokio::spawn(async move { copy_one_dir(&mut reader_a, &mut writer_b, &q).await });
         let drainer = tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
             let mut sink = Vec::new();

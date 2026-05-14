@@ -1136,7 +1136,8 @@ mod integration {
         let mut downstream_proxy = downstream_proxy;
         let mut upstream_proxy = upstream_proxy;
         let ctx = ctx_eligible();
-        let result = copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx, None).await;
+        let result =
+            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx, None).await;
 
         let transferred = result.expect("splice copy_bidirectional should succeed");
         assert_eq!(
@@ -1200,10 +1201,14 @@ mod integration {
 
         let mut downstream_proxy = downstream_proxy;
         let mut upstream_proxy = upstream_proxy;
-        let transferred =
-            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx_eligible(), None)
-                .await
-                .expect("splice should succeed under half-close");
+        let transferred = copy_bidirectional(
+            &mut downstream_proxy,
+            &mut upstream_proxy,
+            &ctx_eligible(),
+            None,
+        )
+        .await
+        .expect("splice should succeed under half-close");
         assert_eq!(transferred.bytes_out, 4096);
         assert_eq!(transferred.bytes_in, 2048);
 
@@ -1259,7 +1264,12 @@ mod integration {
         let mut upstream_proxy = upstream_proxy;
         let res = tokio::time::timeout(
             Duration::from_secs(5),
-            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx_eligible(), None),
+            copy_bidirectional(
+                &mut downstream_proxy,
+                &mut upstream_proxy,
+                &ctx_eligible(),
+                None,
+            ),
         )
         .await
         .expect("did not deadlock")
@@ -1313,9 +1323,14 @@ mod integration {
 
             let mut downstream_proxy = downstream_proxy;
             let mut upstream_proxy = upstream_proxy;
-            let t = copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx_eligible(), None)
-                .await
-                .unwrap();
+            let t = copy_bidirectional(
+                &mut downstream_proxy,
+                &mut upstream_proxy,
+                &ctx_eligible(),
+                None,
+            )
+            .await
+            .unwrap();
             let _echo_total = echo.await.unwrap();
             let _writer_got = writer.await.unwrap();
             (t.bytes_in, t.bytes_out)

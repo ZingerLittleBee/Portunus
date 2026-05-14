@@ -38,14 +38,10 @@ impl TrafficQuotaCache {
 
     #[must_use]
     pub fn get(&self, user_id: &str, client_name: &str) -> Option<TrafficQuotaRow> {
-        self.inner
-            .cache
-            .read()
-            .ok()
-            .and_then(|m| {
-                m.get(&(user_id.to_string(), client_name.to_string()))
-                    .cloned()
-            })
+        self.inner.cache.read().ok().and_then(|m| {
+            m.get(&(user_id.to_string(), client_name.to_string()))
+                .cloned()
+        })
     }
 
     #[must_use]
@@ -140,8 +136,7 @@ impl TrafficQuotaCache {
         } else {
             warn!(
                 event = "traffic_quota.accumulate_missing",
-                user_id, client_name, delta,
-                "accumulate found no row; cache may be stale"
+                user_id, client_name, delta, "accumulate found no row; cache may be stale"
             );
             Ok(None)
         }
@@ -153,7 +148,8 @@ impl TrafficQuotaCache {
         client_name: &str,
         now: i64,
     ) -> Result<Option<TrafficQuotaRow>, StoreError> {
-        let updated = quota_store::clear_period_usage(&self.inner.store, user_id, client_name, now)?;
+        let updated =
+            quota_store::clear_period_usage(&self.inner.store, user_id, client_name, now)?;
         if let Some(ref row) = updated
             && let Ok(mut m) = self.inner.cache.write()
         {
@@ -238,7 +234,10 @@ mod tests {
     fn accumulate_increments_cache() {
         let (_d, cache) = make_cache();
         cache.upsert(sample_row()).unwrap();
-        let (row, just) = cache.accumulate("alice", "edge-01", 100, 1).unwrap().unwrap();
+        let (row, just) = cache
+            .accumulate("alice", "edge-01", 100, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(row.current_period_bytes_used, 100);
         assert!(!just);
         let got = cache.get("alice", "edge-01").unwrap();
@@ -252,10 +251,16 @@ mod tests {
         r.monthly_bytes = 100;
         cache.upsert(r).unwrap();
         // First crossing -> just_exhausted=true.
-        let (_row, just) = cache.accumulate("alice", "edge-01", 200, 5).unwrap().unwrap();
+        let (_row, just) = cache
+            .accumulate("alice", "edge-01", 200, 5)
+            .unwrap()
+            .unwrap();
         assert!(just);
         // Already exhausted -> just_exhausted=false even with the same `now`.
-        let (_row, just2) = cache.accumulate("alice", "edge-01", 50, 5).unwrap().unwrap();
+        let (_row, just2) = cache
+            .accumulate("alice", "edge-01", 50, 5)
+            .unwrap()
+            .unwrap();
         assert!(!just2);
     }
 

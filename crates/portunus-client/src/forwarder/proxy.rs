@@ -387,12 +387,8 @@ async fn copy_uncapped(
     // with the same `read → write_all → consume(n)` ordering as the
     // splice fast path.
     if let Some(q) = quota {
-        return super::quota::copy::copy_bidirectional_with_quota(
-            inbound,
-            outbound,
-            Arc::clone(q),
-        )
-        .await;
+        return super::quota::copy::copy_bidirectional_with_quota(inbound, outbound, Arc::clone(q))
+            .await;
     }
     tokio::io::copy_bidirectional_with_sizes(
         inbound,

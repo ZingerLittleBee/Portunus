@@ -146,8 +146,7 @@ impl TrafficAggregator {
         if self.inner.cache.get(owner_user_id, client_name).is_none() {
             return;
         }
-        let delta_total =
-            i64::try_from(delta_in.saturating_add(delta_out)).unwrap_or(i64::MAX);
+        let delta_total = i64::try_from(delta_in.saturating_add(delta_out)).unwrap_or(i64::MAX);
         match self
             .inner
             .cache
@@ -288,9 +287,11 @@ mod tests {
     async fn record_writes_minute_sample_with_delta() {
         let (_d, _store, agg, _rx) = build_agg();
         // First tick — delta = cumulative.
-        agg.record("edge-01", RuleId(1), "alice", 100, 200, 60).await;
+        agg.record("edge-01", RuleId(1), "alice", 100, 200, 60)
+            .await;
         // Second tick — delta = (new - prev).
-        agg.record("edge-01", RuleId(1), "alice", 150, 250, 60).await;
+        agg.record("edge-01", RuleId(1), "alice", 150, 250, 60)
+            .await;
         let rows = samples::query_samples(
             &agg.inner.store,
             samples::SampleBucket::M1,
@@ -309,7 +310,8 @@ mod tests {
     #[tokio::test]
     async fn record_handles_client_rebaseline() {
         let (_d, _store, agg, _rx) = build_agg();
-        agg.record("edge-01", RuleId(1), "alice", 1_000, 2_000, 60).await;
+        agg.record("edge-01", RuleId(1), "alice", 1_000, 2_000, 60)
+            .await;
         // Client restart: cumulative drops back to small numbers.
         agg.record("edge-01", RuleId(1), "alice", 50, 100, 60).await;
         let rows = samples::query_samples(
@@ -338,17 +340,20 @@ mod tests {
         let agg = TrafficAggregator::new(store.clone(), cache, tx);
 
         // Tick 1: 400 bytes total -> under quota.
-        agg.record("edge-01", RuleId(1), "alice", 200, 200, 60).await;
+        agg.record("edge-01", RuleId(1), "alice", 200, 200, 60)
+            .await;
         assert!(rx2.try_recv().is_err());
 
         // Tick 2: cumulative jumps to 1_200 total -> crosses quota.
-        agg.record("edge-01", RuleId(1), "alice", 600, 600, 60).await;
+        agg.record("edge-01", RuleId(1), "alice", 600, 600, 60)
+            .await;
         let evt = rx2.recv().await.unwrap();
         assert_eq!(evt.user_id, "alice");
         assert_eq!(evt.client_name, "edge-01");
 
         // Tick 3: more bytes after exhausted -> no second event.
-        agg.record("edge-01", RuleId(1), "alice", 1000, 1000, 60).await;
+        agg.record("edge-01", RuleId(1), "alice", 1000, 1000, 60)
+            .await;
         assert!(rx2.try_recv().is_err());
     }
 

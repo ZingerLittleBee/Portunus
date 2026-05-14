@@ -13,11 +13,11 @@ use crate::operator::per_port_stats::PerPortStatsCache;
 use crate::owner::OwnerCapService;
 use crate::rules::ServerRuleStore;
 use crate::store::Store;
-use crate::traffic_quotas::aggregator::TrafficAggregator;
-use crate::traffic_quotas::cache::TrafficQuotaCache;
 use crate::store::operator_store::SqliteOperatorStore;
 use crate::store::rule_store::SqliteRuleStore;
 use crate::store::token_store::SqliteTokenStore;
+use crate::traffic_quotas::aggregator::TrafficAggregator;
+use crate::traffic_quotas::cache::TrafficQuotaCache;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -105,9 +105,7 @@ pub struct AppState {
     pub traffic_quota_exhaust_rx: Arc<
         std::sync::Mutex<
             Option<
-                tokio::sync::mpsc::Receiver<
-                    crate::traffic_quotas::aggregator::QuotaExhaustedEvent,
-                >,
+                tokio::sync::mpsc::Receiver<crate::traffic_quotas::aggregator::QuotaExhaustedEvent>,
             >,
         >,
     >,
@@ -156,19 +154,17 @@ impl AppState {
                 )));
             }
         };
-        let (traffic_quota_exhaust_tx, traffic_quota_exhaust_rx_owned) =
-            tokio::sync::mpsc::channel::<
-                crate::traffic_quotas::aggregator::QuotaExhaustedEvent,
-            >(64);
+        let (traffic_quota_exhaust_tx, traffic_quota_exhaust_rx_owned) = tokio::sync::mpsc::channel::<
+            crate::traffic_quotas::aggregator::QuotaExhaustedEvent,
+        >(64);
         let traffic_aggregator = TrafficAggregator::with_metrics(
             (*store).clone(),
             traffic_quotas.clone(),
             traffic_quota_exhaust_tx,
             Arc::clone(&metrics),
         );
-        let traffic_quota_exhaust_rx = Arc::new(std::sync::Mutex::new(Some(
-            traffic_quota_exhaust_rx_owned,
-        )));
+        let traffic_quota_exhaust_rx =
+            Arc::new(std::sync::Mutex::new(Some(traffic_quota_exhaust_rx_owned)));
         let owner_caps = match OwnerCapService::open(Arc::clone(&store)) {
             Ok(s) => s,
             Err(e) => {

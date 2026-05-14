@@ -27,10 +27,7 @@ pub async fn run_forever(state: Arc<AppState>) {
     loop {
         sleep(TICK).await;
         match run_once(&state, Utc::now()).await {
-            Ok(advanced) if advanced > 0 => info!(
-                event = "traffic_rollover.tick",
-                advanced,
-            ),
+            Ok(advanced) if advanced > 0 => info!(event = "traffic_rollover.tick", advanced,),
             Ok(_) => {}
             Err(e) => error!(event = "traffic_rollover.tick_failed", error = %e),
         }
@@ -54,9 +51,12 @@ pub async fn run_once(
         let Some(new_start) = advance_period_if_due(anchor, start, now) else {
             continue;
         };
-        let Some(updated) = state
-            .traffic_quotas
-            .reset_period(&r.user_id, &r.client_name, new_start.timestamp(), now_ts)?
+        let Some(updated) = state.traffic_quotas.reset_period(
+            &r.user_id,
+            &r.client_name,
+            new_start.timestamp(),
+            now_ts,
+        )?
         else {
             continue;
         };

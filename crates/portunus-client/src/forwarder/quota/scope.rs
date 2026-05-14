@@ -42,12 +42,7 @@ impl QuotaScopeManager {
     }
 
     /// Insert or replace handle state atomically.
-    pub fn install(
-        &self,
-        user_id: &str,
-        client_name: &str,
-        state: QuotaState,
-    ) -> Arc<QuotaHandle> {
+    pub fn install(&self, user_id: &str, client_name: &str, state: QuotaState) -> Arc<QuotaHandle> {
         let mut m = self.inner.write().expect("quota scope poisoned");
         if let Some(existing) = m.get(user_id) {
             existing.replace(state);

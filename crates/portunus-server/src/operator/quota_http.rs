@@ -132,14 +132,13 @@ pub async fn put_quota(
 
     let now = now_unix_sec();
     let anchor = body.billing_anchor.unwrap_or(now);
-    let anchor_dt = Utc
-        .timestamp_opt(anchor, 0)
-        .single()
-        .ok_or_else(|| ApiError::new(
+    let anchor_dt = Utc.timestamp_opt(anchor, 0).single().ok_or_else(|| {
+        ApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid_billing_anchor",
             "billing_anchor out of range",
-        ))?;
+        )
+    })?;
     let started = period_start_at(anchor_dt, 0).timestamp();
     let row = TrafficQuotaRow {
         user_id: user_id.clone(),
@@ -152,10 +151,7 @@ pub async fn put_quota(
         created_at: now,
         updated_at: now,
     };
-    let saved = state
-        .traffic_quotas
-        .upsert(row)
-        .map_err(map_store_error)?;
+    let saved = state.traffic_quotas.upsert(row).map_err(map_store_error)?;
     push_quota_set(&state, &client, &saved).await;
     Ok(Json(QuotaView::from_row(saved)))
 }
@@ -171,11 +167,13 @@ pub async fn patch_quota(
     let mut row = state
         .traffic_quotas
         .get(&user_id, client.as_str())
-        .ok_or_else(|| ApiError::new(
-            StatusCode::NOT_FOUND,
-            "quota_not_found",
-            "no quota for (user, client)",
-        ))?;
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "quota_not_found",
+                "no quota for (user, client)",
+            )
+        })?;
     let now = now_unix_sec();
     if let Some(mb) = body.monthly_bytes {
         if mb < 0 {
@@ -234,11 +232,13 @@ pub async fn get_quota_status(
         .traffic_quotas
         .get(&user_id, client.as_str())
         .map(|r| Json(QuotaView::from_row(r)))
-        .ok_or_else(|| ApiError::new(
-            StatusCode::NOT_FOUND,
-            "quota_not_found",
-            "no quota for (user, client)",
-        ))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "quota_not_found",
+                "no quota for (user, client)",
+            )
+        })
 }
 
 pub async fn list_user_quotas(
@@ -350,11 +350,13 @@ fn serve_traffic(
         ));
     }
     let rows = samples::query_samples(&state.store, chosen, user_id, client_name, from, to)
-        .map_err(|e| ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "store_error",
-            e.to_string(),
-        ))?;
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                e.to_string(),
+            )
+        })?;
     if rows.len() > 10_000 {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -375,10 +377,7 @@ fn serve_traffic(
 /// 403 unless the caller is superadmin or the user under the path.
 /// User-scoped reads (status / list / traffic) accept both roles; CRUD
 /// remains superadmin-only and uses `rbac::require_role` directly.
-fn require_self_or_superadmin(
-    identity: &OperatorIdentity,
-    user_id: &str,
-) -> Result<(), ApiError> {
+fn require_self_or_superadmin(identity: &OperatorIdentity, user_id: &str) -> Result<(), ApiError> {
     if identity.role == OperatorRole::Superadmin {
         return Ok(());
     }
@@ -503,8 +502,8 @@ fn now_unix_sec() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traffic_quotas::store as quota_store;
     use crate::traffic_quotas::cache::TrafficQuotaCache;
+    use crate::traffic_quotas::store as quota_store;
     use axum::response::IntoResponse;
     use tempfile::tempdir;
 
@@ -550,7 +549,10 @@ mod tests {
             updated_at: 0,
         };
         let v = QuotaView::from_row(r);
-        let expected_end = Utc.with_ymd_and_hms(2026, 2, 15, 0, 0, 0).unwrap().timestamp();
+        let expected_end = Utc
+            .with_ymd_and_hms(2026, 2, 15, 0, 0, 0)
+            .unwrap()
+            .timestamp();
         assert_eq!(v.current_period_ends_at, expected_end);
     }
 
@@ -573,7 +575,11 @@ mod tests {
         // delete clears both layers.
         assert!(cache.delete("alice", "edge-01").unwrap());
         assert!(cache.get("alice", "edge-01").is_none());
-        assert!(quota_store::get(&store, "alice", "edge-01").unwrap().is_none());
+        assert!(
+            quota_store::get(&store, "alice", "edge-01")
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn user_identity(uid: &str) -> OperatorIdentity {

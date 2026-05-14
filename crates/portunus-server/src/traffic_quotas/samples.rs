@@ -89,10 +89,7 @@ pub fn rollup_hour(store: &Store, ts_hour: i64) -> Result<(), StoreError> {
     })
 }
 
-pub fn delete_1m_older_than(
-    store: &Store,
-    threshold_unix_sec: i64,
-) -> Result<usize, StoreError> {
+pub fn delete_1m_older_than(store: &Store, threshold_unix_sec: i64) -> Result<usize, StoreError> {
     store.with_conn(|c| {
         let n = c
             .execute(
@@ -104,10 +101,7 @@ pub fn delete_1m_older_than(
     })
 }
 
-pub fn delete_1h_older_than(
-    store: &Store,
-    threshold_unix_sec: i64,
-) -> Result<usize, StoreError> {
+pub fn delete_1h_older_than(store: &Store, threshold_unix_sec: i64) -> Result<usize, StoreError> {
     store.with_conn(|c| {
         let n = c
             .execute(
@@ -172,7 +166,10 @@ pub fn query_samples(
         sql.push_str(&format!(" AND user_id = {}", next_param_index(&mut idx)));
     }
     if client_name.is_some() {
-        sql.push_str(&format!(" AND client_name = {}", next_param_index(&mut idx)));
+        sql.push_str(&format!(
+            " AND client_name = {}",
+            next_param_index(&mut idx)
+        ));
     }
     sql.push_str(&format!(" GROUP BY {ts_col} ORDER BY {ts_col} ASC"));
 

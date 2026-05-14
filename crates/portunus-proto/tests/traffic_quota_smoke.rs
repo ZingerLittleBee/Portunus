@@ -3,7 +3,7 @@
 //! `ServerMessage.payload` oneof variant.
 
 use portunus_proto::v1::{
-    server_message, ServerMessage, TrafficQuotaAction, TrafficQuotaState, TrafficQuotaUpdate,
+    ServerMessage, TrafficQuotaAction, TrafficQuotaState, TrafficQuotaUpdate, server_message,
 };
 use prost::Message;
 
@@ -21,7 +21,7 @@ fn traffic_quota_update_set_roundtrips() {
         user_id: "alice".into(),
         client_name: "edge-01".into(),
         action: TrafficQuotaAction::Set as i32,
-        state: Some(state.clone()),
+        state: Some(state),
     };
     let msg = ServerMessage {
         payload: Some(server_message::Payload::TrafficQuotaUpdate(update.clone())),
