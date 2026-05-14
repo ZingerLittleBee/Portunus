@@ -342,19 +342,6 @@ async fn copy_uncapped(
     has_sni_replay_done: bool,
     has_proxy_out: bool,
 ) -> io::Result<(u64, u64)> {
-    // 013-traffic-quotas E2: when a quota is attached, route through
-    // the userspace quota-aware copy. Splice fast-path stays available
-    // for quota'd rules in E3 (per-iteration consume hook); for now we
-    // ship the simpler "quota = userspace-only" branch and add the
-    // splice variant in a follow-up commit.
-    if let Some(q) = quota {
-        return super::quota::copy::copy_bidirectional_with_quota(
-            inbound,
-            outbound,
-            Arc::clone(q),
-        )
-        .await;
-    }
     #[cfg(target_os = "linux")]
     {
         use super::splice;
@@ -367,7 +354,7 @@ async fn copy_uncapped(
             has_proxy_out,
         );
         if splice::eligible(&ctx) {
-            match splice::copy_bidirectional(inbound, outbound, &ctx).await {
+            match splice::copy_bidirectional(inbound, outbound, &ctx, quota).await {
                 Ok(t) => return Ok((t.bytes_in, t.bytes_out)),
                 Err(splice::SpliceError::Unsupported { errno }) => {
                     warn!(
@@ -393,6 +380,19 @@ async fn copy_uncapped(
             has_sni_replay_done,
             has_proxy_out,
         );
+    }
+    // 013-traffic-quotas E3: when splice is unavailable (non-Linux,
+    // ineligible, or post-Unsupported fallback) and a quota is
+    // attached, the userspace quota-aware copy enforces the budget
+    // with the same `read → write_all → consume(n)` ordering as the
+    // splice fast path.
+    if let Some(q) = quota {
+        return super::quota::copy::copy_bidirectional_with_quota(
+            inbound,
+            outbound,
+            Arc::clone(q),
+        )
+        .await;
     }
     tokio::io::copy_bidirectional_with_sizes(
         inbound,
