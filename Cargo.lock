@@ -1854,6 +1854,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "portunus-forwarder"
+version = "1.4.0"
+
+[[package]]
 name = "portunus-proto"
 version = "1.4.0"
 dependencies = [
