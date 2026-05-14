@@ -78,9 +78,9 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
         // failover_path::run_tcp can find the per-target health state.
         // Single-target rules leave multi_target_obs = None (hot path).
         if !rule.targets.is_empty() {
-            use std::sync::atomic::AtomicU64;
-            use portunus_forwarder::forwarder::failover::HealthState;
             use portunus_forwarder::MultiTargetObservability;
+            use portunus_forwarder::forwarder::failover::HealthState;
+            use std::sync::atomic::AtomicU64;
             let states: Vec<_> = rule
                 .targets
                 .iter()

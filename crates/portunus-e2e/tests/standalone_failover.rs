@@ -119,8 +119,7 @@ targets = [
     let mut buf = vec![0u8; 10];
     s.read_exact(&mut buf).unwrap();
     assert_eq!(
-        &buf,
-        b"SECONDARY\n",
+        &buf, b"SECONDARY\n",
         "second connection should reach secondary after primary drops"
     );
     drop(s);

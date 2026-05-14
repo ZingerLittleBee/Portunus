@@ -95,8 +95,7 @@ target = "127.0.0.1:{backend_port}"
         .spawn()
         .expect("spawn standalone");
 
-    let listening =
-        wait_for_listen(frontend_port, Instant::now() + Duration::from_secs(10));
+    let listening = wait_for_listen(frontend_port, Instant::now() + Duration::from_secs(10));
     assert!(
         listening,
         "frontend port {frontend_port} should be listening"
