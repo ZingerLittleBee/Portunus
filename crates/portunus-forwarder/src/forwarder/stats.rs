@@ -55,6 +55,20 @@ pub struct OwnerRateLimitStatsSnapshot {
     pub stats: RateLimitStatsSnapshot,
 }
 
+/// Wire-neutral mirror of `proto::v1::SniListenerStats` (full peek
+/// histogram fields included). Client translates via
+/// `From<SniListenerStatsSnapshot> for proto::v1::SniListenerStats`.
+#[derive(Clone, Debug, Default)]
+pub struct SniListenerStatsSnapshot {
+    pub listen_port: u16,
+    pub sni_route_miss_total: u64,
+    pub client_hello_parse_failures_total: u64,
+    /// Bucket counts in order of `portunus_core::PEEK_HISTOGRAM_BUCKETS_SECS`.
+    pub client_hello_peek_bucket_counts: Vec<u64>,
+    pub client_hello_peek_sum_micros: u64,
+    pub client_hello_peek_count: u64,
+}
+
 impl RateLimitRejectReason {
     /// Stable mapping to proto enum integer values. Lets the data plane
     /// key a `[u64; N]` counter array without pulling in proto types.

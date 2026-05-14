@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 use crate::forwarder::proxy::proxy_with_preread_and_prelude;
 use crate::forwarder::proxy_protocol::ProxyProtocolPrelude;
 use crate::forwarder::rate_limit::scope::{LayeredAcquire, try_acquire_layered};
-use crate::forwarder::stats::RuleStats;
+use crate::forwarder::stats::{RuleStats, SniListenerStatsSnapshot};
 use crate::resolver::{LiveResolver, Resolve};
 
 use super::peek::{self, PeekError};
@@ -91,10 +91,44 @@ impl PeekDurationHistogram {
     }
 }
 
+impl SniListenerCounters {
+    /// Return a wire-neutral snapshot of all listener counters for the
+    /// given `listen_port`. Atomic loads use `Relaxed` ordering,
+    /// matching the pattern of every other counter in this module.
+    #[must_use]
+    pub fn snapshot(&self, listen_port: u16) -> SniListenerStatsSnapshot {
+        let (client_hello_peek_bucket_counts, client_hello_peek_sum_micros, client_hello_peek_count) =
+            self.peek_histogram.snapshot();
+        SniListenerStatsSnapshot {
+            listen_port,
+            sni_route_miss_total: self.miss.load(Ordering::Relaxed),
+            client_hello_parse_failures_total: self.parse_failures.load(Ordering::Relaxed),
+            client_hello_peek_bucket_counts,
+            client_hello_peek_sum_micros,
+            client_hello_peek_count,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn snapshot_returns_zeroed_for_fresh_counters() {
+        let c = SniListenerCounters::default();
+        let snap = c.snapshot(8443);
+        assert_eq!(snap.listen_port, 8443);
+        assert_eq!(snap.sni_route_miss_total, 0);
+        assert_eq!(snap.client_hello_parse_failures_total, 0);
+        assert_eq!(snap.client_hello_peek_count, 0);
+        assert_eq!(snap.client_hello_peek_sum_micros, 0);
+        assert_eq!(
+            snap.client_hello_peek_bucket_counts.len(),
+            portunus_core::PEEK_HISTOGRAM_BUCKETS_SECS.len()
+        );
+    }
 
     #[test]
     fn peek_histogram_snapshots_cumulative_buckets() {
