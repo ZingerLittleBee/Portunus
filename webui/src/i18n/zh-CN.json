@@ -105,7 +105,9 @@
     "idHint": "小写字母、数字、连字符和下划线;必须以字母开头。",
     "initialPassword": "初始密码",
     "initialPasswordHint": "可选。留空则创建没有 Web 登录密码的用户。",
-    "forcePasswordChange": "首次登录时要求修改密码"
+    "forcePasswordChange": "首次登录时要求修改密码",
+    "initialQuotaToggle": "分配初始配额（可选）",
+    "initialQuotaPending": "用户创建后将在 {{client}} 上分配该配额。"
   },
   "userDetail": {
     "credentials": "凭证",

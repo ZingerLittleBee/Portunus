@@ -105,7 +105,9 @@
     "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter.",
     "initialPassword": "Initial password",
     "initialPasswordHint": "Optional. Leave blank to create the user without Web login password.",
-    "forcePasswordChange": "Require password change on first login"
+    "forcePasswordChange": "Require password change on first login",
+    "initialQuotaToggle": "Assign initial quota (optional)",
+    "initialQuotaPending": "Will provision quota on {{client}} after user creation."
   },
   "userDetail": {
     "credentials": "Credentials",
