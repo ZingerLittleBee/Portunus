@@ -11,7 +11,7 @@ use axum::{
     http::StatusCode,
     middleware::from_fn_with_state,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use portunus_auth::OperatorIdentity;
 use portunus_core::{PortRange, RuleId};
@@ -101,6 +101,36 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::operator::owner_cap::get_owner_rate_limit)
                 .put(crate::operator::owner_cap::put_owner_rate_limit)
                 .delete(crate::operator::owner_cap::delete_owner_rate_limit),
+        )
+        // 013-traffic-quotas C1: per-(user, client) monthly traffic
+        // quota CRUD + historical traffic queries. CRUD pushes
+        // TrafficQuotaUpdate to the connected client; reconnect replay
+        // (C5) handles the offline-client path.
+        .route(
+            "/v1/users/{user_id}/quotas",
+            get(crate::operator::quota_http::list_user_quotas),
+        )
+        .route(
+            "/v1/users/{user_id}/quotas/{client_name}",
+            put(crate::operator::quota_http::put_quota)
+                .patch(crate::operator::quota_http::patch_quota)
+                .delete(crate::operator::quota_http::delete_quota),
+        )
+        .route(
+            "/v1/users/{user_id}/quotas/{client_name}/status",
+            get(crate::operator::quota_http::get_quota_status),
+        )
+        .route(
+            "/v1/users/{user_id}/traffic",
+            get(crate::operator::quota_http::get_user_traffic),
+        )
+        .route(
+            "/v1/clients/{client_name}/quotas",
+            get(crate::operator::quota_http::list_client_quotas),
+        )
+        .route(
+            "/v1/clients/{client_name}/traffic",
+            get(crate::operator::quota_http::get_client_traffic),
         )
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies

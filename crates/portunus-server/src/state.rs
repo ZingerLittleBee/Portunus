@@ -13,6 +13,7 @@ use crate::operator::per_port_stats::PerPortStatsCache;
 use crate::owner::OwnerCapService;
 use crate::rules::ServerRuleStore;
 use crate::store::Store;
+use crate::traffic_quotas::cache::TrafficQuotaCache;
 use crate::store::operator_store::SqliteOperatorStore;
 use crate::store::rule_store::SqliteRuleStore;
 use crate::store::token_store::SqliteTokenStore;
@@ -84,6 +85,11 @@ pub struct AppState {
     /// cache, and GC-on-rule-removal sweep. REST handlers (T028) and
     /// the gRPC `OwnerRateLimitUpdate` push path (T029) read from this.
     pub owner_caps: OwnerCapService,
+    /// 013-traffic-quotas: in-memory mirror of `traffic_quotas` rows.
+    /// HTTP CRUD writes through it; the stats aggregator (B2) reads +
+    /// writes through it; the gRPC push task (C5) reads from it on
+    /// reconnect replay. Cheap to clone (Arc internal).
+    pub traffic_quotas: TrafficQuotaCache,
 }
 
 impl AppState {
@@ -113,6 +119,22 @@ impl AppState {
         // missing envelope as "uncapped" anyway, and a corrupted cap row
         // would have failed the migration's CHECK constraint at write
         // time.
+        // 013-traffic-quotas: hydrate the quota cache from the store at
+        // boot. A failed load falls through to an empty cache (the
+        // server still functions; unauthorized clients just don't see
+        // quotas until the next successful CRUD write).
+        let traffic_quotas = match TrafficQuotaCache::load((*store).clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    event = "traffic_quota.cache_hydrate_failed",
+                    error = %e,
+                );
+                return Err(prometheus::Error::Msg(format!(
+                    "traffic_quota_cache_load: {e}"
+                )));
+            }
+        };
         let owner_caps = match OwnerCapService::open(Arc::clone(&store)) {
             Ok(s) => s,
             Err(e) => {
@@ -150,6 +172,7 @@ impl AppState {
             store,
             rule_store,
             owner_caps,
+            traffic_quotas,
         })
     }
 

@@ -1,0 +1,591 @@
+//! 013-traffic-quotas C1 — HTTP handlers for per-(user, client) traffic
+//! quotas and historical traffic queries.
+//!
+//! Routes (mounted under the auth_middleware layer in `operator/http.rs`):
+//!   - GET    /v1/users/{user_id}/quotas
+//!   - PUT    /v1/users/{user_id}/quotas/{client_name}
+//!   - PATCH  /v1/users/{user_id}/quotas/{client_name}
+//!   - DELETE /v1/users/{user_id}/quotas/{client_name}
+//!   - GET    /v1/users/{user_id}/quotas/{client_name}/status
+//!   - GET    /v1/users/{user_id}/traffic
+//!   - GET    /v1/clients/{client_name}/quotas
+//!   - GET    /v1/clients/{client_name}/traffic
+//!
+//! CRUD writes go through the in-memory `TrafficQuotaCache`, which
+//! fans them into SQLite. PUT/PATCH/DELETE also best-effort push a
+//! `TrafficQuotaUpdate{SET|REMOVE}` to the connected client; the
+//! offline-client path picks the quota up via reconnect replay (C5).
+
+use std::sync::Arc;
+
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
+use chrono::{TimeZone, Utc};
+use portunus_auth::{ClientScope, UserId};
+use portunus_core::ClientName;
+use portunus_proto::v1 as proto;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use tracing::warn;
+
+use crate::grpc::service::version_at_least;
+use crate::operator::http::ApiError;
+use crate::state::AppState;
+use crate::traffic_quotas::samples::{self, SampleBucket, TrafficSample};
+use crate::traffic_quotas::{TrafficQuotaRow, period_start_at};
+
+// ---------------------------------------------------------------------------
+// Wire shapes
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct QuotaView {
+    pub user_id: String,
+    pub client_name: String,
+    pub monthly_bytes: i64,
+    pub billing_anchor: i64,
+    pub current_period_started_at: i64,
+    pub current_period_ends_at: i64,
+    pub current_period_bytes_used: i64,
+    pub budget_remaining_bytes: i64,
+    pub exhausted_at: Option<i64>,
+    pub exhausted: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl QuotaView {
+    fn from_row(r: TrafficQuotaRow) -> Self {
+        let ends_at = compute_period_end(r.billing_anchor, r.current_period_started_at);
+        let budget_remaining = r.budget_remaining();
+        let exhausted = r.is_exhausted();
+        Self {
+            user_id: r.user_id,
+            client_name: r.client_name,
+            monthly_bytes: r.monthly_bytes,
+            billing_anchor: r.billing_anchor,
+            current_period_started_at: r.current_period_started_at,
+            current_period_ends_at: ends_at,
+            current_period_bytes_used: r.current_period_bytes_used,
+            budget_remaining_bytes: budget_remaining,
+            exhausted_at: r.exhausted_at,
+            exhausted,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutQuotaBody {
+    pub monthly_bytes: i64,
+    pub billing_anchor: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchQuotaBody {
+    pub monthly_bytes: Option<i64>,
+    pub clear_period_usage: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrafficQuery {
+    pub client_name: Option<String>,
+    pub user_id: Option<String>,
+    pub from: i64,
+    pub to: i64,
+    pub bucket: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrafficResponse {
+    pub bucket: SampleBucket,
+    pub samples: Vec<TrafficSample>,
+    pub total_bytes_in: i64,
+    pub total_bytes_out: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+pub async fn put_quota(
+    State(state): State<Arc<AppState>>,
+    Path((user_id, client_name)): Path<(String, String)>,
+    Json(body): Json<PutQuotaBody>,
+) -> Result<Json<QuotaView>, ApiError> {
+    if body.monthly_bytes < 0 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_quota_size",
+            "monthly_bytes must be >= 0",
+        ));
+    }
+    let client = parse_client_name(&client_name)?;
+    require_grant(&state, &user_id, &client)?;
+    require_client_supports_quota(&state, &client).await?;
+
+    let now = now_unix_sec();
+    let anchor = body.billing_anchor.unwrap_or(now);
+    let anchor_dt = Utc
+        .timestamp_opt(anchor, 0)
+        .single()
+        .ok_or_else(|| ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_billing_anchor",
+            "billing_anchor out of range",
+        ))?;
+    let started = period_start_at(anchor_dt, 0).timestamp();
+    let row = TrafficQuotaRow {
+        user_id: user_id.clone(),
+        client_name: client.as_str().to_string(),
+        monthly_bytes: body.monthly_bytes,
+        billing_anchor: anchor,
+        current_period_started_at: started,
+        current_period_bytes_used: 0,
+        exhausted_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let saved = state
+        .traffic_quotas
+        .upsert(row)
+        .map_err(map_store_error)?;
+    push_quota_set(&state, &client, &saved).await;
+    Ok(Json(QuotaView::from_row(saved)))
+}
+
+pub async fn patch_quota(
+    State(state): State<Arc<AppState>>,
+    Path((user_id, client_name)): Path<(String, String)>,
+    Json(body): Json<PatchQuotaBody>,
+) -> Result<Json<QuotaView>, ApiError> {
+    let client = parse_client_name(&client_name)?;
+    let mut row = state
+        .traffic_quotas
+        .get(&user_id, client.as_str())
+        .ok_or_else(|| ApiError::new(
+            StatusCode::NOT_FOUND,
+            "quota_not_found",
+            "no quota for (user, client)",
+        ))?;
+    let now = now_unix_sec();
+    if let Some(mb) = body.monthly_bytes {
+        if mb < 0 {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_quota_size",
+                "monthly_bytes must be >= 0",
+            ));
+        }
+        row.monthly_bytes = mb;
+        row.updated_at = now;
+        row = state.traffic_quotas.upsert(row).map_err(map_store_error)?;
+    }
+    if body.clear_period_usage.unwrap_or(false)
+        && let Some(updated) = state
+            .traffic_quotas
+            .clear_period_usage(&user_id, client.as_str(), now)
+            .map_err(map_store_error)?
+    {
+        row = updated;
+    }
+    push_quota_set(&state, &client, &row).await;
+    Ok(Json(QuotaView::from_row(row)))
+}
+
+pub async fn delete_quota(
+    State(state): State<Arc<AppState>>,
+    Path((user_id, client_name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let client = parse_client_name(&client_name)?;
+    let removed = state
+        .traffic_quotas
+        .delete(&user_id, client.as_str())
+        .map_err(map_store_error)?;
+    if !removed {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "quota_not_found",
+            "no quota for (user, client)",
+        ));
+    }
+    push_quota_remove(&state, &user_id, &client).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_quota_status(
+    State(state): State<Arc<AppState>>,
+    Path((user_id, client_name)): Path<(String, String)>,
+) -> Result<Json<QuotaView>, ApiError> {
+    let client = parse_client_name(&client_name)?;
+    state
+        .traffic_quotas
+        .get(&user_id, client.as_str())
+        .map(|r| Json(QuotaView::from_row(r)))
+        .ok_or_else(|| ApiError::new(
+            StatusCode::NOT_FOUND,
+            "quota_not_found",
+            "no quota for (user, client)",
+        ))
+}
+
+pub async fn list_user_quotas(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<String>,
+) -> Json<Vec<QuotaView>> {
+    let rows = state.traffic_quotas.list_for_user(&user_id);
+    Json(rows.into_iter().map(QuotaView::from_row).collect())
+}
+
+pub async fn list_client_quotas(
+    State(state): State<Arc<AppState>>,
+    Path(client_name): Path<String>,
+) -> Json<Vec<QuotaView>> {
+    let rows = state.traffic_quotas.list_for_client(&client_name);
+    Json(rows.into_iter().map(QuotaView::from_row).collect())
+}
+
+pub async fn get_user_traffic(
+    State(state): State<Arc<AppState>>,
+    Path(user_id): Path<String>,
+    Query(q): Query<TrafficQuery>,
+) -> Result<Json<TrafficResponse>, ApiError> {
+    serve_traffic(
+        &state,
+        q.client_name.as_deref(),
+        Some(&user_id),
+        q.from,
+        q.to,
+        q.bucket.as_deref(),
+    )
+}
+
+pub async fn get_client_traffic(
+    State(state): State<Arc<AppState>>,
+    Path(client_name): Path<String>,
+    Query(q): Query<TrafficQuery>,
+) -> Result<Json<TrafficResponse>, ApiError> {
+    serve_traffic(
+        &state,
+        Some(&client_name),
+        q.user_id.as_deref(),
+        q.from,
+        q.to,
+        q.bucket.as_deref(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn serve_traffic(
+    state: &AppState,
+    client_name: Option<&str>,
+    user_id: Option<&str>,
+    from: i64,
+    to: i64,
+    bucket: Option<&str>,
+) -> Result<Json<TrafficResponse>, ApiError> {
+    if from < 0 || to <= from {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_time_range",
+            "from must be >= 0 and to > from",
+        ));
+    }
+    let span = to - from;
+    let chosen = match bucket {
+        Some("1m") => SampleBucket::M1,
+        Some("1h") => SampleBucket::H1,
+        Some(other) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_bucket",
+                format!("bucket must be 1m or 1h, got {other}"),
+            ));
+        }
+        None => {
+            if span <= 24 * 3600 {
+                SampleBucket::M1
+            } else {
+                SampleBucket::H1
+            }
+        }
+    };
+    let now = now_unix_sec();
+    let oldest_allowed = now - chosen.retention_seconds();
+    if from < oldest_allowed {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "traffic_bucket_out_of_retention",
+            format!(
+                "from is older than {} retention ({} sec)",
+                match chosen {
+                    SampleBucket::M1 => "1m",
+                    SampleBucket::H1 => "1h",
+                },
+                chosen.retention_seconds()
+            ),
+        ));
+    }
+    let rows = samples::query_samples(&state.store, chosen, user_id, client_name, from, to)
+        .map_err(|e| ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "store_error",
+            e.to_string(),
+        ))?;
+    if rows.len() > 10_000 {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "traffic_too_many_rows",
+            "narrow the time range or switch to the 1h bucket",
+        ));
+    }
+    let total_bytes_in = rows.iter().map(|r| r.bytes_in).sum();
+    let total_bytes_out = rows.iter().map(|r| r.bytes_out).sum();
+    Ok(Json(TrafficResponse {
+        bucket: chosen,
+        samples: rows,
+        total_bytes_in,
+        total_bytes_out,
+    }))
+}
+
+fn parse_client_name(s: &str) -> Result<ClientName, ApiError> {
+    ClientName::new(s).map_err(|e| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_name",
+            e.to_string(),
+        )
+    })
+}
+
+/// 422 quota_target_not_found if no grant matches (user, client). A
+/// wildcard grant (`ClientScope::Any`) accepts any client.
+fn require_grant(state: &AppState, user_id: &str, client: &ClientName) -> Result<(), ApiError> {
+    let parsed_user = match UserId::from_str(user_id) {
+        Ok(u) => u,
+        Err(_) => UserId::reserved(user_id.to_string()),
+    };
+    let grants = state.operator_store.list_grants(Some(&parsed_user));
+    let any_match = grants.iter().any(|g| match &g.client {
+        ClientScope::Any => true,
+        ClientScope::Named(c) => c.as_str() == client.as_str(),
+    });
+    if any_match {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "quota_target_not_found",
+            format!("no grant for user={user_id} client={client}"),
+        ))
+    }
+}
+
+/// 422 quota_unsupported_by_client when the target client's reported
+/// version is below 1.4.0 (or it is offline / never connected).
+async fn require_client_supports_quota(
+    state: &AppState,
+    client: &ClientName,
+) -> Result<(), ApiError> {
+    let version = state.clients.client_version_of(client).await;
+    if version_at_least(version.as_deref(), 1, 4) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "quota_unsupported_by_client",
+            format!(
+                "target client_version {} < 1.4.0",
+                version.as_deref().unwrap_or("unknown")
+            ),
+        ))
+    }
+}
+
+async fn push_quota_set(state: &AppState, client: &ClientName, row: &TrafficQuotaRow) {
+    let Some((outbound, _waiters)) = state.clients.handles(client).await else {
+        return;
+    };
+    let ends_at = compute_period_end(row.billing_anchor, row.current_period_started_at);
+    let state_proto = proto::TrafficQuotaState {
+        monthly_bytes: row.monthly_bytes,
+        budget_remaining_bytes: row.budget_remaining(),
+        period_started_at_unix_sec: row.current_period_started_at,
+        period_ends_at_unix_sec: ends_at,
+        exhausted: row.is_exhausted(),
+    };
+    let push = proto::ServerMessage {
+        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
+            proto::TrafficQuotaUpdate {
+                request_id: format!("quota-{}", ulid::Ulid::new()),
+                user_id: row.user_id.clone(),
+                client_name: row.client_name.clone(),
+                action: proto::TrafficQuotaAction::Set as i32,
+                state: Some(state_proto),
+            },
+        )),
+    };
+    if outbound.send(Ok(push)).await.is_err() {
+        warn!(
+            event = "traffic_quota.push_failed",
+            user_id = %row.user_id,
+            client = %client,
+            action = "set",
+        );
+    }
+}
+
+async fn push_quota_remove(state: &AppState, user_id: &str, client: &ClientName) {
+    let Some((outbound, _waiters)) = state.clients.handles(client).await else {
+        return;
+    };
+    let push = proto::ServerMessage {
+        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
+            proto::TrafficQuotaUpdate {
+                request_id: format!("quota-{}", ulid::Ulid::new()),
+                user_id: user_id.to_string(),
+                client_name: client.as_str().to_string(),
+                action: proto::TrafficQuotaAction::Remove as i32,
+                state: None,
+            },
+        )),
+    };
+    if outbound.send(Ok(push)).await.is_err() {
+        warn!(
+            event = "traffic_quota.push_failed",
+            user_id, client = %client, action = "remove",
+        );
+    }
+}
+
+fn map_store_error(e: crate::store::StoreError) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "store_error",
+        e.to_string(),
+    )
+}
+
+/// Find the period number `n` such that `period_start(anchor, n) ==
+/// started`, then return `period_start(anchor, n+1)` as the period
+/// end. Returns `i64::MAX` on overflow / unreachable inputs (we'd
+/// rather report an absurd-future timestamp than refuse the read).
+fn compute_period_end(billing_anchor: i64, started: i64) -> i64 {
+    let Some(anchor) = Utc.timestamp_opt(billing_anchor, 0).single() else {
+        return i64::MAX;
+    };
+    let Some(start_dt) = Utc.timestamp_opt(started, 0).single() else {
+        return i64::MAX;
+    };
+    let mut n: u32 = 0;
+    while n < 12_000 {
+        if period_start_at(anchor, n) == start_dt {
+            return period_start_at(anchor, n + 1).timestamp();
+        }
+        n += 1;
+    }
+    i64::MAX
+}
+
+fn now_unix_sec() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traffic_quotas::store as quota_store;
+    use crate::traffic_quotas::cache::TrafficQuotaCache;
+    use tempfile::tempdir;
+
+    fn sample_row(monthly: i64, used: i64) -> TrafficQuotaRow {
+        TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_name: "edge-01".into(),
+            monthly_bytes: monthly,
+            billing_anchor: 0,
+            current_period_started_at: 0,
+            current_period_bytes_used: used,
+            exhausted_at: if used >= monthly { Some(10) } else { None },
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn quota_view_carries_budget_and_exhausted_flags() {
+        let r = sample_row(1_000, 1_200);
+        let v = QuotaView::from_row(r);
+        assert_eq!(v.monthly_bytes, 1_000);
+        assert_eq!(v.current_period_bytes_used, 1_200);
+        assert_eq!(v.budget_remaining_bytes, -200);
+        assert!(v.exhausted);
+        assert_eq!(v.exhausted_at, Some(10));
+    }
+
+    #[test]
+    fn quota_view_period_ends_at_uses_anchor_math() {
+        // anchor = 2026-01-15 00:00:00 UTC -> period 0 ends 2026-02-15.
+        let anchor = Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap();
+        let started = anchor.timestamp();
+        let r = TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_name: "edge-01".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: anchor.timestamp(),
+            current_period_started_at: started,
+            current_period_bytes_used: 0,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let v = QuotaView::from_row(r);
+        let expected_end = Utc.with_ymd_and_hms(2026, 2, 15, 0, 0, 0).unwrap().timestamp();
+        assert_eq!(v.current_period_ends_at, expected_end);
+    }
+
+    #[test]
+    fn cache_crud_via_helpers_roundtrips() {
+        let dir = tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path()).expect("open store");
+        let cache = TrafficQuotaCache::load(store.clone()).expect("load cache");
+        let r = sample_row(1_000, 0);
+        cache.upsert(r.clone()).unwrap();
+        let got = cache.get("alice", "edge-01").unwrap();
+        assert_eq!(got.monthly_bytes, 1_000);
+
+        // store-level row also present.
+        let store_row = quota_store::get(&store, "alice", "edge-01")
+            .unwrap()
+            .unwrap();
+        assert_eq!(store_row.monthly_bytes, 1_000);
+
+        // delete clears both layers.
+        assert!(cache.delete("alice", "edge-01").unwrap());
+        assert!(cache.get("alice", "edge-01").is_none());
+        assert!(quota_store::get(&store, "alice", "edge-01").unwrap().is_none());
+    }
+
+    #[test]
+    fn compute_period_end_falls_back_to_imax_when_unreachable() {
+        // Billing anchor that won't match any period_start chain in <12000 steps:
+        // pass a started timestamp far away from any anchor period_start.
+        let weird = compute_period_end(0, 999_999_999_999);
+        assert_eq!(weird, i64::MAX);
+    }
+}

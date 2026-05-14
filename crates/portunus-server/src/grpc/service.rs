@@ -661,7 +661,7 @@ fn replay_gate_reason(
     Ok(())
 }
 
-fn version_at_least(version: Option<&str>, major_floor: u32, minor_floor: u32) -> bool {
+pub(crate) fn version_at_least(version: Option<&str>, major_floor: u32, minor_floor: u32) -> bool {
     let Some(version) = version else {
         return false;
     };
