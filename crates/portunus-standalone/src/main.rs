@@ -1,4 +1,5 @@
 mod config;
+mod reporter;
 mod signal;
 
 fn main() -> std::process::ExitCode {
