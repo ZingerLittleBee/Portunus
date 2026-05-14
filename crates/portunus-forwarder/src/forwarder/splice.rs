@@ -18,8 +18,8 @@
 
 use std::sync::OnceLock;
 
-use portunus_core::RuleId;
 use portunus_core::Protocol;
+use portunus_core::RuleId;
 
 use super::rate_limit::scope::{OwnerRateLimitHandle, RuleRateLimitHandle};
 

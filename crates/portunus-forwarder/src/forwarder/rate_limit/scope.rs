@@ -348,6 +348,7 @@ pub enum LayeredAcquire {
 /// first, then rule. Both layers are independently optional so
 /// uncapped rules / owners short-circuit through (and the v0.10
 /// byte-stable hot path is preserved when both are `None`).
+#[must_use] 
 pub fn try_acquire_layered(
     owner: Option<&Arc<OwnerRateLimitHandle>>,
     rule: Option<&Arc<RuleRateLimitHandle>>,
@@ -1511,7 +1512,10 @@ mod tests {
         assert_eq!(drained[0].owner_id, "alice");
         let stats = &drained[0].stats;
         assert_eq!(stats.reject_total.len(), 1);
-        assert_eq!(stats.reject_total[0].0, RateLimitRejectReason::OwnerConcurrent);
+        assert_eq!(
+            stats.reject_total[0].0,
+            RateLimitRejectReason::OwnerConcurrent
+        );
         assert_eq!(stats.reject_total[0].1, 1);
     }
 

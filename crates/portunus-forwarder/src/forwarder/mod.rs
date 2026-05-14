@@ -33,8 +33,8 @@ pub mod udp;
 use std::sync::Arc;
 use std::time::Duration;
 
-use portunus_core::{PortRange, RuleId, Target};
 use portunus_core::Protocol;
+use portunus_core::{PortRange, RuleId, Target};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;

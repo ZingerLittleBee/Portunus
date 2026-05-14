@@ -15,8 +15,7 @@
 
 use portunus_forwarder::{
     OwnerRateLimitStatsSnapshot, PerPortStatsSnapshot, PerTargetStatsSnapshot,
-    RateLimitRejectReason, RateLimitStatsSnapshot, RuleStatsSnapshot,
-    SniListenerStatsSnapshot,
+    RateLimitRejectReason, RateLimitStatsSnapshot, RuleStatsSnapshot, SniListenerStatsSnapshot,
 };
 use portunus_proto::v1 as proto;
 
@@ -108,7 +107,11 @@ pub fn rule_stats_to_proto(s: RuleStatsSnapshot) -> proto::RuleStats {
         bytes_in: s.bytes_in,
         bytes_out: s.bytes_out,
         active_connections: s.active_connections,
-        per_port: s.per_port.into_iter().map(per_port_stats_to_proto).collect(),
+        per_port: s
+            .per_port
+            .into_iter()
+            .map(per_port_stats_to_proto)
+            .collect(),
         dns_failures: s.dns_failures,
         datagrams_in: s.datagrams_in,
         datagrams_out: s.datagrams_out,

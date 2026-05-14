@@ -97,8 +97,11 @@ impl SniListenerCounters {
     /// matching the pattern of every other counter in this module.
     #[must_use]
     pub fn snapshot(&self, listen_port: u16) -> SniListenerStatsSnapshot {
-        let (client_hello_peek_bucket_counts, client_hello_peek_sum_micros, client_hello_peek_count) =
-            self.peek_histogram.snapshot();
+        let (
+            client_hello_peek_bucket_counts,
+            client_hello_peek_sum_micros,
+            client_hello_peek_count,
+        ) = self.peek_histogram.snapshot();
         SniListenerStatsSnapshot {
             listen_port,
             sni_route_miss_total: self.miss.load(Ordering::Relaxed),

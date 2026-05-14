@@ -303,8 +303,8 @@ pub fn sort_priority(targets: &[RuleTarget]) -> Option<Vec<usize>> {
 // T2.7: MultiTargetObservability::snapshot_per_target
 // =====================================================================
 
-use crate::forwarder::stats::{PerTargetStatsSnapshot, TargetHealth};
 use crate::forwarder::MultiTarget;
+use crate::forwarder::stats::{PerTargetStatsSnapshot, TargetHealth};
 
 impl crate::forwarder::MultiTargetObservability {
     /// Build a proto-free per-target snapshot mirroring the priority-ordered
@@ -586,8 +586,8 @@ mod tests {
     // ---- T2.7: snapshot_per_target -----------------------------------
 
     fn make_multi_target(host: &str, port: u16, priority: u32) -> crate::forwarder::MultiTarget {
-        use portunus_core::{RuleTarget, Target};
         use crate::forwarder::MultiTarget;
+        use portunus_core::{RuleTarget, Target};
         // Use a loopback IP as the resolved target for test purposes.
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         MultiTarget {
@@ -603,8 +603,8 @@ mod tests {
 
     #[test]
     fn snapshot_per_target_returns_empty_for_no_targets() {
-        use crate::forwarder::stats::PerTargetStatsSnapshot;
         use crate::forwarder::MultiTargetObservability;
+        use crate::forwarder::stats::PerTargetStatsSnapshot;
         use std::sync::Arc;
         use std::sync::atomic::AtomicU64;
 
@@ -612,16 +612,15 @@ mod tests {
             target_failovers_total: Arc::new(AtomicU64::new(0)),
             states: Arc::new(vec![]),
         };
-        let (total, per_target): (u64, Vec<PerTargetStatsSnapshot>) =
-            obs.snapshot_per_target(&[]);
+        let (total, per_target): (u64, Vec<PerTargetStatsSnapshot>) = obs.snapshot_per_target(&[]);
         assert_eq!(total, 0);
         assert!(per_target.is_empty());
     }
 
     #[test]
     fn snapshot_per_target_populates_all_fields() {
-        use crate::forwarder::stats::TargetHealth;
         use crate::forwarder::MultiTargetObservability;
+        use crate::forwarder::stats::TargetHealth;
         use std::sync::Arc;
         use std::sync::atomic::AtomicU64;
         use tokio::sync::Mutex;
@@ -646,8 +645,8 @@ mod tests {
 
     #[test]
     fn snapshot_per_target_skips_extra_targets_beyond_states_len() {
-        use crate::forwarder::stats::PerTargetStatsSnapshot;
         use crate::forwarder::MultiTargetObservability;
+        use crate::forwarder::stats::PerTargetStatsSnapshot;
         use std::sync::Arc;
         use std::sync::atomic::AtomicU64;
         use tokio::sync::Mutex;
@@ -661,8 +660,7 @@ mod tests {
             make_multi_target("a.test", 80, 0),
             make_multi_target("b.test", 80, 1),
         ];
-        let (_, per_target): (u64, Vec<PerTargetStatsSnapshot>) =
-            obs.snapshot_per_target(&targets);
+        let (_, per_target): (u64, Vec<PerTargetStatsSnapshot>) = obs.snapshot_per_target(&targets);
         assert_eq!(per_target.len(), 1);
         assert_eq!(per_target[0].host, "a.test");
     }

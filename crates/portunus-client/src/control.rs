@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use portunus_core::{PortRange, RuleId};
 use portunus_proto::v1::{
-    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction,
-    Protocol, RuleAction,
+    ActivationOutcome, ClientMessage, Hello, OwnerRateLimitAction, Protocol, RuleAction,
     RuleStats as ProtoRuleStats, RuleStatus as ProtoRuleStatus, ServerMessage, StatsReport,
     client_message, control_client::ControlClient, server_message,
 };
@@ -25,9 +24,9 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{error, info, warn};
 
 use crate::bundle::CredentialBundle;
+use crate::port_groups::PortGroupManager;
 use portunus_forwarder::forwarder::stats::RuleStats;
 use portunus_forwarder::forwarder::{self, ClientRule, RuleStatusEvent};
-use crate::port_groups::PortGroupManager;
 
 const PROTOCOL_VERSION: &str = "1.0.0";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -225,8 +224,9 @@ pub async fn run_with_reconnect(
     // reconnects. The server re-pushes the current owner state on
     // reconnect (mirroring the rule-replay convention from v0.1.0)
     // so a stale entry would be overwritten on the next push.
-    let owner_rate_limit_scope =
-        Arc::new(portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
+    let owner_rate_limit_scope = Arc::new(
+        portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new(),
+    );
     let rule_rate_limit_scope =
         Arc::new(portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager::new());
     // 013-traffic-quotas D2: per-(user, client) quota registry lives
@@ -234,7 +234,8 @@ pub async fn run_with_reconnect(
     // every quota row BEFORE any rule, so a stale entry would be
     // overwritten on the next push and a removed quota survives only
     // until the next reconnect.
-    let quota_scope = Arc::new(portunus_forwarder::forwarder::quota::scope::QuotaScopeManager::new());
+    let quota_scope =
+        Arc::new(portunus_forwarder::forwarder::quota::scope::QuotaScopeManager::new());
     // 011-rate-limiting-qos T032: per-owner stats registry parallels
     // the limiter registry. Aggregation across rules sharing the same
     // owner happens here — multiple rules call `get_or_create` for
@@ -243,8 +244,9 @@ pub async fn run_with_reconnect(
     // `StatsReport.owner_rate_limit_stats` (FR-014). Lives for the
     // process lifetime so cumulative counters persist across
     // reconnects.
-    let owner_rate_limit_stats_registry =
-        Arc::new(portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new());
+    let owner_rate_limit_stats_registry = Arc::new(
+        portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry::new(),
+    );
 
     let mut attempt: u32 = 0;
     let max_delay = Duration::from_secs(cfg.max_delay_secs);
@@ -326,18 +328,25 @@ struct RuleSlot {
     /// `RuleStats.rate_limit`. `None` for uncapped rules — the wire
     /// keeps proto3 default-stripping semantics so v0.10 readers see
     /// an unchanged byte stream (T005).
-    rate_limit_stats: Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    rate_limit_stats:
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
     /// 011-rate-limiting-qos: dynamic per-rule limiter handle. The
     /// stats drainer snapshots the current limiter so hot-reload swaps
     /// are reflected in later reports.
-    rate_limit_limiter: Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+    rate_limit_limiter:
+        Option<Arc<portunus_forwarder::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
 }
 
 struct PumpContext {
-    resolver: Arc<portunus_forwarder::resolver::LiveResolver<portunus_forwarder::resolver::HickoryResolver>>,
-    rule_rate_limit_scope: Arc<portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager>,
-    owner_rate_limit_scope: Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
-    owner_rate_limit_stats: Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
+    resolver: Arc<
+        portunus_forwarder::resolver::LiveResolver<portunus_forwarder::resolver::HickoryResolver>,
+    >,
+    rule_rate_limit_scope:
+        Arc<portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager>,
+    owner_rate_limit_scope:
+        Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
+    owner_rate_limit_stats:
+        Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
     /// 013-traffic-quotas D2: per-(user, client) quota registry.
     quota_scope: Arc<portunus_forwarder::forwarder::quota::scope::QuotaScopeManager>,
     drain_timeout: Duration,
@@ -423,9 +432,15 @@ fn handle_server_message(
     msg: ServerMessage,
     rules: &mut HashMap<RuleId, RuleSlot>,
     port_groups: &mut PortGroupManager,
-    resolver: Arc<portunus_forwarder::resolver::LiveResolver<portunus_forwarder::resolver::HickoryResolver>>,
-    rule_rate_limit_scope: &Arc<portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager>,
-    owner_rate_limit_scope: &Arc<portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
+    resolver: Arc<
+        portunus_forwarder::resolver::LiveResolver<portunus_forwarder::resolver::HickoryResolver>,
+    >,
+    rule_rate_limit_scope: &Arc<
+        portunus_forwarder::forwarder::rate_limit::scope::RateLimitScopeManager,
+    >,
+    owner_rate_limit_scope: &Arc<
+        portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
+    >,
     owner_rate_limit_stats: &portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
     quota_scope: &portunus_forwarder::forwarder::quota::scope::QuotaScopeManager,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
@@ -666,7 +681,9 @@ fn handle_server_message(
                 > = std::sync::Arc::new(
                     (0..multi_targets.len())
                         .map(|_| {
-                            tokio::sync::Mutex::new(portunus_forwarder::forwarder::failover::HealthState::new())
+                            tokio::sync::Mutex::new(
+                                portunus_forwarder::forwarder::failover::HealthState::new(),
+                            )
                         })
                         .collect(),
                 );
@@ -711,7 +728,9 @@ fn handle_server_message(
             let owner_rate_limit = owner_id_str.as_ref().map(|owner_id| {
                 Arc::new(
                     portunus_forwarder::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(
-                        portunus_forwarder::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                        portunus_forwarder::forwarder::rate_limit::scope::OwnerId::new(
+                            owner_id.clone(),
+                        ),
                         Arc::clone(owner_rate_limit_scope),
                     ),
                 )
@@ -724,7 +743,9 @@ fn handle_server_message(
             // reject events without rebuilding the rule.
             let rule_owner_rate_limit_stats = owner_id_str.as_ref().map(|owner_id| {
                 owner_rate_limit_stats.get_or_create(
-                    &portunus_forwarder::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
+                    &portunus_forwarder::forwarder::rate_limit::scope::OwnerId::new(
+                        owner_id.clone(),
+                    ),
                 )
             });
             // 013-traffic-quotas E2: resolve the per-(user, client)
@@ -1094,7 +1115,11 @@ fn build_rule_stats_snapshot(
     let basic = slot.stats.snapshot_basic();
     // is_range gates per_port (wire byte-stability with v0.1.0 — single-port
     // rules emit empty per_port).
-    let per_port = if slot.is_range { basic.per_port } else { Vec::new() };
+    let per_port = if slot.is_range {
+        basic.per_port
+    } else {
+        Vec::new()
+    };
 
     let (target_failovers_total, per_target) = match slot.multi_target_obs.as_ref() {
         Some(obs) => obs.snapshot_per_target(&slot.targets_view),

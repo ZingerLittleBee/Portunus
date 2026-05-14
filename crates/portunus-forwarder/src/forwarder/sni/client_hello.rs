@@ -267,6 +267,7 @@ impl<'a> Cursor<'a> {
 /// structurally impossible.
 #[doc(hidden)]
 #[allow(clippy::cast_possible_truncation)]
+#[must_use] 
 pub fn build_client_hello(sni: Option<&str>) -> Vec<u8> {
     let mut body = Vec::with_capacity(256);
     body.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
