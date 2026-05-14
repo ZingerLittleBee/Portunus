@@ -19,7 +19,7 @@ test.describe("multi-target rule push", () => {
     // before the expected offline-client rejection.
     await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
       method: "POST",
-      body: { name: "edge-mt" },
+      body: { name: "edge-mt", address: "127.0.0.1" },
     });
 
     await page.goto("/rules/new");
@@ -82,7 +82,7 @@ test.describe("multi-target rule push", () => {
     await loginAs(page, server.superadminUserId, server.superadminPassword);
     await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
       method: "POST",
-      body: { name: "edge-st" },
+      body: { name: "edge-st", address: "127.0.0.1" },
     });
 
     await page.goto("/rules/new");

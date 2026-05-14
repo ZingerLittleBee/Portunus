@@ -45,7 +45,7 @@ test("superadmin happy path", async ({ page, request, server }) => {
   // bundle modal that us2 covers indirectly via the credentials flow).
   await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
     method: "POST",
-    body: { name: "edge-01" },
+    body: { name: "edge-01", address: "127.0.0.1" },
   });
 
   // Add a grant for alice via the UI form (30000–30050 TCP+UDP).

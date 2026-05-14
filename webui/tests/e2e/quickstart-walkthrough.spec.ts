@@ -19,7 +19,7 @@ test("quickstart walkthrough end-to-end", async ({ page, request, server }) => {
   await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "bob");
   await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
     method: "POST",
-    body: { name: "edge-01" },
+    body: { name: "edge-01", address: "127.0.0.1" },
   });
 
   // § 5 — add a grant for alice.
