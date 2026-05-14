@@ -1,0 +1,15 @@
+[package]
+name = "portunus-forwarder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portunus data-plane library — TCP/UDP forwarding shared by portunus-client and portunus-standalone."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Filled in Phase 2 when modules move in. Empty for now keeps the crate
+# compiling as a stub.
