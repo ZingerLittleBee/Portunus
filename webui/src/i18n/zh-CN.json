@@ -12,7 +12,6 @@
   "nav": {
     "dashboard": "仪表盘",
     "users": "用户",
-    "grants": "授权",
     "rules": "转发规则",
     "clients": "客户端",
     "audit": "审计日志",
@@ -132,25 +131,6 @@
     "generateTemporary": "留空则生成临时密码",
     "requirePasswordChange": "下次登录要求修改密码",
     "keepApiTokens": "保留现有 API 令牌"
-  },
-  "grants": {
-    "title": "授权",
-    "user": "用户",
-    "client": "客户端",
-    "ports": "端口",
-    "protocols": "协议",
-    "newGrant": "新建授权",
-    "revoke": "撤销",
-    "emptyTitle": "暂无授权",
-    "emptyBody": "授权决定租户可以使用哪些端口和协议。"
-  },
-  "grantCreate": {
-    "title": "新建授权",
-    "submit": "创建授权",
-    "selectUser": "请选择用户…",
-    "startPort": "起始端口",
-    "endPort": "结束端口",
-    "protocolRequired": "至少选择一种协议。"
   },
   "rules": {
     "title": "转发规则",

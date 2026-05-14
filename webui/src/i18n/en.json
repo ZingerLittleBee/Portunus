@@ -12,7 +12,6 @@
   "nav": {
     "dashboard": "Dashboard",
     "users": "Users",
-    "grants": "Grants",
     "rules": "Rules",
     "clients": "Clients",
     "audit": "Audit log",
@@ -132,25 +131,6 @@
     "generateTemporary": "Leave blank to generate a temporary password",
     "requirePasswordChange": "Require password change on next login",
     "keepApiTokens": "Keep existing API tokens"
-  },
-  "grants": {
-    "title": "Grants",
-    "user": "User",
-    "client": "Client",
-    "ports": "Ports",
-    "protocols": "Protocols",
-    "newGrant": "New grant",
-    "revoke": "Revoke",
-    "emptyTitle": "No grants yet",
-    "emptyBody": "Grants control which ports and protocols a tenant may use."
-  },
-  "grantCreate": {
-    "title": "New grant",
-    "submit": "Create grant",
-    "selectUser": "Select a user…",
-    "startPort": "Listen port (start)",
-    "endPort": "Listen port (end)",
-    "protocolRequired": "Pick at least one protocol."
   },
   "rules": {
     "title": "Rules",
