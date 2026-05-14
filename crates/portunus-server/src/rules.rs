@@ -34,27 +34,10 @@ fn serialize_prefer_ipv6_as_bool<S: serde::Serializer>(
     s.serialize_bool(v.unwrap_or(false))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Protocol {
-    Tcp,
-    /// Additive in v0.4.0 (spec 004-udp-forward). When persisted in
-    /// `rules.json` (future work), serializes as `"udp"`. v0.3.0 readers
-    /// of a v0.4.0 dump fail loudly on the unknown variant — operators
-    /// should drain UDP rules before downgrading.
-    Udp,
-}
-
-impl Protocol {
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Tcp => "tcp",
-            Self::Udp => "udp",
-        }
-    }
-}
+// Phase 1 of the standalone-forwarder spec — single authoritative
+// `Protocol` enum now lives in portunus_core. JSON wire shape unchanged
+// (still `"tcp"` / `"udp"` lowercase via serde rename_all).
+pub use portunus_core::Protocol;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
