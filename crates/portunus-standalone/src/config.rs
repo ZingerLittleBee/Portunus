@@ -2,6 +2,10 @@
 //! for `portunus-standalone`.
 //!
 //! § 4 of the standalone-forwarder spec.
+//!
+//! Some public struct fields are schema elements retained for future use or
+//! TOML round-trip fidelity; suppress dead_code for the whole module.
+#![allow(dead_code)]
 
 use std::path::Path;
 

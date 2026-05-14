@@ -35,7 +35,7 @@ pub fn spawn_standalone_reporter(
                     };
                     for (rule_id, rs) in map.iter() {
                         let snap = rs.snapshot_basic();
-                        let name = registry.get(rule_id).map(String::as_str).unwrap_or("?");
+                        let name = registry.get(rule_id).map_or("?", String::as_str);
                         tracing::info!(
                             event = "standalone.stats",
                             rule = %rule_id,
