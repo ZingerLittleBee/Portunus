@@ -229,6 +229,12 @@ pub async fn run_with_reconnect(
         Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager::new());
     let rule_rate_limit_scope =
         Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+    // 013-traffic-quotas D2: per-(user, client) quota registry lives
+    // for the entire process lifetime. Reconnect replay (C5) re-pushes
+    // every quota row BEFORE any rule, so a stale entry would be
+    // overwritten on the next push and a removed quota survives only
+    // until the next reconnect.
+    let quota_scope = Arc::new(crate::forwarder::quota::scope::QuotaScopeManager::new());
     // 011-rate-limiting-qos T032: per-owner stats registry parallels
     // the limiter registry. Aggregation across rules sharing the same
     // owner happens here — multiple rules call `get_or_create` for
@@ -255,6 +261,7 @@ pub async fn run_with_reconnect(
                     rule_rate_limit_scope: Arc::clone(&rule_rate_limit_scope),
                     owner_rate_limit_scope: Arc::clone(&owner_rate_limit_scope),
                     owner_rate_limit_stats: Arc::clone(&owner_rate_limit_stats_registry),
+                    quota_scope: Arc::clone(&quota_scope),
                     drain_timeout: cfg.drain_timeout,
                     stats_report_interval: cfg.stats_report_interval,
                 };
@@ -331,6 +338,8 @@ struct PumpContext {
     rule_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::RateLimitScopeManager>,
     owner_rate_limit_scope: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
     owner_rate_limit_stats: Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry>,
+    /// 013-traffic-quotas D2: per-(user, client) quota registry.
+    quota_scope: Arc<crate::forwarder::quota::scope::QuotaScopeManager>,
     drain_timeout: Duration,
     stats_report_interval: Duration,
 }
@@ -363,6 +372,7 @@ async fn pump(mut session: LiveSession, context: PumpContext, cancel: &Cancellat
                         &context.rule_rate_limit_scope,
                         &context.owner_rate_limit_scope,
                         &context.owner_rate_limit_stats,
+                        &context.quota_scope,
                         &status_tx,
                         context.drain_timeout,
                         udp_max_flows,
@@ -417,6 +427,7 @@ fn handle_server_message(
     rule_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::RateLimitScopeManager>,
     owner_rate_limit_scope: &Arc<crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager>,
     owner_rate_limit_stats: &crate::forwarder::rate_limit::scope::OwnerRateLimitStatsRegistry,
+    quota_scope: &crate::forwarder::quota::scope::QuotaScopeManager,
     status_tx: &mpsc::Sender<RuleStatusEvent>,
     drain_timeout: Duration,
     udp_max_flows: u32,
@@ -433,6 +444,15 @@ fn handle_server_message(
         // any per-rule cap.
         Some(server_message::Payload::OwnerRateLimitUpdate(update)) => {
             apply_owner_rate_limit_update(update, owner_rate_limit_scope);
+            return;
+        }
+        // 013-traffic-quotas D3: per-(user, client) quota state push.
+        // SET installs or hot-swaps the QuotaHandle's atomic budget;
+        // REMOVE drops the registry entry so the data-plane hooks
+        // short-circuit the consume branch. Reconnect replay (C5)
+        // delivers these BEFORE the first RuleUpdate.
+        Some(server_message::Payload::TrafficQuotaUpdate(update)) => {
+            apply_traffic_quota_update(update, quota_scope);
             return;
         }
         // Welcome is consumed before pump; any other variant is ignored.
@@ -706,6 +726,17 @@ fn handle_server_message(
                     &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
                 )
             });
+            // 013-traffic-quotas E2: resolve the per-(user, client)
+            // quota handle from the process-lifetime registry. None
+            // when the rule is unowned OR no quota has been installed
+            // for this owner yet — copy_uncapped then stays on the
+            // byte-identical splice / userspace fast path. Reconnect
+            // replay (C5) re-installs every quota BEFORE any rule, so
+            // an owner_id present here either has a quota or genuinely
+            // has none on the server.
+            let rule_quota = owner_id_str
+                .as_ref()
+                .and_then(|uid| quota_scope.lookup(uid));
             // Hold a clone of the rate-limit handles for the RuleSlot
             // (the periodic stats reporter and SNI/legacy paths both
             // need to keep observing them after `client_rule` moves
@@ -745,6 +776,7 @@ fn handle_server_message(
                 // the v0.10 forwarding path byte-for-byte.
                 owner_rate_limit,
                 owner_rate_limit_stats: rule_owner_rate_limit_stats,
+                quota: rule_quota,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();
@@ -884,6 +916,59 @@ fn handle_server_message(
 /// (R-008); a fresh `(client, owner)` falls through to a from-envelope
 /// build. REMOVE drops the entry idempotently so the layered cascade
 /// short-circuits the owner branch.
+/// 013-traffic-quotas D3: apply a single `TrafficQuotaUpdate` server
+/// push. SET threads the wire `TrafficQuotaState` into
+/// `QuotaScopeManager::install`, which atomically `replace()`s any
+/// existing entry's `QuotaHandle` state in-place — in-flight
+/// forwarders observe the new budget via the shared `Arc`. REMOVE
+/// drops the registry entry idempotently.
+fn apply_traffic_quota_update(
+    update: portunus_proto::v1::TrafficQuotaUpdate,
+    quota_scope: &crate::forwarder::quota::scope::QuotaScopeManager,
+) {
+    use portunus_proto::v1::TrafficQuotaAction;
+    let action =
+        TrafficQuotaAction::try_from(update.action).unwrap_or(TrafficQuotaAction::Unspecified);
+    match action {
+        TrafficQuotaAction::Set => {
+            let Some(state) = update.state else {
+                warn!(
+                    event = "control.traffic_quota_update_set_without_state",
+                    user = %update.user_id,
+                    client = %update.client_name,
+                );
+                return;
+            };
+            let qs = crate::forwarder::quota::QuotaState {
+                monthly_bytes: state.monthly_bytes,
+                budget_remaining_bytes: state.budget_remaining_bytes,
+                exhausted: state.exhausted,
+            };
+            quota_scope.install(&update.user_id, &update.client_name, qs);
+            info!(
+                event = "control.traffic_quota_set",
+                user = %update.user_id,
+                client = %update.client_name,
+                remaining = state.budget_remaining_bytes,
+                exhausted = state.exhausted,
+            );
+        }
+        TrafficQuotaAction::Remove => {
+            quota_scope.remove(&update.user_id);
+            info!(
+                event = "control.traffic_quota_remove",
+                user = %update.user_id,
+                client = %update.client_name,
+            );
+        }
+        TrafficQuotaAction::Unspecified => warn!(
+            event = "control.traffic_quota_unspecified_action",
+            user = %update.user_id,
+            client = %update.client_name,
+        ),
+    }
+}
+
 fn apply_owner_rate_limit_update(
     update: portunus_proto::v1::OwnerRateLimitUpdate,
     owner_rate_limit_scope: &crate::forwarder::rate_limit::scope::OwnerRateLimitScopeManager,
@@ -1326,5 +1411,127 @@ mod tests {
             &mgr,
         );
         assert!(mgr.is_empty());
+    }
+
+    // 013-traffic-quotas D3 tests --------------------------------------------
+
+    use crate::forwarder::quota::scope::QuotaScopeManager;
+    use portunus_proto::v1::{TrafficQuotaAction, TrafficQuotaState, TrafficQuotaUpdate};
+
+    fn quota_state(monthly: i64, remaining: i64, exhausted: bool) -> TrafficQuotaState {
+        TrafficQuotaState {
+            monthly_bytes: monthly,
+            budget_remaining_bytes: remaining,
+            period_started_at_unix_sec: 0,
+            period_ends_at_unix_sec: 0,
+            exhausted,
+        }
+    }
+
+    #[test]
+    fn d3_set_installs_quota_handle() {
+        let mgr = QuotaScopeManager::new();
+        let update = TrafficQuotaUpdate {
+            request_id: "r1".into(),
+            user_id: "alice".into(),
+            client_name: "edge-01".into(),
+            action: TrafficQuotaAction::Set as i32,
+            state: Some(quota_state(1_000, 750, false)),
+        };
+        apply_traffic_quota_update(update, &mgr);
+        let h = mgr.lookup("alice").expect("installed");
+        assert_eq!(h.remaining(), 750);
+        assert!(!h.is_exhausted());
+    }
+
+    #[test]
+    fn d3_set_hot_swaps_handle_in_place() {
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: Some(quota_state(1_000, 100, false)),
+            },
+            &mgr,
+        );
+        let h1 = mgr.lookup("alice").unwrap();
+
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r2".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: Some(quota_state(10_000, 10_000, false)),
+            },
+            &mgr,
+        );
+        let h2 = mgr.lookup("alice").unwrap();
+        assert!(Arc::ptr_eq(&h1, &h2));
+        assert_eq!(h1.remaining(), 10_000);
+    }
+
+    #[test]
+    fn d3_remove_drops_handle() {
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: Some(quota_state(1_000, 750, false)),
+            },
+            &mgr,
+        );
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r2".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Remove as i32,
+                state: None,
+            },
+            &mgr,
+        );
+        assert!(mgr.lookup("alice").is_none());
+    }
+
+    #[test]
+    fn d3_set_without_state_is_warning_only() {
+        // SET payload that lost its `state` field on the wire must not
+        // panic — the contract says the server always carries state for
+        // SET, but a malformed push must degrade safely.
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Set as i32,
+                state: None,
+            },
+            &mgr,
+        );
+        assert!(mgr.lookup("alice").is_none());
+    }
+
+    #[test]
+    fn d3_unspecified_action_is_ignored() {
+        let mgr = QuotaScopeManager::new();
+        apply_traffic_quota_update(
+            TrafficQuotaUpdate {
+                request_id: "r1".into(),
+                user_id: "alice".into(),
+                client_name: "edge-01".into(),
+                action: TrafficQuotaAction::Unspecified as i32,
+                state: Some(quota_state(1_000, 750, false)),
+            },
+            &mgr,
+        );
+        assert!(mgr.lookup("alice").is_none());
     }
 }

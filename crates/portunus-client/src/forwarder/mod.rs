@@ -22,6 +22,7 @@ pub mod failover_path;
 pub mod probe;
 pub mod proxy;
 pub mod proxy_protocol;
+pub mod quota;
 pub mod range;
 pub mod rate_limit;
 pub mod sni;
@@ -135,6 +136,11 @@ pub struct ClientRule {
     /// Drained into `StatsReport.owner_rate_limit_stats` on every
     /// report tick.
     pub owner_rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 013-traffic-quotas (E2): per-(user, client) byte-budget handle
+    /// resolved from `QuotaScopeManager` at rule activation. `None`
+    /// for unowned rules or when no quota is installed — copy_uncapped
+    /// then stays on the byte-identical splice / userspace fast path.
+    pub quota: Option<Arc<quota::QuotaHandle>>,
 }
 
 /// One entry in `ClientRule.targets`. Holds both the wire-shape
@@ -329,6 +335,7 @@ fn run_accept_loops<R: Resolve + 'static>(
         let accept_rate_stats = rule.rate_limit_stats.clone();
         let accept_owner_limiter = rule.owner_rate_limit.clone();
         let accept_owner_stats = rule.owner_rate_limit_stats.clone();
+        let accept_quota = rule.quota.clone();
         in_flight.spawn(async move {
             accept_loop(
                 listener,
@@ -345,6 +352,7 @@ fn run_accept_loops<R: Resolve + 'static>(
                 accept_rate_stats,
                 accept_owner_limiter,
                 accept_owner_stats,
+                accept_quota,
             )
             .await;
         });
@@ -374,6 +382,10 @@ async fn accept_loop<R: Resolve + 'static>(
     // reject reasons (FR-014).
     owner_rate_limiter: Option<Arc<rate_limit::scope::OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<rate_limit::stats::RateLimitStatsAccumulator>>,
+    // 013-traffic-quotas E2: per-(user, client) byte budget. `None`
+    // keeps the byte-identical v0.11 path; `Some` routes copy_uncapped
+    // through `copy_bidirectional_with_quota`.
+    quota: Option<Arc<quota::QuotaHandle>>,
 ) {
     // Per-listener in-flight set: lets us reap finished proxies for
     // logging without holding open the rule-level JoinSet's slot.
@@ -442,6 +454,7 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_rate_stats = rate_limit_stats.clone();
                     let conn_owner_limiter = owner_rate_limiter.clone();
                     let conn_owner_stats = owner_rate_limit_stats.clone();
+                    let conn_quota = quota.clone();
                     local.spawn(async move {
                         let admit_guards = (owner_admit, rule_admit);
                         match proxy::proxy(
@@ -458,6 +471,7 @@ async fn accept_loop<R: Resolve + 'static>(
                             conn_rate_stats,
                             conn_owner_limiter,
                             conn_owner_stats,
+                            conn_quota,
                         ).await {
                             Ok((bin, bout)) => {
                                 info!(
@@ -648,6 +662,7 @@ async fn run_udp<R: Resolve + 'static>(
         let task_rate_limit_stats = rule.rate_limit_stats.clone();
         let task_owner_rate_limit = rule.owner_rate_limit.clone();
         let task_owner_rate_limit_stats = rule.owner_rate_limit_stats.clone();
+        let task_quota = rule.quota.clone();
         tasks.spawn(async move {
             udp::run_listener(
                 rule_id,
@@ -664,6 +679,7 @@ async fn run_udp<R: Resolve + 'static>(
                 task_rate_limit_stats,
                 task_owner_rate_limit,
                 task_owner_rate_limit_stats,
+                task_quota,
             )
             .await;
         });
@@ -873,6 +889,7 @@ mod tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         }
     }
 
@@ -916,6 +933,7 @@ mod tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         }
     }
 
@@ -1085,6 +1103,7 @@ mod tests {
                 rate_limit_stats: None,
                 owner_rate_limit: None,
                 owner_rate_limit_stats: None,
+                quota: None,
             },
             ip_resolver(),
             tx,
@@ -1445,6 +1464,7 @@ mod tests {
                     rate_limit_stats: None,
                     owner_rate_limit: None,
                     owner_rate_limit_stats: None,
+                    quota: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1530,6 +1550,7 @@ mod tests {
                     rate_limit_stats: None,
                     owner_rate_limit: None,
                     owner_rate_limit_stats: None,
+                    quota: None,
                 },
                 ip_resolver(),
                 tx,
@@ -1698,6 +1719,7 @@ mod tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         };
 
         let (tx, mut rx) = mpsc::channel(8);

@@ -334,6 +334,54 @@ export interface AuditEntry {
 // Helpers
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// 013-traffic-quotas v1.4.0 — per-(user, client) monthly quotas + traffic history
+// -----------------------------------------------------------------------------
+
+/// Mirrors `QuotaView` in `crates/portunus-server/src/operator/quota_http.rs`.
+/// All timestamps are unix-seconds; `monthly_bytes` and byte tallies are i64.
+export interface MonthlyQuotaView {
+  user_id: string;
+  client_name: string;
+  monthly_bytes: number;
+  billing_anchor: number;
+  current_period_started_at: number;
+  current_period_ends_at: number;
+  current_period_bytes_used: number;
+  budget_remaining_bytes: number;
+  exhausted_at: number | null;
+  exhausted: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface TrafficSample {
+  ts: number;
+  bytes_in: number;
+  bytes_out: number;
+}
+
+export type TrafficBucket = "1m" | "1h";
+
+export interface TrafficResponse {
+  bucket: TrafficBucket;
+  samples: TrafficSample[];
+  total_bytes_in: number;
+  total_bytes_out: number;
+}
+
+export interface PutQuotaInput {
+  monthly_bytes: number;
+  billing_anchor?: number;
+}
+
+export interface PatchQuotaInput {
+  monthly_bytes?: number;
+  clear_period_usage?: boolean;
+}
+
+// -----------------------------------------------------------------------------
+
 export function parseRuleState(raw: unknown): RuleState {
   if (typeof raw === "string") {
     const normalized = raw.toLowerCase();

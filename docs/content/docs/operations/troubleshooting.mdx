@@ -194,6 +194,113 @@ A long tail (close to 3 s) usually means clients are sending
 ClientHellos in dribs and drabs over a slow network — not a
 Portunus issue.
 
+## Traffic quotas (v1.4+)
+
+See the [Traffic Quotas runbook](/en/docs/operations/runbook-traffic-quotas)
+for the full surface.
+
+### "End-user reports connection drops at a GB boundary"
+
+Suspect the pair hit its monthly quota. Check the live gauge:
+
+```text
+portunus_traffic_quota_exhausted{user="alice", client="edge-tokyo"} 1
+```
+
+A value of `1` means the data plane has hard-killed forwarding for
+this pair and is rejecting new connections. Confirm with the HTTP
+status endpoint:
+
+```sh
+curl -sS \
+  -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+  https://portunus.example.com/v1/users/alice/quotas/edge-tokyo/status
+```
+
+`exhausted: true` + a non-null `exhausted_at` confirms the trip.
+
+**Fix** — pick one:
+
+- Issue a one-shot credit (period boundary unchanged):
+
+  ```sh
+  curl -sS -X PATCH \
+    -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+    -d '{"clear_period_usage": true}'
+  ```
+
+- Or raise the monthly cap permanently:
+
+  ```sh
+  curl -sS -X PUT \
+    -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+    -d '{"monthly_bytes": 2199023255552}'
+  ```
+
+The server pushes a fresh `TrafficQuotaUpdate { action: SET }` and
+the client resumes accepting connections without a reconnect.
+
+### "Quota state seems stuck"
+
+Symptoms: PUT/PATCH appears to succeed but the client keeps killing
+connections (or keeps allowing them).
+
+Check 1 — is the client session alive?
+
+```text
+portunus_clients_connected{client="edge-tokyo"} 1
+```
+
+A value of `0` means the control-plane stream is down; the server's
+quota change is queued and will be replayed on reconnect.
+
+Check 2 — did the client process the update? Grep the client log:
+
+```sh
+journalctl -u portunus-client | grep traffic_quota.applied_set
+```
+
+A `traffic_quota.applied_set` event line confirms the `QuotaHandle`
+was installed or replaced. Absence of this line means the
+`TrafficQuotaUpdate` never landed; check that the client binary is
+v1.4.0+.
+
+If the client did reconnect, the in-memory `QuotaHandle` is rebuilt
+from the server's `TrafficQuotaUpdate` replay step (which runs
+**before** rule replay so the handle is in place when the first rule
+binds its listener). No operator action needed — `bytes_used` may
+briefly look higher on the server than the actual delivered total
+during the StatsReport-period window after reconnect.
+
+### "Traffic chart looks empty"
+
+The chart in the Traffic tab pulls from
+`traffic_samples_1m` / `traffic_samples_1h`. Empty means either no
+samples were generated or the requested window falls outside
+retention.
+
+- **No samples** — the rollup task only writes a sample row when the
+  pair forwarded bytes in that minute / hour. An idle pair shows
+  gaps. Verify by pointing your query at a time window where you
+  know traffic was flowing.
+- **Out of retention** — `bucket=1m` rows are kept for **7 days**;
+  `bucket=1h` rows are kept for **90 days**. A query with `from`
+  older than the relevant retention returns
+  `422 quota_bucket_out_of_retention`. Narrow the window or switch
+  to the larger bucket.
+- **Just-past hour** — the rollup task runs at `H+1 min`. Between
+  `H` and `H+1 min` the `1h` row for hour `H` does not exist yet;
+  request `bucket=1m` for that range.
+
+If you do see traffic in the underlying gauges
+(`portunus_traffic_quota_bytes_used` ticked up) but the chart is
+blank, switch the bucket to `1m` and query the smallest window
+covering the activity.
+
 ## Disabling the Linux fast path for triage
 
 On Linux, `portunus-client` automatically uses `splice(2)` to forward

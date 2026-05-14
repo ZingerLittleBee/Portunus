@@ -739,6 +739,7 @@ pub async fn run_udp<R: Resolve + 'static>(
         let task_rate_limit_stats = rule.rate_limit_stats.clone();
         let task_owner_rate_limit = rule.owner_rate_limit.clone();
         let task_owner_rate_limit_stats = rule.owner_rate_limit_stats.clone();
+        let task_quota = rule.quota.clone();
         tasks.spawn(async move {
             udp::run_listener_multi_target(
                 rule_id,
@@ -756,6 +757,7 @@ pub async fn run_udp<R: Resolve + 'static>(
                 task_rate_limit_stats,
                 task_owner_rate_limit,
                 task_owner_rate_limit_stats,
+                task_quota,
             )
             .await;
         });

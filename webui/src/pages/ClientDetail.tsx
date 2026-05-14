@@ -1,26 +1,22 @@
 /// 011-rate-limiting-qos T040: client detail page with two tabs —
 /// "Overview" (connection state, provisioned-at, client address) and
-/// "Owner quotas" (per-owner cap CRUD, capability-gate aware).
-///
-/// The owner-list response carries `rule_count` and `has_rate_limit`
-/// so operators can spot owners who push rules to this client even
-/// before any cap is set.
+/// "Owner quotas" (per-owner cap read-only table with link to user page).
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import {
   useClientOwnersList,
   useClientsList,
-  useDeleteOwnerRateLimit,
-  useOwnerRateLimit,
-  usePutOwnerRateLimit,
   useReissueClient,
 } from "@/api/clients";
+import { useClientQuotas } from "@/api/quotas";
+import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
+import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { canProvisionClient } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
@@ -30,24 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClientInstallSteps } from "@/components/ClientInstallSteps";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CredentialBundleCard } from "@/components/CredentialBundleCard";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import type { CredentialBundle } from "@/api/types";
-import {
-  EMPTY_RATE_LIMIT_FORM,
-  RateLimitForm,
-  formStateToRateLimit,
-  rateLimitToFormState,
-  summarizeRateLimit,
-} from "@/components/RateLimitForm";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { formatTimestamp } from "@/lib/format";
@@ -116,10 +95,13 @@ export function ClientDetail() {
         )}
       </div>
 
+      <ClientExhaustedBanner clientName={clientName} />
+
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">{t("clientDetail.tabOverview")}</TabsTrigger>
           <TabsTrigger value="owners">{t("clientDetail.tabOwnerQuotas")}</TabsTrigger>
+          <TabsTrigger value="traffic">{t("traffic.tab")}</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="space-y-4">
           <Card>
@@ -159,6 +141,9 @@ export function ClientDetail() {
         <TabsContent value="owners">
           <OwnerQuotasTab clientName={clientName} />
         </TabsContent>
+        <TabsContent value="traffic">
+          <TrafficPanel clientName={clientName} />
+        </TabsContent>
       </Tabs>
 
       <ConfirmDialog
@@ -191,15 +176,20 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ClientExhaustedBanner({ clientName }: { clientName: string }) {
+  const quotas = useClientQuotas(clientName);
+  const exhausted = (quotas.data ?? []).filter((q) => q.exhausted);
+  return <ExhaustedBanner exhausted={exhausted} />;
+}
+
 interface OwnerQuotasTabProps {
   clientName: string;
 }
 
 export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const owners = useClientOwnersList(clientName);
-  const [editingOwner, setEditingOwner] = useState<string | null>(null);
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
 
   const columns: Column<OwnerListEntry>[] = [
     {
@@ -235,8 +225,12 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
       header: "",
       width: "120px",
       render: (o) => (
-        <Button size="sm" variant="outline" onClick={() => setEditingOwner(o.owner_id)}>
-          {o.has_rate_limit ? t("ownerQuotas.edit") : t("ownerQuotas.setCap")}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => navigate(`/users/${encodeURIComponent(o.owner_id)}`)}
+        >
+          {t("ownerQuotas.openInUser")}
         </Button>
       ),
     },
@@ -244,12 +238,7 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <p className="text-sm text-muted-foreground">{t("ownerQuotas.help")}</p>
-        <Button size="sm" onClick={() => setAddDialogOpen(true)}>
-          {t("ownerQuotas.addOwnerCap")}
-        </Button>
-      </div>
+      <p className="text-sm text-muted-foreground">{t("ownerQuotas.movedHint")}</p>
       <DataTable
         rows={owners.data ?? []}
         columns={columns}
@@ -262,190 +251,6 @@ export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
         }
         ariaLabel={t("ownerQuotas.tableAriaLabel")}
       />
-      <AddOwnerCapDialog
-        open={addDialogOpen}
-        onClose={() => setAddDialogOpen(false)}
-        onConfirm={(ownerId) => {
-          setAddDialogOpen(false);
-          setEditingOwner(ownerId);
-        }}
-      />
-      {editingOwner && (
-        <OwnerQuotaEditor
-          clientName={clientName}
-          ownerId={editingOwner}
-          onClose={() => setEditingOwner(null)}
-        />
-      )}
     </div>
   );
-}
-
-interface AddOwnerCapDialogProps {
-  open: boolean;
-  onClose: () => void;
-  onConfirm: (ownerId: string) => void;
-}
-
-function AddOwnerCapDialog({ open, onClose, onConfirm }: AddOwnerCapDialogProps) {
-  const { t } = useTranslation();
-  const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  // Reset state every time the dialog opens. Using `open` as the
-  // trigger keeps the input empty for the next operator without
-  // forcing a key-based remount.
-  if (open && value === "" && error !== null) setError(null);
-
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const trimmed = value.trim();
-    if (trimmed.length === 0) {
-      setError(t("ownerQuotas.addErrorEmpty"));
-      return;
-    }
-    onConfirm(trimmed);
-    setValue("");
-    setError(null);
-  }
-
-  function handleOpenChange(next: boolean) {
-    if (!next) {
-      onClose();
-      setValue("");
-      setError(null);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t("ownerQuotas.addDialogTitle")}</DialogTitle>
-          <DialogDescription>{t("ownerQuotas.addDialogBody")}</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="add-owner-cap-id">
-              {t("ownerQuotas.addOwnerIdLabel")}
-            </Label>
-            <Input
-              id="add-owner-cap-id"
-              autoFocus
-              autoComplete="off"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder={t("ownerQuotas.addOwnerIdPlaceholder")}
-            />
-            {error && <p className="text-sm text-destructive">{error}</p>}
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
-              {t("confirm.cancel")}
-            </Button>
-            <Button type="submit">{t("ownerQuotas.addContinue")}</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-interface EditorProps {
-  clientName: string;
-  ownerId: string;
-  onClose: () => void;
-}
-
-function OwnerQuotaEditor({ clientName, ownerId, onClose }: EditorProps) {
-  const { t } = useTranslation();
-  const view = useOwnerRateLimit(clientName, ownerId);
-  const put = usePutOwnerRateLimit(clientName);
-  const del = useDeleteOwnerRateLimit(clientName);
-  const [form, setForm] = useState(EMPTY_RATE_LIMIT_FORM);
-  const [error, setError] = useState<string | null>(null);
-  const [hydrated, setHydrated] = useState(false);
-
-  // Hydrate the form once the GET resolves (200 OK or 404→null).
-  // Re-runs only when the cached envelope changes — manual edits to
-  // `form` are not clobbered.
-  if (!hydrated && !view.isLoading) {
-    setForm(rateLimitToFormState(view.data?.rate_limit));
-    setHydrated(true);
-  }
-
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-    const body = formStateToRateLimit(form);
-    if (!body) {
-      setError(t("ownerQuotas.errorEmpty"));
-      return;
-    }
-    try {
-      await put.mutateAsync({ ownerId, body });
-      onClose();
-    } catch (err) {
-      setError(formatApiError(err));
-    }
-  }
-
-  async function onDelete() {
-    setError(null);
-    try {
-      await del.mutateAsync(ownerId);
-      onClose();
-    } catch (err) {
-      setError(formatApiError(err));
-    }
-  }
-
-  const summary = summarizeRateLimit(view.data?.rate_limit);
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          {t("ownerQuotas.editorTitle")} — <span className="font-mono">{ownerId}</span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        {summary && (
-          <p className="text-xs text-muted-foreground mb-3">
-            {t("ownerQuotas.currentCap")} <span className="font-mono">{summary}</span>
-          </p>
-        )}
-        <form onSubmit={onSubmit} className="space-y-4">
-          <RateLimitForm state={form} onChange={setForm} />
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className="flex gap-2">
-            <Button type="submit" disabled={put.isPending}>
-              {put.isPending ? t("confirm.busy") : t("ownerQuotas.save")}
-            </Button>
-            <Button type="button" variant="outline" onClick={onClose}>
-              {t("confirm.cancel")}
-            </Button>
-            {view.data && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={onDelete}
-                disabled={del.isPending}
-                className="text-destructive ml-auto"
-              >
-                <Trash2 className="h-4 w-4 mr-1" />
-                {t("ownerQuotas.delete")}
-              </Button>
-            )}
-          </div>
-        </form>
-      </CardContent>
-    </Card>
-  );
-}
-
-function formatApiError(err: unknown): string {
-  if (err instanceof ApiError) return `${err.code}: ${err.message}`;
-  return (err as Error).message;
 }

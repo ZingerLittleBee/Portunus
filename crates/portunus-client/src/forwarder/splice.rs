@@ -500,7 +500,8 @@ mod linux {
         pipe_read_fd: RawFd,
         mut remaining: usize,
         bytes_out: &AtomicU64,
-    ) -> io::Result<()> {
+        quota: Option<&std::sync::Arc<super::quota::QuotaHandle>>,
+    ) -> io::Result<DrainOutcome> {
         while remaining > 0 {
             dst.writable().await?;
             let res = dst.try_io(Interest::WRITABLE, || {
@@ -523,6 +524,17 @@ mod linux {
                 Ok(n) => {
                     bytes_out.fetch_add(n as u64, Ordering::Relaxed);
                     remaining -= n;
+                    // 013-traffic-quotas E3: consume AFTER the bytes have
+                    // landed on the destination socket. Mirrors the E1
+                    // userspace ordering (write_all → consume).
+                    if let Some(q) = quota
+                        && matches!(
+                            q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
+                            super::quota::ConsumeOutcome::Exhausted,
+                        )
+                    {
+                        return Ok(DrainOutcome::QuotaExhausted);
+                    }
                 }
                 // EAGAIN → re-arm via dst.writable() on next iteration;
                 // EINTR → retry. Both fall through to the next `while`
@@ -532,7 +544,13 @@ mod linux {
                 Err(e) => return Err(e),
             }
         }
-        Ok(())
+        Ok(DrainOutcome::Drained)
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum DrainOutcome {
+        Drained,
+        QuotaExhausted,
     }
 
     /// One direction of the bidirectional splice loop:
@@ -549,6 +567,7 @@ mod linux {
         pipe: &PipePair,
         moved_any: &AtomicBool,
         bytes_out: &AtomicU64,
+        quota: Option<&std::sync::Arc<super::quota::QuotaHandle>>,
     ) -> Result<(), SpliceError> {
         let pipe_read_fd = pipe.read_fd.as_raw_fd();
         let pipe_write_fd = pipe.write_fd.as_raw_fd();
@@ -556,6 +575,16 @@ mod linux {
         let capacity = pipe.capacity_bytes;
 
         loop {
+            // 013-traffic-quotas E3: per-iteration short-circuit. Cheap
+            // Acquire load — when exhausted, half-close `dst` write and
+            // return cleanly so the peer direction also drains via the
+            // standard EOF cascade.
+            if let Some(q) = quota
+                && q.is_exhausted()
+            {
+                let _ = nix_shutdown(dst.as_raw_fd(), NixShutdown::Write);
+                return Ok(());
+            }
             // Wait for read readiness on the source socket.
             src.readable().await.map_err(SpliceError::Io)?;
 
@@ -599,9 +628,15 @@ mod linux {
 
             // pipe → dst (must drain n_in before next read iteration,
             // otherwise the pipe fills and src→pipe blocks).
-            drain_pipe_to(dst, pipe_read_fd, n_in, bytes_out)
+            let outcome = drain_pipe_to(dst, pipe_read_fd, n_in, bytes_out, quota)
                 .await
                 .map_err(SpliceError::Io)?;
+            if outcome == DrainOutcome::QuotaExhausted {
+                // Bytes already delivered; half-close `dst` write so the
+                // peer side observes EOF and exits cleanly.
+                let _ = nix_shutdown(dst.as_raw_fd(), NixShutdown::Write);
+                return Ok(());
+            }
         }
     }
 
@@ -617,6 +652,7 @@ mod linux {
         downstream: &mut TcpStream,
         upstream: &mut TcpStream,
         ctx: &CopyCtx,
+        quota: Option<&std::sync::Arc<super::quota::QuotaHandle>>,
     ) -> Result<Transferred, SpliceError> {
         debug_assert!(
             super::eligible(ctx),
@@ -641,14 +677,16 @@ mod linux {
                 &*upstream,
                 &pipe_dn_to_up,
                 &moved_any,
-                &bytes_in
+                &bytes_in,
+                quota,
             ),
             splice_dir(
                 &*upstream,
                 &*downstream,
                 &pipe_up_to_dn,
                 &moved_any,
-                &bytes_out
+                &bytes_out,
+                quota,
             ),
         );
 
@@ -1098,7 +1136,8 @@ mod integration {
         let mut downstream_proxy = downstream_proxy;
         let mut upstream_proxy = upstream_proxy;
         let ctx = ctx_eligible();
-        let result = copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx).await;
+        let result =
+            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx, None).await;
 
         let transferred = result.expect("splice copy_bidirectional should succeed");
         assert_eq!(
@@ -1162,10 +1201,14 @@ mod integration {
 
         let mut downstream_proxy = downstream_proxy;
         let mut upstream_proxy = upstream_proxy;
-        let transferred =
-            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx_eligible())
-                .await
-                .expect("splice should succeed under half-close");
+        let transferred = copy_bidirectional(
+            &mut downstream_proxy,
+            &mut upstream_proxy,
+            &ctx_eligible(),
+            None,
+        )
+        .await
+        .expect("splice should succeed under half-close");
         assert_eq!(transferred.bytes_out, 4096);
         assert_eq!(transferred.bytes_in, 2048);
 
@@ -1221,7 +1264,12 @@ mod integration {
         let mut upstream_proxy = upstream_proxy;
         let res = tokio::time::timeout(
             Duration::from_secs(5),
-            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx_eligible()),
+            copy_bidirectional(
+                &mut downstream_proxy,
+                &mut upstream_proxy,
+                &ctx_eligible(),
+                None,
+            ),
         )
         .await
         .expect("did not deadlock")
@@ -1275,9 +1323,14 @@ mod integration {
 
             let mut downstream_proxy = downstream_proxy;
             let mut upstream_proxy = upstream_proxy;
-            let t = copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx_eligible())
-                .await
-                .unwrap();
+            let t = copy_bidirectional(
+                &mut downstream_proxy,
+                &mut upstream_proxy,
+                &ctx_eligible(),
+                None,
+            )
+            .await
+            .unwrap();
             let _echo_total = echo.await.unwrap();
             let _writer_got = writer.await.unwrap();
             (t.bytes_in, t.bytes_out)

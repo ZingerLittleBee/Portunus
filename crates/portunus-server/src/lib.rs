@@ -22,6 +22,7 @@ pub mod shutdown;
 pub mod state;
 pub mod store;
 pub mod tls;
+pub mod traffic_quotas;
 
 /// Output format for CLI subcommands. Used by `rule_cli` (and now,
 /// transitively, by integration tests that exercise the operator HTTP

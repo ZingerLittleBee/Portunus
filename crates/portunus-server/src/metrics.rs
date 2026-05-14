@@ -25,7 +25,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use portunus_core::{ClientName, RuleId, peek_histogram::PEEK_HISTOGRAM_BUCKETS_SECS};
 use prometheus::{
-    CounterVec, Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder, opts,
+    CounterVec, Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
+    TextEncoder, opts,
 };
 use serde::Serialize;
 use tokio::sync::{RwLock, broadcast};
@@ -182,6 +183,25 @@ pub struct Metrics {
     /// limiter's `active_connections` atomic. Always 0 for rules
     /// with no concurrent cap.
     pub rate_limit_active_connections: GaugeVec,
+    /// 013-traffic-quotas C3: current period bytes consumed
+    /// per-(user, client). Labels `&["user", "client"]`. Reset on
+    /// period rollover via the rollover tick.
+    pub traffic_quota_bytes_used: IntGaugeVec,
+    /// 013-traffic-quotas C3: configured monthly cap in bytes per
+    /// quota. Stable across the lifetime of a quota row (changes
+    /// only on operator PUT/PATCH).
+    pub traffic_quota_bytes_limit: IntGaugeVec,
+    /// 013-traffic-quotas C3: 1 when the quota is currently
+    /// exhausted, else 0. Reset to 0 on period rollover.
+    pub traffic_quota_exhausted: IntGaugeVec,
+    /// 013-traffic-quotas C3: monotonic count of period boundary
+    /// crossings (rollovers).
+    pub traffic_quota_period_resets_total: IntCounterVec,
+    /// 013-traffic-quotas C3: monotonic count of first-time
+    /// exhaustions per period. One increment per (user, client) per
+    /// period; subsequent over-usage within the same period does NOT
+    /// increment.
+    pub traffic_quota_exhausted_total: IntCounterVec,
 }
 
 impl Metrics {
@@ -348,6 +368,41 @@ impl Metrics {
             ),
             &["client", "rule", "owner"],
         )?;
+        let traffic_quota_bytes_used = IntGaugeVec::new(
+            opts!(
+                "portunus_traffic_quota_bytes_used",
+                "Per-(user, client) current-period cumulative bytes consumed (013-traffic-quotas)."
+            ),
+            &["user", "client"],
+        )?;
+        let traffic_quota_bytes_limit = IntGaugeVec::new(
+            opts!(
+                "portunus_traffic_quota_bytes_limit",
+                "Per-(user, client) monthly byte budget (013-traffic-quotas)."
+            ),
+            &["user", "client"],
+        )?;
+        let traffic_quota_exhausted = IntGaugeVec::new(
+            opts!(
+                "portunus_traffic_quota_exhausted",
+                "1 when the quota is currently exhausted, else 0 (013-traffic-quotas)."
+            ),
+            &["user", "client"],
+        )?;
+        let traffic_quota_period_resets_total = IntCounterVec::new(
+            opts!(
+                "portunus_traffic_quota_period_resets_total",
+                "Per-(user, client) monotonic count of period boundary rollovers (013-traffic-quotas)."
+            ),
+            &["user", "client"],
+        )?;
+        let traffic_quota_exhausted_total = IntCounterVec::new(
+            opts!(
+                "portunus_traffic_quota_exhausted_total",
+                "Per-(user, client) monotonic count of first-time period exhaustions (013-traffic-quotas)."
+            ),
+            &["user", "client"],
+        )?;
         registry.register(Box::new(clients_connected.clone()))?;
         registry.register(Box::new(auth_failures_total.clone()))?;
         registry.register(Box::new(rule_bytes_in_total.clone()))?;
@@ -377,6 +432,11 @@ impl Metrics {
         registry.register(Box::new(rate_limit_reject_total.clone()))?;
         registry.register(Box::new(rate_limit_throttle_seconds_total.clone()))?;
         registry.register(Box::new(rate_limit_active_connections.clone()))?;
+        registry.register(Box::new(traffic_quota_bytes_used.clone()))?;
+        registry.register(Box::new(traffic_quota_bytes_limit.clone()))?;
+        registry.register(Box::new(traffic_quota_exhausted.clone()))?;
+        registry.register(Box::new(traffic_quota_period_resets_total.clone()))?;
+        registry.register(Box::new(traffic_quota_exhausted_total.clone()))?;
 
         Ok(Self {
             registry,
@@ -405,6 +465,11 @@ impl Metrics {
             rate_limit_reject_total,
             rate_limit_throttle_seconds_total,
             rate_limit_active_connections,
+            traffic_quota_bytes_used,
+            traffic_quota_bytes_limit,
+            traffic_quota_exhausted,
+            traffic_quota_period_resets_total,
+            traffic_quota_exhausted_total,
         })
     }
 
@@ -1760,6 +1825,54 @@ mod tests {
                 "portunus_rate_limit_active_connections{client=\"edge-a\",owner=\"alice\",rule=\"\"} 4"
             ),
             "gauge must show latest value 4 in: {body}"
+        );
+    }
+
+    /// 013-traffic-quotas C3: assert all five new families are
+    /// registered and renderable. Cardinality is zero until the
+    /// aggregator writes a value, so we exercise that path.
+    #[test]
+    fn traffic_quota_collectors_register_and_render() {
+        let metrics = Metrics::new().unwrap();
+        let labels = ["alice", "edge-01"];
+        metrics
+            .traffic_quota_bytes_used
+            .with_label_values(&labels)
+            .set(123);
+        metrics
+            .traffic_quota_bytes_limit
+            .with_label_values(&labels)
+            .set(1_000);
+        metrics
+            .traffic_quota_exhausted
+            .with_label_values(&labels)
+            .set(0);
+        metrics
+            .traffic_quota_period_resets_total
+            .with_label_values(&labels)
+            .inc();
+        metrics
+            .traffic_quota_exhausted_total
+            .with_label_values(&labels)
+            .inc();
+        let body = String::from_utf8(metrics.render()).unwrap();
+        for name in [
+            "portunus_traffic_quota_bytes_used",
+            "portunus_traffic_quota_bytes_limit",
+            "portunus_traffic_quota_exhausted",
+            "portunus_traffic_quota_period_resets_total",
+            "portunus_traffic_quota_exhausted_total",
+        ] {
+            assert!(
+                body.contains(name),
+                "missing {name} in rendered metrics: {body}"
+            );
+        }
+        assert!(
+            body.contains(
+                "portunus_traffic_quota_bytes_used{client=\"edge-01\",user=\"alice\"} 123"
+            ),
+            "bytes_used must show 123 in: {body}"
         );
     }
 }

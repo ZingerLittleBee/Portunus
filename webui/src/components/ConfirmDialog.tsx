@@ -1,4 +1,7 @@
 import { useTranslation } from "react-i18next";
+import { AlertTriangle } from "lucide-react";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Dialog,
   DialogContent,
@@ -45,14 +48,17 @@ export function ConfirmDialog({
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         {dependents && dependents.length > 0 && (
-          <div className="rounded-md border bg-muted/50 p-3 text-sm">
-            <div className="mb-2 font-medium">{t("confirm.cascadePreview")}</div>
-            <ul className="ml-4 list-disc space-y-1 text-muted-foreground">
-              {dependents.map((d) => (
-                <li key={d}>{d}</li>
-              ))}
-            </ul>
-          </div>
+          <Alert variant={destructive ? "destructive" : "default"}>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>{t("confirm.cascadePreview")}</AlertTitle>
+            <AlertDescription>
+              <ul className="ml-4 list-disc space-y-1">
+                {dependents.map((d) => (
+                  <li key={d}>{d}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
         )}
         {children}
         <DialogFooter>

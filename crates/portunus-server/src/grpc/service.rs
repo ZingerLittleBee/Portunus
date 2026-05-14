@@ -195,6 +195,11 @@ impl Control for ControlService {
         // sends rule pushes through this same channel.)
         tokio::spawn(async move {
             let _outbound = tx;
+            // 013-traffic-quotas C5: quotas BEFORE rules so the
+            // client's QuotaScopeManager is registry-resident when the
+            // first rule activates and consults the per-(user, client)
+            // gate. Capability-gated against pre-1.4 clients.
+            replay_traffic_quotas_for_client(&pump_state, &pump_identity, &_outbound).await;
             replay_rules_for_client(&pump_state, &pump_identity, &_outbound).await;
             // 011-rate-limiting-qos T029: after the rule replay, push
             // every persisted owner-cap envelope so the client's
@@ -343,6 +348,28 @@ async fn handle_client_message(
                     .get(rule_id)
                     .await
                     .map_or_else(|| "_unknown".to_string(), |r| r.owner_user_id.to_string());
+                // 013-traffic-quotas B2: feed the per-(user, client)
+                // aggregator with the same cumulative readings. The
+                // aggregator computes its own deltas (independent of
+                // RuleStatsCache's prev map), upserts a 1m sample, and
+                // accumulates into the quota row when present. Skipped
+                // for unowned / legacy rules via the empty/`_unknown`
+                // owner guard inside `record`.
+                let now_unix_sec = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+                    .unwrap_or(0);
+                state
+                    .traffic_aggregator
+                    .record(
+                        identity.client_name.as_str(),
+                        rule_id,
+                        owner.as_str(),
+                        entry.bytes_in,
+                        entry.bytes_out,
+                        now_unix_sec,
+                    )
+                    .await;
                 state
                     .stats_cache
                     .observe_with_targets(
@@ -581,6 +608,36 @@ async fn replay_rules_for_client(
     }
 }
 
+/// 013-traffic-quotas C5: push every persisted `traffic_quotas` row
+/// for `client_name` as `TrafficQuotaUpdate{SET}` frames. Mounted in
+/// the connect path BEFORE `replay_rules_for_client` so the client's
+/// `QuotaScopeManager` is populated when the first rule activates.
+/// Capability-gated against pre-1.4 clients — older builds silently
+/// drop the new oneof variant; emitting nothing keeps the wire
+/// byte-identical with the v1.3.x contract.
+async fn replay_traffic_quotas_for_client(
+    state: &AppState,
+    identity: &ClientIdentity,
+    outbound: &OutboundSender,
+) {
+    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    if !version_at_least(client_version.as_deref(), 1, 4) {
+        return;
+    }
+    let rows = state
+        .traffic_quotas
+        .list_for_client(identity.client_name.as_str());
+    for row in rows {
+        let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
+            &row,
+            format!("quota-replay-{}", ulid::Ulid::new()),
+        );
+        if outbound.send(Ok(msg)).await.is_err() {
+            break;
+        }
+    }
+}
+
 /// 011-rate-limiting-qos T029: push every persisted owner-cap envelope
 /// for `client_name` as `OwnerRateLimitUpdate{SET}` frames. Skipped
 /// entirely for pre-0.11 clients per FR-006 — those clients have no
@@ -661,7 +718,7 @@ fn replay_gate_reason(
     Ok(())
 }
 
-fn version_at_least(version: Option<&str>, major_floor: u32, minor_floor: u32) -> bool {
+pub(crate) fn version_at_least(version: Option<&str>, major_floor: u32, minor_floor: u32) -> bool {
     let Some(version) = version else {
         return false;
     };

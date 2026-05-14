@@ -77,6 +77,7 @@ pub async fn run_listener_multi_target<R: Resolve + 'static>(
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) {
     let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
     let listener = match UdpSocket::bind(listen_addr).await {
@@ -118,6 +119,7 @@ pub async fn run_listener_multi_target<R: Resolve + 'static>(
                         rate_limit_stats.clone(),
                         owner_rate_limit.clone(),
                         owner_rate_limit_stats.clone(),
+                        quota.clone(),
                     )
                     .await;
                 }
@@ -167,6 +169,7 @@ async fn handle_inbound_multi_target<R: Resolve>(
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) {
     use crate::forwarder::failover;
     use std::time::{Instant, SystemTime};
@@ -182,6 +185,16 @@ async fn handle_inbound_multi_target<R: Resolve>(
             &stats,
         )
         .await;
+        return;
+    }
+
+    // 013-traffic-quotas E4: drop datagrams on a NEW flow when the
+    // budget is already exhausted. Mirrors TCP `is_exhausted` short-
+    // circuit — we don't burn a resolve / bind / first-packet rate
+    // grant on a flow that can't actually deliver bytes.
+    if let Some(q) = quota.as_ref()
+        && q.is_exhausted()
+    {
         return;
     }
 
@@ -269,6 +282,7 @@ async fn handle_inbound_multi_target<R: Resolve>(
             Some((target_idx, Arc::clone(&health_states))),
             admit_guard,
             owner_admit_guard,
+            quota.clone(),
         )
         .await
         {
@@ -310,6 +324,12 @@ async fn relay_existing_flow(
     flow_table: &Arc<UdpFlowTable>,
     stats: &Arc<RuleStats>,
 ) {
+    // 013-traffic-quotas E4: silently drop further inbound datagrams
+    // once the budget is exhausted. Mirrors the TCP `is_exhausted`
+    // short-circuit.
+    if !phase_flow.quota_allows() {
+        return;
+    }
     let n = u64::try_from(payload.len()).unwrap_or(u64::MAX);
     loop {
         let upstream = phase_flow.current_upstream();
@@ -317,6 +337,9 @@ async fn relay_existing_flow(
             Ok(_) => {
                 stats.inc_datagram_in(listen_port, n);
                 phase_flow.bump_inbound(n).await;
+                // 013-traffic-quotas E4: consume AFTER send_to landed —
+                // counters and budget agree byte-for-byte.
+                let _ = phase_flow.quota_consume_after_send(n);
                 if let Ok(live) = u32::try_from(flow_table.len().await) {
                     stats.set_active_flows(live);
                 }
@@ -448,6 +471,7 @@ pub async fn run_listener<R: Resolve + 'static>(
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) {
     let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
     let listener = match UdpSocket::bind(listen_addr).await {
@@ -493,6 +517,7 @@ pub async fn run_listener<R: Resolve + 'static>(
                         rate_limit_stats.clone(),
                         owner_rate_limit.clone(),
                         owner_rate_limit_stats.clone(),
+                        quota.clone(),
                     )
                     .await;
                 }
@@ -539,6 +564,7 @@ async fn handle_inbound<R: Resolve>(
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) {
     // Fast path: existing flow. Skips both resolver and upstream-bind
     // in the common case of a long-lived sender. The resolver's cache
@@ -547,6 +573,14 @@ async fn handle_inbound<R: Resolve>(
     let phase_flow = if let Some(f) = flow_table.get(source).await {
         f
     } else {
+        // 013-traffic-quotas E4: drop datagrams that would open a NEW
+        // flow under an exhausted budget. Existing-flow datagrams hit
+        // the `quota_allows` check inside `relay_existing_flow`.
+        if let Some(q) = quota.as_ref()
+            && q.is_exhausted()
+        {
+            return;
+        }
         // T021/T030: layered owner+rule rate-limit gate before any
         // resolver / NAT bind work. Reject = silent drop (FR-009 UDP
         // path); FR-013 ordering — owner first.
@@ -614,6 +648,7 @@ async fn handle_inbound<R: Resolve>(
             None, // legacy single-target rule — preserve v0.6.0 hot path
             admit_guard,
             owner_admit_guard,
+            quota.clone(),
         )
         .await
         {
@@ -622,6 +657,12 @@ async fn handle_inbound<R: Resolve>(
         }
     };
 
+    // 013-traffic-quotas E4: an existing flow could have been built
+    // before exhaustion but the budget might have drained mid-flow;
+    // short-circuit before the send_to. Mirrors `relay_existing_flow`.
+    if !phase_flow.quota_allows() {
+        return;
+    }
     // Forward inbound datagram through the flow's upstream socket. On
     // send_to error, US2 (T045) walks remaining multi-A candidates
     // before giving up — only the LAST candidate's failure bumps
@@ -633,6 +674,9 @@ async fn handle_inbound<R: Resolve>(
             Ok(_) => {
                 stats.inc_datagram_in(listen_port, n);
                 phase_flow.bump_inbound(n).await;
+                // 013-traffic-quotas E4: consume after the bytes
+                // landed upstream.
+                let _ = phase_flow.quota_consume_after_send(n);
                 // Opportunistic gauge update — the exact value is
                 // re-read on the StatsReport tick anyway.
                 if let Ok(live) = u32::try_from(flow_table.len().await) {
@@ -709,6 +753,11 @@ async fn build_or_lookup_flow(
     // owner gauge tracks across all flows owned by the same RBAC
     // identity.
     owner_admit_guard: Option<ActiveGuard>,
+    // 013-traffic-quotas E4: per-(user, client) byte budget handle.
+    // Attached to the freshly-built flow via `attach_quota` so the
+    // relay loop and reply pump see the same `Arc<QuotaHandle>` for
+    // the life of the flow.
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) -> Option<Arc<UdpFlow>> {
     let upstream_socket = match UdpSocket::bind(("0.0.0.0", 0)).await {
         Ok(s) => Arc::new(s),
@@ -733,16 +782,23 @@ async fn build_or_lookup_flow(
     let flow_for_build = Arc::clone(&upstream_socket);
     let addrs_for_build = upstream_addrs.clone();
     let multi_for_build = multi_target.clone();
+    let quota_for_build = quota.clone();
     let result = flow_table
-        .lookup_or_insert(source, move || match multi_for_build {
-            Some((target_idx, hstates)) => UdpFlow::new_multi_target(
-                source,
-                flow_for_build,
-                addrs_for_build,
-                target_idx,
-                hstates,
-            ),
-            None => UdpFlow::new(source, flow_for_build, addrs_for_build),
+        .lookup_or_insert(source, move || {
+            let flow = match multi_for_build {
+                Some((target_idx, hstates)) => UdpFlow::new_multi_target(
+                    source,
+                    flow_for_build,
+                    addrs_for_build,
+                    target_idx,
+                    hstates,
+                ),
+                None => UdpFlow::new(source, flow_for_build, addrs_for_build),
+            };
+            match quota_for_build {
+                Some(q) => flow.attach_quota(q),
+                None => flow,
+            }
         })
         .await;
 
@@ -817,11 +873,20 @@ fn spawn_reply_pump(
                 () = flow.cancel.cancelled() => break,
                 recv = flow.upstream_socket.recv_from(&mut buf) => match recv {
                     Ok((n, _from)) => {
+                        // 013-traffic-quotas E4: drop the reply when
+                        // the budget is exhausted. The flow stays open
+                        // — the idle reaper or next admin update will
+                        // tear it down.
+                        if !flow.quota_allows() {
+                            continue;
+                        }
                         let bytes = u64::try_from(n).unwrap_or(u64::MAX);
                         match listener.send_to(&buf[..n], flow.source_addr).await {
                             Ok(_) => {
                                 stats.inc_datagram_out(listen_port, bytes);
                                 flow.bump_outbound(bytes).await;
+                                // Consume AFTER the reply landed.
+                                let _ = flow.quota_consume_after_send(bytes);
                             }
                             Err(e) => {
                                 warn!(
@@ -935,6 +1000,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
         });
@@ -989,6 +1055,7 @@ mod tests {
                 stats_run,
                 test_resolver(),
                 cancel_run,
+                None,
                 None,
                 None,
                 None,
@@ -1073,6 +1140,7 @@ mod tests {
                 cancel_run,
                 Some(task_limiter),
                 Some(task_rl_stats),
+                None,
                 None,
                 None,
             )
@@ -1181,6 +1249,7 @@ mod tests {
                 Some(task_rule_stats),
                 Some(task_owner),
                 Some(task_owner_stats),
+                None,
             )
             .await;
         });
@@ -1279,6 +1348,7 @@ mod tests {
                 None,
                 Some(task_owner),
                 Some(task_owner_stats),
+                None,
             )
             .await;
         });

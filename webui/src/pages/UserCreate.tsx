@@ -1,13 +1,18 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { toast } from "sonner";
 
 import { useCreateUser } from "@/api/users";
+import { useCreateAccessEntry } from "@/api/access-entries";
+import { useClientsList } from "@/api/clients";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { UserQuotaForm, type UserQuotaFormSubmitValue } from "@/components/UserQuota/UserQuotaForm";
 
 export function UserCreate() {
   const { t } = useTranslation();
@@ -18,6 +23,15 @@ export function UserCreate() {
   const [initialPassword, setInitialPassword] = useState("");
   const [forcePasswordChange, setForcePasswordChange] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [showInitialQuota, setShowInitialQuota] = useState(false);
+  const [pendingQuota, setPendingQuota] = useState<UserQuotaFormSubmitValue | null>(null);
+  const clientsQ = useClientsList();
+  const clientLites = (clientsQ.data ?? []).map((c) => ({
+    client_name: c.client_name,
+    connected: c.connected,
+  }));
+  const createEntry = useCreateAccessEntry(userId);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -37,6 +51,22 @@ export function UserCreate() {
             }
           : {}),
       });
+      if (pendingQuota && res.user_id) {
+        try {
+          await createEntry.mutateAsync({
+            user_id: res.user_id,
+            client_name: pendingQuota.client_name,
+            listen_port_start: pendingQuota.listen_port_start,
+            listen_port_end: pendingQuota.listen_port_end,
+            protocols: pendingQuota.protocols,
+            ...(pendingQuota.cap !== undefined ? { cap: pendingQuota.cap } : {}),
+          });
+          toast.success(t("userQuota.toast.created", { client: pendingQuota.client_name }));
+        } catch (err) {
+          const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
+          toast.warning(`${t("userQuota.toast.createFailed")}: ${msg}`);
+        }
+      }
       navigate(`/users/${res.user_id}`);
     } catch (err) {
       const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
@@ -94,6 +124,36 @@ export function UserCreate() {
             {t("userCreate.forcePasswordChange")}
           </label>
           {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="border-t pt-4">
+            <button
+              type="button"
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+              onClick={() => setShowInitialQuota((v) => !v)}
+            >
+              {showInitialQuota ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {t("userCreate.initialQuotaToggle")}
+            </button>
+            {showInitialQuota && (
+              <div className="mt-3">
+                <UserQuotaForm
+                  clients={clientLites}
+                  disabledClientNames={new Set()}
+                  onSubmit={(v) => {
+                    setPendingQuota(v);
+                  }}
+                  onCancel={() => {
+                    setShowInitialQuota(false);
+                    setPendingQuota(null);
+                  }}
+                />
+                {pendingQuota && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {t("userCreate.initialQuotaPending", { client: pendingQuota.client_name })}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
           <div className="flex gap-2">
             <Button type="submit" disabled={create.isPending}>
               {create.isPending ? t("confirm.busy") : t("userCreate.submit")}

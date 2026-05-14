@@ -12,7 +12,6 @@
   "nav": {
     "dashboard": "仪表盘",
     "users": "用户",
-    "grants": "授权",
     "rules": "转发规则",
     "clients": "客户端",
     "audit": "审计日志",
@@ -105,7 +104,9 @@
     "idHint": "小写字母、数字、连字符和下划线;必须以字母开头。",
     "initialPassword": "初始密码",
     "initialPasswordHint": "可选。留空则创建没有 Web 登录密码的用户。",
-    "forcePasswordChange": "首次登录时要求修改密码"
+    "forcePasswordChange": "首次登录时要求修改密码",
+    "initialQuotaToggle": "分配初始配额（可选）",
+    "initialQuotaPending": "用户创建后将在 {{client}} 上分配该配额。"
   },
   "userDetail": {
     "credentials": "凭证",
@@ -130,25 +131,6 @@
     "generateTemporary": "留空则生成临时密码",
     "requirePasswordChange": "下次登录要求修改密码",
     "keepApiTokens": "保留现有 API 令牌"
-  },
-  "grants": {
-    "title": "授权",
-    "user": "用户",
-    "client": "客户端",
-    "ports": "端口",
-    "protocols": "协议",
-    "newGrant": "新建授权",
-    "revoke": "撤销",
-    "emptyTitle": "暂无授权",
-    "emptyBody": "授权决定租户可以使用哪些端口和协议。"
-  },
-  "grantCreate": {
-    "title": "新建授权",
-    "submit": "创建授权",
-    "selectUser": "请选择用户…",
-    "startPort": "起始端口",
-    "endPort": "结束端口",
-    "protocolRequired": "至少选择一种协议。"
   },
   "rules": {
     "title": "转发规则",
@@ -362,7 +344,9 @@
     "addOwnerIdLabel": "所有者 (用户 ID)",
     "addOwnerIdPlaceholder": "例如 alice",
     "addContinue": "继续",
-    "addErrorEmpty": "请输入用户 ID。"
+    "addErrorEmpty": "请输入用户 ID。",
+    "openInUser": "在用户页编辑",
+    "movedHint": "Owner 配额编辑已迁移到用户详情页。"
   },
   "audit": {
     "title": "审计日志",
@@ -394,5 +378,109 @@
   "notFound": {
     "title": "页面不存在",
     "back": "返回仪表盘"
+  },
+  "userQuota": {
+    "sectionTitle": "用户配额",
+    "sectionHelp": "每一行授权此用户访问一台 client，并可选地设置带宽/并发限制。",
+    "tableHelp": "此用户在各 client 上的访问与配额。",
+    "add": "添加配额",
+    "empty": "尚未配置任何 client 访问。",
+    "unlimited": "不限制",
+    "online": "在线",
+    "offline": "离线",
+    "deleteTitle": "移除用户配额",
+    "deleteBody": "撤销 {{user}} 对 {{client}} 的访问？该用户在此 client 上推送的规则也会被一并清除。",
+    "col": {
+      "client": "Client",
+      "portRange": "端口段",
+      "protocols": "协议",
+      "bwIn": "入带宽",
+      "bwOut": "出带宽",
+      "concurrent": "并发",
+      "newConnPerSec": "新建/秒",
+      "status": "状态"
+    },
+    "row": {
+      "expand": "展开",
+      "collapse": "收起",
+      "duplicateTooltip": "后端存在该用户在此 client 上的额外 grant；编辑保存将合并它们。",
+      "duplicateBanner": "检测到 {{count}} 条额外的历史 grant。保存编辑将合并为 1 条。",
+      "readOnlyHint": "请到用户详情页编辑此条目。",
+      "staleAfterDeleteHint": "更新部分生效：旧的 grant 已删除但新 grant 创建失败，请重新添加该条目。"
+    },
+    "combobox": {
+      "placeholder": "选择 client…",
+      "search": "搜索 client…",
+      "empty": "未找到 client。",
+      "offline": "离线",
+      "alreadyAssigned": "已分配"
+    },
+    "form": {
+      "client": "Client",
+      "portStart": "起始端口",
+      "portEnd": "结束端口",
+      "protocols": "协议",
+      "unlimited": "不限制",
+      "unlimitedHelp": "允许访问但不设置带宽/并发上限。",
+      "bandwidthIn": "入带宽 (bps)",
+      "bandwidthOut": "出带宽 (bps)",
+      "concurrent": "并发连接数",
+      "newConnPerSec": "新建连接/秒",
+      "uncapped": "不限",
+      "save": "保存"
+    },
+    "toast": {
+      "created": "已为 {{client}} 创建配额",
+      "updated": "已更新 {{client}} 的配额",
+      "deleted": "已移除 {{client}} 的配额",
+      "createFailed": "创建失败",
+      "updateFailed": "更新失败",
+      "deleteFailed": "删除失败"
+    },
+    "redirectNotice": "Grants 管理已迁移到用户详情页。",
+    "monthlyQuota": "月度配额",
+    "thisPeriod": "本期",
+    "clearUsage": "清零本期用量",
+    "clearUsageConfirm": "仅清零本期已用字节,不会重置计费起点或周期边界。",
+    "exhausted": "已耗尽",
+    "resetsOn": "{{date}} 重置",
+    "billingAnchor": "计费起点",
+    "deleteQuota": "删除配额",
+    "deleteQuotaConfirm": "删除 {{client}} 的月度流量配额。该入口将不再计量。",
+    "monthlyBytesLabel": "月度字节数",
+    "monthlyBytesHelp": "每个计费周期允许的总字节数。设为 0 将停止转发。",
+    "unit": {
+      "KB": "KB",
+      "MB": "MB",
+      "GB": "GB",
+      "TB": "TB"
+    }
+  },
+  "traffic": {
+    "tab": "流量",
+    "bytesIn": "入流量",
+    "bytesOut": "出流量",
+    "totalIn": "总入",
+    "totalOut": "总出",
+    "timeRange": "时间范围",
+    "ranges": {
+      "1h": "最近 1 小时",
+      "24h": "最近 24 小时",
+      "7d": "最近 7 天",
+      "custom": "自定义"
+    },
+    "bucket": "粒度",
+    "buckets": {
+      "auto": "自动",
+      "1m": "1 分钟",
+      "1h": "1 小时"
+    },
+    "banner": {
+      "title": "月度配额已耗尽",
+      "row": "{{client}} 已暂停转发",
+      "increase": "提高上限"
+    },
+    "empty": "所选时段内没有流量样本。",
+    "loading": "加载流量数据…"
   }
 }

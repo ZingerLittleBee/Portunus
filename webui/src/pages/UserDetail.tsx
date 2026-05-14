@@ -12,7 +12,12 @@ import {
   useRevokeCredential,
   useRotateCredential,
 } from "@/api/credentials";
-import { useGrantsList, useRevokeGrant } from "@/api/grants";
+import { useAccessEntries } from "@/api/access-entries";
+import { useClientsList } from "@/api/clients";
+import { useUserQuotas, usePatchQuota } from "@/api/quotas";
+import { UserQuotaTable } from "@/components/UserQuota/UserQuotaTable";
+import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
+import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { canSeeUserDetail, type Identity } from "@/lib/permissions";
 import { PermissionDenied } from "@/components/PermissionDenied";
@@ -54,10 +59,18 @@ function UserDetailInner({ userId, identity }: InnerProps) {
 
   const user = useUser(userId);
   const credentials = useCredentialsList(userId);
-  const grants = useGrantsList(userId);
+  const accessEntries = useAccessEntries(userId);
+  const userQuotas = useUserQuotas(userId);
+  const patchQuota = usePatchQuota(userId);
+  const exhaustedQuotas = (userQuotas.data ?? []).filter((q) => q.exhausted);
+  const clientsQ = useClientsList();
+  const clientLites = (clientsQ.data ?? []).map((c) => ({
+    client_name: c.client_name,
+    connected: c.connected,
+  }));
+  const isSuperadmin = identity?.role === "superadmin";
   const issue = useIssueCredential(userId);
   const revokeCred = useRevokeCredential(userId);
-  const revokeGrant = useRevokeGrant();
   const deleteUser = useDeleteUser();
   const resetPassword = useResetUserPassword(userId);
 
@@ -157,27 +170,43 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         </CardContent>
       </Card>
 
+      <ExhaustedBanner
+        exhausted={exhaustedQuotas}
+        onClearUsage={
+          isSuperadmin
+            ? (q) =>
+                patchQuota.mutate({
+                  client_name: q.client_name,
+                  body: { clear_period_usage: true },
+                })
+            : undefined
+        }
+      />
+
       <Card>
         <CardHeader>
-          <CardTitle>{t("userDetail.grants")}</CardTitle>
+          <CardTitle>{t("userQuota.sectionTitle")}</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2">
-          {grants.data && grants.data.length > 0 ? (
-            grants.data.map((g) => (
-              <div key={g.grant_id} className="flex items-center gap-3 rounded-md border p-3 text-sm">
-                <div className="flex-1 font-mono">
-                  {g.client}:{g.listen_port_start}–{g.listen_port_end} ({g.protocols.join("/")})
-                </div>
-                {identity?.role === "superadmin" && (
-                  <Button variant="ghost" size="sm" onClick={() => revokeGrant.mutate(g.grant_id)}>
-                    {t("userDetail.revokeGrant")}
-                  </Button>
-                )}
-              </div>
-            ))
+        <CardContent>
+          {accessEntries.isLoading ? (
+            <p className="text-sm text-muted-foreground">{t("confirm.busy")}</p>
           ) : (
-            <p className="text-sm text-muted-foreground">{t("userDetail.noGrants")}</p>
+            <UserQuotaTable
+              userId={userId}
+              entries={accessEntries.data ?? []}
+              clients={clientLites}
+              readOnly={!isSuperadmin}
+            />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("traffic.tab")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TrafficPanel userId={userId} />
         </CardContent>
       </Card>
 
@@ -191,7 +220,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         description={t("userDetail.deleteBody", { id: userId })}
         dependents={[
           ...((credentials.data ?? []).map((c) => `credential ${c.credential_id}`)),
-          ...((grants.data ?? []).map((g) => `grant ${g.grant_id}`)),
+          ...((accessEntries.data ?? []).map((e) => `quota ${e.client_name}`)),
         ]}
         busy={deleteUser.isPending}
         onConfirm={async () => {

@@ -149,6 +149,10 @@ pub struct SniRuleSlot {
     /// 011-rate-limiting-qos: per-owner reject/active stats accumulator.
     pub owner_rate_limit_stats:
         Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 013-traffic-quotas E2: per-(user, client) byte budget handle.
+    /// Cloned from `ClientRule.quota`; routes copy_uncapped through
+    /// the quota-aware userspace path when present.
+    pub quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 }
 
 /// Snapshot of the rule slots a SNI listener can dispatch to.
@@ -469,6 +473,7 @@ async fn handle_accept<R: Resolve + 'static>(
         slot.rate_limit_stats.clone(),
         slot.owner_rate_limit.clone(),
         slot.owner_rate_limit_stats.clone(),
+        slot.quota.clone(),
     )
     .await;
     if let Err(e) = res

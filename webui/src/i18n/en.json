@@ -12,7 +12,6 @@
   "nav": {
     "dashboard": "Dashboard",
     "users": "Users",
-    "grants": "Grants",
     "rules": "Rules",
     "clients": "Clients",
     "audit": "Audit log",
@@ -105,7 +104,9 @@
     "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter.",
     "initialPassword": "Initial password",
     "initialPasswordHint": "Optional. Leave blank to create the user without Web login password.",
-    "forcePasswordChange": "Require password change on first login"
+    "forcePasswordChange": "Require password change on first login",
+    "initialQuotaToggle": "Assign initial quota (optional)",
+    "initialQuotaPending": "Will provision quota on {{client}} after user creation."
   },
   "userDetail": {
     "credentials": "Credentials",
@@ -130,25 +131,6 @@
     "generateTemporary": "Leave blank to generate a temporary password",
     "requirePasswordChange": "Require password change on next login",
     "keepApiTokens": "Keep existing API tokens"
-  },
-  "grants": {
-    "title": "Grants",
-    "user": "User",
-    "client": "Client",
-    "ports": "Ports",
-    "protocols": "Protocols",
-    "newGrant": "New grant",
-    "revoke": "Revoke",
-    "emptyTitle": "No grants yet",
-    "emptyBody": "Grants control which ports and protocols a tenant may use."
-  },
-  "grantCreate": {
-    "title": "New grant",
-    "submit": "Create grant",
-    "selectUser": "Select a user…",
-    "startPort": "Listen port (start)",
-    "endPort": "Listen port (end)",
-    "protocolRequired": "Pick at least one protocol."
   },
   "rules": {
     "title": "Rules",
@@ -362,7 +344,9 @@
     "addOwnerIdLabel": "Owner (user ID)",
     "addOwnerIdPlaceholder": "e.g. alice",
     "addContinue": "Continue",
-    "addErrorEmpty": "Please enter a user ID."
+    "addErrorEmpty": "Please enter a user ID.",
+    "openInUser": "Open in user",
+    "movedHint": "Owner quota editing has moved to the user detail page."
   },
   "audit": {
     "title": "Audit log",
@@ -394,5 +378,109 @@
   "notFound": {
     "title": "Page not found",
     "back": "Back to dashboard"
+  },
+  "userQuota": {
+    "sectionTitle": "User quotas",
+    "sectionHelp": "Each row authorises this user on a specific client with optional bandwidth/concurrency limits.",
+    "tableHelp": "Per-client access and quota for this user.",
+    "add": "Add quota",
+    "empty": "No client access configured.",
+    "unlimited": "Unlimited",
+    "online": "Online",
+    "offline": "Offline",
+    "deleteTitle": "Remove user quota",
+    "deleteBody": "Revoke {{user}}'s access to {{client}}? Any rules they pushed to this client will also be cleared.",
+    "col": {
+      "client": "Client",
+      "portRange": "Ports",
+      "protocols": "Protocols",
+      "bwIn": "Bandwidth in",
+      "bwOut": "Bandwidth out",
+      "concurrent": "Concurrent",
+      "newConnPerSec": "New/s",
+      "status": "Status"
+    },
+    "row": {
+      "expand": "Expand row",
+      "collapse": "Collapse row",
+      "duplicateTooltip": "Backend has additional grants for this user+client; editing will merge them.",
+      "duplicateBanner": "Detected {{count}} extra legacy grant(s). Saving here will merge them into one.",
+      "readOnlyHint": "Edit this entry from the user detail page.",
+      "staleAfterDeleteHint": "Update partially applied: previous grants were removed but the new one failed to create. Please re-add the entry."
+    },
+    "combobox": {
+      "placeholder": "Select a client…",
+      "search": "Search clients…",
+      "empty": "No clients found.",
+      "offline": "offline",
+      "alreadyAssigned": "already assigned"
+    },
+    "form": {
+      "client": "Client",
+      "portStart": "Port (start)",
+      "portEnd": "Port (end)",
+      "protocols": "Protocols",
+      "unlimited": "Unlimited",
+      "unlimitedHelp": "Allow access without bandwidth or concurrency limits.",
+      "bandwidthIn": "Bandwidth in (bps)",
+      "bandwidthOut": "Bandwidth out (bps)",
+      "concurrent": "Concurrent connections",
+      "newConnPerSec": "New connections / sec",
+      "uncapped": "uncapped",
+      "save": "Save"
+    },
+    "toast": {
+      "created": "Quota created for {{client}}",
+      "updated": "Quota updated for {{client}}",
+      "deleted": "Quota removed for {{client}}",
+      "createFailed": "Create failed",
+      "updateFailed": "Update failed",
+      "deleteFailed": "Delete failed"
+    },
+    "redirectNotice": "Grants are now managed under each user's profile.",
+    "monthlyQuota": "Monthly quota",
+    "thisPeriod": "This period",
+    "clearUsage": "Clear usage",
+    "clearUsageConfirm": "Zeroes the bytes used in the current period. Billing anchor and period boundaries are NOT reset.",
+    "exhausted": "Exhausted",
+    "resetsOn": "Resets {{date}}",
+    "billingAnchor": "Billing anchor",
+    "deleteQuota": "Delete quota",
+    "deleteQuotaConfirm": "Removes the monthly traffic quota for {{client}}. Traffic for this entry becomes unmetered.",
+    "monthlyBytesLabel": "Monthly bytes",
+    "monthlyBytesHelp": "Total bytes allowed per billing period. Set to 0 to disable forwarding.",
+    "unit": {
+      "KB": "KB",
+      "MB": "MB",
+      "GB": "GB",
+      "TB": "TB"
+    }
+  },
+  "traffic": {
+    "tab": "Traffic",
+    "bytesIn": "Bytes in",
+    "bytesOut": "Bytes out",
+    "totalIn": "Total in",
+    "totalOut": "Total out",
+    "timeRange": "Time range",
+    "ranges": {
+      "1h": "Last 1 hour",
+      "24h": "Last 24 hours",
+      "7d": "Last 7 days",
+      "custom": "Custom"
+    },
+    "bucket": "Bucket",
+    "buckets": {
+      "auto": "Auto",
+      "1m": "1 minute",
+      "1h": "1 hour"
+    },
+    "banner": {
+      "title": "Monthly quota exhausted",
+      "row": "Forwarding paused for {{client}}",
+      "increase": "Increase limit"
+    },
+    "empty": "No traffic samples in the selected range.",
+    "loading": "Loading traffic…"
   }
 }

@@ -41,8 +41,8 @@ fn fresh_store_has_current_schema() {
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 7,
-        "current target schema is 7 (V001 + V002 + V003 + V004 + V005 + V006 + V007)"
+        v, 8,
+        "current target schema is 8 (V001 + V002 + V003 + V004 + V005 + V006 + V007 + V008)"
     );
     assert_eq!(v, Store::target_schema_version());
 
