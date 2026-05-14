@@ -38,15 +38,13 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 tokio-stream = { workspace = true }
-nix = { workspace = true }
-
-# Async DNS resolver (system-resolv.conf, no DoT/DoH per v0.3.0 OOS).
-hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }
 # `async fn` in trait still uses async-trait under the hood for trait
 # objects (the resolver layer holds `Arc<R>` generically but tests use
 # `dyn Resolve` indirectly through the trait, so we keep async-trait
 # for forward-compat with the US2 single-flight wait machinery).
 async-trait = "0.1"
+# Removed in v1.5.0: nix / hickory-resolver
+# (data-plane uses moved to portunus-forwarder)
 
 [dev-dependencies]
 tempfile = { workspace = true }

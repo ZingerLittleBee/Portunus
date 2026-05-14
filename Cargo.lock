@@ -1799,8 +1799,6 @@ dependencies = [
  "chrono",
  "clap",
  "criterion",
- "hickory-resolver",
- "nix",
  "portunus-auth",
  "portunus-core",
  "portunus-forwarder",
