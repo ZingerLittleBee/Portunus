@@ -396,6 +396,33 @@
     "back": "Back to dashboard"
   },
   "userQuota": {
+    "sectionTitle": "User quotas",
+    "sectionHelp": "Each row authorises this user on a specific client with optional bandwidth/concurrency limits.",
+    "tableHelp": "Per-client access and quota for this user.",
+    "add": "Add quota",
+    "empty": "No client access configured.",
+    "unlimited": "Unlimited",
+    "online": "Online",
+    "offline": "Offline",
+    "deleteTitle": "Remove user quota",
+    "deleteBody": "Revoke {{user}}'s access to {{client}}? Any rules they pushed to this client will also be cleared.",
+    "col": {
+      "client": "Client",
+      "portRange": "Ports",
+      "protocols": "Protocols",
+      "bwIn": "Bandwidth in",
+      "bwOut": "Bandwidth out",
+      "concurrent": "Concurrent",
+      "newConnPerSec": "New/s",
+      "status": "Status"
+    },
+    "row": {
+      "expand": "Expand row",
+      "collapse": "Collapse row",
+      "duplicateTooltip": "Backend has additional grants for this user+client; editing will merge them.",
+      "duplicateBanner": "Detected {{count}} extra legacy grant(s). Saving here will merge them into one.",
+      "readOnlyHint": "Edit this entry from the user detail page."
+    },
     "combobox": {
       "placeholder": "Select a client…",
       "search": "Search clients…",
@@ -405,17 +432,26 @@
     },
     "form": {
       "client": "Client",
-      "portStart": "Port start",
-      "portEnd": "Port end",
+      "portStart": "Port (start)",
+      "portEnd": "Port (end)",
       "protocols": "Protocols",
       "unlimited": "Unlimited",
-      "unlimitedHelp": "No rate-limit caps applied.",
-      "bandwidthIn": "Bandwidth in (bytes/sec)",
-      "bandwidthOut": "Bandwidth out (bytes/sec)",
+      "unlimitedHelp": "Allow access without bandwidth or concurrency limits.",
+      "bandwidthIn": "Bandwidth in (bps)",
+      "bandwidthOut": "Bandwidth out (bps)",
       "concurrent": "Concurrent connections",
       "newConnPerSec": "New connections / sec",
       "uncapped": "uncapped",
       "save": "Save"
-    }
+    },
+    "toast": {
+      "created": "Quota created for {{client}}",
+      "updated": "Quota updated for {{client}}",
+      "deleted": "Quota removed for {{client}}",
+      "createFailed": "Create failed",
+      "updateFailed": "Update failed",
+      "deleteFailed": "Delete failed"
+    },
+    "redirectNotice": "Grants are now managed under each user's profile."
   }
 }
