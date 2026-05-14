@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use portunus_core::{PortRange, RuleId, Target};
-use portunus_proto::v1::Protocol;
+use portunus_core::Protocol;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;

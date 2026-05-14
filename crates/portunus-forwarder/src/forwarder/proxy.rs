@@ -347,7 +347,7 @@ async fn copy_uncapped(
         use super::splice;
         let ctx = splice::CopyCtx::build(
             rule_id,
-            portunus_proto::v1::Protocol::Tcp,
+            portunus_core::Protocol::Tcp,
             rate_limit,
             owner_rate_limit,
             has_sni_replay_done,
