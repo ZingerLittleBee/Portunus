@@ -311,11 +311,22 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         }
     });
 
+    // 013-traffic-quotas C4: per-minute period rollover tick. Same
+    // shutdown semantics as rollup_task.
+    let rollover_state = Arc::clone(&state);
+    let rollover_shutdown = shutdown.token();
+    let rollover_task = tokio::spawn(async move {
+        tokio::select! {
+            () = crate::traffic_quotas::rollover::run_forever(rollover_state) => {}
+            () = rollover_shutdown.cancelled() => {}
+        }
+    });
+
     // Wait for shutdown signal, then drain.
     let _ = signal_task.await;
     info!(event = "server.draining");
     clients.shutdown();
-    let _ = tokio::join!(grpc_task, http_task, metrics_task, rollup_task);
+    let _ = tokio::join!(grpc_task, http_task, metrics_task, rollup_task, rollover_task);
     info!(event = "server.stopped");
     Ok(())
 }
