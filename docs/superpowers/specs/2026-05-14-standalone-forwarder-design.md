@@ -1,6 +1,6 @@
 # Standalone Forwarder — Design
 
-**Status:** draft v4 · awaiting user review (v4 addresses 5 v3-review findings + 2 small fixes)
+**Status:** draft v5 · awaiting user review (v5 addresses 3 v4-review findings + 2 small fixes)
 **Branch:** `feat/standalone-forwarder`
 **Target release:** v1.5.0
 **Date:** 2026-05-14
@@ -431,7 +431,7 @@ async fn run(cfg: Config) -> ExitCode {
     let (status_tx, mut status_rx) = mpsc::channel(64);
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<()>(1);
 
-    // finding 3 修订:不动 run_forwarder 签名(stats: Arc<RuleStats> 必填)。
+    // finding 3 修订(v3):不动 run_forwarder 签名(stats: Arc<RuleStats> 必填)。
     // 在循环里就地构造 Arc<RuleStats>,登记到 registry,再传给 forwarder。
     let rule_stats_handles: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -446,10 +446,25 @@ async fn run(cfg: Config) -> ExitCode {
     let expected: HashSet<RuleId> = registry.keys().copied().collect();
     for parsed in cfg.into_iter_rules() {                              // ParsedRule
         let rule_id = parsed.rule_id;
-        let stats = Arc::new(RuleStats::new(parsed.is_range()));
-        rule_stats_handles.write().expect("stats registry not poisoned")
-            .insert(rule_id, Arc::clone(&stats));
-        let rule: ClientRule = parsed.into_client_rule();              // 现有签名
+        let rule: ClientRule = parsed.into_client_rule();              // 现有 schema
+
+        // v5 finding 3 修订:生产构造是 RuleStats::for_range(range) -> Arc<Self>,
+        // 不是 RuleStats::new()(后者 #[cfg(test)] 且无参)。已经返回 Arc,不再包一层。
+        let stats: Arc<RuleStats> = RuleStats::for_range(rule.listen_range);
+
+        // v5 small fix:统一错误处理 — 锁中毒不 expect,记录后跳过该规则。
+        // 实际上 stats_handles 是 standalone 独有,只有 reporter 读、main 写,
+        // 中毒只可能因 reporter spawn 内 panic — 这种情况下跳过本条规则比 panic 友好。
+        match rule_stats_handles.write() {
+            Ok(mut guard) => { guard.insert(rule_id, Arc::clone(&stats)); }
+            Err(e) => {
+                error!(event = "standalone.stats_registry_poisoned",
+                       %rule_id, error = %e,
+                       "skipping rule registration; reporter will miss its stats");
+                // 继续 spawn forwarder — 规则仍工作,只是不出 stats 日志
+            }
+        }
+
         joinset.spawn(run_forwarder(
             rule,
             resolver.clone(),
@@ -581,7 +596,9 @@ pub fn spawn_standalone_reporter(
                         }
                     };
                     for (rule_id, rs) in map.iter() {
-                        let snap = rs.snapshot();           // 调用 forwarder 提供的 getter
+                        // v5 finding 2:用 snapshot_basic(无 multi-target / rate-limit
+                        // 上下文),standalone 平衡套餐够用
+                        let snap = rs.snapshot_basic();
                         let name = registry.get(rule_id).map(String::as_str).unwrap_or("?");
                         info!(event="standalone.stats",
                               rule=%rule_id, rule_name=%name,
@@ -602,7 +619,7 @@ pub fn spawn_standalone_reporter(
 **关键**:
 - 仅消费 `RuleStats::snapshot() -> RuleStatsSnapshot`(forwarder 提供的 getter,
   finding 2)。不需要 RuleSlot 周边状态。
-- per_target / SNI / rate-limit / per_port snapshot 字段在 LoggingStatsSink
+- per_target / SNI / rate-limit / per_port snapshot 字段在 standalone reporter
   里**不展开**(平衡套餐不启用 SNI / rate-limit;per_target / per_port 信息
   在数据面发生事件时由 forwarder 自己 `tracing::warn!` 出来,reporter 无需周期 dump)。
 - reject / throttle 事件由 forwarder 内部直接 `tracing::warn!`,**不**通过
@@ -622,9 +639,14 @@ pub fn install_standalone_signal_handler(shutdown: Shutdown) -> io::Result<JoinH
     let mut sigint  = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sighup  = signal(SignalKind::hangup())?;
+    let cancel = shutdown.token();
     Ok(tokio::spawn(async move {
         loop {
             tokio::select! {
+                // 关键(v5 finding 1):同时监听 shutdown token,这样运行期
+                // fatal 触发 shutdown.trigger() 后 signal task 也会自然退出,
+                // 避免 main 的 signal_task.await 死锁。
+                _ = cancel.cancelled() => { tracing::debug!(event="standalone.signal_handler_exit", reason="shutdown_triggered_externally"); return; }
                 _ = sigint.recv()  => { tracing::info!(event="shutdown.signal", signal="SIGINT");  shutdown.trigger(); return; }
                 _ = sigterm.recv() => { tracing::info!(event="shutdown.signal", signal="SIGTERM"); shutdown.trigger(); return; }
                 _ = sighup.recv()  => { tracing::info!(event="standalone.sighup_ignored"); /* loop continues */ }
@@ -771,10 +793,24 @@ pub enum RateLimitRejectReason {
 }
 ```
 
-**Snapshot getter**(数据面 hot path 仍只动原子计数器):
+**Snapshot getter**(v5 finding 2 修订)。`RuleStats` 内部只持有
+基础计数器(bytes_in/out、active_connections、per_port、DNS/UDP 计数、SNI
+trio);多目标/限速/per_target 等字段都不在 `RuleStats` 内,而是分散在
+`MultiTargetObservability`、`RateLimitStatsAccumulator`、`RateLimitScopeManager`
+之类的并行结构里。因此:
+
 ```rust
+// portunus-forwarder/src/forwarder/stats.rs
 impl RuleStats {
-    pub fn snapshot(&self) -> RuleStatsSnapshot { /* atomic loads */ }
+    /// 仅基础计数器 — 不含 per_target / rate_limit。
+    /// 字段集对应当前 RuleStats 内部 atomics 的子集:
+    /// bytes_in/out、active_connections、per_port、dns_failures、
+    /// datagrams_in/out、active_flows、flows_dropped_overflow、
+    /// sni_route_{exact,wildcard,fallback}_total。
+    /// per_target / rate_limit / multi_target failover counters
+    /// 需要外部 caller 自行从 MultiTargetObservability /
+    /// RateLimitStatsAccumulator 取后合并 — 见下方 client snapshot 装配。
+    pub fn snapshot_basic(&self) -> RuleStatsSnapshotBasic { /* atomic loads */ }
 }
 
 impl RateLimitStatsAccumulator {
@@ -788,7 +824,88 @@ impl OwnerRateLimitStatsRegistry {
 impl SniListenerCounters {
     pub fn snapshot(&self, listen_port: u16) -> SniListenerStatsSnapshot { /* ... */ }
 }
+
+impl MultiTargetObservability {
+    /// per-target snapshot 组装 — 现 control.rs::build_per_target 的等价物。
+    /// 入参 `targets` 是 ClientRule.targets 的引用(host/port/priority 元数据)。
+    /// 数据面通过 try_lock 取 HealthState,失败则跳过该 target 本 tick。
+    pub fn snapshot_per_target(&self, targets: &[MultiTarget]) -> (u64, Vec<PerTargetStatsSnapshot>);
+    //   ^ target_failovers_total                              ^ per_target 子表
+}
 ```
+
+```rust
+// portunus-forwarder/src/forwarder/stats.rs(snapshot 类型)
+#[derive(Clone, Debug, Default)]
+pub struct RuleStatsSnapshotBasic {
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub active_connections: u32,
+    pub per_port: Vec<PerPortStatsSnapshot>,                 // 注意见下方 §5.2-build
+    pub dns_failures: u64,
+    pub datagrams_in: u64,
+    pub datagrams_out: u64,
+    pub active_flows: u32,
+    pub flows_dropped_overflow: u64,
+    pub sni_route_exact_total: u64,
+    pub sni_route_wildcard_total: u64,
+    pub sni_route_fallback_total: u64,
+}
+```
+
+**client 装配**(`portunus-client/src/control.rs`,替代当前的 inline 构造):
+
+```rust
+/// 把当前 RuleSlot 的所有上下文聚合成完整的 RuleStatsSnapshot。
+/// 与现有 send_stats_report 内 inline 构造 1:1 等价 — wire compat
+/// 由此函数保证(per_port 仅 is_range==true 时填、rate_limit None=无 cap、
+/// per_target empty=单目标 ……)。
+fn build_rule_stats_snapshot(
+    rule_id: RuleId,
+    slot: &RuleSlot,
+) -> RuleStatsSnapshot {
+    let basic = slot.stats.snapshot_basic();
+
+    // is_range 决定 per_port 是否上线 — 单端口 wire 字节稳定。
+    let per_port = if slot.is_range { basic.per_port } else { Vec::new() };
+
+    // multi-target 才填 per_target + target_failovers_total
+    let (target_failovers_total, per_target) = match slot.multi_target_obs.as_ref() {
+        Some(obs) => obs.snapshot_per_target(&slot.targets_view),
+        None => (0, Vec::new()),
+    };
+
+    // 限速 accumulator: drain() 返 None 表示空帐户(proto3 default-stripping)
+    let rate_limit = slot.rate_limit_stats.as_ref().and_then(|acc| {
+        if let Some(limiter) = slot.rate_limit_limiter.as_ref() {
+            acc.set_active_connections(limiter.active_connections());
+        }
+        acc.drain()
+    });
+
+    RuleStatsSnapshot {
+        bytes_in: basic.bytes_in,
+        bytes_out: basic.bytes_out,
+        active_connections: basic.active_connections,
+        per_port,
+        dns_failures: basic.dns_failures,
+        datagrams_in: basic.datagrams_in,
+        datagrams_out: basic.datagrams_out,
+        active_flows: basic.active_flows,
+        flows_dropped_overflow: basic.flows_dropped_overflow,
+        target_failovers_total,
+        per_target,
+        sni_route_exact_total: basic.sni_route_exact_total,
+        sni_route_wildcard_total: basic.sni_route_wildcard_total,
+        sni_route_fallback_total: basic.sni_route_fallback_total,
+        rate_limit,
+    }
+}
+```
+
+**standalone 装配**:它只需基础计数器(平衡套餐无 SNI / rate-limit;multi-target
+信息由 forwarder 数据面 `proxy.*` 事件直接日志)。reporter 调
+`rs.snapshot_basic()` 就够,不构造完整 `RuleStatsSnapshot`。
 
 **client 翻译层(新)** — 在 `portunus-client/src/control.rs` 加:
 ```rust
@@ -882,13 +999,16 @@ Phase 2 — 平移数据面 + proto-free 净化 + snapshot getter (PR 2)
   ├─ T2.3 RateLimitStatsAccumulator::drain_to_proto → drain() 返 Snapshot
   ├─ T2.4 OwnerRateLimitStatsRegistry::drain_to_proto → drain() 返 Vec<Snapshot>
   ├─ T2.5 SniListenerCounters proto-free
-  ├─ T2.6 RuleStats::snapshot() getter + RuleStatsSnapshot 完整字段集
-  ├─ T2.7 lib.rs pub use re-exports(对照 §3.3)
-  ├─ T2.8 portunus-client 加 From<Snapshot> for proto::* 翻译层
-  ├─ T2.9 client/control.rs 用 snapshot + From 重构 send_stats_report
-  ├─ T2.10 LiveResolver::with_system_defaults() 新增
-  ├─ T2.11 client use 路径全局替换 + Cargo.toml 调整
-  ├─ T2.12 benches 跟源迁
+  ├─ T2.6 RuleStats::snapshot_basic() getter + RuleStatsSnapshotBasic
+  ├─ T2.7 MultiTargetObservability::snapshot_per_target() 提取(从 control.rs::build_per_target 平移)
+  ├─ T2.8 lib.rs pub use re-exports(对照 §3.3);
+  │       rate_limit/mod.rs + sni/mod.rs 加 `pub use scope::*; pub use stats::*; pub use listener::*;`
+  ├─ T2.9 portunus-client 加 From<Snapshot> for proto::* 翻译层(注意:无 TargetHealth From,直接调 as_wire())
+  ├─ T2.10 client/control.rs 新增 build_rule_stats_snapshot(rule_id, slot),
+  │        send_stats_report 改用 build_*().into() — wire compat 由 *_wire_compat 套件守护
+  ├─ T2.11 LiveResolver::with_system_defaults() 新增
+  ├─ T2.12 client use 路径全局替换 + Cargo.toml 调整
+  ├─ T2.13 benches 跟源迁
   └─ 验证: workspace test + *_wire_compat 字节级全绿
 
 Phase 3 — portunus-standalone binary (PR 3)
@@ -992,6 +1112,27 @@ v3 → v4:
     - reporter 锁中毒 → `warn!` + `continue`(本 tick 跳过,不杀进程)
 16. **字段名修正**:`probe_interval_secs` → `health_check_interval_secs`(对齐
     `ClientRule::health_check_interval_secs`)。
+
+v4 → v5:
+17. **signal task 死锁修复**(v5 finding 1):signal handler 内 select 增加
+    `cancel.cancelled()` 分支 —— 运行期 fatal 触发 `shutdown.trigger()` 后
+    signal task 也会自然退出,`signal_task.await` 不再卡死。
+18. **RuleStats::snapshot() 边界**(v5 finding 2):snapshot getter 重命名为
+    `snapshot_basic()`,**只返回基础计数器**(bytes / per_port / DNS / UDP /
+    SNI trio)。`per_target / target_failovers_total` 由
+    `MultiTargetObservability::snapshot_per_target()` 提供;`rate_limit` 由
+    `RateLimitStatsAccumulator::drain()` 提供。完整 `RuleStatsSnapshot` 由
+    **client 侧** `build_rule_stats_snapshot(rule_id, slot)` 装配(替代 inline
+    构造),保证 wire compat。standalone 平衡套餐只用 `snapshot_basic()`。
+19. **RuleStats 生产构造**(v5 finding 3):用
+    `RuleStats::for_range(rule.listen_range) -> Arc<Self>`(生产 API);
+    `RuleStats::new()` 是 `#[cfg(test)]` 不可用。`for_range` 已返回 Arc,
+    standalone 不再 `Arc::new()` 包一层。
+20. **stats registry 锁中毒处理**:`rule_stats_handles.write()` 失败时
+    `error!` 后跳过该规则注册(forwarder 仍 spawn,只是 reporter 拿不到 stats),
+    不 panic、不 expect。
+21. **去除 LoggingStatsSink 残留称呼**:文档统一叫"standalone reporter",
+    没有"sink"类型(无 trait,无独立结构)。
 
 无未决问题。
 
