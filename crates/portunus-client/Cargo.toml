@@ -43,7 +43,7 @@ tokio-stream = { workspace = true }
 # `dyn Resolve` indirectly through the trait, so we keep async-trait
 # for forward-compat with the US2 single-flight wait machinery).
 async-trait = "0.1"
-# Removed in v1.5.0: nix / hickory-resolver
+# Removed in v1.4.0: nix / hickory-resolver
 # (data-plane uses moved to portunus-forwarder)
 
 [dev-dependencies]

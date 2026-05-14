@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.5.0] — 2026-05-15
+## [1.4.0] — 2026-05-14
 
-Standalone forwarder. A new `portunus-standalone` binary provides
-self-contained TCP/UDP forwarding driven entirely by a TOML config file,
-with no dependency on a running `portunus-server`.
+Per-(user, client) monthly traffic quota + history aggregation, plus a
+new `portunus-standalone` binary for self-contained TCP/UDP forwarding.
+Operators can cap monthly bytes per (user, client) pair with bounded
+best-effort hard-kill enforcement on the data plane; the Web UI gains a
+Traffic tab with 1-minute + 1-hour rollup history on both UserDetail
+and ClientDetail.
 
 ### Added
 
@@ -34,22 +37,6 @@ with no dependency on a running `portunus-server`.
   (EN + 中文) covering config schema, signals, and systemd unit example.
 - **Makefile targets** — `make standalone` (build) and
   `make standalone-check` (validate all `valid_*.toml` fixtures).
-
-### Changed
-
-- `portunus-client` data-plane code now lives in `portunus-forwarder`;
-  `portunus-client` re-exports it. Wire protocol and behaviour are
-  byte-identical to v1.4.0.
-
-## [1.4.0] — 2026-05-14
-
-Per-(user, client) monthly traffic quota + history aggregation. Operators
-can now cap monthly bytes per (user, client) pair with bounded best-effort
-hard-kill enforcement on the data plane; the Web UI gains a Traffic tab
-with 1-minute + 1-hour rollup history on both UserDetail and ClientDetail.
-
-### Added
-
 - **Monthly traffic quota** — new `traffic_quotas` SQLite table; CRUD
   HTTP endpoints `/v1/users/{u}/quotas/{c}` (PUT / PATCH / DELETE / GET)
   and `/v1/users/{u}/quotas/{c}/status`. Billing-anniversary period
@@ -81,6 +68,9 @@ with 1-minute + 1-hour rollup history on both UserDetail and ClientDetail.
 
 ### Changed
 
+- `portunus-client` data-plane code now lives in `portunus-forwarder`;
+  `portunus-client` re-exports it. Wire protocol and behaviour are
+  byte-identical to v1.3.1.
 - Reconnect replay sequence is now: `Welcome` → `TrafficQuotaUpdate(s)`
   → `RuleUpdate(s)` → `OwnerRateLimitUpdate(s)` (was `Welcome` →
   `RuleUpdate` → `OwnerRateLimitUpdate`).

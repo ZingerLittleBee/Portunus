@@ -185,7 +185,7 @@ The full step-by-step walkthrough — including key fingerprint pinning,
 revocation, and the SC-001 5-minute target — is in
 [`specs/001-tcp-forward-mvp/quickstart.md`](specs/001-tcp-forward-mvp/quickstart.md).
 
-## Standalone forwarder (v1.5+)
+## Standalone forwarder (v1.4+)
 
 `portunus-standalone` is a self-contained TCP/UDP forwarder driven by a
 TOML file — no `portunus-server` required. It uses the same data-plane
