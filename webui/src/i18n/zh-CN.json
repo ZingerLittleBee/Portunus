@@ -437,6 +437,50 @@
       "updateFailed": "更新失败",
       "deleteFailed": "删除失败"
     },
-    "redirectNotice": "Grants 管理已迁移到用户详情页。"
+    "redirectNotice": "Grants 管理已迁移到用户详情页。",
+    "monthlyQuota": "月度配额",
+    "thisPeriod": "本期",
+    "clearUsage": "清零本期用量",
+    "clearUsageConfirm": "仅清零本期已用字节,不会重置计费起点或周期边界。",
+    "exhausted": "已耗尽",
+    "resetsOn": "{{date}} 重置",
+    "billingAnchor": "计费起点",
+    "deleteQuota": "删除配额",
+    "deleteQuotaConfirm": "删除 {{client}} 的月度流量配额。该入口将不再计量。",
+    "monthlyBytesLabel": "月度字节数",
+    "monthlyBytesHelp": "每个计费周期允许的总字节数。设为 0 将停止转发。",
+    "unit": {
+      "KB": "KB",
+      "MB": "MB",
+      "GB": "GB",
+      "TB": "TB"
+    }
+  },
+  "traffic": {
+    "tab": "流量",
+    "bytesIn": "入流量",
+    "bytesOut": "出流量",
+    "totalIn": "总入",
+    "totalOut": "总出",
+    "timeRange": "时间范围",
+    "ranges": {
+      "1h": "最近 1 小时",
+      "24h": "最近 24 小时",
+      "7d": "最近 7 天",
+      "custom": "自定义"
+    },
+    "bucket": "粒度",
+    "buckets": {
+      "auto": "自动",
+      "1m": "1 分钟",
+      "1h": "1 小时"
+    },
+    "banner": {
+      "title": "月度配额已耗尽",
+      "row": "{{client}} 已暂停转发",
+      "increase": "提高上限"
+    },
+    "empty": "所选时段内没有流量样本。",
+    "loading": "加载流量数据…"
   }
 }

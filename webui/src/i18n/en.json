@@ -437,6 +437,50 @@
       "updateFailed": "Update failed",
       "deleteFailed": "Delete failed"
     },
-    "redirectNotice": "Grants are now managed under each user's profile."
+    "redirectNotice": "Grants are now managed under each user's profile.",
+    "monthlyQuota": "Monthly quota",
+    "thisPeriod": "This period",
+    "clearUsage": "Clear usage",
+    "clearUsageConfirm": "Zeroes the bytes used in the current period. Billing anchor and period boundaries are NOT reset.",
+    "exhausted": "Exhausted",
+    "resetsOn": "Resets {{date}}",
+    "billingAnchor": "Billing anchor",
+    "deleteQuota": "Delete quota",
+    "deleteQuotaConfirm": "Removes the monthly traffic quota for {{client}}. Traffic for this entry becomes unmetered.",
+    "monthlyBytesLabel": "Monthly bytes",
+    "monthlyBytesHelp": "Total bytes allowed per billing period. Set to 0 to disable forwarding.",
+    "unit": {
+      "KB": "KB",
+      "MB": "MB",
+      "GB": "GB",
+      "TB": "TB"
+    }
+  },
+  "traffic": {
+    "tab": "Traffic",
+    "bytesIn": "Bytes in",
+    "bytesOut": "Bytes out",
+    "totalIn": "Total in",
+    "totalOut": "Total out",
+    "timeRange": "Time range",
+    "ranges": {
+      "1h": "Last 1 hour",
+      "24h": "Last 24 hours",
+      "7d": "Last 7 days",
+      "custom": "Custom"
+    },
+    "bucket": "Bucket",
+    "buckets": {
+      "auto": "Auto",
+      "1m": "1 minute",
+      "1h": "1 hour"
+    },
+    "banner": {
+      "title": "Monthly quota exhausted",
+      "row": "Forwarding paused for {{client}}",
+      "increase": "Increase limit"
+    },
+    "empty": "No traffic samples in the selected range.",
+    "loading": "Loading traffic…"
   }
 }

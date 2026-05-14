@@ -14,6 +14,9 @@ import {
   useClientsList,
   useReissueClient,
 } from "@/api/clients";
+import { useClientQuotas } from "@/api/quotas";
+import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
+import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { canProvisionClient } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
@@ -92,10 +95,13 @@ export function ClientDetail() {
         )}
       </div>
 
+      <ClientExhaustedBanner clientName={clientName} />
+
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">{t("clientDetail.tabOverview")}</TabsTrigger>
           <TabsTrigger value="owners">{t("clientDetail.tabOwnerQuotas")}</TabsTrigger>
+          <TabsTrigger value="traffic">{t("traffic.tab")}</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="space-y-4">
           <Card>
@@ -135,6 +141,9 @@ export function ClientDetail() {
         <TabsContent value="owners">
           <OwnerQuotasTab clientName={clientName} />
         </TabsContent>
+        <TabsContent value="traffic">
+          <TrafficPanel clientName={clientName} />
+        </TabsContent>
       </Tabs>
 
       <ConfirmDialog
@@ -165,6 +174,12 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="font-mono">{value}</span>
     </div>
   );
+}
+
+function ClientExhaustedBanner({ clientName }: { clientName: string }) {
+  const quotas = useClientQuotas(clientName);
+  const exhausted = (quotas.data ?? []).filter((q) => q.exhausted);
+  return <ExhaustedBanner exhausted={exhausted} />;
 }
 
 interface OwnerQuotasTabProps {

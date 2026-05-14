@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatBps } from "./format";
+import { QuotaCellMonthly } from "./QuotaCellMonthly";
+import { QuotaCellPeriodProgress } from "./QuotaCellPeriodProgress";
 import { UserQuotaForm, type UserQuotaFormSubmitValue } from "./UserQuotaForm";
 import type { ClientLite } from "./ClientCombobox";
 
@@ -134,6 +136,12 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           {entry.unlimited ? "—" : (entry.cap?.new_connections_per_sec ?? "—")}
         </TableCell>
         <TableCell>
+          <QuotaCellMonthly quota={entry.quota} />
+        </TableCell>
+        <TableCell>
+          <QuotaCellPeriodProgress quota={entry.quota} />
+        </TableCell>
+        <TableCell>
           {clientOnline ? (
             <Badge variant={"success" as never}>{t("userQuota.online")}</Badge>
           ) : (
@@ -165,7 +173,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
       </TableRow>
       {expanded && (
         <TableRow>
-          <TableCell colSpan={10} className="bg-muted/30">
+          <TableCell colSpan={12} className="bg-muted/30">
             {staleFailure && (
               <Alert variant="destructive" className="mb-3">
                 <AlertTriangle className="h-4 w-4" />

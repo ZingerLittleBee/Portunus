@@ -78,6 +78,8 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
             <TableHead>{t("userQuota.col.bwOut")}</TableHead>
             <TableHead>{t("userQuota.col.concurrent")}</TableHead>
             <TableHead>{t("userQuota.col.newConnPerSec")}</TableHead>
+            <TableHead>{t("userQuota.monthlyQuota")}</TableHead>
+            <TableHead>{t("userQuota.thisPeriod")}</TableHead>
             <TableHead>{t("userQuota.col.status")}</TableHead>
             <TableHead aria-label="actions" />
           </TableRow>
@@ -95,7 +97,7 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
           ))}
           {entries.length === 0 && !adding && (
             <TableRow>
-              <TableCell colSpan={10} className="text-center text-muted-foreground py-6">
+              <TableCell colSpan={12} className="text-center text-muted-foreground py-6">
                 {t("userQuota.empty")}
               </TableCell>
             </TableRow>

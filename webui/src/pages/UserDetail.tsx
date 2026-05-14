@@ -14,7 +14,10 @@ import {
 } from "@/api/credentials";
 import { useAccessEntries } from "@/api/access-entries";
 import { useClientsList } from "@/api/clients";
+import { useUserQuotas, usePatchQuota } from "@/api/quotas";
 import { UserQuotaTable } from "@/components/UserQuota/UserQuotaTable";
+import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
+import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { canSeeUserDetail, type Identity } from "@/lib/permissions";
 import { PermissionDenied } from "@/components/PermissionDenied";
@@ -57,6 +60,9 @@ function UserDetailInner({ userId, identity }: InnerProps) {
   const user = useUser(userId);
   const credentials = useCredentialsList(userId);
   const accessEntries = useAccessEntries(userId);
+  const userQuotas = useUserQuotas(userId);
+  const patchQuota = usePatchQuota(userId);
+  const exhaustedQuotas = (userQuotas.data ?? []).filter((q) => q.exhausted);
   const clientsQ = useClientsList();
   const clientLites = (clientsQ.data ?? []).map((c) => ({
     client_name: c.client_name,
@@ -164,6 +170,19 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         </CardContent>
       </Card>
 
+      <ExhaustedBanner
+        exhausted={exhaustedQuotas}
+        onClearUsage={
+          isSuperadmin
+            ? (q) =>
+                patchQuota.mutate({
+                  client_name: q.client_name,
+                  body: { clear_period_usage: true },
+                })
+            : undefined
+        }
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>{t("userQuota.sectionTitle")}</CardTitle>
@@ -179,6 +198,15 @@ function UserDetailInner({ userId, identity }: InnerProps) {
               readOnly={!isSuperadmin}
             />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("traffic.tab")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TrafficPanel userId={userId} />
         </CardContent>
       </Card>
 
