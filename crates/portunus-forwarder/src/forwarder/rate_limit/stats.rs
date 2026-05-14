@@ -16,9 +16,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use portunus_core::RejectReason;
-use portunus_proto::v1 as proto;
 
 use super::scope::BandwidthDirection;
+use crate::forwarder::stats::{RateLimitRejectReason, RateLimitStatsSnapshot};
 
 /// One slot per [`RejectReason`] variant. Index via
 /// [`reason_index`]. The order matches `RejectReason as i32` modulo
@@ -52,16 +52,18 @@ fn reason_from_index(idx: usize) -> RejectReason {
     }
 }
 
-/// Map [`RejectReason`] to its proto enum tag. Centralised so the
-/// drain path and any future call site share one source of truth.
-fn reason_to_proto(reason: RejectReason) -> proto::RateLimitRejectReason {
+/// Map [`RejectReason`] to its wire-neutral mirror enum. Centralised so
+/// the drain path and any future call site share one source of truth.
+/// Exhaustive `match` — adding a `RejectReason` variant forces a compile
+/// error here so the T2.10 `From` impl cannot silently omit a variant.
+fn reason_to_snapshot(reason: RejectReason) -> RateLimitRejectReason {
     match reason {
-        RejectReason::ConnConcurrent => proto::RateLimitRejectReason::ConnConcurrent,
-        RejectReason::ConnRate => proto::RateLimitRejectReason::ConnRate,
-        RejectReason::UdpFlowRate => proto::RateLimitRejectReason::UdpFlowRate,
-        RejectReason::OwnerConcurrent => proto::RateLimitRejectReason::OwnerConcurrent,
-        RejectReason::OwnerConnRate => proto::RateLimitRejectReason::OwnerConnRate,
-        RejectReason::OwnerUdpFlowRate => proto::RateLimitRejectReason::OwnerUdpFlowRate,
+        RejectReason::ConnConcurrent => RateLimitRejectReason::ConnConcurrent,
+        RejectReason::ConnRate => RateLimitRejectReason::ConnRate,
+        RejectReason::UdpFlowRate => RateLimitRejectReason::UdpFlowRate,
+        RejectReason::OwnerConcurrent => RateLimitRejectReason::OwnerConcurrent,
+        RejectReason::OwnerConnRate => RateLimitRejectReason::OwnerConnRate,
+        RejectReason::OwnerUdpFlowRate => RateLimitRejectReason::OwnerUdpFlowRate,
     }
 }
 
@@ -143,23 +145,20 @@ impl RateLimitStatsAccumulator {
         }
     }
 
-    /// Drain a wire snapshot. Returns `None` when no event has ever
-    /// fired and the gauge is zero — preserves v0.10 byte-stability
-    /// for uncapped rules (proto3 default-stripping). Otherwise emits
-    /// a sparse `RateLimitStats` carrying only the reasons that have
-    /// fired and the throttle/gauge fields when non-zero.
+    /// Proto-free snapshot. Returns `None` when no event has ever fired
+    /// and the gauge is zero — preserves v0.10 byte-stability for uncapped
+    /// rules (proto3 default-stripping). Otherwise emits a sparse
+    /// `RateLimitStatsSnapshot` carrying only the reasons that have fired
+    /// and the throttle/gauge fields when non-zero.
     #[must_use]
-    pub fn drain_to_proto(&self) -> Option<proto::RateLimitStats> {
+    pub fn drain(&self) -> Option<RateLimitStatsSnapshot> {
         let mut reject_total = Vec::new();
         for (idx, slot) in self.reject_total_by_reason.iter().enumerate() {
             let total = slot.load(Ordering::Relaxed);
             if total == 0 {
                 continue;
             }
-            reject_total.push(proto::RateLimitRejectCount {
-                reason: reason_to_proto(reason_from_index(idx)) as i32,
-                total,
-            });
+            reject_total.push((reason_to_snapshot(reason_from_index(idx)), total));
         }
         let throttle_in = self.throttle_micros_in.load(Ordering::Relaxed);
         let throttle_out = self.throttle_micros_out.load(Ordering::Relaxed);
@@ -168,7 +167,7 @@ impl RateLimitStatsAccumulator {
             return None;
         }
         let active_u32 = u32::try_from(active).unwrap_or(u32::MAX);
-        Some(proto::RateLimitStats {
+        Some(RateLimitStatsSnapshot {
             reject_total,
             throttle_micros_in: throttle_in,
             throttle_micros_out: throttle_out,
@@ -184,7 +183,27 @@ mod tests {
     #[test]
     fn empty_accumulator_drains_to_none() {
         let acc = RateLimitStatsAccumulator::new();
-        assert!(acc.drain_to_proto().is_none());
+        assert!(acc.drain().is_none());
+    }
+
+    #[test]
+    fn drain_returns_none_when_accumulator_is_empty() {
+        let acc = RateLimitStatsAccumulator::new();
+        assert!(
+            acc.drain().is_none(),
+            "empty accumulator must drain to None for proto3 default-stripping"
+        );
+    }
+
+    #[test]
+    fn drain_returns_snapshot_with_active_only_when_set() {
+        let acc = RateLimitStatsAccumulator::new();
+        acc.set_active_connections(5);
+        let snap = acc.drain().expect("non-empty accumulator drains to Some");
+        assert_eq!(snap.active_connections, 5);
+        assert_eq!(snap.throttle_micros_in, 0);
+        assert_eq!(snap.throttle_micros_out, 0);
+        assert!(snap.reject_total.is_empty());
     }
 
     #[test]
@@ -203,14 +222,15 @@ mod tests {
         let acc = RateLimitStatsAccumulator::new();
         acc.record_reject(RejectReason::ConnRate);
         acc.record_reject(RejectReason::OwnerConcurrent);
-        let stats = acc.drain_to_proto().expect("non-empty drain");
+        let stats = acc.drain().expect("non-empty drain");
         assert_eq!(stats.reject_total.len(), 2);
-        let reasons: Vec<i32> = stats.reject_total.iter().map(|c| c.reason).collect();
-        assert!(reasons.contains(&(proto::RateLimitRejectReason::ConnRate as i32)));
-        assert!(reasons.contains(&(proto::RateLimitRejectReason::OwnerConcurrent as i32)));
+        let reasons: Vec<RateLimitRejectReason> =
+            stats.reject_total.iter().map(|(r, _)| *r).collect();
+        assert!(reasons.contains(&RateLimitRejectReason::ConnRate));
+        assert!(reasons.contains(&RateLimitRejectReason::OwnerConcurrent));
         // No UNSPECIFIED sentinel and no untouched reasons.
-        assert!(!reasons.contains(&(proto::RateLimitRejectReason::Unspecified as i32)));
-        assert!(!reasons.contains(&(proto::RateLimitRejectReason::UdpFlowRate as i32)));
+        assert!(!reasons.contains(&RateLimitRejectReason::Unspecified));
+        assert!(!reasons.contains(&RateLimitRejectReason::UdpFlowRate));
     }
 
     #[test]
@@ -219,7 +239,7 @@ mod tests {
         acc.record_throttle(BandwidthDirection::In, 12_345);
         acc.record_throttle(BandwidthDirection::Out, 67_890);
         acc.set_active_connections(7);
-        let stats = acc.drain_to_proto().expect("non-empty drain");
+        let stats = acc.drain().expect("non-empty drain");
         assert_eq!(stats.throttle_micros_in, 12_345);
         assert_eq!(stats.throttle_micros_out, 67_890);
         assert_eq!(stats.active_connections, 7);
@@ -240,7 +260,7 @@ mod tests {
     fn drain_active_connections_clamps_to_u32_max() {
         let acc = RateLimitStatsAccumulator::new();
         acc.set_active_connections(u64::from(u32::MAX) + 1);
-        let stats = acc.drain_to_proto().expect("non-empty drain");
+        let stats = acc.drain().expect("non-empty drain");
         assert_eq!(stats.active_connections, u32::MAX);
     }
 

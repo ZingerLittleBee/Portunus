@@ -20,6 +20,31 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use portunus_core::PortRange;
 
+/// Wire-neutral mirror of `proto::v1::RateLimitRejectReason` — variants
+/// listed in the **same order** as the proto enum so per-variant numeric
+/// codes stay stable when the client crate translates via `From`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RateLimitRejectReason {
+    Unspecified,
+    ConnConcurrent,
+    ConnRate,
+    UdpFlowRate,
+    OwnerConcurrent,
+    OwnerConnRate,
+    OwnerUdpFlowRate,
+}
+
+/// Wire-neutral mirror of `proto::v1::RateLimitStats` (spec §5.2). Lives
+/// in forwarder so the data plane is proto-free; the client crate
+/// translates via `From<RateLimitStatsSnapshot> for proto::v1::RateLimitStats`.
+#[derive(Clone, Debug, Default)]
+pub struct RateLimitStatsSnapshot {
+    pub reject_total: Vec<(RateLimitRejectReason, u64)>,
+    pub throttle_micros_in: u64,
+    pub throttle_micros_out: u64,
+    pub active_connections: u32,
+}
+
 #[derive(Debug, Default)]
 pub struct PerPortCounters {
     pub bytes_in: AtomicU64,
