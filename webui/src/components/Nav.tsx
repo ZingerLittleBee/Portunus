@@ -20,8 +20,7 @@ interface NavItem {
 const ITEMS: NavItem[] = [
   { to: "/", i18nKey: "nav.dashboard", visible: () => true },
   { to: "/users", i18nKey: "nav.users", visible: canSeeUsersList },
-  { to: "/grants", i18nKey: "nav.grants", visible: () => true },
-  { to: "/rules", i18nKey: "nav.rules", visible: () => true },
+{ to: "/rules", i18nKey: "nav.rules", visible: () => true },
   { to: "/clients", i18nKey: "nav.clients", visible: () => true },
   { to: "/audit", i18nKey: "nav.audit", visible: canSeeAuditLog },
   { to: "/metrics", i18nKey: "nav.metrics", visible: () => true },

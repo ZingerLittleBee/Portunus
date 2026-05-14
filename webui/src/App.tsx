@@ -17,8 +17,6 @@ import { PermissionDenied } from "@/components/PermissionDenied";
 const UsersList = lazy(() => import("@/pages/UsersList").then((m) => ({ default: m.UsersList })));
 const UserCreate = lazy(() => import("@/pages/UserCreate").then((m) => ({ default: m.UserCreate })));
 const UserDetail = lazy(() => import("@/pages/UserDetail").then((m) => ({ default: m.UserDetail })));
-const GrantsList = lazy(() => import("@/pages/GrantsList").then((m) => ({ default: m.GrantsList })));
-const GrantCreate = lazy(() => import("@/pages/GrantCreate").then((m) => ({ default: m.GrantCreate })));
 const RulesList = lazy(() => import("@/pages/RulesList").then((m) => ({ default: m.RulesList })));
 const RulePush = lazy(() => import("@/pages/RulePush").then((m) => ({ default: m.RulePush })));
 const RuleDetail = lazy(() => import("@/pages/RuleDetail").then((m) => ({ default: m.RuleDetail })));
@@ -126,26 +124,8 @@ export function App() {
           </AuthGate>
         }
       />
-      <Route
-        path="/grants"
-        element={
-          <AuthGate>
-            <Shell>
-              <GrantsList />
-            </Shell>
-          </AuthGate>
-        }
-      />
-      <Route
-        path="/grants/new"
-        element={
-          <AuthGate role="superadmin">
-            <Shell>
-              <GrantCreate />
-            </Shell>
-          </AuthGate>
-        }
-      />
+      <Route path="/grants" element={<Navigate to="/users" replace />} />
+      <Route path="/grants/new" element={<Navigate to="/users" replace />} />
       <Route
         path="/rules"
         element={

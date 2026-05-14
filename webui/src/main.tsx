@@ -7,6 +7,7 @@ import { I18nextProvider } from "react-i18next";
 import { ThemeProvider } from "@/theme/ThemeProvider";
 import { i18n } from "@/i18n";
 import { App } from "@/App";
+import { Toaster } from "@/components/ui/sonner";
 
 import "@/theme/tokens.css";
 
@@ -30,6 +31,7 @@ ReactDOM.createRoot(root).render(
         <I18nextProvider i18n={i18n}>
           <BrowserRouter>
             <App />
+            <Toaster richColors closeButton position="top-right" />
           </BrowserRouter>
         </I18nextProvider>
       </ThemeProvider>
