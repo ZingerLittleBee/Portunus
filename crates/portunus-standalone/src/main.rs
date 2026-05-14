@@ -1,6 +1,6 @@
-use std::process::ExitCode;
+mod config;
 
-fn main() -> ExitCode {
-    eprintln!("portunus-standalone: phase 3 scaffolding — config loader lands in T3.2");
-    ExitCode::SUCCESS
+fn main() -> std::process::ExitCode {
+    eprintln!("portunus-standalone: phase 3 scaffolding — runtime lands in T3.5");
+    std::process::ExitCode::SUCCESS
 }
