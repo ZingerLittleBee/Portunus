@@ -404,7 +404,7 @@ mod tests {
 
     // T020..T024: real-wire ClientHello fixtures captured against
     // OpenSSL 3.6.2 with `-servername example.com`. See
-    // `crates/portunus-client/tests/fixtures/tls/README.md` for the
+    // `crates/portunus-forwarder/tests/fixtures/tls/README.md` for the
     // capture procedure. These tests lock the fixtures' parse
     // outcomes so a parser regression OR fixture rot surfaces here.
 
