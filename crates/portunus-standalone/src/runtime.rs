@@ -41,7 +41,7 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
     #[cfg(unix)]
     log_fd_limit();
 
-    let drain = Duration::from_secs(5);
+    let drain = Duration::from_secs(cfg.global.shutdown_drain_secs);
     let rule_stats_handles: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let reporter_handle = spawn_standalone_reporter(

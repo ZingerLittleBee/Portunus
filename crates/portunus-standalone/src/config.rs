@@ -69,21 +69,65 @@ pub struct Config {
     pub rules: Vec<RawRule>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
     /// Optional human-readable label for this config file.
     #[serde(default)]
     pub label: Option<String>,
+    /// EnvFilter directive ("info", "debug", "portunus=debug,info", …).
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    /// Either "json" or "pretty".
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+    /// Drain budget passed to each forwarder task on shutdown.
+    #[serde(default = "default_shutdown_drain_secs")]
+    pub shutdown_drain_secs: u64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            label: None,
+            log_level: default_log_level(),
+            log_format: default_log_format(),
+            shutdown_drain_secs: default_shutdown_drain_secs(),
+        }
+    }
+}
+
+fn default_log_level() -> String { "info".into() }
+fn default_log_format() -> String { "json".into() }
+fn default_shutdown_drain_secs() -> u64 { 30 }
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DefaultsConfig {
     /// Default protocol if a rule omits `protocol`.
     #[serde(default)]
     pub protocol: Option<String>,
+    #[serde(default = "default_udp_max_flows")]
+    pub udp_max_flows: u32,
+    #[serde(default = "default_udp_flow_idle_secs")]
+    pub udp_flow_idle_secs: u32,
+    #[serde(default)]
+    pub prefer_ipv6: bool,
 }
+
+impl Default for DefaultsConfig {
+    fn default() -> Self {
+        Self {
+            protocol: None,
+            udp_max_flows: default_udp_max_flows(),
+            udp_flow_idle_secs: default_udp_flow_idle_secs(),
+            prefer_ipv6: false,
+        }
+    }
+}
+
+fn default_udp_max_flows() -> u32 { 1024 }
+fn default_udp_flow_idle_secs() -> u32 { 60 }
 
 /// Raw TOML representation of a single forwarding rule.
 /// Both `listen_port` and `listen_ports` are optional here; XOR is
@@ -113,6 +157,18 @@ pub struct RawRule {
     /// Multi-target list (mutually exclusive with `target`).
     #[serde(default)]
     pub targets: Option<Vec<RawTarget>>,
+
+    /// Per-rule override of `defaults.prefer_ipv6`.
+    #[serde(default)]
+    pub prefer_ipv6: Option<bool>,
+
+    /// Per-rule override of `defaults.udp_max_flows` (UDP only).
+    #[serde(default)]
+    pub udp_max_flows: Option<u32>,
+
+    /// Per-rule override of `defaults.udp_flow_idle_secs` (UDP only).
+    #[serde(default)]
+    pub udp_flow_idle_secs: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +200,9 @@ pub struct ParsedRule {
     /// Non-empty only when the rule carries PROXY protocol on the single target,
     /// or the operator used the `targets` list form.
     pub targets: Vec<MultiTarget>,
+    pub prefer_ipv6: bool,
+    pub udp_max_flows: u32,
+    pub udp_flow_idle_secs: u32,
 }
 
 impl ParsedRule {
@@ -159,10 +218,10 @@ impl ParsedRule {
             target_host: self.target_host,
             target: self.target,
             target_range: self.target_range,
-            prefer_ipv6: false,
+            prefer_ipv6: self.prefer_ipv6,
             protocol: self.protocol,
-            udp_max_flows: 1024,
-            udp_flow_idle_secs: 60,
+            udp_max_flows: self.udp_max_flows,
+            udp_flow_idle_secs: self.udp_flow_idle_secs,
             targets: self.targets,
             health_check_interval_secs: None,
             multi_target_obs: None,
@@ -293,6 +352,9 @@ impl Config {
     /// (e.g. invalid host string, bad port range).
     pub fn into_iter_rules(self) -> Result<impl Iterator<Item = ParsedRule>, ConfigError> {
         let defaults_protocol = self.defaults.protocol;
+        let defaults_prefer_ipv6 = self.defaults.prefer_ipv6;
+        let defaults_udp_max_flows = self.defaults.udp_max_flows;
+        let defaults_udp_flow_idle_secs = self.defaults.udp_flow_idle_secs;
         let mut parsed = Vec::with_capacity(self.rules.len());
 
         for raw in self.rules {
@@ -331,6 +393,11 @@ impl Config {
                     target,
                     target_range,
                     targets: Vec::new(),
+                    prefer_ipv6: raw.prefer_ipv6.unwrap_or(defaults_prefer_ipv6),
+                    udp_max_flows: raw.udp_max_flows.unwrap_or(defaults_udp_max_flows),
+                    udp_flow_idle_secs: raw
+                        .udp_flow_idle_secs
+                        .unwrap_or(defaults_udp_flow_idle_secs),
                 });
             } else {
                 // Multi-target list form.
@@ -368,6 +435,11 @@ impl Config {
                     target: first_target,
                     target_range: first_range,
                     targets: multi_targets,
+                    prefer_ipv6: raw.prefer_ipv6.unwrap_or(defaults_prefer_ipv6),
+                    udp_max_flows: raw.udp_max_flows.unwrap_or(defaults_udp_max_flows),
+                    udp_flow_idle_secs: raw
+                        .udp_flow_idle_secs
+                        .unwrap_or(defaults_udp_flow_idle_secs),
                 });
             }
         }

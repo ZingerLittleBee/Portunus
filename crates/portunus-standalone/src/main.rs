@@ -72,7 +72,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    init_tracing(&cli);
+    init_tracing(&cli, &cfg);
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -87,11 +87,11 @@ fn main() -> ExitCode {
     rt.block_on(runtime::run(cfg, registry))
 }
 
-fn init_tracing(cli: &Cli) {
+fn init_tracing(cli: &Cli, cfg: &config::Config) {
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-    let level = cli.log_level.as_deref().unwrap_or("info");
-    let format = cli.log_format.as_deref().unwrap_or("json");
+    let level = cli.log_level.as_deref().unwrap_or(&cfg.global.log_level);
+    let format = cli.log_format.as_deref().unwrap_or(&cfg.global.log_format);
 
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
     let reg = tracing_subscriber::registry().with(filter);
