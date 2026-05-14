@@ -13,10 +13,9 @@
 //! long-lived tokio task.
 
 use crate::state::AppState;
-use crate::traffic_quotas::{TrafficQuotaRow, advance_period_if_due, period_start_at};
+use crate::traffic_quotas::{TrafficQuotaRow, advance_period_if_due, make_traffic_quota_set_msg};
 use chrono::{DateTime, TimeZone, Utc};
 use portunus_core::ClientName;
-use portunus_proto::v1 as proto;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -96,49 +95,14 @@ async fn push_reset(state: &AppState, row: &TrafficQuotaRow) {
     let Some((outbound, _waiters)) = state.clients.handles(&client).await else {
         return;
     };
-    let ends_at = compute_period_end(row.billing_anchor, row.current_period_started_at);
-    let state_proto = proto::TrafficQuotaState {
-        monthly_bytes: row.monthly_bytes,
-        budget_remaining_bytes: row.budget_remaining(),
-        period_started_at_unix_sec: row.current_period_started_at,
-        period_ends_at_unix_sec: ends_at,
-        exhausted: row.is_exhausted(),
-    };
-    let push = proto::ServerMessage {
-        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
-            proto::TrafficQuotaUpdate {
-                request_id: format!("quota-rollover-{}", ulid::Ulid::new()),
-                user_id: row.user_id.clone(),
-                client_name: row.client_name.clone(),
-                action: proto::TrafficQuotaAction::Set as i32,
-                state: Some(state_proto),
-            },
-        )),
-    };
-    if outbound.send(Ok(push)).await.is_err() {
+    let msg = make_traffic_quota_set_msg(row, format!("quota-rollover-{}", ulid::Ulid::new()));
+    if outbound.send(Ok(msg)).await.is_err() {
         warn!(
             event = "traffic_quota.rollover_push_failed",
             user = %row.user_id,
             client = %client,
         );
     }
-}
-
-fn compute_period_end(billing_anchor: i64, started: i64) -> i64 {
-    let Some(anchor) = Utc.timestamp_opt(billing_anchor, 0).single() else {
-        return i64::MAX;
-    };
-    let Some(start_dt) = Utc.timestamp_opt(started, 0).single() else {
-        return i64::MAX;
-    };
-    let mut n: u32 = 0;
-    while n < 12_000 {
-        if period_start_at(anchor, n) == start_dt {
-            return period_start_at(anchor, n + 1).timestamp();
-        }
-        n += 1;
-    }
-    i64::MAX
 }
 
 #[cfg(test)]

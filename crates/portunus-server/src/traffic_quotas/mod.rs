@@ -4,6 +4,7 @@
 //! the SQLite layer. See design spec §3.3.
 
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
+use portunus_proto::v1 as proto;
 
 pub mod aggregator;
 pub mod cache;
@@ -64,6 +65,73 @@ pub fn period_start_at(billing_anchor: DateTime<Utc>, n: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(target_year, target_month, day, h, m, s)
         .single()
         .expect("period_start_at constructs valid date")
+}
+
+/// Compute the period-end timestamp (next period's start). Returns
+/// `i64::MAX` if the chain to `started` can't be located within 1000
+/// years — preferred over refusing the read.
+#[must_use]
+pub fn compute_period_end(billing_anchor: i64, started: i64) -> i64 {
+    let Some(anchor) = Utc.timestamp_opt(billing_anchor, 0).single() else {
+        return i64::MAX;
+    };
+    let Some(start_dt) = Utc.timestamp_opt(started, 0).single() else {
+        return i64::MAX;
+    };
+    let mut n: u32 = 0;
+    while n < 12_000 {
+        if period_start_at(anchor, n) == start_dt {
+            return period_start_at(anchor, n + 1).timestamp();
+        }
+        n += 1;
+    }
+    i64::MAX
+}
+
+/// Build a `ServerMessage` carrying a `TrafficQuotaUpdate{SET}` for
+/// `row`. Shared by CRUD push (quota_http.rs), period rollover
+/// (rollover.rs), aggregator exhaust handling, and reconnect replay
+/// (grpc/service.rs).
+#[must_use]
+pub fn make_traffic_quota_set_msg(row: &TrafficQuotaRow, request_id: String) -> proto::ServerMessage {
+    let ends_at = compute_period_end(row.billing_anchor, row.current_period_started_at);
+    proto::ServerMessage {
+        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
+            proto::TrafficQuotaUpdate {
+                request_id,
+                user_id: row.user_id.clone(),
+                client_name: row.client_name.clone(),
+                action: proto::TrafficQuotaAction::Set as i32,
+                state: Some(proto::TrafficQuotaState {
+                    monthly_bytes: row.monthly_bytes,
+                    budget_remaining_bytes: row.budget_remaining(),
+                    period_started_at_unix_sec: row.current_period_started_at,
+                    period_ends_at_unix_sec: ends_at,
+                    exhausted: row.is_exhausted(),
+                }),
+            },
+        )),
+    }
+}
+
+/// Build a `ServerMessage` carrying a `TrafficQuotaUpdate{REMOVE}`.
+#[must_use]
+pub fn make_traffic_quota_remove_msg(
+    user_id: String,
+    client_name: String,
+    request_id: String,
+) -> proto::ServerMessage {
+    proto::ServerMessage {
+        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
+            proto::TrafficQuotaUpdate {
+                request_id,
+                user_id,
+                client_name,
+                action: proto::TrafficQuotaAction::Remove as i32,
+                state: None,
+            },
+        )),
+    }
 }
 
 fn last_day_of_month(year: i32, month: u32) -> u32 {

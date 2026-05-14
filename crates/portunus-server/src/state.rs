@@ -13,6 +13,7 @@ use crate::operator::per_port_stats::PerPortStatsCache;
 use crate::owner::OwnerCapService;
 use crate::rules::ServerRuleStore;
 use crate::store::Store;
+use crate::traffic_quotas::aggregator::TrafficAggregator;
 use crate::traffic_quotas::cache::TrafficQuotaCache;
 use crate::store::operator_store::SqliteOperatorStore;
 use crate::store::rule_store::SqliteRuleStore;
@@ -90,6 +91,26 @@ pub struct AppState {
     /// writes through it; the gRPC push task (C5) reads from it on
     /// reconnect replay. Cheap to clone (Arc internal).
     pub traffic_quotas: TrafficQuotaCache,
+    /// 013-traffic-quotas B2: per-(rule, owner) stats aggregator hooked
+    /// into the gRPC StatsReport path. Owns its own prev map for
+    /// delta computation and emits a `QuotaExhaustedEvent` on first
+    /// crossing (consumed by the gRPC push task spawned in serve.rs).
+    pub traffic_aggregator: TrafficAggregator,
+    /// 013-traffic-quotas B2 → C5: receiver paired with the aggregator's
+    /// exhaust sender. `serve.rs` takes ownership once at boot to spawn
+    /// the consumer that turns `QuotaExhaustedEvent` into a
+    /// `TrafficQuotaUpdate{SET}` push (exhausted=true) toward the
+    /// affected client. Wrapped in `Mutex<Option<…>>` so AppState
+    /// itself stays Clone.
+    pub traffic_quota_exhaust_rx: Arc<
+        std::sync::Mutex<
+            Option<
+                tokio::sync::mpsc::Receiver<
+                    crate::traffic_quotas::aggregator::QuotaExhaustedEvent,
+                >,
+            >,
+        >,
+    >,
 }
 
 impl AppState {
@@ -135,6 +156,19 @@ impl AppState {
                 )));
             }
         };
+        let (traffic_quota_exhaust_tx, traffic_quota_exhaust_rx_owned) =
+            tokio::sync::mpsc::channel::<
+                crate::traffic_quotas::aggregator::QuotaExhaustedEvent,
+            >(64);
+        let traffic_aggregator = TrafficAggregator::with_metrics(
+            (*store).clone(),
+            traffic_quotas.clone(),
+            traffic_quota_exhaust_tx,
+            Arc::clone(&metrics),
+        );
+        let traffic_quota_exhaust_rx = Arc::new(std::sync::Mutex::new(Some(
+            traffic_quota_exhaust_rx_owned,
+        )));
         let owner_caps = match OwnerCapService::open(Arc::clone(&store)) {
             Ok(s) => s,
             Err(e) => {
@@ -173,6 +207,8 @@ impl AppState {
             rule_store,
             owner_caps,
             traffic_quotas,
+            traffic_aggregator,
+            traffic_quota_exhaust_rx,
         })
     }
 

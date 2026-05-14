@@ -26,7 +26,6 @@ use axum::{
 use chrono::{TimeZone, Utc};
 use portunus_auth::{ClientScope, OperatorIdentity, OperatorRole, UserId};
 use portunus_core::ClientName;
-use portunus_proto::v1 as proto;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::warn;
@@ -36,7 +35,7 @@ use crate::operator::http::ApiError;
 use crate::operator::rbac;
 use crate::state::AppState;
 use crate::traffic_quotas::samples::{self, SampleBucket, TrafficSample};
-use crate::traffic_quotas::{TrafficQuotaRow, period_start_at};
+use crate::traffic_quotas::{TrafficQuotaRow, compute_period_end, period_start_at};
 
 // ---------------------------------------------------------------------------
 // Wire shapes
@@ -451,26 +450,11 @@ async fn push_quota_set(state: &AppState, client: &ClientName, row: &TrafficQuot
     let Some((outbound, _waiters)) = state.clients.handles(client).await else {
         return;
     };
-    let ends_at = compute_period_end(row.billing_anchor, row.current_period_started_at);
-    let state_proto = proto::TrafficQuotaState {
-        monthly_bytes: row.monthly_bytes,
-        budget_remaining_bytes: row.budget_remaining(),
-        period_started_at_unix_sec: row.current_period_started_at,
-        period_ends_at_unix_sec: ends_at,
-        exhausted: row.is_exhausted(),
-    };
-    let push = proto::ServerMessage {
-        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
-            proto::TrafficQuotaUpdate {
-                request_id: format!("quota-{}", ulid::Ulid::new()),
-                user_id: row.user_id.clone(),
-                client_name: row.client_name.clone(),
-                action: proto::TrafficQuotaAction::Set as i32,
-                state: Some(state_proto),
-            },
-        )),
-    };
-    if outbound.send(Ok(push)).await.is_err() {
+    let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
+        row,
+        format!("quota-{}", ulid::Ulid::new()),
+    );
+    if outbound.send(Ok(msg)).await.is_err() {
         warn!(
             event = "traffic_quota.push_failed",
             user_id = %row.user_id,
@@ -484,18 +468,12 @@ async fn push_quota_remove(state: &AppState, user_id: &str, client: &ClientName)
     let Some((outbound, _waiters)) = state.clients.handles(client).await else {
         return;
     };
-    let push = proto::ServerMessage {
-        payload: Some(proto::server_message::Payload::TrafficQuotaUpdate(
-            proto::TrafficQuotaUpdate {
-                request_id: format!("quota-{}", ulid::Ulid::new()),
-                user_id: user_id.to_string(),
-                client_name: client.as_str().to_string(),
-                action: proto::TrafficQuotaAction::Remove as i32,
-                state: None,
-            },
-        )),
-    };
-    if outbound.send(Ok(push)).await.is_err() {
+    let msg = crate::traffic_quotas::make_traffic_quota_remove_msg(
+        user_id.to_string(),
+        client.as_str().to_string(),
+        format!("quota-{}", ulid::Ulid::new()),
+    );
+    if outbound.send(Ok(msg)).await.is_err() {
         warn!(
             event = "traffic_quota.push_failed",
             user_id, client = %client, action = "remove",
@@ -509,27 +487,6 @@ fn map_store_error(e: crate::store::StoreError) -> ApiError {
         "store_error",
         e.to_string(),
     )
-}
-
-/// Find the period number `n` such that `period_start(anchor, n) ==
-/// started`, then return `period_start(anchor, n+1)` as the period
-/// end. Returns `i64::MAX` on overflow / unreachable inputs (we'd
-/// rather report an absurd-future timestamp than refuse the read).
-fn compute_period_end(billing_anchor: i64, started: i64) -> i64 {
-    let Some(anchor) = Utc.timestamp_opt(billing_anchor, 0).single() else {
-        return i64::MAX;
-    };
-    let Some(start_dt) = Utc.timestamp_opt(started, 0).single() else {
-        return i64::MAX;
-    };
-    let mut n: u32 = 0;
-    while n < 12_000 {
-        if period_start_at(anchor, n) == start_dt {
-            return period_start_at(anchor, n + 1).timestamp();
-        }
-        n += 1;
-    }
-    i64::MAX
 }
 
 fn now_unix_sec() -> i64 {
