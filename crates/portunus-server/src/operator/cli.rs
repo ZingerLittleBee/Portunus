@@ -5,14 +5,15 @@
 //! in-memory state) where possible, with `async` only where they reach into
 //! tokio-aware structures.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
 use portunus_auth::{AuthError, Authenticator};
 use portunus_core::{
-    ClientName, ClientNameError, HostnameError, PortRange, PortRangeError, RequestId, RuleId,
-    Target, TargetError,
+    ClientName, ClientNameError, Hostname, HostnameError, PortRange, PortRangeError, RequestId,
+    RuleId, Target, TargetError,
 };
 use portunus_proto::v1::{
     ActivationOutcome, Protocol as ProtoProto, Rule as ProtoRule, RuleAction, RuleUpdate,
@@ -73,6 +74,8 @@ pub enum OperatorError {
     /// message.
     #[error("{code}: {message}")]
     InvalidTargetHost { code: &'static str, message: String },
+    #[error("invalid_client_address: {0}")]
+    InvalidClientAddress(String),
     /// Range size > server-configured cap (FR-008, 002-port-range-forward).
     #[error("exceeds_cap: requested={requested} cap={cap}")]
     ExceedsCap { requested: u32, cap: u32 },
@@ -241,6 +244,7 @@ impl OperatorError {
             | Self::InvalidProtocol(_)
             | Self::InvalidTarget(_)
             | Self::InvalidTargetHost { .. }
+            | Self::InvalidClientAddress(_)
             | Self::ExceedsCap { .. }
             | Self::RangeInvalid(_)
             | Self::UnsupportedProtocol { .. }
@@ -312,6 +316,7 @@ impl OperatorError {
             Self::InvalidName(_) => "invalid_name",
             Self::InvalidProtocol(_) => "invalid_protocol",
             Self::InvalidTarget(_) => "invalid_target",
+            Self::InvalidClientAddress(_) => "invalid_client_address",
             // `InvalidTargetHost` and `SniValidation` (below) both
             // store an operator-api-stable subcode in their `code`
             // field; merging the arms keeps the dispatch trivial.
@@ -438,9 +443,14 @@ impl From<RuleStoreError> for OperatorError {
 pub fn issue_bundle(
     state: &AppState,
     raw_name: &str,
+    client_address: Option<&str>,
 ) -> Result<(ClientName, CredentialBundle), OperatorError> {
     let name = ClientName::from_str(raw_name)?;
-    let token = match state.tokens.issue(name.clone()) {
+    let address = client_address.map(validate_client_address).transpose()?;
+    let token = match state
+        .tokens
+        .issue_with_address(name.clone(), address.as_deref())
+    {
         Ok(t) => t,
         Err(AuthError::ClientAlreadyExists(n)) => {
             return Err(OperatorError::ClientAlreadyExists(n));
@@ -470,9 +480,10 @@ pub fn issue_bundle(
 pub fn provision_client(
     state: &AppState,
     raw_name: &str,
+    client_address: Option<&str>,
     out: Option<PathBuf>,
 ) -> Result<(PathBuf, CredentialBundle), OperatorError> {
-    let (name, bundle) = issue_bundle(state, raw_name)?;
+    let (name, bundle) = issue_bundle(state, raw_name, client_address)?;
     let path = out.unwrap_or_else(|| {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
@@ -577,6 +588,7 @@ pub async fn list_clients(state: &AppState) -> Vec<ClientView> {
             provisioned_at: p.issued_at,
             revoked_at: p.revoked_at,
             connected: conn.is_some(),
+            client_address: p.client_address,
             remote_addr: conn.and_then(|c| c.remote_addr.map(|a| a.to_string())),
             connected_at: conn.map(|c| c.connected_at),
         });
@@ -590,7 +602,7 @@ pub fn render_client_view_text(views: &[ClientView]) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<32} {:<10} {:<25} REMOTE",
+        "{:<32} {:<10} {:<25} ADDRESS",
         "CLIENT", "STATE", "PROVISIONED_AT"
     );
     for v in views {
@@ -607,10 +619,35 @@ pub fn render_client_view_text(views: &[ClientView]) -> String {
             v.client_name,
             state,
             v.provisioned_at.format("%Y-%m-%dT%H:%M:%SZ"),
-            v.remote_addr.as_deref().unwrap_or("-"),
+            v.client_address.as_deref().unwrap_or("-"),
         );
     }
     s
+}
+
+pub fn validate_client_address(input: &str) -> Result<String, OperatorError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(OperatorError::InvalidClientAddress(
+            "client address is required".into(),
+        ));
+    }
+    if trimmed.contains("://") || trimmed.contains('/') {
+        return Err(OperatorError::InvalidClientAddress(
+            "client address must be a bare IP address or hostname, not a URL".into(),
+        ));
+    }
+    if let Ok(ip) = IpAddr::from_str(trimmed) {
+        return Ok(ip.to_string());
+    }
+    if trimmed.contains(':') {
+        return Err(OperatorError::InvalidClientAddress(
+            "client address must not include a port".into(),
+        ));
+    }
+    Hostname::new(trimmed)
+        .map(|h| h.to_string())
+        .map_err(|e| OperatorError::InvalidClientAddress(e.to_string()))
 }
 
 /// Helper for the `audit.rule_push` log: emit `listen_port_end` only
@@ -1579,5 +1616,23 @@ mod tests {
         let err: OperatorError = Target::parse("2001:db8::1").unwrap_err().into();
         assert_eq!(err.code(), "invalid_target_host");
         assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn client_address_accepts_ip_or_hostname() {
+        assert_eq!(
+            validate_client_address("68.77.201.69").unwrap(),
+            "68.77.201.69"
+        );
+        assert_eq!(
+            validate_client_address("Edge.Example.COM.").unwrap(),
+            "edge.example.com"
+        );
+    }
+
+    #[test]
+    fn client_address_rejects_urls_and_host_ports() {
+        assert!(validate_client_address("https://edge.example.com").is_err());
+        assert!(validate_client_address("edge.example.com:8443").is_err());
     }
 }

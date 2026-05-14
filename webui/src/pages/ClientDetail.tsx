@@ -1,5 +1,5 @@
 /// 011-rate-limiting-qos T040: client detail page with two tabs —
-/// "Overview" (connection state, provisioned-at, remote address) and
+/// "Overview" (connection state, provisioned-at, client address) and
 /// "Owner quotas" (per-owner cap CRUD, capability-gate aware).
 ///
 /// The owner-list response carries `rule_count` and `has_rate_limit`
@@ -127,7 +127,8 @@ export function ClientDetail() {
               <CardTitle>{t("clientDetail.overviewTitle")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              <Row label={t("clientDetail.remote")} value={client?.remote_addr ?? "—"} />
+              <Row label={t("clientDetail.address")} value={client?.client_address ?? "—"} />
+              <Row label={t("clientDetail.observedPeer")} value={client?.remote_addr ?? "—"} />
               <Row
                 label={t("clientDetail.connectedAt")}
                 value={

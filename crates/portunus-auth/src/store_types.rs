@@ -84,4 +84,5 @@ pub struct ProvisionedClient {
     pub client_name: ClientName,
     pub issued_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub client_address: Option<String>,
 }

@@ -297,7 +297,7 @@ pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
     let resp = reqwest::blocking::Client::new()
         .post(&url)
         .header(k, v)
-        .json(&serde_json::json!({ "name": name }))
+        .json(&serde_json::json!({ "name": name, "address": "127.0.0.1" }))
         .send()
         .expect("POST /v1/clients");
     assert!(

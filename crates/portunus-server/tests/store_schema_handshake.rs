@@ -2,7 +2,7 @@
 //!
 //! Covers:
 //! - Fresh open lands at the current target schema version
-//!   (6 after V006 added by local password auth).
+//!   (7 after V007 added the operator-declared client entry address).
 //! - A simulated v0.8 state.db (only V001 applied) is auto-migrated up
 //!   to V002 on open — the additive `sni_pattern` column appears.
 //! - A state.db whose `schema_migrations` head exceeds the binary's
@@ -41,8 +41,8 @@ fn fresh_store_has_current_schema() {
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 6,
-        "current target schema is 6 (V001 + V002 + V003 + V004 + V005 + V006)"
+        v, 7,
+        "current target schema is 7 (V001 + V002 + V003 + V004 + V005 + V006 + V007)"
     );
     assert_eq!(v, Store::target_schema_version());
 
@@ -53,6 +53,7 @@ fn fresh_store_has_current_schema() {
             assert!(table_exists(conn, "web_sessions"));
             assert!(table_exists(conn, "login_attempts"));
             assert!(table_exists(conn, "onboarding_setup"));
+            assert!(column_exists(conn, "client_tokens", "client_address"));
             Ok(())
         })
         .expect("inspect schema");

@@ -297,12 +297,14 @@ export interface ClientView {
   provisioned_at: string;
   revoked_at: string | null;
   connected: boolean;
+  client_address: string | null;
   remote_addr: string | null;
   connected_at: string | null;
 }
 
 export interface ProvisionClientBody {
   name: string;
+  address: string;
 }
 
 export interface CredentialBundle {

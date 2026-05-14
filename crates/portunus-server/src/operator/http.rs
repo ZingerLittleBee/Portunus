@@ -119,13 +119,14 @@ pub fn router(state: Arc<AppState>) -> Router {
 #[derive(Debug, Deserialize)]
 struct ProvisionBody {
     name: String,
+    address: String,
 }
 
 async fn post_clients(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ProvisionBody>,
 ) -> Result<(StatusCode, Json<CredentialBundle>), ApiError> {
-    let (_name, bundle) = cli::issue_bundle(&state, &body.name)?;
+    let (_name, bundle) = cli::issue_bundle(&state, &body.name, Some(&body.address))?;
     Ok((StatusCode::CREATED, Json(bundle)))
 }
 
@@ -1338,6 +1339,7 @@ impl From<OperatorError> for ApiError {
             | OperatorError::InvalidProtocol(_)
             | OperatorError::InvalidTarget(_)
             | OperatorError::InvalidTargetHost { .. }
+            | OperatorError::InvalidClientAddress(_)
             | OperatorError::ExceedsCap { .. }
             | OperatorError::RangeInvalid(_)
             // 007-multi-target-failover: shape + targets validation

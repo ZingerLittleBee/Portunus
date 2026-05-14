@@ -52,6 +52,7 @@ pub struct ClientView {
     pub provisioned_at: chrono::DateTime<chrono::Utc>,
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
     pub connected: bool,
+    pub client_address: Option<String>,
     pub remote_addr: Option<String>,
     pub connected_at: Option<chrono::DateTime<chrono::Utc>>,
 }

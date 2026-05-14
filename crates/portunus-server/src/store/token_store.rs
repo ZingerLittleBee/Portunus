@@ -45,7 +45,7 @@ impl SqliteTokenStore {
         self.store.with_conn(|c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT client_name, issued_at, revoked_at \
+                    "SELECT client_name, issued_at, revoked_at, client_address \
                      FROM client_tokens \
                      ORDER BY client_name ASC",
                 )
@@ -55,12 +55,13 @@ impl SqliteTokenStore {
                     let name: String = r.get(0)?;
                     let issued: String = r.get(1)?;
                     let revoked: Option<String> = r.get(2)?;
-                    Ok((name, issued, revoked))
+                    let client_address: Option<String> = r.get(3)?;
+                    Ok((name, issued, revoked, client_address))
                 })
                 .map_err(map_rusqlite)?;
             let mut out = Vec::new();
             for r in rows {
-                let (name, issued, revoked) = r.map_err(map_rusqlite)?;
+                let (name, issued, revoked, client_address) = r.map_err(map_rusqlite)?;
                 let client_name = ClientName::new(name).map_err(|e| StoreError::Internal {
                     message: format!("client_tokens has invalid client_name: {e}"),
                 })?;
@@ -70,10 +71,63 @@ impl SqliteTokenStore {
                     client_name,
                     issued_at,
                     revoked_at,
+                    client_address,
                 });
             }
             Ok(out)
         })
+    }
+
+    pub fn issue_with_address(
+        &self,
+        name: ClientName,
+        client_address: Option<&str>,
+    ) -> Result<String, AuthError> {
+        self.issue_inner(name, client_address)
+    }
+
+    fn issue_inner(
+        &self,
+        name: ClientName,
+        client_address: Option<&str>,
+    ) -> Result<String, AuthError> {
+        let token = token::generate_token();
+        let hash_hex = fingerprint::hex(&token::hash_token(&token));
+        let issued_at = Utc::now().to_rfc3339();
+        let name_for_err = name.clone();
+
+        self.store
+            .with_write_tx(|tx| {
+                let exists: bool = tx
+                    .query_row(
+                        "SELECT 1 FROM client_tokens WHERE client_name = ? LIMIT 1",
+                        rusqlite::params![name.as_str()],
+                        |_| Ok(true),
+                    )
+                    .or_else(|e| match e {
+                        rusqlite::Error::QueryReturnedNoRows => Ok(false),
+                        other => Err(other),
+                    })
+                    .map_err(map_rusqlite)?;
+                if exists {
+                    return Err(StoreError::Conflict {
+                        detail: "client_already_exists".into(),
+                    });
+                }
+                tx.execute(
+                    "INSERT INTO client_tokens \
+                     (client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, NULL, ?)",
+                    rusqlite::params![name.as_str(), hash_hex, issued_at, client_address],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                StoreError::Conflict { .. } => AuthError::ClientAlreadyExists(name_for_err),
+                other => store_err_to_auth(other),
+            })?;
+        Ok(token)
     }
 }
 
@@ -148,42 +202,7 @@ impl Authenticator for SqliteTokenStore {
     }
 
     fn issue(&self, name: ClientName) -> Result<String, AuthError> {
-        let token = token::generate_token();
-        let hash_hex = fingerprint::hex(&token::hash_token(&token));
-        let issued_at = Utc::now().to_rfc3339();
-        let name_for_err = name.clone();
-
-        self.store
-            .with_write_tx(|tx| {
-                let exists: bool = tx
-                    .query_row(
-                        "SELECT 1 FROM client_tokens WHERE client_name = ? LIMIT 1",
-                        rusqlite::params![name.as_str()],
-                        |_| Ok(true),
-                    )
-                    .or_else(|e| match e {
-                        rusqlite::Error::QueryReturnedNoRows => Ok(false),
-                        other => Err(other),
-                    })
-                    .map_err(map_rusqlite)?;
-                if exists {
-                    return Err(StoreError::Conflict {
-                        detail: "client_already_exists".into(),
-                    });
-                }
-                tx.execute(
-                    "INSERT INTO client_tokens (client_name, token_hash, issued_at, revoked_at) \
-                     VALUES (?, ?, ?, NULL)",
-                    rusqlite::params![name.as_str(), hash_hex, issued_at],
-                )
-                .map_err(map_rusqlite)?;
-                Ok(())
-            })
-            .map_err(|e| match e {
-                StoreError::Conflict { .. } => AuthError::ClientAlreadyExists(name_for_err),
-                other => store_err_to_auth(other),
-            })?;
-        Ok(token)
+        self.issue_inner(name, None)
     }
 
     fn revoke(&self, name: &ClientName) -> Result<(), AuthError> {
@@ -452,6 +471,18 @@ mod tests {
             s.reissue(&cn("nope")).unwrap(),
             ReissueOutcome::NotFound
         ));
+    }
+
+    #[test]
+    fn issue_with_address_persists_client_address() {
+        let (_d, s) = fresh();
+        s.issue_with_address(cn("edge-01"), Some("edge.example.com"))
+            .unwrap();
+
+        let rows = s.list().unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].client_address.as_deref(), Some("edge.example.com"));
     }
 
     #[test]
