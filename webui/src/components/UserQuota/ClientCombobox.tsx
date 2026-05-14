@@ -65,6 +65,7 @@ export function ClientCombobox({
                     value={c.client_name}
                     disabled={isDisabled}
                     onSelect={() => {
+                      if (isDisabled) return;
                       onChange(c.client_name);
                       setOpen(false);
                     }}
