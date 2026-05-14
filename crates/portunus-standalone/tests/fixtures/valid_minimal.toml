@@ -1,0 +1,5 @@
+[[rule]]
+name = "ssh"
+protocol = "tcp"
+listen_port = 2222
+target = "10.0.0.5:22"

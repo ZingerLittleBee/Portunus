@@ -29,5 +29,6 @@ blake3             = { workspace = true }
 libc               = "0.2"
 
 [dev-dependencies]
-assert_cmd = { workspace = true }
-tempfile   = { workspace = true }
+assert_cmd  = { workspace = true }
+predicates  = { workspace = true }
+tempfile    = { workspace = true }

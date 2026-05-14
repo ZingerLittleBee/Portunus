@@ -1,0 +1,33 @@
+[global]
+log_level = "debug"
+
+[defaults]
+udp_max_flows = 4096
+
+[[rule]]
+name = "ssh-tunnel"
+protocol = "tcp"
+listen_port = 2222
+target = "10.0.0.5:22"
+
+[[rule]]
+name = "web-range"
+protocol = "tcp"
+listen_ports = "8000-8009"
+target = "10.0.0.10:8000-8009"
+
+[[rule]]
+name = "ha-https"
+protocol = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+
+[[rule]]
+name = "game-udp"
+protocol = "udp"
+listen_port = 27015
+target = "10.0.0.20:27015"
+udp_flow_idle_secs = 120

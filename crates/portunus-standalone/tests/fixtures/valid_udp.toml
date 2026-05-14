@@ -1,0 +1,5 @@
+[[rule]]
+name = "udp-echo"
+protocol = "udp"
+listen_port = 9999
+target = "127.0.0.1:9998"

@@ -1,0 +1,6 @@
+[[rule]]
+name = "a"
+protocol = "tcp"
+listen_port = 1
+target = "1.1.1.1:1"
+bind_addr = "0.0.0.0"

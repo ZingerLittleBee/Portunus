@@ -130,6 +130,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 tempfile = "3"
 assert_cmd = "2"
+predicates = "3"
 tokio-test = "0.4"
 
 [profile.release]
