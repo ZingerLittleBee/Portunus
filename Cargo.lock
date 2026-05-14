@@ -1861,7 +1861,9 @@ version = "1.4.0"
 name = "portunus-proto"
 version = "1.4.0"
 dependencies = [
+ "portunus-core",
  "prost",
+ "thiserror 1.0.69",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

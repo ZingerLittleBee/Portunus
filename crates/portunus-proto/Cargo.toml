@@ -14,6 +14,8 @@ workspace = true
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
+portunus-core = { workspace = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
