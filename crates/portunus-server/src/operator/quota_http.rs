@@ -19,12 +19,12 @@
 use std::sync::Arc;
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
 use chrono::{TimeZone, Utc};
-use portunus_auth::{ClientScope, UserId};
+use portunus_auth::{ClientScope, OperatorIdentity, OperatorRole, UserId};
 use portunus_core::ClientName;
 use portunus_proto::v1 as proto;
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ use tracing::warn;
 
 use crate::grpc::service::version_at_least;
 use crate::operator::http::ApiError;
+use crate::operator::rbac;
 use crate::state::AppState;
 use crate::traffic_quotas::samples::{self, SampleBucket, TrafficSample};
 use crate::traffic_quotas::{TrafficQuotaRow, period_start_at};
@@ -114,9 +115,11 @@ pub struct TrafficResponse {
 
 pub async fn put_quota(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((user_id, client_name)): Path<(String, String)>,
     Json(body): Json<PutQuotaBody>,
 ) -> Result<Json<QuotaView>, ApiError> {
+    rbac::require_role(&identity, OperatorRole::Superadmin)?;
     if body.monthly_bytes < 0 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -160,9 +163,11 @@ pub async fn put_quota(
 
 pub async fn patch_quota(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((user_id, client_name)): Path<(String, String)>,
     Json(body): Json<PatchQuotaBody>,
 ) -> Result<Json<QuotaView>, ApiError> {
+    rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let client = parse_client_name(&client_name)?;
     let mut row = state
         .traffic_quotas
@@ -199,8 +204,10 @@ pub async fn patch_quota(
 
 pub async fn delete_quota(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((user_id, client_name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let client = parse_client_name(&client_name)?;
     let removed = state
         .traffic_quotas
@@ -219,8 +226,10 @@ pub async fn delete_quota(
 
 pub async fn get_quota_status(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((user_id, client_name)): Path<(String, String)>,
 ) -> Result<Json<QuotaView>, ApiError> {
+    require_self_or_superadmin(&identity, &user_id)?;
     let client = parse_client_name(&client_name)?;
     state
         .traffic_quotas
@@ -235,25 +244,31 @@ pub async fn get_quota_status(
 
 pub async fn list_user_quotas(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(user_id): Path<String>,
-) -> Json<Vec<QuotaView>> {
+) -> Result<Json<Vec<QuotaView>>, ApiError> {
+    require_self_or_superadmin(&identity, &user_id)?;
     let rows = state.traffic_quotas.list_for_user(&user_id);
-    Json(rows.into_iter().map(QuotaView::from_row).collect())
+    Ok(Json(rows.into_iter().map(QuotaView::from_row).collect()))
 }
 
 pub async fn list_client_quotas(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_name): Path<String>,
-) -> Json<Vec<QuotaView>> {
+) -> Result<Json<Vec<QuotaView>>, ApiError> {
+    rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let rows = state.traffic_quotas.list_for_client(&client_name);
-    Json(rows.into_iter().map(QuotaView::from_row).collect())
+    Ok(Json(rows.into_iter().map(QuotaView::from_row).collect()))
 }
 
 pub async fn get_user_traffic(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(user_id): Path<String>,
     Query(q): Query<TrafficQuery>,
 ) -> Result<Json<TrafficResponse>, ApiError> {
+    require_self_or_superadmin(&identity, &user_id)?;
     serve_traffic(
         &state,
         q.client_name.as_deref(),
@@ -266,9 +281,11 @@ pub async fn get_user_traffic(
 
 pub async fn get_client_traffic(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_name): Path<String>,
     Query(q): Query<TrafficQuery>,
 ) -> Result<Json<TrafficResponse>, ApiError> {
+    rbac::require_role(&identity, OperatorRole::Superadmin)?;
     serve_traffic(
         &state,
         Some(&client_name),
@@ -354,6 +371,26 @@ fn serve_traffic(
         total_bytes_in,
         total_bytes_out,
     }))
+}
+
+/// 403 unless the caller is superadmin or the user under the path.
+/// User-scoped reads (status / list / traffic) accept both roles; CRUD
+/// remains superadmin-only and uses `rbac::require_role` directly.
+fn require_self_or_superadmin(
+    identity: &OperatorIdentity,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    if identity.role == OperatorRole::Superadmin {
+        return Ok(());
+    }
+    if identity.user_id.as_str() == user_id {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "not_owner",
+        "callers may only read their own quotas",
+    ))
 }
 
 fn parse_client_name(s: &str) -> Result<ClientName, ApiError> {
@@ -511,6 +548,7 @@ mod tests {
     use super::*;
     use crate::traffic_quotas::store as quota_store;
     use crate::traffic_quotas::cache::TrafficQuotaCache;
+    use axum::response::IntoResponse;
     use tempfile::tempdir;
 
     fn sample_row(monthly: i64, used: i64) -> TrafficQuotaRow {
@@ -579,6 +617,38 @@ mod tests {
         assert!(cache.delete("alice", "edge-01").unwrap());
         assert!(cache.get("alice", "edge-01").is_none());
         assert!(quota_store::get(&store, "alice", "edge-01").unwrap().is_none());
+    }
+
+    fn user_identity(uid: &str) -> OperatorIdentity {
+        OperatorIdentity {
+            user_id: UserId::from_str(uid).unwrap(),
+            role: OperatorRole::User,
+        }
+    }
+
+    fn superadmin_identity() -> OperatorIdentity {
+        OperatorIdentity {
+            user_id: UserId::superadmin(),
+            role: OperatorRole::Superadmin,
+        }
+    }
+
+    #[test]
+    fn require_self_or_superadmin_allows_superadmin() {
+        assert!(require_self_or_superadmin(&superadmin_identity(), "alice").is_ok());
+    }
+
+    #[test]
+    fn require_self_or_superadmin_allows_caller_for_own_user() {
+        assert!(require_self_or_superadmin(&user_identity("alice"), "alice").is_ok());
+    }
+
+    #[test]
+    fn require_self_or_superadmin_rejects_other_users_403() {
+        let err = require_self_or_superadmin(&user_identity("alice"), "bob").unwrap_err();
+        // ApiError doesn't expose status publicly; render and inspect.
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
