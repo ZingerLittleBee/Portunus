@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-05-15
+
+Standalone forwarder. A new `portunus-standalone` binary provides
+self-contained TCP/UDP forwarding driven entirely by a TOML config file,
+with no dependency on a running `portunus-server`.
+
+### Added
+
+- **`portunus-standalone` binary** — TOML-configured TCP/UDP forwarder
+  built on `portunus-forwarder`. Supports single-port, port-range, and
+  multi-target rules; PROXY protocol v1/v2 output; UDP flow table; and
+  all address-family (prefer-IPv6) options from the existing rule model.
+- **`--check` mode** — validates config and exits 0 (valid) or 2 (invalid)
+  without binding any ports. Suitable for CI pre-flight and deployment hooks.
+- **SIGHUP no-op** — signal is accepted and logged; config reload is
+  deferred to a future release.
+- **Periodic reporter** — logs per-rule byte + connection stats to stderr
+  every 30 seconds using `RuleStats::snapshot_basic`.
+- **Config lookup chain** — `--config` flag → `$PORTUNUS_STANDALONE_CONFIG`
+  env var → `./portunus.toml`.
+- **`portunus-forwarder` crate** — shared data-plane library extracted from
+  `portunus-client` so both `portunus-client` and `portunus-standalone` use
+  identical forwarding, resolver, rate-limit, and SNI code paths.
+- **Operator docs** — `docs/content/docs/operations/standalone.mdx`
+  (EN + 中文) covering config schema, signals, and systemd unit example.
+- **Makefile targets** — `make standalone` (build) and
+  `make standalone-check` (validate all `valid_*.toml` fixtures).
+
+### Changed
+
+- `portunus-client` data-plane code now lives in `portunus-forwarder`;
+  `portunus-client` re-exports it. Wire protocol and behaviour are
+  byte-identical to v1.4.0.
+
 ## [1.4.0] — 2026-05-14
 
 Per-(user, client) monthly traffic quota + history aggregation. Operators
