@@ -138,17 +138,17 @@ export interface CreateAccessEntryInput {
 }
 
 export interface AccessEntryError extends Error {
-  stage: "grant" | "cap" | "rollback";
+  stage: "grant" | "grant_create" | "cap" | "rollback";
   recoverable: boolean;
 }
 
 export function makeError(
-  stage: "grant" | "cap" | "rollback",
+  stage: AccessEntryError["stage"],
   cause: unknown,
   recoverable: boolean,
 ): AccessEntryError {
   const msg = cause instanceof Error ? cause.message : String(cause);
-  const err = new Error(`[${stage}] ${msg}`) as AccessEntryError;
+  const err = new Error(`[${stage}] ${msg}`, { cause }) as AccessEntryError;
   err.stage = stage;
   err.recoverable = recoverable;
   return err;
@@ -191,7 +191,12 @@ export function useCreateAccessEntry(userId: string) {
             throw makeError("cap", err, true);
           } catch (rollbackErr) {
             if ((rollbackErr as AccessEntryError).stage === "cap") throw rollbackErr;
-            throw makeError("rollback", rollbackErr, false);
+            // Preserve the original cap error in the rollback error's chain so debugging shows BOTH.
+            const chained = new Error(
+              `cap put failed: ${err instanceof Error ? err.message : String(err)}; rollback delete also failed`,
+              { cause: rollbackErr },
+            );
+            throw makeError("rollback", chained, false);
           }
         }
       }
@@ -272,7 +277,7 @@ export function useUpdateAccessEntry(userId: string) {
             } satisfies CreateGrantBody),
           });
         } catch (err) {
-          throw makeError("grant", err, false);
+          throw makeError("grant_create", err, false);
         }
       }
 
@@ -302,15 +307,17 @@ export function useUpdateAccessEntry(userId: string) {
   });
 }
 
+export interface DeleteAccessEntryInput {
+  grant_id: string;
+  client_name: string;
+  user_id: string;
+  legacy_duplicate_ids?: string[];
+}
+
 export function useDeleteAccessEntry(userId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      grant_id: string;
-      client_name: string;
-      user_id: string;
-      legacy_duplicate_ids?: string[];
-    }): Promise<void> => {
+    mutationFn: async (input: DeleteAccessEntryInput): Promise<void> => {
       const capUrl = `/v1/clients/${encodeURIComponent(input.client_name)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`;
       try {
         await apiFetch<void>(capUrl, { method: "DELETE" });
