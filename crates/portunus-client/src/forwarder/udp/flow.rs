@@ -89,6 +89,14 @@ pub struct UdpFlow {
     /// through the listener task.
     pub target_idx: Option<u32>,
     pub health_states: Option<Arc<Vec<Mutex<crate::forwarder::failover::HealthState>>>>,
+
+    /// 013-traffic-quotas E4: per-(user, client) byte budget handle.
+    /// `None` for legacy unmetered rules — `quota_allows()` short-
+    /// circuits without an atomic load on those paths so the v0.6
+    /// hot path stays byte-identical. `Some` flows consume `n` bytes
+    /// after every successful `send_to` and short-circuit further
+    /// datagrams on the exhausted side.
+    pub quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 }
 
 impl UdpFlow {
@@ -119,6 +127,7 @@ impl UdpFlow {
             cancel: CancellationToken::new(),
             target_idx: None,
             health_states: None,
+            quota: None,
         })
     }
 
@@ -152,7 +161,55 @@ impl UdpFlow {
             cancel: CancellationToken::new(),
             target_idx: Some(target_idx),
             health_states: Some(health_states),
+            quota: None,
         })
+    }
+
+    /// 013-traffic-quotas E4: attach a quota handle at construction
+    /// time. Used by the listener to install the per-(user, client)
+    /// budget into a freshly-built flow before it's inserted into the
+    /// flow table. The flow keeps an `Arc<QuotaHandle>` clone for the
+    /// life of the flow; replay-time `QuotaScopeManager.install`
+    /// updates reach in-flight UDP via the shared atomic, mirroring TCP.
+    pub fn attach_quota(
+        mut self: Arc<Self>,
+        quota: Arc<crate::forwarder::quota::QuotaHandle>,
+    ) -> Arc<Self> {
+        // The Arc is unique at this point (the listener has not yet
+        // inserted it into the flow table or cloned it for the reply
+        // pump). `Arc::get_mut` returns Some because no other clones
+        // exist.
+        if let Some(slot) = Arc::get_mut(&mut self) {
+            slot.quota = Some(quota);
+        }
+        self
+    }
+
+    /// 013-traffic-quotas E4: true iff the budget is not exhausted.
+    /// `None` quota → always true (legacy fast path; one branch, no
+    /// atomic load).
+    #[must_use]
+    pub fn quota_allows(&self) -> bool {
+        match self.quota.as_ref() {
+            None => true,
+            Some(q) => !q.is_exhausted(),
+        }
+    }
+
+    /// 013-traffic-quotas E4: consume `n` bytes after a successful
+    /// `send_to`. No-op on unmetered flows. Returns false iff the
+    /// consume straddled the budget boundary or it was already
+    /// exhausted — the datagram still landed (consume is post-send),
+    /// but the caller treats `false` as a signal to drop subsequent
+    /// datagrams via `quota_allows`.
+    pub fn quota_consume_after_send(&self, n: u64) -> bool {
+        let Some(q) = self.quota.as_ref() else {
+            return true;
+        };
+        matches!(
+            q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
+            crate::forwarder::quota::ConsumeOutcome::Granted,
+        )
     }
 
     /// Currently-active upstream address. Reads `current_addr_idx`
