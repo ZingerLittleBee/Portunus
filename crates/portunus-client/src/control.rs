@@ -726,6 +726,17 @@ fn handle_server_message(
                     &crate::forwarder::rate_limit::scope::OwnerId::new(owner_id.clone()),
                 )
             });
+            // 013-traffic-quotas E2: resolve the per-(user, client)
+            // quota handle from the process-lifetime registry. None
+            // when the rule is unowned OR no quota has been installed
+            // for this owner yet — copy_uncapped then stays on the
+            // byte-identical splice / userspace fast path. Reconnect
+            // replay (C5) re-installs every quota BEFORE any rule, so
+            // an owner_id present here either has a quota or genuinely
+            // has none on the server.
+            let rule_quota = owner_id_str
+                .as_ref()
+                .and_then(|uid| quota_scope.lookup(uid));
             // Hold a clone of the rate-limit handles for the RuleSlot
             // (the periodic stats reporter and SNI/legacy paths both
             // need to keep observing them after `client_rule` moves
@@ -765,6 +776,7 @@ fn handle_server_message(
                 // the v0.10 forwarding path byte-for-byte.
                 owner_rate_limit,
                 owner_rate_limit_stats: rule_owner_rate_limit_stats,
+                quota: rule_quota,
             };
             let task_cancel = cancel.clone();
             let task_status_tx = status_tx.clone();

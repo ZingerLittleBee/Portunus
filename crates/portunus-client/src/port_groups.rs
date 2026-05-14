@@ -102,6 +102,10 @@ pub(crate) struct GroupMember {
     /// 011-rate-limiting-qos: per-owner reject/active stats accumulator.
     pub(crate) owner_rate_limit_stats:
         Option<Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>>,
+    /// 013-traffic-quotas E2: per-(user, client) byte budget handle
+    /// flowing from `ClientRule.quota` into the per-port `GroupMember`
+    /// and onward into `SniRuleSlot.quota` on every rebuild.
+    pub(crate) quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 }
 
 /// Per-port runtime: the bound listener task, the table watch
@@ -189,6 +193,7 @@ impl PortGroupManager {
             rate_limit_stats: rule.rate_limit_stats.clone(),
             owner_rate_limit: rule.owner_rate_limit.clone(),
             owner_rate_limit_stats: rule.owner_rate_limit_stats.clone(),
+            quota: rule.quota.clone(),
         };
 
         match self.groups.get_mut(&listen_port) {
@@ -420,6 +425,7 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
                 rate_limit_stats: m.rate_limit_stats.clone(),
                 owner_rate_limit: m.owner_rate_limit.clone(),
                 owner_rate_limit_stats: m.owner_rate_limit_stats.clone(),
+                quota: m.quota.clone(),
             },
         );
     }
@@ -470,6 +476,7 @@ mod tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         }
     }
 
@@ -688,6 +695,7 @@ mod e2e_tests {
             rate_limit_stats: None,
             owner_rate_limit: None,
             owner_rate_limit_stats: None,
+            quota: None,
         }
     }
 

@@ -71,6 +71,7 @@ pub async fn proxy<R: Resolve>(
     // copy loop — owner first (FR-013).
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<super::quota::QuotaHandle>>,
 ) -> io::Result<(u64, u64)> {
     // Legacy plain-TCP path: no preread bytes to replay.
     proxy_with_preread(
@@ -88,6 +89,7 @@ pub async fn proxy<R: Resolve>(
         rate_limit_stats,
         owner_rate_limit,
         owner_rate_limit_stats,
+        quota,
     )
     .await
 }
@@ -114,6 +116,7 @@ pub async fn proxy_with_preread<R: Resolve>(
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<super::quota::QuotaHandle>>,
 ) -> io::Result<(u64, u64)> {
     proxy_with_preread_and_prelude(
         inbound,
@@ -131,6 +134,7 @@ pub async fn proxy_with_preread<R: Resolve>(
         rate_limit_stats,
         owner_rate_limit,
         owner_rate_limit_stats,
+        quota,
     )
     .await
 }
@@ -155,6 +159,7 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
     owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<super::quota::QuotaHandle>>,
 ) -> io::Result<(u64, u64)> {
     let mut outbound = match resolver
         .connect_target(rule_id, target, target_port, prefer_ipv6)
@@ -298,6 +303,7 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
                     rule_id,
                     rate_limit.as_deref(),
                     owner_rate_limit.as_deref(),
+                    quota.as_ref(),
                     preread_in > 0,
                     had_proxy_prelude,
                 )
@@ -325,15 +331,30 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
 /// (FR-006).
 ///
 /// On non-Linux this is a thin wrapper around `copy_bidirectional_with_sizes`.
+#[allow(clippy::too_many_arguments)]
 async fn copy_uncapped(
     inbound: &mut TcpStream,
     outbound: &mut TcpStream,
     rule_id: RuleId,
     rate_limit: Option<&RuleRateLimitHandle>,
     owner_rate_limit: Option<&OwnerRateLimitHandle>,
+    quota: Option<&Arc<super::quota::QuotaHandle>>,
     has_sni_replay_done: bool,
     has_proxy_out: bool,
 ) -> io::Result<(u64, u64)> {
+    // 013-traffic-quotas E2: when a quota is attached, route through
+    // the userspace quota-aware copy. Splice fast-path stays available
+    // for quota'd rules in E3 (per-iteration consume hook); for now we
+    // ship the simpler "quota = userspace-only" branch and add the
+    // splice variant in a follow-up commit.
+    if let Some(q) = quota {
+        return super::quota::copy::copy_bidirectional_with_quota(
+            inbound,
+            outbound,
+            Arc::clone(q),
+        )
+        .await;
+    }
     #[cfg(target_os = "linux")]
     {
         use super::splice;
@@ -476,6 +497,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
         });
@@ -515,6 +537,7 @@ mod tests {
                 cancel_proxy,
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,
@@ -582,6 +605,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
         });
@@ -633,6 +657,7 @@ mod tests {
                     CancellationToken::new(),
                     Some(s),
                     0,
+                    None,
                     None,
                     None,
                     None,
@@ -713,6 +738,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
             });
@@ -782,6 +808,7 @@ mod tests {
                 cancel,
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,
