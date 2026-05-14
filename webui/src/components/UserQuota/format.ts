@@ -15,9 +15,11 @@ export function parseBpsInput(raw: string): number | null {
     const n = Number(s);
     return Number.isFinite(n) && n >= 0 ? n : null;
   }
-  const value = Number(m[1]);
+  const valueRaw = m[1];
+  if (!valueRaw) return null;
+  const value = Number(valueRaw);
   if (!Number.isFinite(value)) return null;
-  const unit = m[2].toUpperCase();
+  const unit = (m[2] ?? "").toUpperCase();
   const mul = unit === "K" ? 1_000 : unit === "M" ? 1_000_000 : unit === "G" ? 1_000_000_000 : 1;
   return Math.round(value * mul);
 }
