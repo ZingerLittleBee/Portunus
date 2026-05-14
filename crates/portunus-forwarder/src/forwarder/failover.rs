@@ -300,6 +300,68 @@ pub fn sort_priority(targets: &[RuleTarget]) -> Option<Vec<usize>> {
 }
 
 // =====================================================================
+// T2.7: MultiTargetObservability::snapshot_per_target
+// =====================================================================
+
+use crate::forwarder::stats::{PerTargetStatsSnapshot, TargetHealth};
+use crate::forwarder::MultiTarget;
+
+impl crate::forwarder::MultiTargetObservability {
+    /// Build a proto-free per-target snapshot mirroring the priority-ordered
+    /// `targets` slice. Uses `try_lock` — on contention the target is silently
+    /// skipped for this tick (stats never block the data-plane hot path).
+    ///
+    /// Returns `(target_failovers_total, per_target)` so the caller can fill
+    /// both `RuleStatsSnapshot` fields with a single call.
+    #[must_use]
+    pub fn snapshot_per_target(
+        &self,
+        targets: &[MultiTarget],
+    ) -> (u64, Vec<PerTargetStatsSnapshot>) {
+        let total = self
+            .target_failovers_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut out = Vec::with_capacity(targets.len());
+        for (idx, t) in targets.iter().enumerate() {
+            if idx >= self.states.len() {
+                break;
+            }
+            let Ok(state) = self.states[idx].try_lock() else {
+                continue;
+            };
+            let last_failure_at_unix_ms = state
+                .last_failure_at()
+                .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+            let last_success_at_unix_ms = state
+                .last_success_at()
+                .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+            let (bytes_in, bytes_out) = state.snapshot_bytes();
+            let connections_accepted = state.snapshot_connections();
+            let health = match state.health() {
+                Health::Healthy => TargetHealth::Healthy,
+                Health::Failed => TargetHealth::Failed,
+            };
+            out.push(PerTargetStatsSnapshot {
+                index: u32::try_from(idx).unwrap_or(u32::MAX),
+                host: t.spec.host.clone(),
+                port: t.spec.port,
+                priority: t.spec.priority,
+                health,
+                consecutive_failures: state.consecutive_failures(),
+                last_failure_at_unix_ms,
+                last_success_at_unix_ms,
+                bytes_in,
+                bytes_out,
+                connections_accepted,
+            });
+        }
+        (total, out)
+    }
+}
+
+// =====================================================================
 // Tests (T017 + T019)
 // =====================================================================
 //
@@ -519,5 +581,89 @@ mod tests {
         let targets = vec![t("a.test", 80, 5), t("b.test", 80, 1), t("c.test", 80, 3)];
         let order = sort_priority(&targets).expect("non-empty");
         assert_eq!(order, vec![1, 2, 0]);
+    }
+
+    // ---- T2.7: snapshot_per_target -----------------------------------
+
+    fn make_multi_target(host: &str, port: u16, priority: u32) -> crate::forwarder::MultiTarget {
+        use portunus_core::{RuleTarget, Target};
+        use crate::forwarder::MultiTarget;
+        // Use a loopback IP as the resolved target for test purposes.
+        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        MultiTarget {
+            spec: RuleTarget {
+                host: host.to_string(),
+                port,
+                priority,
+                proxy_protocol: None,
+            },
+            target: Target::Ip(ip),
+        }
+    }
+
+    #[test]
+    fn snapshot_per_target_returns_empty_for_no_targets() {
+        use crate::forwarder::stats::PerTargetStatsSnapshot;
+        use crate::forwarder::MultiTargetObservability;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+
+        let obs = MultiTargetObservability {
+            target_failovers_total: Arc::new(AtomicU64::new(0)),
+            states: Arc::new(vec![]),
+        };
+        let (total, per_target): (u64, Vec<PerTargetStatsSnapshot>) =
+            obs.snapshot_per_target(&[]);
+        assert_eq!(total, 0);
+        assert!(per_target.is_empty());
+    }
+
+    #[test]
+    fn snapshot_per_target_populates_all_fields() {
+        use crate::forwarder::stats::TargetHealth;
+        use crate::forwarder::MultiTargetObservability;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        use tokio::sync::Mutex;
+
+        let state = HealthState::new();
+        let obs = MultiTargetObservability {
+            target_failovers_total: Arc::new(AtomicU64::new(7)),
+            states: Arc::new(vec![Mutex::new(state)]),
+        };
+        let targets = vec![make_multi_target("db.test", 5432, 0)];
+        let (total, per_target) = obs.snapshot_per_target(&targets);
+        assert_eq!(total, 7);
+        assert_eq!(per_target.len(), 1);
+        let snap = &per_target[0];
+        assert_eq!(snap.index, 0);
+        assert_eq!(snap.host, "db.test");
+        assert_eq!(snap.port, 5432);
+        assert_eq!(snap.priority, 0);
+        assert_eq!(snap.health, TargetHealth::Healthy);
+        assert_eq!(snap.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn snapshot_per_target_skips_extra_targets_beyond_states_len() {
+        use crate::forwarder::stats::PerTargetStatsSnapshot;
+        use crate::forwarder::MultiTargetObservability;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        use tokio::sync::Mutex;
+
+        // 1 state, 2 targets — second target must be silently skipped.
+        let obs = MultiTargetObservability {
+            target_failovers_total: Arc::new(AtomicU64::new(0)),
+            states: Arc::new(vec![Mutex::new(HealthState::new())]),
+        };
+        let targets = vec![
+            make_multi_target("a.test", 80, 0),
+            make_multi_target("b.test", 80, 1),
+        ];
+        let (_, per_target): (u64, Vec<PerTargetStatsSnapshot>) =
+            obs.snapshot_per_target(&targets);
+        assert_eq!(per_target.len(), 1);
+        assert_eq!(per_target[0].host, "a.test");
     }
 }
