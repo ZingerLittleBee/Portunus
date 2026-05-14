@@ -389,6 +389,39 @@ mod tests {
     }
 
     #[test]
+    fn v008_creates_traffic_quota_tables() {
+        // 013-traffic-quotas: V008 introduces traffic_quotas + sample tables.
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).expect("open fresh");
+        assert!(store.schema_version().unwrap() >= 8);
+        store
+            .with_conn(|c| {
+                let names = ["traffic_quotas", "traffic_samples_1m", "traffic_samples_1h", "traffic_rollup_state"];
+                for n in names {
+                    let cnt: i64 = c
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                            [n],
+                            |r| r.get(0),
+                        )
+                        .map_err(map_rusqlite)?;
+                    assert_eq!(cnt, 1, "table {n} should exist after V008");
+                }
+                // traffic_rollup_state should have its singleton row.
+                let last: i64 = c
+                    .query_row(
+                        "SELECT last_rolled_up_hour FROM traffic_rollup_state WHERE id = 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
+                assert_eq!(last, 0);
+                Ok(())
+            })
+            .expect("inspect tables");
+    }
+
+    #[test]
     fn pragma_contract_holds_on_pool_connections() {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
