@@ -131,8 +131,8 @@ mod tests {
     fn advance_due_returns_new_start() {
         let anchor = Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap();
         let now = anchor + chrono::Duration::days(32);
-        let new = advance_period_if_due(anchor, anchor, now).expect("advance");
-        assert_eq!(new, Utc.with_ymd_and_hms(2026, 2, 15, 0, 0, 0).unwrap());
+        let advanced = advance_period_if_due(anchor, anchor, now).expect("advance");
+        assert_eq!(advanced, Utc.with_ymd_and_hms(2026, 2, 15, 0, 0, 0).unwrap());
     }
 
     /// Within-period (29 days in) should NOT advance.
