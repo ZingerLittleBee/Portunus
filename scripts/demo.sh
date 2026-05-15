@@ -430,9 +430,9 @@ print_stats() {
   for g in "${!RULE_LISTEN[@]}"; do
     u="${RULE_USER[g]}"; tok="${USER_TOKENS[u]}"; rid="${RULE_ID[g]}"
     body="$(curl -s -H "Authorization: Bearer ${tok}" \
-      "http://${HTTP_ENDPOINT}/v1/rules/${rid}/stats")"
-    bin="$(printf '%s' "${body}" | jq -r '.bytes_in // 0')"
-    bout="$(printf '%s' "${body}" | jq -r '.bytes_out // 0')"
+      "http://${HTTP_ENDPOINT}/v1/rules/${rid}/stats")" || true
+    bin="$(printf '%s' "${body}" | jq -r '.bytes_in // 0' 2>/dev/null || echo 0)"
+    bout="$(printf '%s' "${body}" | jq -r '.bytes_out // 0' 2>/dev/null || echo 0)"
     log "stats user${u}/${RULE_EDGE[g]} listen ${RULE_LISTEN[g]}" \
         "rule=${rid} bytes_in=${bin} bytes_out=${bout}"
   done
@@ -448,7 +448,7 @@ assert_cross_tenant_403() {
   victim_rid="${RULE_ID[0]}"   # owned by user1
   code="$(curl -s -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer ${USER_TOKENS[2]}" \
-    "http://${HTTP_ENDPOINT}/v1/rules/${victim_rid}/stats")"
+    "http://${HTTP_ENDPOINT}/v1/rules/${victim_rid}/stats")" || true
   if [[ "${code}" == "403" ]]; then
     log "cross-tenant 403 OK: user2 denied reading user1's rule stats"
   else
