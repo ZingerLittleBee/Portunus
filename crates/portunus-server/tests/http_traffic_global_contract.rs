@@ -84,8 +84,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 fn seed_two_users(state: &AppState, ts_minute: i64) {
     samples::upsert_1m_delta(&state.store, "alice", "edge-a", ts_minute, 100, 200)
         .expect("seed alice");
-    samples::upsert_1m_delta(&state.store, "bob", "edge-b", ts_minute, 300, 400)
-        .expect("seed bob");
+    samples::upsert_1m_delta(&state.store, "bob", "edge-b", ts_minute, 300, 400).expect("seed bob");
 }
 
 /// Pick a minute boundary that lies inside the 1m bucket's retention
@@ -107,7 +106,11 @@ async fn tenant_get_global_traffic_is_forbidden() {
     let ts = recent_minute();
     seed_two_users(&state, ts);
 
-    let uri = format!("/v1/traffic/global?from={}&to={}&bucket=1m", ts - 1, ts + 60);
+    let uri = format!(
+        "/v1/traffic/global?from={}&to={}&bucket=1m",
+        ts - 1,
+        ts + 60
+    );
     let resp = router
         .oneshot(req("GET", &uri, Some(&alice_token)))
         .await
@@ -121,7 +124,11 @@ async fn superadmin_get_global_traffic_aggregates_across_users() {
     let ts = recent_minute();
     seed_two_users(&state, ts);
 
-    let uri = format!("/v1/traffic/global?from={}&to={}&bucket=1m", ts - 1, ts + 60);
+    let uri = format!(
+        "/v1/traffic/global?from={}&to={}&bucket=1m",
+        ts - 1,
+        ts + 60
+    );
     let resp = router
         .oneshot(req("GET", &uri, Some(SUPERADMIN_TOKEN)))
         .await
