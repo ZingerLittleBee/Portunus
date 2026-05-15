@@ -327,7 +327,7 @@ build_binaries() {
   log "building binaries (profile=${CARGO_PROFILE}, PORTUNUS_SKIP_WEBUI=1)..."
   local flags=()
   [[ "${CARGO_PROFILE}" == "release" ]] && flags+=(--release)
-  PORTUNUS_SKIP_WEBUI=1 cargo build "${flags[@]}" \
+  PORTUNUS_SKIP_WEBUI=1 cargo build "${flags[@]+"${flags[@]}"}" \
     -p portunus-server -p portunus-client
   [[ -x "${SERVER_BIN}" ]] || die "server binary missing: ${SERVER_BIN}"
   [[ -x "${CLIENT_BIN}" ]] || die "client binary missing: ${CLIENT_BIN}"
@@ -356,8 +356,19 @@ bootstrap_superadmin() {
   SUPERADMIN_TOKEN="$(printf '%s\n' "${out}" \
     | grep -oE 'token=[A-Za-z0-9_-]{20,}' | head -1 | cut -d= -f2)"
   [[ -n "${SUPERADMIN_TOKEN}" ]] \
-    || die "could not parse superadmin token from: ${out}"
+    || die "could not parse superadmin token from: ${out} (check ${DATA_DIR}/server.log)"
   printf '%s' "${SUPERADMIN_TOKEN}" >"${DATA_DIR}/.superadmin-token"
+}
+
+check_ports() {
+  local endpoint host port
+  for endpoint in "${GRPC_ENDPOINT}" "${HTTP_ENDPOINT}"; do
+    host="${endpoint%:*}"
+    port="${endpoint##*:}"
+    if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+      die "port ${port} (${endpoint}) already in use — kill the stale portunus-server first"
+    fi
+  done
 }
 
 # ---- server ----------------------------------------------------------------
@@ -392,6 +403,7 @@ main() {
   parse_args "$@"
   if [[ "${DRY_RUN}" == "1" ]]; then print_topology; exit 0; fi
   preflight
+  check_ports
   resolve_bins
   print_topology
   build_binaries
