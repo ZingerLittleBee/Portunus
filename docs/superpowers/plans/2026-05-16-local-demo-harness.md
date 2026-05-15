@@ -465,33 +465,33 @@ user_listen_start() { echo $(( BASE_LISTEN + (($1 - 1) * RULES_PER_USER) )); }
 user_listen_end()   { echo $(( $(user_listen_start "$1") + RULES_PER_USER - 1 )); }
 
 add_users() {
-  local u uid edge ls le tok
+  local u uid edge port_start port_end tok
   for ((u = 1; u <= USERS; u++)); do
     uid="user${u}"
     edge="edge-${u}"
     EDGE_NAMES[u]="${edge}"
-    ls="$(user_listen_start "${u}")"
-    le="$(user_listen_end "${u}")"
+    port_start="$(user_listen_start "${u}")"
+    port_end="$(user_listen_end "${u}")"
 
     PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
       user-add "${uid}" --display-name "Demo ${uid}" \
-      --http-endpoint "${HTTP_ENDPOINT}" >/dev/null
+      --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log"
 
     PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
       grant-add --user-id "${uid}" --client "${edge}" \
-      --listen-port-start "${ls}" --listen-port-end "${le}" \
-      --protocols tcp --http-endpoint "${HTTP_ENDPOINT}" >/dev/null
+      --listen-port-start "${port_start}" --listen-port-end "${port_end}" \
+      --protocols tcp --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log"
 
     tok="$(PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
       credential-issue "${uid}" --format json \
-      --http-endpoint "${HTTP_ENDPOINT}" | jq -r '.token')"
+      --http-endpoint "${HTTP_ENDPOINT}" 2>>"${DATA_DIR}/server.log" | jq -r '.token')"
     [[ -n "${tok}" && "${tok}" != "null" ]] \
-      || die "no token for ${uid}"
+      || die "no token for ${uid} (check ${DATA_DIR}/server.log)"
     USER_TOKENS[u]="${tok}"
-    log "provisioned ${uid} (grant ${edge} tcp ${ls}-${le})"
+    log "provisioned ${uid} (grant ${edge} tcp ${port_start}-${port_end})"
   done
 }
 ```
