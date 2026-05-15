@@ -14,11 +14,13 @@
 
 - **Binaries:** built with `cargo build`. `portunus-server`'s `build.rs` errors if `webui/dist/index.html` is missing **unless `PORTUNUS_SKIP_WEBUI=1` is set at build time**. So build with `PORTUNUS_SKIP_WEBUI=1 cargo build -p portunus-server -p portunus-client`. Default profile is `release` → binaries at `target/release/portunus-{server,client}`. Honor `CARGO_PROFILE=dev` → `target/debug/...`.
 - **Endpoint defaults align with no ephemeral discovery:** gRPC control listen defaults to `127.0.0.1:7443`; `provision-client` advertises `127.0.0.1:7443`; operator HTTP is set explicitly via `serve --operator-http-listen 127.0.0.1:7080`.
-- **Operator CLI auth:** `user-add`, `grant-add`, `credential-issue`, `push-rule`, and rule listing all authenticate to `--http-endpoint` (default `127.0.0.1:7080`) via the `PORTUNUS_OPERATOR_TOKEN` env var. Missing → stderr `error: unauthenticated (set PORTUNUS_OPERATOR_TOKEN ...)`.
+- **Operator CLI auth:** `user-add`, `grant-add`, `credential-issue` authenticate to `--http-endpoint` (default `127.0.0.1:7080`) via the `PORTUNUS_OPERATOR_TOKEN` env var (they call the live server's HTTP API — safe while the server runs). Missing → stderr `error: unauthenticated (set PORTUNUS_OPERATOR_TOKEN ...)`.
+- **CRITICAL — offline CLIs vs live server:** `provision-client` and `push-rule` use the OFFLINE path (`build_offline_state` → opens `state.db` directly). Run while the server is live they fail with `store: store_in_use: <data-dir>/state.db`, and even if they didn't they would desync the server's in-memory token/rule cache. While the server is running, ALL provisioning and rule pushes MUST go through the HTTP API (`POST /v1/clients`, `POST /v1/rules`) — exactly as `crates/portunus-e2e/tests/common/mod.rs` (`provision_client_http`, `push_rule_http`) does. The harness keeps the server live for `connected`/stats monitoring, so it uses HTTP throughout.
 - **`bootstrap-superadmin` stdout** on success: a single line `superadmin user_id=_superadmin token=<43-char>` (token is URL-safe base64: `[A-Za-z0-9_-]`).
 - **`credential-issue --format json`** (default) prints the raw API JSON; the token is at `.token` (43-char, returned exactly once). Per `specs/005-multi-user-rbac/contracts/operator-api.md` `POST /v1/users/{id}/credentials`.
 - **`grant-add`** requires `--user-id --client <name> --listen-port-start --listen-port-end [--protocols tcp]`.
-- **`push-rule`** positional args: `<CLIENT> <LISTEN> [TARGET]`, `--protocol` default `tcp`, operates against `--data-dir` but authorizes via `PORTUNUS_OPERATOR_TOKEN` (the owning user's token → rule is owned by that user).
+- **Provision via HTTP:** `POST /v1/clients` (bearer = superadmin token) body `{"name":"<edge>","address":"127.0.0.1"}` → response body IS the credential bundle JSON; write it to `<edge>.bundle.json`.
+- **Push rule via HTTP:** `POST /v1/rules` (bearer = owning user's token → rule owned by that user) body `{"client","listen_port","target_host","target_port","protocol":"tcp"}`. A 2xx means success; 403 means RBAC denied (used for the negative check).
 - **Rule listing / stats:** operator HTTP `GET /v1/rules?client=<name>` (bearer = owner token) returns the owner's rules; `GET /v1/rules/<rule_id>/stats` returns `bytes_in`/`bytes_out`. Cross-tenant read returns HTTP 403. (Confirmed by `crates/portunus-e2e/tests/rbac_smoke.rs` and `tests/common/mod.rs`.)
 - **Echo upstream correctness:** macOS/BSD `nc -lk` does **not** echo received bytes back, so it cannot serve as the round-trip upstream. Use `socat TCP-LISTEN:<port>,bind=127.0.0.1,reuseaddr,fork EXEC:cat` when `socat` exists, else an embedded `python3` threaded TCP echo. This is a deliberate refinement of the design's "nc -lk" wording; the intent (a real upstream service that really echoes) is preserved.
 - **Isolated state dir:** `/tmp/portunus-demo` (never `/tmp/portunus-dev`, which `make dev` owns).
@@ -556,17 +558,25 @@ edge_connected() {
 }
 
 start_edges() {
-  local u edge bundle
+  local u edge bundle code
   for ((u = 1; u <= USERS; u++)); do
     edge="${EDGE_NAMES[u]}"
     bundle="${DATA_DIR}/${edge}.bundle.json"
-    PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
-      "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
-      provision-client "${edge}" --out "${bundle}" >/dev/null
+    # Provision via the LIVE server's HTTP API. The offline `provision-client`
+    # CLI opens state.db directly — it fails with `store_in_use` while the
+    # server holds the SQLite lock, and would also desync the server's
+    # in-memory token cache (per crates/portunus-e2e/tests/common/mod.rs).
+    code="$(curl -s -o "${bundle}" -w '%{http_code}' \
+      -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
+      "http://${HTTP_ENDPOINT}/v1/clients")"
+    [[ "${code}" == 2?? ]] \
+      || die "provision ${edge} failed (HTTP ${code}); see ${bundle}"
 
     local extra_env=()
     [[ "${DISABLE_SPLICE}" == "1" ]] && extra_env+=(PORTUNUS_DISABLE_SPLICE=1)
-    env "${extra_env[@]:-}" "${CLIENT_BIN}" --bundle "${bundle}" \
+    env "${extra_env[@]+"${extra_env[@]}"}" "${CLIENT_BIN}" --bundle "${bundle}" \
       >>"${DATA_DIR}/${edge}.log" 2>&1 &
     track "$!"
   done
@@ -657,18 +667,23 @@ start_upstreams() {
 }
 
 push_rules() {
-  local g u tok edge listen target
+  local g u tok edge listen target code
   for g in "${!RULE_LISTEN[@]}"; do
     u="${RULE_USER[g]}"
     tok="${USER_TOKENS[u]}"
     edge="${RULE_EDGE[g]}"
     listen="${RULE_LISTEN[g]}"
     target="${RULE_TARGET[g]}"
-    PORTUNUS_OPERATOR_TOKEN="${tok}" \
-      "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
-      push-rule "${edge}" "${listen}" "127.0.0.1:${target}" \
-      --protocol tcp >/dev/null \
-      || die "push-rule failed: ${edge} ${listen} (user${u})"
+    # Push via the LIVE server's HTTP API using the owning user's token so
+    # the rule is owned by that user (RBAC). The offline `push-rule` CLI
+    # conflicts with the server's SQLite lock and bypasses per-user auth.
+    code="$(curl -s -o /dev/null -w '%{http_code}' \
+      -X POST -H "Authorization: Bearer ${tok}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"client\":\"${edge}\",\"listen_port\":${listen},\"target_host\":\"127.0.0.1\",\"target_port\":${target},\"protocol\":\"tcp\"}" \
+      "http://${HTTP_ENDPOINT}/v1/rules")"
+    [[ "${code}" == 2?? ]] \
+      || die "push rule failed: ${edge}:${listen} user${u} (HTTP ${code})"
   done
   # Resolve rule ids per owner via the operator HTTP API.
   for g in "${!RULE_LISTEN[@]}"; do
@@ -694,15 +709,17 @@ assert_negative_rbac() {
     log "negative RBAC check skipped (need >= 2 users)"
     return 0
   fi
-  local foreign_listen
+  local foreign_listen code
   foreign_listen="$(user_listen_start 2)"
-  if PORTUNUS_OPERATOR_TOKEN="${USER_TOKENS[1]}" \
-       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
-       push-rule "${EDGE_NAMES[2]}" "${foreign_listen}" "127.0.0.1:1" \
-       --protocol tcp >/dev/null 2>&1; then
-    die "RBAC FAIL: user1 token pushed into user2's range (${foreign_listen})"
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -X POST -H "Authorization: Bearer ${USER_TOKENS[1]}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"client\":\"${EDGE_NAMES[2]}\",\"listen_port\":${foreign_listen},\"target_host\":\"127.0.0.1\",\"target_port\":1,\"protocol\":\"tcp\"}" \
+    "http://${HTTP_ENDPOINT}/v1/rules")"
+  if [[ "${code}" == 2?? ]]; then
+    die "RBAC FAIL: user1 token pushed into user2's range (${foreign_listen}, HTTP ${code})"
   fi
-  log "negative RBAC OK: cross-user push rejected"
+  log "negative RBAC OK: cross-user push rejected (HTTP ${code})"
 }
 ```
 
