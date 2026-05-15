@@ -11,7 +11,6 @@ import { formatBytes } from "@/lib/format";
 import { AlertBanner } from "./components/AlertBanner";
 import { KpiCard } from "./components/KpiCard";
 import { OfflineClientsPanel } from "./components/OfflineClientsPanel";
-import { RecentAuditPanel } from "./components/RecentAuditPanel";
 import { ThroughputChart } from "./components/ThroughputChart";
 import { UnhealthyTargetsPanel } from "./components/UnhealthyTargetsPanel";
 import { useDashboardRange } from "./useDashboardRange";
@@ -39,11 +38,15 @@ export function TenantDashboard() {
   const transferred24h =
     (traffic24h.data?.total_bytes_in ?? 0) + (traffic24h.data?.total_bytes_out ?? 0);
 
-  const connectedCount = (clients.data ?? []).filter((c) => c.connected).length;
-  const totalClients = clients.data?.length ?? 0;
+  // Only count clients this tenant actually owns (= clients referenced by
+  // their server-filtered rules list). /v1/clients is not tenant-scoped
+  // server-side, so we filter here.
+  const myClientNames = new Set((rules.data ?? []).map((r) => r.client_name));
+  const myClients = (clients.data ?? []).filter((c) => myClientNames.has(c.client_name));
+  const connectedCount = myClients.filter((c) => c.connected).length;
+  const totalClients = myClients.length;
   const ruleCount = rules.data?.length ?? 0;
-  const offlineClientCount = (clients.data ?? [])
-    .filter((c) => !c.connected && !c.revoked_at).length;
+  const offlineClientCount = myClients.filter((c) => !c.connected && !c.revoked_at).length;
 
   // Aggregate quota usage across this user's per-client rows.
   const quotaUsed = (quotas.data ?? []).reduce(
@@ -104,10 +107,9 @@ export function TenantDashboard() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <UnhealthyTargetsPanel />
         <OfflineClientsPanel />
-        <RecentAuditPanel />
       </div>
 
       <ThroughputChart

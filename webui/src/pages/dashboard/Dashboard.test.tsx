@@ -74,5 +74,6 @@ describe("Dashboard role branching", () => {
 
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls.find((u) => u.includes("/v1/metrics"))).toBeUndefined();
+    expect(urls.find((u) => u.includes("/v1/audit"))).toBeUndefined();
   });
 });
