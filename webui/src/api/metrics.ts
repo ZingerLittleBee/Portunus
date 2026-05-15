@@ -13,32 +13,96 @@ export function useMetricsText() {
   });
 }
 
+export interface TopRule {
+  rule: string;
+  bytesIn: number;
+  bytesOut: number;
+  total: number;
+}
+
 export interface DashboardGauges {
   clientsConnected: number | null;
   rulesActive: number | null;
+  activeConnections: number | null;
+  topRules: TopRule[];
 }
 
-/// Parse a small subset of the Prometheus text exposition into the
-/// numbers the dashboard cards display.
+const LABEL_RULE_RE = /rule="([^"]+)"/;
+
+function extractRule(line: string): string | null {
+  const m = line.match(LABEL_RULE_RE);
+  return m?.[1] ?? null;
+}
+
+function valueAtEnd(line: string): number | null {
+  const parts = line.split(/\s+/);
+  const raw = parts[parts.length - 1];
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : null;
+}
+
 export function parseDashboardGauges(text: string | undefined): DashboardGauges {
-  if (!text) return { clientsConnected: null, rulesActive: null };
+  const empty: DashboardGauges = {
+    clientsConnected: null,
+    rulesActive: null,
+    activeConnections: null,
+    topRules: [],
+  };
+  if (!text) return empty;
+
   let clientsConnected: number | null = null;
-  const ruleNames = new Set<string>();
+  let activeConnectionsSum = 0;
+  let sawActiveConnections = false;
+  const ruleBytesIn = new Map<string, number>();
+  const ruleBytesOut = new Map<string, number>();
+
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
+
     if (line.startsWith("portunus_clients_connected ")) {
-      const v = Number(line.split(/\s+/)[1]);
-      if (Number.isFinite(v)) clientsConnected = v;
-    } else if (line.startsWith("portunus_rule_bytes_in_total{")) {
-      // Extract the `rule="..."` label to count distinct active rules.
-      const m = line.match(/rule="([^"]+)"/);
-      if (m?.[1]) ruleNames.add(m[1]);
+      const v = valueAtEnd(line);
+      if (v !== null) clientsConnected = v;
+      continue;
+    }
+    if (line.startsWith("portunus_rule_active_connections{")) {
+      const v = valueAtEnd(line);
+      if (v !== null) {
+        activeConnectionsSum += v;
+        sawActiveConnections = true;
+      }
+      continue;
+    }
+    if (line.startsWith("portunus_rule_bytes_in_total{")) {
+      const rule = extractRule(line);
+      const v = valueAtEnd(line);
+      if (rule && v !== null) ruleBytesIn.set(rule, v);
+      continue;
+    }
+    if (line.startsWith("portunus_rule_bytes_out_total{")) {
+      const rule = extractRule(line);
+      const v = valueAtEnd(line);
+      if (rule && v !== null) ruleBytesOut.set(rule, v);
+      continue;
     }
   }
+
+  const rulesActive = ruleBytesIn.size > 0 ? ruleBytesIn.size : null;
+
+  const topRules: TopRule[] = [...ruleBytesIn.keys()]
+    .map((rule) => {
+      const bytesIn = ruleBytesIn.get(rule) ?? 0;
+      const bytesOut = ruleBytesOut.get(rule) ?? 0;
+      return { rule, bytesIn, bytesOut, total: bytesIn + bytesOut };
+    })
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
+
   return {
     clientsConnected,
-    rulesActive: ruleNames.size > 0 ? ruleNames.size : null,
+    rulesActive,
+    activeConnections: sawActiveConnections ? activeConnectionsSum : null,
+    topRules,
   };
 }
 
