@@ -408,6 +408,73 @@ assert_negative_rbac() {
   log "negative RBAC OK: cross-user push rejected (HTTP ${code})"
 }
 
+# ---- end-to-end verification ----------------------------------------------
+OVERALL_STATUS=0
+
+verify_forwarding() {
+  local g listen marker
+  for g in "${!RULE_LISTEN[@]}"; do
+    listen="${RULE_LISTEN[g]}"
+    marker="demo-$(date +%s)-${listen}-$$"
+    if tcp_roundtrip "${listen}" "${marker}"; then
+      log "PASS  listen ${listen} (user${RULE_USER[g]}/${RULE_EDGE[g]}) echo ok"
+    else
+      log "FAIL  listen ${listen} (user${RULE_USER[g]}/${RULE_EDGE[g]}) no echo"
+      OVERALL_STATUS=1
+    fi
+  done
+}
+
+print_stats() {
+  local g u tok rid body bin bout
+  for g in "${!RULE_LISTEN[@]}"; do
+    u="${RULE_USER[g]}"; tok="${USER_TOKENS[u]}"; rid="${RULE_ID[g]}"
+    body="$(curl -s -H "Authorization: Bearer ${tok}" \
+      "http://${HTTP_ENDPOINT}/v1/rules/${rid}/stats")"
+    bin="$(printf '%s' "${body}" | jq -r '.bytes_in // 0')"
+    bout="$(printf '%s' "${body}" | jq -r '.bytes_out // 0')"
+    log "stats user${u}/${RULE_EDGE[g]} listen ${RULE_LISTEN[g]}" \
+        "rule=${rid} bytes_in=${bin} bytes_out=${bout}"
+  done
+}
+
+# user2's token reading user1's rule stats MUST return HTTP 403.
+assert_cross_tenant_403() {
+  if (( USERS < 2 )); then
+    log "cross-tenant 403 check skipped (need >= 2 users)"
+    return 0
+  fi
+  local victim_rid code
+  victim_rid="${RULE_ID[0]}"   # owned by user1
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${USER_TOKENS[2]}" \
+    "http://${HTTP_ENDPOINT}/v1/rules/${victim_rid}/stats")"
+  if [[ "${code}" == "403" ]]; then
+    log "cross-tenant 403 OK: user2 denied reading user1's rule stats"
+  else
+    log "RBAC FAIL: cross-tenant read returned ${code}, expected 403"
+    OVERALL_STATUS=1
+  fi
+}
+
+print_cheatsheet() {
+  local g u
+  log "==================== demo ready ===================="
+  print_topology
+  for ((u = 1; u <= USERS; u++)); do
+    log "user${u} token: ${USER_TOKENS[u]}"
+  done
+  for g in "${!RULE_LISTEN[@]}"; do
+    log "rule ${RULE_ID[g]}  listen ${RULE_LISTEN[g]}  owner user${RULE_USER[g]}"
+  done
+  log "data plane:   nc 127.0.0.1 ${RULE_LISTEN[0]}   (type text -> echoed)"
+  log "monitoring:   curl -s -H \"Authorization: Bearer <user-token>\" \\"
+  log "                http://${HTTP_ENDPOINT}/v1/rules/<rule_id>/stats | jq"
+  log "logs:         ${DATA_DIR}/server.log , ${DATA_DIR}/edge-*.log"
+  log "stop:         Ctrl-C here (tears down server / clients / upstreams)"
+  log "===================================================="
+}
+
 main() {
   parse_args "$@"
   if [[ "${DRY_RUN}" == "1" ]]; then print_topology; exit 0; fi
@@ -429,10 +496,22 @@ main() {
   push_rules
   assert_negative_rbac
   log "rules active; RBAC isolation verified"
+  verify_forwarding
+  print_stats
+  assert_cross_tenant_403
+  print_cheatsheet
   if [[ "${NO_WAIT}" == "1" ]]; then
-    log "stopping here (--no-wait, pipeline incomplete: through Task 6)"
-    exit 0
+    log "exiting (--no-wait); overall status=${OVERALL_STATUS}"
+    exit "${OVERALL_STATUS}"
   fi
+  log "holding environment open — press Ctrl-C to stop"
+  # Use a sleep loop so that SIGINT/SIGTERM interrupt the sleep and let the
+  # EXIT trap run — plain `wait` (no args) ignores SIGINT in non-interactive
+  # (background) shells because bash inherits SIG_IGN for SIGINT there.
+  while kill -0 "${CHILD_PIDS[0]:-$$}" 2>/dev/null; do
+    sleep 1 &
+    wait $! 2>/dev/null || break
+  done
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
