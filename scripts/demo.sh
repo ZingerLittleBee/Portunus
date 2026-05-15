@@ -302,9 +302,9 @@ start_edges() {
       -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
       -H 'Content-Type: application/json' \
       -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
-      "http://${HTTP_ENDPOINT}/v1/clients")"
+      "http://${HTTP_ENDPOINT}/v1/clients")" || true
     [[ "${code}" == 2?? ]] \
-      || die "provision ${edge} failed (HTTP ${code}); see ${bundle}"
+      || die "provision ${edge} failed (HTTP ${code:-curl-error}); see ${bundle}"
 
     local extra_env=()
     [[ "${DISABLE_SPLICE}" == "1" ]] && extra_env+=(PORTUNUS_DISABLE_SPLICE=1)

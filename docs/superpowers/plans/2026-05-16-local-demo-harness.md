@@ -570,9 +570,9 @@ start_edges() {
       -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
       -H 'Content-Type: application/json' \
       -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
-      "http://${HTTP_ENDPOINT}/v1/clients")"
+      "http://${HTTP_ENDPOINT}/v1/clients")" || true
     [[ "${code}" == 2?? ]] \
-      || die "provision ${edge} failed (HTTP ${code}); see ${bundle}"
+      || die "provision ${edge} failed (HTTP ${code:-curl-error}); see ${bundle}"
 
     local extra_env=()
     [[ "${DISABLE_SPLICE}" == "1" ]] && extra_env+=(PORTUNUS_DISABLE_SPLICE=1)
@@ -681,9 +681,9 @@ push_rules() {
       -X POST -H "Authorization: Bearer ${tok}" \
       -H 'Content-Type: application/json' \
       -d "{\"client\":\"${edge}\",\"listen_port\":${listen},\"target_host\":\"127.0.0.1\",\"target_port\":${target},\"protocol\":\"tcp\"}" \
-      "http://${HTTP_ENDPOINT}/v1/rules")"
+      "http://${HTTP_ENDPOINT}/v1/rules")" || true
     [[ "${code}" == 2?? ]] \
-      || die "push rule failed: ${edge}:${listen} user${u} (HTTP ${code})"
+      || die "push rule failed: ${edge}:${listen} user${u} (HTTP ${code:-curl-error})"
   done
   # Resolve rule ids per owner via the operator HTTP API.
   for g in "${!RULE_LISTEN[@]}"; do
@@ -715,10 +715,12 @@ assert_negative_rbac() {
     -X POST -H "Authorization: Bearer ${USER_TOKENS[1]}" \
     -H 'Content-Type: application/json' \
     -d "{\"client\":\"${EDGE_NAMES[2]}\",\"listen_port\":${foreign_listen},\"target_host\":\"127.0.0.1\",\"target_port\":1,\"protocol\":\"tcp\"}" \
-    "http://${HTTP_ENDPOINT}/v1/rules")"
+    "http://${HTTP_ENDPOINT}/v1/rules")" || true
   if [[ "${code}" == 2?? ]]; then
     die "RBAC FAIL: user1 token pushed into user2's range (${foreign_listen}, HTTP ${code})"
   fi
+  [[ "${code}" == 4?? ]] \
+    || die "negative RBAC inconclusive: expected 4xx denial, got HTTP ${code:-curl-error}"
   log "negative RBAC OK: cross-user push rejected (HTTP ${code})"
 }
 ```
