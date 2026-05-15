@@ -279,6 +279,50 @@ add_users() {
   done
 }
 
+# ---- edge clients ----------------------------------------------------------
+edge_connected() {
+  local edge="$1"
+  curl -s -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
+    "http://${HTTP_ENDPOINT}/v1/clients" 2>/dev/null \
+    | jq -e --arg n "${edge}" \
+        'any(.[]; .client_name == $n and .connected == true)' \
+        >/dev/null 2>&1
+}
+
+start_edges() {
+  local u edge bundle code
+  for ((u = 1; u <= USERS; u++)); do
+    edge="${EDGE_NAMES[u]}"
+    bundle="${DATA_DIR}/${edge}.bundle.json"
+    # Provision via the LIVE server's HTTP API. The offline `provision-client`
+    # CLI opens state.db directly — it fails with `store_in_use` while the
+    # server holds the SQLite lock, and would also desync the server's
+    # in-memory token cache (per crates/portunus-e2e/tests/common/mod.rs).
+    code="$(curl -s -o "${bundle}" -w '%{http_code}' \
+      -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
+      "http://${HTTP_ENDPOINT}/v1/clients")"
+    [[ "${code}" == 2?? ]] \
+      || die "provision ${edge} failed (HTTP ${code}); see ${bundle}"
+
+    local extra_env=()
+    [[ "${DISABLE_SPLICE}" == "1" ]] && extra_env+=(PORTUNUS_DISABLE_SPLICE=1)
+    env "${extra_env[@]+"${extra_env[@]}"}" "${CLIENT_BIN}" --bundle "${bundle}" \
+      >>"${DATA_DIR}/${edge}.log" 2>&1 &
+    track "$!"
+  done
+  for ((u = 1; u <= USERS; u++)); do
+    edge="${EDGE_NAMES[u]}"
+    wait_ready 15 "${edge} connected" edge_connected "${edge}" || {
+      log "--- ${edge}.log (tail) ---"
+      tail -n 30 "${DATA_DIR}/${edge}.log" >&2
+      die "${edge} never reported connected"
+    }
+    log "${edge} connected"
+  done
+}
+
 main() {
   parse_args "$@"
   if [[ "${DRY_RUN}" == "1" ]]; then print_topology; exit 0; fi
@@ -294,8 +338,10 @@ main() {
   log "server ready; superadmin token captured (${#SUPERADMIN_TOKEN} chars)"
   add_users
   log "users provisioned: ${USERS}"
+  start_edges
+  log "all ${USERS} edges connected"
   if [[ "${NO_WAIT}" == "1" ]]; then
-    log "stopping here (--no-wait, pipeline incomplete: through Task 4)"
+    log "stopping here (--no-wait, pipeline incomplete: through Task 5)"
     exit 0
   fi
 }
