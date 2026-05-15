@@ -20,7 +20,8 @@
     "audit": "审计日志",
     "metrics": "指标",
     "settings": "设置",
-    "signOut": "登出"
+    "signOut": "登出",
+    "userMenu": "用户菜单"
   },
   "login": {
     "title": "登录",

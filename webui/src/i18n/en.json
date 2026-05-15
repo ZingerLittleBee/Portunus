@@ -20,7 +20,8 @@
     "audit": "Audit log",
     "metrics": "Metrics",
     "settings": "Settings",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "userMenu": "User menu"
   },
   "login": {
     "title": "Sign in",
