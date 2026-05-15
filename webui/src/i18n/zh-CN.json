@@ -9,6 +9,9 @@
     "dark": "深色",
     "system": "跟随系统"
   },
+  "common": {
+    "retry": "重试"
+  },
   "nav": {
     "dashboard": "仪表盘",
     "users": "用户",
@@ -81,9 +84,39 @@
     "loading": "加载中…"
   },
   "dashboard": {
-    "greeting": "欢迎",
+    "title": "看板",
+    "greeting": "你好",
     "connectedClients": "已连接客户端",
-    "activeRules": "生效规则"
+    "activeRules": "生效规则",
+    "targetsOk": "目标健康",
+    "targetsDown": "{{n}} 个故障",
+    "throughputNow": "当前吞吐",
+    "totalTransferred": "累计流量",
+    "sinceProcessStart": "自进程启动以来",
+    "activeConnections": "活跃连接数",
+    "calculating": "计算中…",
+    "myClients": "我的客户端",
+    "myRules": "我的规则",
+    "my24hTransferred": "24 小时流量",
+    "myQuotaUsed": "配额使用",
+    "myActiveConns": "活跃连接数",
+    "openComing": "即将推出",
+    "noQuotaSet": "未设置配额",
+    "unhealthyTargets": "异常目标",
+    "allTargetsHealthy": "全部目标健康",
+    "down": "故障",
+    "offlineClients": "离线客户端",
+    "allClientsOnline": "全部客户端在线",
+    "recentAudit": "最近活动",
+    "noRecentActivity": "暂无活动",
+    "throughputChart": "吞吐量",
+    "topRules": "Top 规则",
+    "noRulesYet": "暂无规则",
+    "noTrafficYet": "时间范围内无流量",
+    "chartLoadError": "图表加载失败",
+    "alertUnhealthy": "{{n}} 个目标异常",
+    "alertOffline": "{{n}} 个客户端离线",
+    "alertQuotaNear": "配额已用 {{pct}}%"
   },
   "users": {
     "title": "用户",
