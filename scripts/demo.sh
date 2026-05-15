@@ -87,11 +87,11 @@ print_topology() {
 
 main() {
   parse_args "$@"
-  preflight
   if [[ "${DRY_RUN}" == "1" ]]; then
     print_topology
     exit 0
   fi
+  preflight
   print_topology
 }
 
