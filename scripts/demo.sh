@@ -323,6 +323,91 @@ start_edges() {
   done
 }
 
+# ---- rules -----------------------------------------------------------------
+# RULE_LISTEN[g], RULE_TARGET[g], RULE_USER[g], RULE_EDGE[g], RULE_ID[g]
+declare -a RULE_LISTEN=() RULE_TARGET=() RULE_USER=() RULE_EDGE=() RULE_ID=()
+
+start_upstreams() {
+  local u r idx listen target
+  idx=0
+  for ((u = 1; u <= USERS; u++)); do
+    for ((r = 1; r <= RULES_PER_USER; r++)); do
+      listen=$((BASE_LISTEN + idx))
+      target=$((BASE_LISTEN + 1000 + idx))
+      start_echo_upstream "${target}"
+      RULE_LISTEN[idx]="${listen}"
+      RULE_TARGET[idx]="${target}"
+      RULE_USER[idx]="${u}"
+      RULE_EDGE[idx]="${EDGE_NAMES[u]}"
+      idx=$((idx + 1))
+    done
+  done
+  # Give every echo listener a moment to bind.
+  local p
+  for p in "${RULE_TARGET[@]}"; do
+    wait_ready 5 "echo:${p}" bash -c "exec 3<>/dev/tcp/127.0.0.1/${p}" \
+      || die "echo upstream ${p} did not bind"
+  done
+}
+
+push_rules() {
+  local g u tok edge listen target code
+  for g in "${!RULE_LISTEN[@]}"; do
+    u="${RULE_USER[g]}"
+    tok="${USER_TOKENS[u]}"
+    edge="${RULE_EDGE[g]}"
+    listen="${RULE_LISTEN[g]}"
+    target="${RULE_TARGET[g]}"
+    # Push via the LIVE server's HTTP API using the owning user's token so
+    # the rule is owned by that user (RBAC). The offline `push-rule` CLI
+    # conflicts with the server's SQLite lock and bypasses per-user auth.
+    code="$(curl -s -o /dev/null -w '%{http_code}' \
+      -X POST -H "Authorization: Bearer ${tok}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"client\":\"${edge}\",\"listen_port\":${listen},\"target_host\":\"127.0.0.1\",\"target_port\":${target},\"protocol\":\"tcp\"}" \
+      "http://${HTTP_ENDPOINT}/v1/rules")" || true
+    [[ "${code}" == 2?? ]] \
+      || die "push rule failed: ${edge}:${listen} user${u} (HTTP ${code:-curl-error})"
+  done
+  # Resolve rule ids per owner via the operator HTTP API.
+  for g in "${!RULE_LISTEN[@]}"; do
+    u="${RULE_USER[g]}"
+    tok="${USER_TOKENS[u]}"
+    edge="${RULE_EDGE[g]}"
+    listen="${RULE_LISTEN[g]}"
+    RULE_ID[g]="$(curl -s -H "Authorization: Bearer ${tok}" \
+      "http://${HTTP_ENDPOINT}/v1/rules?client=${edge}" \
+      | jq -r --argjson lp "${listen}" \
+          '.[] | select((.listen_port // .listen) == $lp) | .rule_id // .id' \
+      | head -1)"
+    [[ -n "${RULE_ID[g]}" && "${RULE_ID[g]}" != "null" ]] \
+      || die "could not resolve rule_id for ${edge}:${listen}"
+  done
+  log "pushed ${#RULE_LISTEN[@]} rules across ${USERS} users"
+}
+
+# user1's token attempting to push into user2's granted port range MUST be
+# rejected. Requires USERS >= 2; skipped otherwise.
+assert_negative_rbac() {
+  if (( USERS < 2 )); then
+    log "negative RBAC check skipped (need >= 2 users)"
+    return 0
+  fi
+  local foreign_listen code
+  foreign_listen="$(user_listen_start 2)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -X POST -H "Authorization: Bearer ${USER_TOKENS[1]}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"client\":\"${EDGE_NAMES[2]}\",\"listen_port\":${foreign_listen},\"target_host\":\"127.0.0.1\",\"target_port\":1,\"protocol\":\"tcp\"}" \
+    "http://${HTTP_ENDPOINT}/v1/rules")" || true
+  if [[ "${code}" == 2?? ]]; then
+    die "RBAC FAIL: user1 token pushed into user2's range (${foreign_listen}, HTTP ${code})"
+  fi
+  [[ "${code}" == 4?? ]] \
+    || die "negative RBAC inconclusive: expected 4xx denial, got HTTP ${code:-curl-error}"
+  log "negative RBAC OK: cross-user push rejected (HTTP ${code})"
+}
+
 main() {
   parse_args "$@"
   if [[ "${DRY_RUN}" == "1" ]]; then print_topology; exit 0; fi
@@ -340,8 +425,12 @@ main() {
   log "users provisioned: ${USERS}"
   start_edges
   log "all ${USERS} edges connected"
+  start_upstreams
+  push_rules
+  assert_negative_rbac
+  log "rules active; RBAC isolation verified"
   if [[ "${NO_WAIT}" == "1" ]]; then
-    log "stopping here (--no-wait, pipeline incomplete: through Task 5)"
+    log "stopping here (--no-wait, pipeline incomplete: through Task 6)"
     exit 0
   fi
 }
