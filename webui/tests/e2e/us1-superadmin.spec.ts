@@ -15,8 +15,8 @@ import { loginAs, api } from "./fixtures/helpers";
 test("superadmin happy path", async ({ page, request, server }) => {
   await loginAs(page, server.superadminUserId, server.superadminPassword);
 
-  // Dashboard greeting visible.
-  await expect(page.getByRole("heading", { level: 1 })).toContainText(/welcome/i);
+  // Superadmin lands on the dashboard overview (h1 = "Dashboard").
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(/dashboard/i);
 
   // Create alice via the SPA.
   await page.goto("/users/new");
@@ -48,16 +48,21 @@ test("superadmin happy path", async ({ page, request, server }) => {
     body: { name: "edge-01", address: "127.0.0.1" },
   });
 
-  // Add a grant for alice via the UI form (30000–30050 TCP+UDP).
-  await page.goto("/grants/new");
-  await page.getByLabel(/^user$/i).selectOption("alice");
-  await page.getByLabel(/^client$/i).fill("edge-01");
-  await page.getByLabel(/listen port \(start\)/i).fill("30000");
-  await page.getByLabel(/listen port \(end\)/i).fill("30050");
-  await page.getByLabel(/^tcp$/i).check();
-  await page.getByLabel(/^udp$/i).check();
-  await page.getByRole("button", { name: /create grant/i }).click();
-  await expect(page).toHaveURL(/\/grants/);
-  // Grant lands in the list.
-  await expect(page.locator('[role="rowgroup"] [role="row"]').first()).toBeVisible();
+  // Add a grant for alice (30000–30050 TCP+UDP). The standalone
+  // /grants/new form was folded into the user-detail quota table, so
+  // the grant is created there via the inline "Add quota" form.
+  await page.goto("/users/alice");
+  await page.getByRole("button", { name: /add quota/i }).click();
+  await page.getByRole("combobox", { name: /^client$/i }).click();
+  await page.getByPlaceholder(/search clients/i).fill("edge-01");
+  await page.getByRole("option", { name: /edge-01/i }).click();
+  await page.getByLabel(/port \(start\)/i).fill("30000");
+  await page.getByLabel(/port \(end\)/i).fill("30050");
+  // TCP is selected by default; add UDP so the grant covers both.
+  await page.getByRole("checkbox", { name: /udp/i }).check();
+  // No bandwidth / concurrency caps for this grant.
+  await page.getByRole("switch", { name: /unlimited/i }).check();
+  await page.getByRole("button", { name: /^save$/i }).click();
+  // Entry lands in the per-user quota table.
+  await expect(page.getByRole("row", { name: /edge-01/i }).first()).toBeVisible();
 });

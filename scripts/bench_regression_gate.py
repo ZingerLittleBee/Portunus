@@ -4,12 +4,12 @@
 Reads the per-benchmark median from
 `target/criterion/<group>/<id>/new/estimates.json` (or the bare
 `<bench>/new/estimates.json` for ungrouped benches) produced by the most
-recent `cargo bench -p portunus-client --bench data_plane` run, and exits
+recent `cargo bench -p portunus-forwarder --bench data_plane` run, and exits
 non-zero if any benchmark's median regressed beyond `--max-regression-pct`
-versus `crates/portunus-client/benches/baselines/v0.1.0.json`.
+versus `crates/portunus-forwarder/benches/baselines/v0.1.0.json`.
 
 Usage:
-    cargo bench -p portunus-client --bench data_plane -- --save-baseline new
+    cargo bench -p portunus-forwarder --bench data_plane -- --save-baseline new
     python3 scripts/bench_regression_gate.py [--max-regression-pct 25]
 
 The default 25% tolerance is intentionally loose — CI runners are noisy
@@ -26,7 +26,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BASELINE = ROOT / "crates/portunus-client/benches/baselines/v0.1.0.json"
+BASELINE = ROOT / "crates/portunus-forwarder/benches/baselines/v0.1.0.json"
 CRITERION = ROOT / "target/criterion"
 
 # Map our baseline keys → criterion's filesystem layout. Throughput

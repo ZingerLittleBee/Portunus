@@ -42,7 +42,9 @@ test("quickstart walkthrough end-to-end", async ({ page, request, server }) => {
   await page.goto("/audit");
   await expect(page.locator('[role="rowgroup"] [role="row"]').first()).toBeVisible();
 
-  // § 11 — sign out → login screen.
-  await page.getByRole("button", { name: /sign out/i }).click();
+  // § 11 — sign out → login screen. Sign-out lives in the sidebar user
+  // menu (shadcn DropdownMenu); open it first, then click the item.
+  await page.getByRole("button", { name: /user menu/i }).click();
+  await page.getByRole("menuitem", { name: /sign out/i }).click();
   await expect(page).toHaveURL(/\/login/);
 });

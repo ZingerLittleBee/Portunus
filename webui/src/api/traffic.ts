@@ -55,3 +55,17 @@ export function useClientTraffic(clientName: string, q: TrafficQuery) {
     enabled: clientName.length > 0 && q.from < q.to,
   });
 }
+
+export const globalTrafficKey = (q: TrafficQuery) =>
+  ["global-traffic", q] as const;
+
+/// Superadmin-only aggregated traffic across all users and clients.
+/// Tenants will receive 403 — components that call this must already
+/// be inside a superadmin-only render path.
+export function useGlobalTraffic(q: TrafficQuery) {
+  return useQuery({
+    queryKey: globalTrafficKey(q),
+    queryFn: () => apiFetch<TrafficResponse>(`/v1/traffic/global?${trafficQs(q)}`),
+    enabled: q.from < q.to,
+  });
+}

@@ -500,7 +500,7 @@ mod linux {
         pipe_read_fd: RawFd,
         mut remaining: usize,
         bytes_out: &AtomicU64,
-        quota: Option<&std::sync::Arc<super::quota::QuotaHandle>>,
+        quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
     ) -> io::Result<DrainOutcome> {
         while remaining > 0 {
             dst.writable().await?;
@@ -530,7 +530,7 @@ mod linux {
                     if let Some(q) = quota
                         && matches!(
                             q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
-                            super::quota::ConsumeOutcome::Exhausted,
+                            crate::forwarder::quota::ConsumeOutcome::Exhausted,
                         )
                     {
                         return Ok(DrainOutcome::QuotaExhausted);
@@ -567,7 +567,7 @@ mod linux {
         pipe: &PipePair,
         moved_any: &AtomicBool,
         bytes_out: &AtomicU64,
-        quota: Option<&std::sync::Arc<super::quota::QuotaHandle>>,
+        quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
     ) -> Result<(), SpliceError> {
         let pipe_read_fd = pipe.read_fd.as_raw_fd();
         let pipe_write_fd = pipe.write_fd.as_raw_fd();
@@ -652,7 +652,7 @@ mod linux {
         downstream: &mut TcpStream,
         upstream: &mut TcpStream,
         ctx: &CopyCtx,
-        quota: Option<&std::sync::Arc<super::quota::QuotaHandle>>,
+        quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
     ) -> Result<Transferred, SpliceError> {
         debug_assert!(
             super::eligible(ctx),
