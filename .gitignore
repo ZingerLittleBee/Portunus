@@ -40,3 +40,7 @@ webui/node_modules/
 webui/playwright-report/
 webui/test-results/
 webui/.eslintcache
+
+
+# Superpowers brainstorming visual companion
+.superpowers/
