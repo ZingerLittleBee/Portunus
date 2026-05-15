@@ -13,6 +13,7 @@ import type { TrafficSample } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatBytes } from "@/lib/format";
 
 import type { DashboardRangeId } from "@/pages/dashboard/useDashboardRange";
 
@@ -25,13 +26,6 @@ export interface ThroughputChartProps {
   rangeId: DashboardRangeId;
   onRangeChange: (id: DashboardRangeId) => void;
   onRetry: () => void;
-}
-
-function fmtBytes(v: number): string {
-  if (v < 1024) return `${v} B`;
-  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
-  if (v < 1024 * 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB`;
-  return `${(v / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 export function ThroughputChart(props: ThroughputChartProps) {
@@ -80,13 +74,17 @@ export function ThroughputChart(props: ThroughputChartProps) {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
                 <XAxis
                   dataKey="ts"
-                  tickFormatter={(v) => new Date(v as number).toLocaleTimeString()}
+                  tickFormatter={(v) => new Date(Number(v)).toLocaleTimeString()}
                   fontSize={10}
                 />
-                <YAxis tickFormatter={fmtBytes} fontSize={10} width={60} />
+                <YAxis
+                  tickFormatter={(v) => formatBytes(Number(v))}
+                  fontSize={10}
+                  width={60}
+                />
                 <Tooltip
-                  labelFormatter={(v) => new Date(v as number).toLocaleString()}
-                  formatter={(v: number) => fmtBytes(v)}
+                  labelFormatter={(v) => new Date(Number(v)).toLocaleString()}
+                  formatter={(v: number | string) => formatBytes(Number(v))}
                 />
                 <Line type="monotone" dataKey="bytes_in" stroke="#3b82f6" dot={false} />
                 <Line type="monotone" dataKey="bytes_out" stroke="#10b981" dot={false} />

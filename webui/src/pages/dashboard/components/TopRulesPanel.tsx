@@ -2,13 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import type { TopRule } from "@/api/metrics";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
-function fmtBytes(v: number): string {
-  if (v < 1024) return `${v} B`;
-  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
-  if (v < 1024 * 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB`;
-  return `${(v / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
+import { formatBytes } from "@/lib/format";
 
 export interface TopRulesPanelProps {
   rules: TopRule[];
@@ -32,7 +26,7 @@ export function TopRulesPanel({ rules }: TopRulesPanelProps) {
               <li key={r.rule}>
                 <div className="flex justify-between">
                   <span className="truncate font-medium">#{r.rule}</span>
-                  <span className="tabular-nums text-muted-foreground">{fmtBytes(r.total)}</span>
+                  <span className="tabular-nums text-muted-foreground">{formatBytes(r.total)}</span>
                 </div>
                 <div className="mt-1 h-1 overflow-hidden rounded bg-muted">
                   <div
