@@ -35,6 +35,7 @@
 DATA_DIR    ?= /tmp/portunus-dev
 LISTEN      ?= 127.0.0.1:7080
 CARGO_PROFILE ?= release
+DEMO_ARGS   ?=
 SERVER_BIN  := target/$(CARGO_PROFILE)/portunus-server
 
 ifeq ($(CARGO_PROFILE),release)
@@ -45,7 +46,8 @@ endif
 
 .DEFAULT_GOAL := help
 .PHONY: help setup webui-install webui-build server-build bootstrap \
-        dev-bootstrap serve serve-docker dev backend ui test test-csrf clean
+        dev-bootstrap serve serve-docker dev backend ui test test-csrf clean \
+        demo
 
 help:
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -223,3 +225,14 @@ standalone-check:  ## Validate all valid_*.toml fixtures via --check (expects "o
 	  result=$$(PORTUNUS_SKIP_WEBUI=1 cargo run $(CARGO_FLAGS) -p portunus-standalone --quiet -- --check --config "$$f" 2>/dev/null); \
 	  echo "$$f: $$result"; \
 	done
+
+## --- demo -------------------------------------------------------------------
+
+# Stand up a full multi-user demo: server + N RBAC users each with an
+# independent edge client and K real forwarding rules to local echo
+# upstreams. Verifies real end-to-end TCP forwarding + RBAC isolation,
+# then holds the environment open (Ctrl-C tears everything down). Uses an
+# isolated /tmp/portunus-demo data dir — does not touch `make dev` state.
+# Override args, e.g.: make demo DEMO_ARGS="--users 5 --rules-per-user 3"
+demo:  ## Multi-user demo: server + N edges + K rules, verify + hold open
+	@bash scripts/demo.sh $(DEMO_ARGS)
