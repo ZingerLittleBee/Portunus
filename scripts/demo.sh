@@ -56,6 +56,77 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+# ---- process lifecycle -----------------------------------------------------
+declare -a CHILD_PIDS=()
+
+track() { CHILD_PIDS+=("$1"); }
+
+cleanup() {
+  local pid
+  for pid in "${CHILD_PIDS[@]:-}"; do
+    [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
+  done
+  # Backstop: kill anything still in this script's process group.
+  pkill -P $$ 2>/dev/null || true
+}
+trap cleanup INT TERM EXIT
+
+# Generic readiness poller. Usage: wait_ready <timeout_s> <desc> <cmd...>
+# Succeeds when <cmd...> exits 0; fails (exit 1) after timeout.
+wait_ready() {
+  local timeout="$1" desc="$2"; shift 2
+  local deadline=$(( $(date +%s) + timeout ))
+  while (( $(date +%s) < deadline )); do
+    if "$@" >/dev/null 2>&1; then return 0; fi
+    sleep 0.3
+  done
+  log "timeout (${timeout}s) waiting for: ${desc}"
+  return 1
+}
+
+# ---- echo upstream ---------------------------------------------------------
+# Starts a real TCP echo service on 127.0.0.1:<port> in the background and
+# track()s its PID. Prefers socat; falls back to an embedded python3 echo.
+PY_ECHO='import socket,threading,sys
+p=int(sys.argv[1])
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(("127.0.0.1",p)); s.listen(64)
+def h(c):
+    try:
+        while True:
+            d=c.recv(65536)
+            if not d: break
+            c.sendall(d)
+    finally:
+        c.close()
+while True:
+    c,_=s.accept()
+    threading.Thread(target=h,args=(c,),daemon=True).start()'
+
+start_echo_upstream() {
+  local port="$1"
+  if command -v socat >/dev/null 2>&1; then
+    socat "TCP-LISTEN:${port},bind=127.0.0.1,reuseaddr,fork" EXEC:cat \
+      >>"${DATA_DIR}/upstream-${port}.log" 2>&1 &
+  else
+    python3 -c "${PY_ECHO}" "${port}" \
+      >>"${DATA_DIR}/upstream-${port}.log" 2>&1 &
+  fi
+  track "$!"
+}
+
+# ---- TCP round-trip --------------------------------------------------------
+# Connects to 127.0.0.1:<port>, sends a unique marker line, and returns 0
+# iff the exact marker echoes back within 3s. Uses bash /dev/tcp.
+tcp_roundtrip() {
+  local port="$1" marker="$2" line
+  exec 3<>"/dev/tcp/127.0.0.1/${port}" || return 1
+  printf '%s\n' "${marker}" >&3
+  IFS= read -r -t 3 line <&3 || { exec 3>&- 3<&-; return 1; }
+  exec 3>&- 3<&-
+  [[ "${line}" == "${marker}" ]]
+}
+
 preflight() {
   require_cmd cargo
   require_cmd curl
