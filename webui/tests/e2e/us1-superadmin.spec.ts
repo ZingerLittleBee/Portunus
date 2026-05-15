@@ -15,8 +15,8 @@ import { loginAs, api } from "./fixtures/helpers";
 test("superadmin happy path", async ({ page, request, server }) => {
   await loginAs(page, server.superadminUserId, server.superadminPassword);
 
-  // Dashboard greeting visible.
-  await expect(page.getByRole("heading", { level: 1 })).toContainText(/welcome/i);
+  // Superadmin lands on the dashboard overview (h1 = "Dashboard").
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(/dashboard/i);
 
   // Create alice via the SPA.
   await page.goto("/users/new");
