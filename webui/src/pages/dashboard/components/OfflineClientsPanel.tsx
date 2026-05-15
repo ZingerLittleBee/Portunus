@@ -1,11 +1,19 @@
+// webui/src/pages/dashboard/components/OfflineClientsPanel.tsx
 import { useTranslation } from "react-i18next";
 
 import { useClientsList } from "@/api/clients";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+function parseTs(iso: string | null): number {
+  if (!iso) return 0;
+  const v = Date.parse(iso);
+  return Number.isFinite(v) ? v : 0;
+}
+
 function relativeIso(iso: string | null): string {
-  if (!iso) return "—";
-  const diffSec = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  const ms = parseTs(iso);
+  if (ms === 0) return "—";
+  const diffSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (diffSec < 60) return `${diffSec}s`;
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h`;
@@ -16,11 +24,12 @@ export function OfflineClientsPanel() {
   const { t } = useTranslation();
   const clients = useClientsList();
 
-  // Sort offline clients by `connected_at` descending — most recently
-  // disconnected first (since they were online most recently).
+  // Sort offline clients by `connected_at` descending (most recently
+  // online first). Never-connected clients sort to the bottom via the
+  // 0 sentinel in `parseTs`.
   const offline = (clients.data ?? [])
     .filter((c) => !c.connected && !c.revoked_at)
-    .sort((a, b) => Date.parse(b.connected_at ?? "") - Date.parse(a.connected_at ?? ""))
+    .sort((a, b) => parseTs(b.connected_at) - parseTs(a.connected_at))
     .slice(0, 8);
 
   return (
