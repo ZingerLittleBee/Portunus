@@ -621,4 +621,28 @@ mod tests {
         let weird = compute_period_end(0, 999_999_999_999);
         assert_eq!(weird, i64::MAX);
     }
+
+    #[test]
+    fn require_role_rejects_tenant_for_global_traffic() {
+        let id = user_identity("alice");
+        let err = rbac::require_role(&id, OperatorRole::Superadmin).unwrap_err();
+        let api_err: ApiError = err.into();
+        let resp = api_err.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn serve_traffic_with_no_filters_sums_across_users() {
+        let dir = tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path()).expect("open store");
+        let ts = 1_700_000_000_i64 - (1_700_000_000_i64 % 60);
+        samples::upsert_1m_delta(&store, "alice", "edge-a", ts, 100, 200).unwrap();
+        samples::upsert_1m_delta(&store, "bob", "edge-b", ts, 300, 400).unwrap();
+        let rows =
+            samples::query_samples(&store, SampleBucket::M1, None, None, ts - 1, ts + 60).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].ts, ts);
+        assert_eq!(rows[0].bytes_in, 400);
+        assert_eq!(rows[0].bytes_out, 600);
+    }
 }
