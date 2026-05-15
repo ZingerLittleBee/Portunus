@@ -874,15 +874,24 @@ Expected: 6 `PASS  listen …` lines (no `FAIL`), 6 `stats …` lines, `negative
 
 - [ ] **Step 5: Verify hold-open + clean teardown**
 
-Run:
+Note: `kill -INT` sent to a *backgrounded* bash is dropped on macOS/POSIX — a
+non-interactive shell inherits `SIGINT=SIG_IGN` for background jobs and `trap`
+cannot override an inherited ignore. That is a property of the test harness,
+NOT the script: a real interactive Ctrl-C signals the foreground process group
+and fires the `trap cleanup INT` handler normally. To verify teardown
+automatically, use `SIGTERM` (also in the script's `trap ... TERM EXIT`, and
+not SIG_IGN-inherited):
+
 ```bash
 ( scripts/demo.sh --users 2 --rules-per-user 1 & echo $! >/tmp/demo.pid ) ; sleep 25
-cat /tmp/portunus-demo/server.log | grep -q server.listening && echo SERVER_UP
-kill -INT "$(cat /tmp/demo.pid)" 2>/dev/null || true
-sleep 2
+grep -q server.listening /tmp/portunus-demo/server.log && echo SERVER_UP
+kill -TERM "$(cat /tmp/demo.pid)" 2>/dev/null || true
+sleep 3
 pgrep -fl 'portunus-server|portunus-client' && echo LEAK || echo CLEAN_TEARDOWN
 ```
-Expected: `SERVER_UP`, then `CLEAN_TEARDOWN` (the `INT` trap killed all children). If `LEAK`, the trap/`pkill` path needs fixing before proceeding.
+Expected: `SERVER_UP`, then `CLEAN_TEARDOWN` (the `TERM` trap ran `cleanup`,
+which killed tracked PIDs and `pkill -P $$` swept the rest). If `LEAK`, the
+trap/`pkill` teardown is genuinely broken — fix before proceeding.
 
 - [ ] **Step 6: Commit**
 

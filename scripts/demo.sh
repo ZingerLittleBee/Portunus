@@ -505,13 +505,7 @@ main() {
     exit "${OVERALL_STATUS}"
   fi
   log "holding environment open — press Ctrl-C to stop"
-  # Use a sleep loop so that SIGINT/SIGTERM interrupt the sleep and let the
-  # EXIT trap run — plain `wait` (no args) ignores SIGINT in non-interactive
-  # (background) shells because bash inherits SIG_IGN for SIGINT there.
-  while kill -0 "${CHILD_PIDS[0]:-$$}" 2>/dev/null; do
-    sleep 1 &
-    wait $! 2>/dev/null || break
-  done
+  wait
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
