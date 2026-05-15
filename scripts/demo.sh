@@ -63,7 +63,7 @@ track() { CHILD_PIDS+=("$1"); }
 
 cleanup() {
   local pid
-  for pid in "${CHILD_PIDS[@]:-}"; do
+  for pid in "${CHILD_PIDS[@]+"${CHILD_PIDS[@]}"}"; do
     [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
   done
   # Backstop: kill anything still in this script's process group.
@@ -75,7 +75,8 @@ trap cleanup INT TERM EXIT
 # Succeeds when <cmd...> exits 0; fails (exit 1) after timeout.
 wait_ready() {
   local timeout="$1" desc="$2"; shift 2
-  local deadline=$(( $(date +%s) + timeout ))
+  local deadline
+  deadline=$(( $(date +%s) + timeout ))
   while (( $(date +%s) < deadline )); do
     if "$@" >/dev/null 2>&1; then return 0; fi
     sleep 0.3
@@ -121,7 +122,7 @@ start_echo_upstream() {
 tcp_roundtrip() {
   local port="$1" marker="$2" line
   exec 3<>"/dev/tcp/127.0.0.1/${port}" || return 1
-  printf '%s\n' "${marker}" >&3
+  printf '%s\n' "${marker}" >&3 || { exec 3>&- 3<&-; return 1; }
   IFS= read -r -t 3 line <&3 || { exec 3>&- 3<&-; return 1; }
   exec 3>&- 3<&-
   [[ "${line}" == "${marker}" ]]
