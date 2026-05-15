@@ -24,14 +24,23 @@ export function computeRate(
 
 /// Subscribes to the metrics poll and returns a live bytes/sec value
 /// computed from the cumulative `portunus_rule_bytes_*_total` sum.
+///
+/// Deliberately keys the effect only on `dataUpdatedAt` (the poll
+/// timestamp) rather than `gauges.topRules`. The parser produces a
+/// fresh array reference on every render, which would otherwise
+/// re-fire this effect within a single poll tick — collapsing `dt`
+/// to 0 and clobbering the rate.
 export function useThroughputRate(): number | null {
   const gauges = useDashboardGauges();
   const { dataUpdatedAt } = useMetricsText();
   const prev = useRef<ThroughputSample | null>(null);
   const [rate, setRate] = useState<number | null>(null);
 
+  // We intentionally exclude `gauges.topRules` from the dep array.
+  // It is recomputed from the same source as `dataUpdatedAt` and
+  // would only introduce reference-instability noise.
   useEffect(() => {
-    if (!dataUpdatedAt || gauges.topRules.length === 0) return;
+    if (!dataUpdatedAt) return;
     const totalBytes = gauges.topRules.reduce(
       (acc, r) => acc + r.bytesIn + r.bytesOut,
       0,
@@ -39,7 +48,8 @@ export function useThroughputRate(): number | null {
     const next = { totalBytes, ts: dataUpdatedAt / 1000 };
     setRate(computeRate(prev.current, next));
     prev.current = next;
-  }, [dataUpdatedAt, gauges.topRules]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataUpdatedAt]);
 
   return rate;
 }
