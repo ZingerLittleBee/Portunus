@@ -239,6 +239,46 @@ wait_server() {
   }
 }
 
+# ---- users / grants / credentials -----------------------------------------
+# USER_TOKENS[i] = bearer token for useri (1-based); EDGE_NAMES[i]=edge-i
+declare -a USER_TOKENS=()
+declare -a EDGE_NAMES=()
+
+# First listen port for user u (1-based), contiguous K-port block.
+user_listen_start() { echo $(( BASE_LISTEN + (($1 - 1) * RULES_PER_USER) )); }
+user_listen_end()   { echo $(( $(user_listen_start "$1") + RULES_PER_USER - 1 )); }
+
+add_users() {
+  local u uid edge ls le tok
+  for ((u = 1; u <= USERS; u++)); do
+    uid="user${u}"
+    edge="edge-${u}"
+    EDGE_NAMES[u]="${edge}"
+    ls="$(user_listen_start "${u}")"
+    le="$(user_listen_end "${u}")"
+
+    PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
+      "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
+      user-add "${uid}" --display-name "Demo ${uid}" \
+      --http-endpoint "${HTTP_ENDPOINT}" >/dev/null
+
+    PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
+      "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
+      grant-add --user-id "${uid}" --client "${edge}" \
+      --listen-port-start "${ls}" --listen-port-end "${le}" \
+      --protocols tcp --http-endpoint "${HTTP_ENDPOINT}" >/dev/null
+
+    tok="$(PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
+      "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
+      credential-issue "${uid}" --format json \
+      --http-endpoint "${HTTP_ENDPOINT}" | jq -r '.token')"
+    [[ -n "${tok}" && "${tok}" != "null" ]] \
+      || die "no token for ${uid}"
+    USER_TOKENS[u]="${tok}"
+    log "provisioned ${uid} (grant ${edge} tcp ${ls}-${le})"
+  done
+}
+
 main() {
   parse_args "$@"
   if [[ "${DRY_RUN}" == "1" ]]; then print_topology; exit 0; fi
@@ -252,8 +292,10 @@ main() {
   start_server
   wait_server
   log "server ready; superadmin token captured (${#SUPERADMIN_TOKEN} chars)"
+  add_users
+  log "users provisioned: ${USERS}"
   if [[ "${NO_WAIT}" == "1" ]]; then
-    log "stopping here (--no-wait, pipeline incomplete: through Task 3)"
+    log "stopping here (--no-wait, pipeline incomplete: through Task 4)"
     exit 0
   fi
 }
