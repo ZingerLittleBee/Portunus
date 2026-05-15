@@ -10,6 +10,7 @@
 //!   - GET    /v1/users/{user_id}/traffic
 //!   - GET    /v1/clients/{client_name}/quotas
 //!   - GET    /v1/clients/{client_name}/traffic
+//!   - GET    /v1/traffic/global (superadmin-only)
 //!
 //! CRUD writes go through the in-memory `TrafficQuotaCache`, which
 //! fans them into SQLite. PUT/PATCH/DELETE also best-effort push a
@@ -293,6 +294,18 @@ pub async fn get_client_traffic(
         q.to,
         q.bucket.as_deref(),
     )
+}
+
+/// `GET /v1/traffic/global?from=&to=&bucket=` — superadmin-only.
+/// Returns bucketed traffic aggregated across **all** users and clients,
+/// reusing the same wire shape `/v1/users/{id}/traffic` returns.
+pub async fn get_global_traffic(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    Query(q): Query<TrafficQuery>,
+) -> Result<Json<TrafficResponse>, ApiError> {
+    rbac::require_role(&identity, OperatorRole::Superadmin)?;
+    serve_traffic(&state, None, None, q.from, q.to, q.bucket.as_deref())
 }
 
 // ---------------------------------------------------------------------------
