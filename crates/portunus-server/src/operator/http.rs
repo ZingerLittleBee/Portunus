@@ -132,6 +132,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/clients/{client_name}/traffic",
             get(crate::operator::quota_http::get_client_traffic),
         )
+        .route(
+            "/v1/traffic/global",
+            get(crate::operator::quota_http::get_global_traffic),
+        )
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
