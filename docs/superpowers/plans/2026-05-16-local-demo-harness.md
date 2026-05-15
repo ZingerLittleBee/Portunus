@@ -695,7 +695,7 @@ push_rules() {
       "http://${HTTP_ENDPOINT}/v1/rules?client=${edge}" \
       | jq -r --argjson lp "${listen}" \
           '.[] | select((.listen_port // .listen) == $lp) | .rule_id // .id' \
-      | head -1)"
+      | head -1)" || true
     [[ -n "${RULE_ID[g]}" && "${RULE_ID[g]}" != "null" ]] \
       || die "could not resolve rule_id for ${edge}:${listen}"
   done
