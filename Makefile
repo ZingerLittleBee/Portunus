@@ -31,6 +31,9 @@
 #                   dev` only works if you sync that file too.
 #   CARGO_PROFILE   `release` (default) or `dev`. Controls which target/
 #                   subdir `$(SERVER_BIN)` resolves to.
+#   DEMO_ARGS       Extra flags forwarded to `scripts/demo.sh` by the
+#                   `demo` target (e.g. --users 5 --rules-per-user 3).
+#                   Default: empty.
 
 DATA_DIR    ?= /tmp/portunus-dev
 LISTEN      ?= 127.0.0.1:7080
