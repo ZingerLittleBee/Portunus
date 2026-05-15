@@ -43,6 +43,7 @@ export function ClientCombobox({
         <Button
           variant="outline"
           role="combobox"
+          aria-label={t("userQuota.form.client")}
           aria-expanded={open}
           disabled={disabled}
           className="w-full justify-between"

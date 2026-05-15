@@ -53,13 +53,15 @@ test("superadmin happy path", async ({ page, request, server }) => {
   // the grant is created there via the inline "Add quota" form.
   await page.goto("/users/alice");
   await page.getByRole("button", { name: /add quota/i }).click();
-  await page.getByRole("combobox").click();
+  await page.getByRole("combobox", { name: /^client$/i }).click();
   await page.getByPlaceholder(/search clients/i).fill("edge-01");
   await page.getByRole("option", { name: /edge-01/i }).click();
   await page.getByLabel(/port \(start\)/i).fill("30000");
   await page.getByLabel(/port \(end\)/i).fill("30050");
   // TCP is selected by default; add UDP so the grant covers both.
   await page.getByRole("checkbox", { name: /udp/i }).check();
+  // No bandwidth / concurrency caps for this grant.
+  await page.getByRole("switch", { name: /unlimited/i }).check();
   await page.getByRole("button", { name: /^save$/i }).click();
   // Entry lands in the per-user quota table.
   await expect(page.getByRole("row", { name: /edge-01/i }).first()).toBeVisible();
