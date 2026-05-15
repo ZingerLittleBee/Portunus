@@ -157,14 +157,93 @@ print_topology() {
   done
 }
 
+# ---- binaries --------------------------------------------------------------
+SERVER_BIN=""
+CLIENT_BIN=""
+SUPERADMIN_TOKEN=""
+
+resolve_bins() {
+  local sub="release"
+  [[ "${CARGO_PROFILE}" == "dev" ]] && sub="debug"
+  SERVER_BIN="target/${sub}/portunus-server"
+  CLIENT_BIN="target/${sub}/portunus-client"
+}
+
+build_binaries() {
+  log "building binaries (profile=${CARGO_PROFILE}, PORTUNUS_SKIP_WEBUI=1)..."
+  local flags=()
+  [[ "${CARGO_PROFILE}" == "release" ]] && flags+=(--release)
+  PORTUNUS_SKIP_WEBUI=1 cargo build "${flags[@]}" \
+    -p portunus-server -p portunus-client
+  [[ -x "${SERVER_BIN}" ]] || die "server binary missing: ${SERVER_BIN}"
+  [[ -x "${CLIENT_BIN}" ]] || die "client binary missing: ${CLIENT_BIN}"
+}
+
+# ---- data dir + bootstrap --------------------------------------------------
+prepare_data_dir() {
+  if [[ "${KEEP}" == "1" ]]; then
+    [[ -d "${DATA_DIR}" ]] || die "--keep set but ${DATA_DIR} does not exist"
+    log "reusing existing data dir ${DATA_DIR}"
+  else
+    rm -rf "${DATA_DIR}"
+    mkdir -p "${DATA_DIR}"
+  fi
+}
+
+bootstrap_superadmin() {
+  if [[ "${KEEP}" == "1" && -f "${DATA_DIR}/.superadmin-token" ]]; then
+    SUPERADMIN_TOKEN="$(cat "${DATA_DIR}/.superadmin-token")"
+    log "reusing captured superadmin token"
+    return 0
+  fi
+  local out
+  out="$("${SERVER_BIN}" --data-dir "${DATA_DIR}" \
+        bootstrap-superadmin --name ops 2>>"${DATA_DIR}/server.log")"
+  SUPERADMIN_TOKEN="$(printf '%s\n' "${out}" \
+    | grep -oE 'token=[A-Za-z0-9_-]{20,}' | head -1 | cut -d= -f2)"
+  [[ -n "${SUPERADMIN_TOKEN}" ]] \
+    || die "could not parse superadmin token from: ${out}"
+  printf '%s' "${SUPERADMIN_TOKEN}" >"${DATA_DIR}/.superadmin-token"
+}
+
+# ---- server ----------------------------------------------------------------
+start_server() {
+  log "starting server (gRPC ${GRPC_ENDPOINT}, http ${HTTP_ENDPOINT})..."
+  local extra_env=(PORTUNUS_SKIP_WEBUI=1)
+  [[ "${DISABLE_SPLICE}" == "1" ]] && extra_env+=(PORTUNUS_DISABLE_SPLICE=1)
+  env "${extra_env[@]}" "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
+    serve --operator-http-listen "${HTTP_ENDPOINT}" \
+    >>"${DATA_DIR}/server.log" 2>&1 &
+  track "$!"
+}
+
+server_listening() {
+  grep -q 'server.listening' "${DATA_DIR}/server.log" 2>/dev/null
+}
+
+wait_server() {
+  wait_ready 15 "server.listening" server_listening || {
+    log "--- server.log (tail) ---"; tail -n 30 "${DATA_DIR}/server.log" >&2
+    die "server did not become ready"
+  }
+}
+
 main() {
   parse_args "$@"
-  if [[ "${DRY_RUN}" == "1" ]]; then
-    print_topology
+  if [[ "${DRY_RUN}" == "1" ]]; then print_topology; exit 0; fi
+  preflight
+  resolve_bins
+  print_topology
+  build_binaries
+  prepare_data_dir
+  bootstrap_superadmin
+  start_server
+  wait_server
+  log "server ready; superadmin token captured (${#SUPERADMIN_TOKEN} chars)"
+  if [[ "${NO_WAIT}" == "1" ]]; then
+    log "stopping here (--no-wait, pipeline incomplete: through Task 3)"
     exit 0
   fi
-  preflight
-  print_topology
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
