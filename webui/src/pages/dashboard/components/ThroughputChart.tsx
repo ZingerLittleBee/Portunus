@@ -39,6 +39,7 @@ export function ThroughputChart(props: ThroughputChartProps) {
     bytes_in: s.bytes_in,
     bytes_out: s.bytes_out,
   }));
+  const hasSamples = data.length > 0;
   const chartConfig = {
     bytes_in: {
       label: t("traffic.bytesIn"),
@@ -75,14 +76,18 @@ export function ThroughputChart(props: ThroughputChartProps) {
               {t("common.retry")}
             </Button>
           </div>
-        ) : props.isLoading ? (
-          <Skeleton className="h-48 w-full" />
-        ) : data.length === 0 ? (
+        ) : props.isLoading && !hasSamples ? (
+          <Skeleton data-testid="throughput-chart-skeleton" className="h-48 w-full" />
+        ) : !hasSamples ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             {t("dashboard.noTrafficYet")}
           </p>
         ) : (
-          <ChartContainer config={chartConfig} className="h-48 w-full">
+          <ChartContainer
+            data-testid="throughput-chart"
+            config={chartConfig}
+            className="h-48 w-full"
+          >
             <LineChart data={data}>
               <CartesianGrid vertical={false} />
               <XAxis
