@@ -1,5 +1,12 @@
 // webui/src/components/UserQuota/UserQuotaRow.tsx
-import { AlertTriangle, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -13,6 +20,21 @@ import { ApiError } from "@/api/client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatBps } from "./format";
@@ -32,11 +54,14 @@ interface Props {
 export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editDialogContainer, setEditDialogContainer] = useState<HTMLDivElement | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [staleFailure, setStaleFailure] = useState<string | null>(null);
   const update = useUpdateAccessEntry(userId);
   const del = useDeleteAccessEntry(userId);
+  const hasDetail = readOnly || staleFailure !== null || entry.legacy_duplicates !== undefined;
 
   async function onSubmit(v: UserQuotaFormSubmitValue) {
     setServerError(null);
@@ -59,7 +84,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           : {}),
       });
       toast.success(t("userQuota.toast.updated", { client: v.client_name }));
-      setExpanded(false);
+      setEditOpen(false);
     } catch (err) {
       const msg =
         err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
@@ -99,14 +124,16 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
     <>
       <TableRow>
         <TableCell>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setExpanded((v) => !v)}
-            aria-label={expanded ? t("userQuota.row.collapse") : t("userQuota.row.expand")}
-          >
-            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          </Button>
+          {hasDetail && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setExpanded((v) => !v)}
+              aria-label={expanded ? t("userQuota.row.collapse") : t("userQuota.row.expand")}
+            >
+              {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+            </Button>
+          )}
         </TableCell>
         <TableCell className="font-mono">{entry.client_name}</TableCell>
         <TableCell className="font-mono">
@@ -143,46 +170,66 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
         </TableCell>
         <TableCell>
           {clientOnline ? (
-            <Badge variant={"success" as never}>{t("userQuota.online")}</Badge>
+            <Badge variant="success">{t("userQuota.online")}</Badge>
           ) : (
             <Badge variant="secondary">{t("userQuota.offline")}</Badge>
           )}
           {entry.legacy_duplicates && (
             <span title={t("userQuota.row.duplicateTooltip")}>
-              <AlertTriangle className="inline ml-2 h-4 w-4 text-amber-500" />
+              <AlertTriangle className="ml-2 inline size-4 text-amber-500" />
             </span>
           )}
           {staleFailure && (
             <span title={staleFailure} className="ml-2 inline-flex">
-              <AlertTriangle className="h-4 w-4 text-destructive" />
+              <AlertTriangle className="size-4 text-destructive" />
             </span>
           )}
         </TableCell>
         <TableCell>
           {!readOnly && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setConfirmDelete(true)}
-              className="text-destructive"
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  aria-label={t("userQuota.row.actions")}
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => setEditOpen(true)}>
+                    <Pencil className="size-4" />
+                    {t("userQuota.row.edit")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onSelect={() => setConfirmDelete(true)}
+                  >
+                    <Trash2 className="size-4" />
+                    {t("userQuota.row.delete")}
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </TableCell>
       </TableRow>
-      {expanded && (
+      {expanded && hasDetail && (
         <TableRow>
           <TableCell colSpan={12} className="bg-muted/30">
             {staleFailure && (
               <Alert variant="destructive" className="mb-3">
-                <AlertTriangle className="h-4 w-4" />
+                <AlertTriangle className="size-4" />
                 <AlertDescription>{staleFailure}</AlertDescription>
               </Alert>
             )}
             {entry.legacy_duplicates && (
               <Alert className="mb-3">
-                <AlertTriangle className="h-4 w-4" />
+                <AlertTriangle className="size-4" />
                 <AlertDescription>
                   {t("userQuota.row.duplicateBanner", {
                     count: entry.legacy_duplicates.length,
@@ -190,38 +237,59 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
                 </AlertDescription>
               </Alert>
             )}
-            {readOnly ? (
+            {readOnly && (
               <div className="text-sm text-muted-foreground p-2">
                 {t("userQuota.row.readOnlyHint")}
               </div>
-            ) : (
-              <UserQuotaForm
-                clients={clients}
-                disabledClientNames={new Set()}
-                lockClient
-                defaultValues={{
-                  client_name: entry.client_name,
-                  listen_port_start: entry.listen_port_start,
-                  listen_port_end: entry.listen_port_end,
-                  protocols: entry.protocols,
-                  unlimited: entry.unlimited,
-                  bandwidth_in_bps: entry.cap?.bandwidth_in_bps ?? null,
-                  bandwidth_out_bps: entry.cap?.bandwidth_out_bps ?? null,
-                  new_connections_per_sec: entry.cap?.new_connections_per_sec ?? null,
-                  concurrent_connections: entry.cap?.concurrent_connections ?? null,
-                  bandwidth_in_burst: entry.cap?.bandwidth_in_burst ?? null,
-                  bandwidth_out_burst: entry.cap?.bandwidth_out_burst ?? null,
-                  new_connections_burst: entry.cap?.new_connections_burst ?? null,
-                }}
-                onSubmit={onSubmit}
-                onCancel={() => setExpanded(false)}
-                busy={update.isPending}
-                serverError={serverError}
-              />
             )}
           </TableCell>
         </TableRow>
       )}
+
+      <Dialog
+        open={editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open);
+          if (!open) setServerError(null);
+        }}
+      >
+        <DialogContent
+          ref={setEditDialogContainer}
+          className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto"
+        >
+          <DialogHeader>
+            <DialogTitle>{t("userQuota.editDialogTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("userQuota.editDialogBody", { client: entry.client_name })}
+            </DialogDescription>
+          </DialogHeader>
+          <UserQuotaForm
+            clients={clients}
+            disabledClientNames={new Set()}
+            lockClient
+            defaultValues={{
+              client_name: entry.client_name,
+              listen_port_start: entry.listen_port_start,
+              listen_port_end: entry.listen_port_end,
+              protocols: entry.protocols,
+              unlimited: entry.unlimited,
+              bandwidth_in_bps: entry.cap?.bandwidth_in_bps ?? null,
+              bandwidth_out_bps: entry.cap?.bandwidth_out_bps ?? null,
+              new_connections_per_sec: entry.cap?.new_connections_per_sec ?? null,
+              concurrent_connections: entry.cap?.concurrent_connections ?? null,
+              bandwidth_in_burst: entry.cap?.bandwidth_in_burst ?? null,
+              bandwidth_out_burst: entry.cap?.bandwidth_out_burst ?? null,
+              new_connections_burst: entry.cap?.new_connections_burst ?? null,
+            }}
+            onSubmit={onSubmit}
+            onCancel={() => setEditOpen(false)}
+            busy={update.isPending}
+            framed={false}
+            popoverContainer={editDialogContainer}
+            serverError={serverError}
+          />
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={confirmDelete}

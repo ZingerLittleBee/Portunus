@@ -6,15 +6,20 @@ import { useTranslation } from "react-i18next";
 import {
   Area,
   AreaChart,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
 import type { TrafficSample } from "@/api/types";
-import { formatBytes } from "@/lib/format";
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
+import { formatBytes, formatChartTime, formatChartTimestamp } from "@/lib/format";
 
 interface Props {
   samples: TrafficSample[];
@@ -24,38 +29,68 @@ interface Props {
 export function TrafficChart({ samples, height = 320 }: Props) {
   const { t } = useTranslation();
   const data = samples.map((s) => ({
-    ts: new Date(s.ts * 1000).toLocaleString(),
-    in: s.bytes_in,
-    out: s.bytes_out,
+    ts: s.ts,
+    bytes_in: s.bytes_in,
+    bytes_out: s.bytes_out,
   }));
+  const chartConfig = {
+    bytes_in: {
+      label: t("traffic.bytesIn"),
+      color: "hsl(var(--chart-1, 220 70% 50%))",
+    },
+    bytes_out: {
+      label: t("traffic.bytesOut"),
+      color: "hsl(var(--chart-2, 12 76% 61%))",
+    },
+  } satisfies ChartConfig;
+
   return (
-    <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={data}>
-        <XAxis dataKey="ts" minTickGap={48} />
-        <YAxis tickFormatter={(v) => formatBytes(Number(v))} width={80} />
-        <Tooltip
-          formatter={(v: number | string) => formatBytes(Number(v))}
+    <ChartContainer config={chartConfig} className="w-full" style={{ height }}>
+      <AreaChart data={data} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
+        <XAxis
+          dataKey="ts"
+          minTickGap={48}
+          tickFormatter={(v) => formatChartTime(Number(v))}
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
         />
-        <Legend />
+        <YAxis
+          tickFormatter={(v) => formatBytes(Number(v))}
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          width={80}
+        />
+        <ChartTooltip
+          content={
+            <ChartTooltipContent
+              labelFormatter={(_, payload) => {
+                const ts = payload[0]?.payload?.ts;
+                return typeof ts === "number" ? formatChartTimestamp(ts) : null;
+              }}
+              valueFormatter={(v) => formatBytes(Number(v))}
+            />
+          }
+        />
+        <ChartLegend content={<ChartLegendContent />} />
         <Area
           type="monotone"
-          dataKey="in"
-          name={t("traffic.bytesIn")}
+          dataKey="bytes_in"
           stackId="1"
-          stroke="hsl(var(--chart-1, 220 70% 50%))"
-          fill="hsl(var(--chart-1, 220 70% 50%))"
+          stroke="var(--color-bytes_in)"
+          fill="var(--color-bytes_in)"
           fillOpacity={0.3}
         />
         <Area
           type="monotone"
-          dataKey="out"
-          name={t("traffic.bytesOut")}
+          dataKey="bytes_out"
           stackId="1"
-          stroke="hsl(var(--chart-2, 12 76% 61%))"
-          fill="hsl(var(--chart-2, 12 76% 61%))"
+          stroke="var(--color-bytes_out)"
+          fill="var(--color-bytes_out)"
           fillOpacity={0.3}
         />
       </AreaChart>
-    </ResponsiveContainer>
+    </ChartContainer>
   );
 }

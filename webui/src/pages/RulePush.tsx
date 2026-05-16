@@ -10,12 +10,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   EMPTY_RATE_LIMIT_FORM,
   RateLimitForm,
   formStateToRateLimit,
 } from "@/components/RateLimitForm";
 
 type FormMode = "single" | "multi";
+const PROXY_PROTOCOL_NONE = "__none";
 
 interface TargetRow {
   host: string;
@@ -198,18 +207,30 @@ export function RulePush() {
                       onChange={(e) => updateTarget(idx, "port", e.target.value)}
                       required
                     />
-                    <select
-                      className="h-10 rounded-md border border-input bg-background px-2 text-sm"
-                      value={row.proxyProtocol}
-                      onChange={(e) =>
-                        updateTarget(idx, "proxyProtocol", e.target.value as TargetRow["proxyProtocol"])
+                    <Select
+                      value={row.proxyProtocol || PROXY_PROTOCOL_NONE}
+                      onValueChange={(value) =>
+                        updateTarget(
+                          idx,
+                          "proxyProtocol",
+                          value === PROXY_PROTOCOL_NONE ? "" : value,
+                        )
                       }
                       disabled={protocol !== "tcp"}
                     >
-                      <option value="">{t("rulePush.proxyProtocolDisabled")}</option>
-                      <option value="v1">{t("rulePush.proxyProtocolV1")}</option>
-                      <option value="v2">{t("rulePush.proxyProtocolV2")}</option>
-                    </select>
+                      <SelectTrigger aria-label={t("rulePush.proxyProtocolDisabled")}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value={PROXY_PROTOCOL_NONE}>
+                            {t("rulePush.proxyProtocolDisabled")}
+                          </SelectItem>
+                          <SelectItem value="v1">{t("rulePush.proxyProtocolV1")}</SelectItem>
+                          <SelectItem value="v2">{t("rulePush.proxyProtocolV2")}</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
                     <span className="text-sm text-muted-foreground sm:text-center">
                       {t("rulePush.priority")} {idx}
                     </span>

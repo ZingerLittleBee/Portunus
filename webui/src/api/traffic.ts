@@ -7,7 +7,7 @@
 // `from` / `to` are unix-seconds; `bucket` defaults to server auto-selection
 // (1m if range ≤ 7d, 1h otherwise) when omitted.
 
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import type { TrafficBucket, TrafficResponse } from "@/api/types";
 
@@ -42,6 +42,7 @@ export function useUserTraffic(userId: string, q: TrafficQuery) {
         `/v1/users/${encodeURIComponent(userId)}/traffic?${trafficQs(q)}`,
       ),
     enabled: userId.length > 0 && q.from < q.to,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -53,6 +54,7 @@ export function useClientTraffic(clientName: string, q: TrafficQuery) {
         `/v1/clients/${encodeURIComponent(clientName)}/traffic?${trafficQs(q)}`,
       ),
     enabled: clientName.length > 0 && q.from < q.to,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -67,5 +69,6 @@ export function useGlobalTraffic(q: TrafficQuery) {
     queryKey: globalTrafficKey(q),
     queryFn: () => apiFetch<TrafficResponse>(`/v1/traffic/global?${trafficQs(q)}`),
     enabled: q.from < q.to,
+    placeholderData: keepPreviousData,
   });
 }

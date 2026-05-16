@@ -233,9 +233,12 @@ standalone-check:  ## Validate all valid_*.toml fixtures via --check (expects "o
 
 # Stand up a full multi-user demo: server + N RBAC users each with an
 # independent edge client and K real forwarding rules to local echo
-# upstreams. Verifies real end-to-end TCP forwarding + RBAC isolation,
-# then holds the environment open (Ctrl-C tears everything down). Uses an
-# isolated /tmp/portunus-demo data dir — does not touch `make dev` state.
+# upstreams. Starts the Vite Web UI on http://localhost:5173, verifies
+# real end-to-end TCP forwarding + RBAC isolation, then holds the
+# environment open (Ctrl-C tears everything down). Uses an isolated
+# /tmp/portunus-demo data dir — does not touch `make dev` state.
+# Web UI login is _superadmin / portunus-demo-password by default
+# (override with PORTUNUS_DEMO_PASSWORD=...).
 # Override args, e.g.: make demo DEMO_ARGS="--users 5 --rules-per-user 3"
 demo:  ## Multi-user demo: server + N edges + K rules, verify + hold open
 	@bash scripts/demo.sh $(DEMO_ARGS)

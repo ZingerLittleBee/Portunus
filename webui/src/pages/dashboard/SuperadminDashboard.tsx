@@ -9,12 +9,13 @@ import { useThroughputRate } from "@/api/use-throughput-rate";
 import { formatBytes } from "@/lib/format";
 
 import { AlertBanner } from "./components/AlertBanner";
+import { DashboardIssueBlocks } from "./components/DashboardIssueBlocks";
 import { KpiCard } from "./components/KpiCard";
-import { OfflineClientsPanel } from "./components/OfflineClientsPanel";
-import { RecentAuditPanel } from "./components/RecentAuditPanel";
 import { ThroughputChart } from "./components/ThroughputChart";
 import { TopRulesPanel } from "./components/TopRulesPanel";
-import { UnhealthyTargetsPanel } from "./components/UnhealthyTargetsPanel";
+import { TrafficComparisonChart } from "./components/TrafficComparisonChart";
+import { TrafficDirectionChart } from "./components/TrafficDirectionChart";
+import { useDashboardTrafficBreakdown } from "./trafficBreakdown";
 import { useDashboardRange } from "./useDashboardRange";
 
 export function SuperadminDashboard() {
@@ -25,6 +26,7 @@ export function SuperadminDashboard() {
   const throughput = useThroughputRate();
   const { rangeId, range, setRange } = useDashboardRange("24h");
   const global = useGlobalTraffic(range);
+  const breakdown = useDashboardTrafficBreakdown(range);
   const qc = useQueryClient();
 
   const connectedCount = (clients.data ?? []).filter((c) => c.connected).length;
@@ -46,8 +48,10 @@ export function SuperadminDashboard() {
   if (unhealthyCount > 0) issues.push(t("dashboard.alertUnhealthy", { n: unhealthyCount }));
   if (offlineClientCount > 0) issues.push(t("dashboard.alertOffline", { n: offlineClientCount }));
 
+  const breakdownLoading = breakdown.isLoading && !breakdown.data;
+
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">{t("dashboard.title")}</h1>
 
       <AlertBanner issues={issues} />
@@ -80,11 +84,10 @@ export function SuperadminDashboard() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <UnhealthyTargetsPanel />
-        <OfflineClientsPanel />
-        <RecentAuditPanel />
-      </div>
+      <DashboardIssueBlocks
+        unhealthyTargets={unhealthyCount}
+        offlineClients={offlineClientCount}
+      />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[2fr_1fr]">
         <ThroughputChart
@@ -96,6 +99,26 @@ export function SuperadminDashboard() {
           onRetry={() => qc.invalidateQueries({ queryKey: globalTrafficKey(range) })}
         />
         <TopRulesPanel rules={gauges.topRules} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+        <TrafficComparisonChart
+          title={t("dashboard.trafficByClient")}
+          items={breakdown.data?.clients ?? []}
+          isLoading={breakdownLoading}
+          error={breakdown.error}
+        />
+        <TrafficComparisonChart
+          title={t("dashboard.trafficByUser")}
+          items={breakdown.data?.users ?? []}
+          isLoading={breakdownLoading}
+          error={breakdown.error}
+        />
+        <TrafficDirectionChart
+          rows={breakdown.data?.directions ?? []}
+          isLoading={breakdownLoading}
+          error={breakdown.error}
+        />
       </div>
     </div>
   );

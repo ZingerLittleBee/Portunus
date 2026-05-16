@@ -241,7 +241,34 @@ pub enum ReissueOutcome {
     NotFound,
 }
 
+/// Outcome of updating editable client metadata.
+#[derive(Debug, PartialEq, Eq)]
+pub enum UpdateClientOutcome {
+    Updated,
+    NotFound,
+}
+
 impl SqliteTokenStore {
+    /// Update editable metadata for an existing client token row.
+    pub fn update_client_address(
+        &self,
+        name: &ClientName,
+        client_address: Option<&str>,
+    ) -> Result<UpdateClientOutcome, StoreError> {
+        let rows = self.store.with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE client_tokens SET client_address = ? WHERE client_name = ?",
+                rusqlite::params![client_address, name.as_str()],
+            )
+            .map_err(map_rusqlite)
+        })?;
+        if rows == 0 {
+            Ok(UpdateClientOutcome::NotFound)
+        } else {
+            Ok(UpdateClientOutcome::Updated)
+        }
+    }
+
     /// Permanently remove a previously-revoked client row. Refuses to
     /// touch active rows so the caller can't accidentally race the
     /// data-plane disconnect path. Returns `StillActive` if the row is
@@ -483,6 +510,37 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].client_address.as_deref(), Some("edge.example.com"));
+    }
+
+    #[test]
+    fn update_client_address_replaces_existing_value() {
+        let (_d, s) = fresh();
+        let name = cn("edge-01");
+        s.issue_with_address(name.clone(), Some("edge.example.com"))
+            .unwrap();
+
+        assert_eq!(
+            s.update_client_address(&name, Some("new-edge.example.com"))
+                .unwrap(),
+            UpdateClientOutcome::Updated,
+        );
+
+        let rows = s.list().unwrap();
+        assert_eq!(
+            rows[0].client_address.as_deref(),
+            Some("new-edge.example.com")
+        );
+    }
+
+    #[test]
+    fn update_client_address_reports_missing_client() {
+        let (_d, s) = fresh();
+
+        assert_eq!(
+            s.update_client_address(&cn("missing"), Some("edge.example.com"))
+                .unwrap(),
+            UpdateClientOutcome::NotFound,
+        );
     }
 
     #[test]

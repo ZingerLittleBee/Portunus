@@ -1,26 +1,36 @@
 import { useTranslation } from "react-i18next";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
-import type { TopRule } from "@/api/metrics";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes } from "@/lib/format";
 
-export interface TopRulesPanelProps {
-  rules: TopRule[];
+import type { TrafficBreakdownItem } from "../trafficBreakdown";
+
+interface TrafficComparisonChartProps {
+  title: string;
+  items: TrafficBreakdownItem[];
+  isLoading: boolean;
+  error: unknown;
 }
 
-export function TopRulesPanel({ rules }: TopRulesPanelProps) {
+export function TrafficComparisonChart({
+  title,
+  items,
+  isLoading,
+  error,
+}: TrafficComparisonChartProps) {
   const { t } = useTranslation();
-  const data = rules.map((rule) => ({
-    rule: `#${rule.rule}`,
-    bytesIn: rule.bytesIn,
-    bytesOut: rule.bytesOut,
+  const data = items.map((item) => ({
+    label: item.label,
+    bytesIn: item.bytesIn,
+    bytesOut: item.bytesOut,
   }));
   const chartConfig = {
     bytesIn: {
@@ -36,18 +46,24 @@ export function TopRulesPanel({ rules }: TopRulesPanelProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">{t("dashboard.topRules")}</CardTitle>
+        <CardTitle className="text-sm">{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        {rules.length === 0 ? (
+        {error ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            {t("dashboard.noRulesYet")}
+            {t("dashboard.chartLoadError")}
+          </p>
+        ) : isLoading && data.length === 0 ? (
+          <Skeleton className="h-52 w-full" />
+        ) : data.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {t("dashboard.noTrafficYet")}
           </p>
         ) : (
           <ChartContainer
             config={chartConfig}
             className="w-full"
-            style={{ height: Math.max(180, data.length * 38) }}
+            style={{ height: Math.max(190, data.length * 38) }}
           >
             <BarChart
               accessibilityLayer
@@ -65,12 +81,12 @@ export function TopRulesPanel({ rules }: TopRulesPanelProps) {
                 tickMargin={8}
               />
               <YAxis
-                dataKey="rule"
+                dataKey="label"
                 type="category"
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
-                width={56}
+                width={96}
                 fontSize={11}
               />
               <ChartTooltip

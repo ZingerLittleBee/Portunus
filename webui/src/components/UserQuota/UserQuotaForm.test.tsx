@@ -1,6 +1,8 @@
 // webui/src/components/UserQuota/UserQuotaForm.test.tsx
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { UserQuotaForm } from "./UserQuotaForm";
 import "@/i18n";
 
@@ -23,6 +25,29 @@ describe("UserQuotaForm", () => {
       />,
     );
     expect(screen.getByRole("combobox")).toBeTruthy();
+  });
+
+  it("defaults new entries to unlimited tcp and udp access", () => {
+    render(
+      <UserQuotaForm
+        clients={clients}
+        disabledClientNames={new Set()}
+        defaultValues={undefined}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: /unlimited/i }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("checkbox", { name: "TCP" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("checkbox", { name: "UDP" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.queryByLabelText(/bandwidth in/i)).toBeFalsy();
   });
 
   it("blocks submission when ports inverted", async () => {
@@ -63,5 +88,10 @@ describe("UserQuotaForm", () => {
       />,
     );
     expect(screen.queryByLabelText(/bandwidth in/i)).toBeFalsy();
+  });
+
+  it("right-aligns dialog form actions", () => {
+    const source = readFileSync(resolve(__dirname, "UserQuotaForm.tsx"), "utf8");
+    expect(source).toContain("sm:justify-end");
   });
 });

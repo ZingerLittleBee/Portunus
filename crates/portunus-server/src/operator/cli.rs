@@ -539,6 +539,33 @@ pub fn delete_client(state: &AppState, raw_name: &str) -> Result<(), OperatorErr
     }
 }
 
+/// Update editable metadata for an existing client.
+pub fn update_client(
+    state: &AppState,
+    raw_name: &str,
+    client_address: Option<&str>,
+) -> Result<(), OperatorError> {
+    let name = ClientName::from_str(raw_name)?;
+    let address = client_address.map(validate_client_address).transpose()?;
+    match state
+        .tokens
+        .update_client_address(&name, address.as_deref())
+        .map_err(|e| OperatorError::Auth(AuthError::StoreCorrupt(e.to_string())))?
+    {
+        crate::store::token_store::UpdateClientOutcome::Updated => {
+            info!(
+                event = "audit.client_update",
+                outcome = "success",
+                client_name = %name,
+            );
+            Ok(())
+        }
+        crate::store::token_store::UpdateClientOutcome::NotFound => {
+            Err(OperatorError::ClientNotFound(name))
+        }
+    }
+}
+
 /// Rotate a client's credential and return the new bundle. Works on
 /// active OR revoked rows — a revoked client is brought back to life
 /// with a fresh token. Any live forwarder under this name is forcibly

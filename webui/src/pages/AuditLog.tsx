@@ -5,6 +5,14 @@ import { Download } from "lucide-react";
 import { fetchAuditEnvelope, useAuditLog } from "@/api/audit";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { downloadBlob, toNdjsonBlob } from "@/lib/ndjson";
@@ -146,16 +154,21 @@ export function AuditLog() {
         columns={columns}
         rowKey={(e) => `${e.timestamp}-${e.actor}-${e.path}-${e.outcome}`}
         toolbar={
-          <select
+          <Select
             value={outcomeFilter}
-            onChange={(e) => setOutcomeFilter(e.target.value as OutcomeFilter)}
-            className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-            aria-label={t("audit.outcomeFilterLabel")}
+            onValueChange={(value) => setOutcomeFilter(value as OutcomeFilter)}
           >
-            <option value="all">{t("audit.outcomeAll")}</option>
-            <option value="allow">{t("audit.allow")}</option>
-            <option value="deny">{t("audit.deny")}</option>
-          </select>
+            <SelectTrigger className="w-[10rem]" aria-label={t("audit.outcomeFilterLabel")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="all">{t("audit.outcomeAll")}</SelectItem>
+                <SelectItem value="allow">{t("audit.allow")}</SelectItem>
+                <SelectItem value="deny">{t("audit.deny")}</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
         }
         emptyState={<EmptyState title={t("audit.emptyTitle")} description={t("audit.emptyBody")} />}
         ariaLabel={t("audit.title")}

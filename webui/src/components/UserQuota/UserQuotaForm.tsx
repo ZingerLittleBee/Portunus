@@ -10,6 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/cn";
 import { ClientCombobox, type ClientLite } from "./ClientCombobox";
 import { accessEntrySchema } from "./format";
 
@@ -33,6 +34,8 @@ interface Props {
   onSubmit: (v: UserQuotaFormSubmitValue) => void | Promise<void>;
   onCancel: () => void;
   busy?: boolean;
+  framed?: boolean;
+  popoverContainer?: HTMLElement | null | undefined;
   serverError?: string | null;
 }
 
@@ -40,8 +43,8 @@ const DEFAULTS: FormValues = {
   client_name: "",
   listen_port_start: 10_000,
   listen_port_end: 19_999,
-  protocols: ["tcp"],
-  unlimited: false,
+  protocols: ["tcp", "udp"],
+  unlimited: true,
   bandwidth_in_bps: null,
   bandwidth_out_bps: null,
   new_connections_per_sec: null,
@@ -71,6 +74,8 @@ export function UserQuotaForm({
   onSubmit,
   onCancel,
   busy,
+  framed = true,
+  popoverContainer,
   serverError,
 }: Props) {
   const { t } = useTranslation();
@@ -104,8 +109,11 @@ export function UserQuotaForm({
   }
 
   return (
-    <form onSubmit={handleSubmit(submit)} className="space-y-4 p-4 border rounded-md bg-card">
-      <div className="space-y-2">
+    <form
+      onSubmit={handleSubmit(submit)}
+      className={cn("flex flex-col gap-4", framed && "rounded-md border bg-card p-4")}
+    >
+      <div className="flex flex-col gap-2">
         <Label>{t("userQuota.form.client")}</Label>
         <Controller
           name="client_name"
@@ -117,6 +125,7 @@ export function UserQuotaForm({
               onChange={field.onChange}
               disabledClientNames={disabledClientNames}
               disabled={lockClient ?? false}
+              popoverContainer={popoverContainer}
             />
           )}
         />
@@ -126,7 +135,7 @@ export function UserQuotaForm({
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="space-y-1">
+        <div className="flex flex-col gap-1">
           <Label htmlFor="port-start">{t("userQuota.form.portStart")}</Label>
           <Input
             id="port-start"
@@ -136,7 +145,7 @@ export function UserQuotaForm({
             {...register("listen_port_start", { valueAsNumber: true })}
           />
         </div>
-        <div className="space-y-1">
+        <div className="flex flex-col gap-1">
           <Label htmlFor="port-end">{t("userQuota.form.portEnd")}</Label>
           <Input
             id="port-end"
@@ -151,7 +160,7 @@ export function UserQuotaForm({
         <p className="text-sm text-destructive">{formState.errors.listen_port_end.message}</p>
       )}
 
-      <div className="space-y-2">
+      <div className="flex flex-col gap-2">
         <Label>{t("userQuota.form.protocols")}</Label>
         <Controller
           name="protocols"
@@ -196,7 +205,7 @@ export function UserQuotaForm({
 
       {!unlimited && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Label htmlFor="bw-in">{t("userQuota.form.bandwidthIn")}</Label>
             <Input
               id="bw-in"
@@ -206,7 +215,7 @@ export function UserQuotaForm({
               {...register("bandwidth_in_bps", { setValueAs: nullableInt })}
             />
           </div>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Label htmlFor="bw-out">{t("userQuota.form.bandwidthOut")}</Label>
             <Input
               id="bw-out"
@@ -216,7 +225,7 @@ export function UserQuotaForm({
               {...register("bandwidth_out_bps", { setValueAs: nullableInt })}
             />
           </div>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Label htmlFor="conc">{t("userQuota.form.concurrent")}</Label>
             <Input
               id="conc"
@@ -226,7 +235,7 @@ export function UserQuotaForm({
               {...register("concurrent_connections", { setValueAs: nullableInt })}
             />
           </div>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Label htmlFor="ncps">{t("userQuota.form.newConnPerSec")}</Label>
             <Input
               id="ncps"
@@ -246,7 +255,7 @@ export function UserQuotaForm({
 
       {serverError && <p className="text-sm text-destructive">{serverError}</p>}
 
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
         <Button type="submit" disabled={busy}>
           {busy ? t("confirm.busy") : t("userQuota.form.save")}
         </Button>

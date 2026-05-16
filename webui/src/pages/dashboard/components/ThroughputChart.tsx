@@ -3,8 +3,6 @@ import {
   CartesianGrid,
   Line,
   LineChart,
-  ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
@@ -12,8 +10,14 @@ import {
 import type { TrafficSample } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatChartTime, formatChartTimestamp } from "@/lib/format";
 
 import type { DashboardRangeId } from "@/pages/dashboard/useDashboardRange";
 
@@ -31,10 +35,21 @@ export interface ThroughputChartProps {
 export function ThroughputChart(props: ThroughputChartProps) {
   const { t } = useTranslation();
   const data = (props.samples ?? []).map((s) => ({
-    ts: s.ts * 1000,
+    ts: s.ts,
     bytes_in: s.bytes_in,
     bytes_out: s.bytes_out,
   }));
+  const hasSamples = data.length > 0;
+  const chartConfig = {
+    bytes_in: {
+      label: t("traffic.bytesIn"),
+      color: "hsl(220 70% 50%)",
+    },
+    bytes_out: {
+      label: t("traffic.bytesOut"),
+      color: "hsl(160 84% 39%)",
+    },
+  } satisfies ChartConfig;
 
   return (
     <Card>
@@ -61,36 +76,61 @@ export function ThroughputChart(props: ThroughputChartProps) {
               {t("common.retry")}
             </Button>
           </div>
-        ) : props.isLoading ? (
-          <Skeleton className="h-48 w-full" />
-        ) : data.length === 0 ? (
+        ) : props.isLoading && !hasSamples ? (
+          <Skeleton data-testid="throughput-chart-skeleton" className="h-48 w-full" />
+        ) : !hasSamples ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             {t("dashboard.noTrafficYet")}
           </p>
         ) : (
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
-                <XAxis
-                  dataKey="ts"
-                  tickFormatter={(v) => new Date(Number(v)).toLocaleTimeString()}
-                  fontSize={10}
-                />
-                <YAxis
-                  tickFormatter={(v) => formatBytes(Number(v))}
-                  fontSize={10}
-                  width={60}
-                />
-                <Tooltip
-                  labelFormatter={(v) => new Date(Number(v)).toLocaleString()}
-                  formatter={(v: number | string) => formatBytes(Number(v))}
-                />
-                <Line type="monotone" dataKey="bytes_in" stroke="#3b82f6" dot={false} />
-                <Line type="monotone" dataKey="bytes_out" stroke="#10b981" dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          <ChartContainer
+            data-testid="throughput-chart"
+            config={chartConfig}
+            className="h-48 w-full"
+          >
+            <LineChart data={data} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="ts"
+                tickFormatter={(v) => formatChartTime(Number(v))}
+                fontSize={10}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+              />
+              <YAxis
+                tickFormatter={(v) => formatBytes(Number(v))}
+                fontSize={10}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                width={60}
+              />
+              <ChartTooltip
+                content={
+                  <ChartTooltipContent
+                    labelFormatter={(_, payload) => {
+                      const ts = payload[0]?.payload?.ts;
+                      return typeof ts === "number" ? formatChartTimestamp(ts) : null;
+                    }}
+                    valueFormatter={(v) => formatBytes(Number(v))}
+                  />
+                }
+              />
+              <Line
+                type="monotone"
+                dataKey="bytes_in"
+                stroke="var(--color-bytes_in)"
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="bytes_out"
+                stroke="var(--color-bytes_out)"
+                dot={false}
+              />
+            </LineChart>
+          </ChartContainer>
         )}
       </CardContent>
     </Card>

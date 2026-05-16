@@ -8,6 +8,13 @@ import { useCreateAccessEntry, type AccessEntry } from "@/api/access-entries";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -29,6 +36,7 @@ interface Props {
 export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
   const { t } = useTranslation();
   const [adding, setAdding] = useState(false);
+  const [addDialogContainer, setAddDialogContainer] = useState<HTMLDivElement | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const create = useCreateAccessEntry(userId);
 
@@ -56,18 +64,23 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">{t("userQuota.tableHelp")}</p>
         {!readOnly && (
-          <Button size="sm" onClick={() => setAdding(true)} disabled={adding} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-1" />
+          <Button
+            size="sm"
+            onClick={() => setAdding(true)}
+            disabled={create.isPending}
+            className="w-full sm:w-auto"
+          >
+            <Plus className="mr-1 size-4" />
             {t("userQuota.add")}
           </Button>
         )}
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto rounded-lg border">
         <Table className="min-w-[980px]">
           <TableHeader>
             <TableRow>
@@ -107,19 +120,36 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
         </Table>
       </div>
 
-      {adding && (
-        <UserQuotaForm
-          clients={clients}
-          disabledClientNames={disabledClientNames}
-          onSubmit={onAdd}
-          onCancel={() => {
-            setAdding(false);
-            setServerError(null);
-          }}
-          busy={create.isPending}
-          serverError={serverError}
-        />
-      )}
+      <Dialog
+        open={adding}
+        onOpenChange={(open) => {
+          setAdding(open);
+          if (!open) setServerError(null);
+        }}
+      >
+        <DialogContent
+          ref={setAddDialogContainer}
+          className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto"
+        >
+          <DialogHeader>
+            <DialogTitle>{t("userQuota.addDialogTitle")}</DialogTitle>
+            <DialogDescription>{t("userQuota.addDialogBody")}</DialogDescription>
+          </DialogHeader>
+          <UserQuotaForm
+            clients={clients}
+            disabledClientNames={disabledClientNames}
+            onSubmit={onAdd}
+            onCancel={() => {
+              setAdding(false);
+              setServerError(null);
+            }}
+            busy={create.isPending}
+            framed={false}
+            popoverContainer={addDialogContainer}
+            serverError={serverError}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

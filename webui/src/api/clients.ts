@@ -8,6 +8,7 @@ import type {
   OwnerRateLimitView,
   ProvisionClientBody,
   RateLimit,
+  UpdateClientBody,
 } from "@/api/types";
 
 export const CLIENTS_KEY = ["clients"] as const;
@@ -50,6 +51,20 @@ export function useDeleteClient() {
   return useMutation({
     mutationFn: (name: string) =>
       apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
+export function useUpdateClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, body }: { name: string; body: UpdateClientBody }) =>
+      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
     },

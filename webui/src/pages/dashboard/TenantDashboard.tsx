@@ -9,10 +9,11 @@ import { useUserTraffic, userTrafficKey } from "@/api/traffic";
 import { formatBytes } from "@/lib/format";
 
 import { AlertBanner } from "./components/AlertBanner";
+import { DashboardIssueBlocks } from "./components/DashboardIssueBlocks";
 import { KpiCard } from "./components/KpiCard";
-import { OfflineClientsPanel } from "./components/OfflineClientsPanel";
 import { ThroughputChart } from "./components/ThroughputChart";
-import { UnhealthyTargetsPanel } from "./components/UnhealthyTargetsPanel";
+import { TrafficDirectionChart } from "./components/TrafficDirectionChart";
+import { trafficDirectionRows } from "./trafficBreakdown";
 import { useDashboardRange } from "./useDashboardRange";
 
 export function TenantDashboard() {
@@ -71,8 +72,13 @@ export function TenantDashboard() {
     issues.push(t("dashboard.alertQuotaNear", { pct: Math.round(quotaPct) }));
   }
 
+  const directionRows = trafficDirectionRows({
+    total_bytes_in: traffic.data?.total_bytes_in ?? 0,
+    total_bytes_out: traffic.data?.total_bytes_out ?? 0,
+  });
+
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">
         {t("dashboard.greeting")}, {identity?.display_name ?? identity?.user_id ?? "—"}
       </h1>
@@ -107,19 +113,26 @@ export function TenantDashboard() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <UnhealthyTargetsPanel />
-        <OfflineClientsPanel />
-      </div>
-
-      <ThroughputChart
-        samples={traffic.data?.samples}
-        isLoading={traffic.isLoading}
-        error={traffic.error}
-        rangeId={rangeId}
-        onRangeChange={setRange}
-        onRetry={() => qc.invalidateQueries({ queryKey: userTrafficKey(userId, range) })}
+      <DashboardIssueBlocks
+        unhealthyTargets={unhealthyCount}
+        offlineClients={offlineClientCount}
       />
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[2fr_1fr]">
+        <ThroughputChart
+          samples={traffic.data?.samples}
+          isLoading={traffic.isLoading}
+          error={traffic.error}
+          rangeId={rangeId}
+          onRangeChange={setRange}
+          onRetry={() => qc.invalidateQueries({ queryKey: userTrafficKey(userId, range) })}
+        />
+        <TrafficDirectionChart
+          rows={directionRows}
+          isLoading={traffic.isLoading}
+          error={traffic.error}
+        />
+      </div>
     </div>
   );
 }
