@@ -14,33 +14,30 @@ export function DashboardIssueBlocks({
   const { t } = useTranslation();
 
   return (
-    <div className="grid h-fit grid-cols-2 gap-3 md:max-w-md">
-      <Card>
-        <CardHeader className="p-3 pb-1">
-          <CardTitle className="text-xs font-medium text-muted-foreground">
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">{t("dashboard.operationalStatus")}</CardTitle>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-4">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-muted-foreground">
             {t("dashboard.unhealthyTargets")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-3 pt-0">
-          <div className="text-2xl font-semibold tabular-nums">{unhealthyTargets}</div>
+          </div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{unhealthyTargets}</div>
           <p className="text-xs text-muted-foreground">
             {unhealthyTargets > 0 ? t("dashboard.down") : t("dashboard.allTargetsHealthy")}
           </p>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader className="p-3 pb-1">
-          <CardTitle className="text-xs font-medium text-muted-foreground">
+        </div>
+        <div className="min-w-0 border-l pl-4">
+          <div className="text-xs font-medium text-muted-foreground">
             {t("dashboard.offlineClients")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-3 pt-0">
-          <div className="text-2xl font-semibold tabular-nums">{offlineClients}</div>
+          </div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{offlineClients}</div>
           <p className="text-xs text-muted-foreground">
             {offlineClients > 0 ? t("dashboard.offline") : t("dashboard.allClientsOnline")}
           </p>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

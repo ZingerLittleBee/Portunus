@@ -11,7 +11,6 @@ import { formatBytes } from "@/lib/format";
 import { AlertBanner } from "./components/AlertBanner";
 import { DashboardIssueBlocks } from "./components/DashboardIssueBlocks";
 import { KpiCard } from "./components/KpiCard";
-import { RecentAuditPanel } from "./components/RecentAuditPanel";
 import { ThroughputChart } from "./components/ThroughputChart";
 import { TopRulesPanel } from "./components/TopRulesPanel";
 import { TrafficComparisonChart } from "./components/TrafficComparisonChart";
@@ -85,13 +84,10 @@ export function SuperadminDashboard() {
         />
       </div>
 
-      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)]">
-        <DashboardIssueBlocks
-          unhealthyTargets={unhealthyCount}
-          offlineClients={offlineClientCount}
-        />
-        <RecentAuditPanel />
-      </div>
+      <DashboardIssueBlocks
+        unhealthyTargets={unhealthyCount}
+        offlineClients={offlineClientCount}
+      />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[2fr_1fr]">
         <ThroughputChart
