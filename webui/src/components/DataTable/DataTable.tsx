@@ -94,11 +94,18 @@ export function DataTable<Row>({
     virtualizer.scrollToIndex(next, { align: "auto" });
   }
 
+  const grid = gridStyle(columns);
+  const tableWidth = tableMinWidth(columns);
+
   return (
-    <div className={cn("flex flex-col gap-2", className)}>
-      {toolbar && <div className="flex items-center gap-2">{toolbar}</div>}
-      <div className="rounded-md border">
-        <div className="grid border-b bg-muted/40 text-sm font-medium" role="row" style={gridStyle(columns)}>
+    <div className={cn("flex min-w-0 flex-col gap-2", className)}>
+      {toolbar && <div className="flex flex-col gap-2 sm:flex-row sm:items-center">{toolbar}</div>}
+      <div className="overflow-x-auto rounded-md border">
+        <div
+          className="grid border-b bg-muted/40 text-sm font-medium"
+          role="row"
+          style={{ ...grid, minWidth: tableWidth }}
+        >
           {columns.map((c) => (
             <button
               key={c.key}
@@ -122,9 +129,10 @@ export function DataTable<Row>({
           ref={parentRef}
           tabIndex={0}
           onKeyDown={onKeyDown}
-          className="h-[480px] overflow-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-[480px] overflow-y-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           role="rowgroup"
           aria-label={ariaLabel}
+          style={{ minWidth: tableWidth }}
         >
           {sorted.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
@@ -151,7 +159,7 @@ export function DataTable<Row>({
                       onRowClick && "cursor-pointer",
                       focusedIndex === vrow.index && "bg-muted/40",
                     )}
-                    style={{ ...gridStyle(columns), height: vrow.size, transform: `translateY(${vrow.start}px)` }}
+                    style={{ ...grid, height: vrow.size, transform: `translateY(${vrow.start}px)` }}
                   >
                     {columns.map((c) => (
                       <div key={c.key} role="cell" className="truncate px-3">
@@ -176,4 +184,14 @@ function gridStyle<Row>(columns: Column<Row>[]): React.CSSProperties {
   return {
     gridTemplateColumns: columns.map((c) => c.width ?? "1fr").join(" "),
   };
+}
+
+function tableMinWidth<Row>(columns: Column<Row>[]): string {
+  return `${columns.reduce((total, column) => total + widthToPixels(column.width), 0)}px`;
+}
+
+function widthToPixels(width: string | undefined): number {
+  if (!width) return 160;
+  const match = /^(\d+(?:\.\d+)?)px$/.exec(width);
+  return match ? Number(match[1]) : 160;
 }

@@ -116,7 +116,7 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
         {helper && <p className="text-xs text-muted-foreground">{helper}</p>}
         <p className="text-xs text-muted-foreground">{t("rateLimitForm.help")}</p>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="rl-bw-in" className="text-xs">
             {t("rateLimitForm.bandwidthIn")}
@@ -188,7 +188,7 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
         {t("rateLimitForm.advanced")}
       </button>
       {advancedOpen && (
-        <div className="grid grid-cols-2 gap-3 pl-4 border-l border-border">
+        <div className="grid grid-cols-1 gap-3 border-l border-border pl-4 sm:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="rl-bw-in-burst" className="text-xs">
               {t("rateLimitForm.bandwidthInBurst")}

@@ -57,53 +57,55 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">{t("userQuota.tableHelp")}</p>
         {!readOnly && (
-          <Button size="sm" onClick={() => setAdding(true)} disabled={adding}>
+          <Button size="sm" onClick={() => setAdding(true)} disabled={adding} className="w-full sm:w-auto">
             <Plus className="h-4 w-4 mr-1" />
             {t("userQuota.add")}
           </Button>
         )}
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead aria-label="expand" />
-            <TableHead>{t("userQuota.col.client")}</TableHead>
-            <TableHead>{t("userQuota.col.portRange")}</TableHead>
-            <TableHead>{t("userQuota.col.protocols")}</TableHead>
-            <TableHead>{t("userQuota.col.bwIn")}</TableHead>
-            <TableHead>{t("userQuota.col.bwOut")}</TableHead>
-            <TableHead>{t("userQuota.col.concurrent")}</TableHead>
-            <TableHead>{t("userQuota.col.newConnPerSec")}</TableHead>
-            <TableHead>{t("userQuota.monthlyQuota")}</TableHead>
-            <TableHead>{t("userQuota.thisPeriod")}</TableHead>
-            <TableHead>{t("userQuota.col.status")}</TableHead>
-            <TableHead aria-label="actions" />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {entries.map((e) => (
-            <UserQuotaRow
-              key={`${e.user_id}::${e.client_name}`}
-              userId={userId}
-              entry={e}
-              clients={clients}
-              clientOnline={clients.find((c) => c.client_name === e.client_name)?.connected ?? false}
-              readOnly={readOnly}
-            />
-          ))}
-          {entries.length === 0 && !adding && (
+      <div className="overflow-x-auto">
+        <Table className="min-w-[980px]">
+          <TableHeader>
             <TableRow>
-              <TableCell colSpan={12} className="text-center text-muted-foreground py-6">
-                {t("userQuota.empty")}
-              </TableCell>
+              <TableHead aria-label="expand" />
+              <TableHead>{t("userQuota.col.client")}</TableHead>
+              <TableHead>{t("userQuota.col.portRange")}</TableHead>
+              <TableHead>{t("userQuota.col.protocols")}</TableHead>
+              <TableHead>{t("userQuota.col.bwIn")}</TableHead>
+              <TableHead>{t("userQuota.col.bwOut")}</TableHead>
+              <TableHead>{t("userQuota.col.concurrent")}</TableHead>
+              <TableHead>{t("userQuota.col.newConnPerSec")}</TableHead>
+              <TableHead>{t("userQuota.monthlyQuota")}</TableHead>
+              <TableHead>{t("userQuota.thisPeriod")}</TableHead>
+              <TableHead>{t("userQuota.col.status")}</TableHead>
+              <TableHead aria-label="actions" />
             </TableRow>
-          )}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {entries.map((e) => (
+              <UserQuotaRow
+                key={`${e.user_id}::${e.client_name}`}
+                userId={userId}
+                entry={e}
+                clients={clients}
+                clientOnline={clients.find((c) => c.client_name === e.client_name)?.connected ?? false}
+                readOnly={readOnly}
+              />
+            ))}
+            {entries.length === 0 && !adding && (
+              <TableRow>
+                <TableCell colSpan={12} className="text-center text-muted-foreground py-6">
+                  {t("userQuota.empty")}
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
 
       {adding && (
         <UserQuotaForm

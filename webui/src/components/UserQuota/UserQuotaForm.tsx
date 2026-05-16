@@ -125,7 +125,7 @@ export function UserQuotaForm({
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="port-start">{t("userQuota.form.portStart")}</Label>
           <Input
@@ -180,7 +180,7 @@ export function UserQuotaForm({
         )}
       </div>
 
-      <div className="flex items-center justify-between border-t pt-4">
+      <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <Label htmlFor="unlimited">{t("userQuota.form.unlimited")}</Label>
           <p className="text-xs text-muted-foreground">{t("userQuota.form.unlimitedHelp")}</p>
@@ -195,7 +195,7 @@ export function UserQuotaForm({
       </div>
 
       {!unlimited && (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="bw-in">{t("userQuota.form.bandwidthIn")}</Label>
             <Input
@@ -237,7 +237,7 @@ export function UserQuotaForm({
             />
           </div>
           {formState.errors.bandwidth_in_bps && (
-            <p className="col-span-2 text-sm text-destructive">
+            <p className="text-sm text-destructive sm:col-span-2">
               {formState.errors.bandwidth_in_bps.message}
             </p>
           )}
@@ -246,7 +246,7 @@ export function UserQuotaForm({
 
       {serverError && <p className="text-sm text-destructive">{serverError}</p>}
 
-      <div className="flex gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
         <Button type="submit" disabled={busy}>
           {busy ? t("confirm.busy") : t("userQuota.form.save")}
         </Button>

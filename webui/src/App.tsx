@@ -78,13 +78,13 @@ function Shell({ children }: { children: React.ReactNode }) {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur">
+        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-3 backdrop-blur sm:px-4">
           <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
+          <Separator orientation="vertical" className="mr-2 hidden h-4 sm:block" />
           <PageBreadcrumb />
         </header>
         <ErrorBanner />
-        <main className="flex flex-1 flex-col gap-4 p-6">
+        <main className="flex min-w-0 flex-1 flex-col gap-4 p-4 sm:p-6">
           <Suspense fallback={<div className="text-muted-foreground">Loading…</div>}>
             {children}
           </Suspense>

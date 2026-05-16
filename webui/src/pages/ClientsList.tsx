@@ -132,9 +132,9 @@ export function ClientsList() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">{t("clients.title")}</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           {revokedCount > 0 && (
             <Button
               variant={showRevoked ? "secondary" : "outline"}
@@ -145,7 +145,7 @@ export function ClientsList() {
             </Button>
           )}
           {canProvision && (
-            <Button asChild>
+            <Button asChild className="w-full sm:w-auto">
               <Link to="/clients/new">
                 <Plus className="mr-1 h-4 w-4" />
                 {t("clients.provision")}
