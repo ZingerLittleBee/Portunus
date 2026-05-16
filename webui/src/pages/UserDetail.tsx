@@ -89,11 +89,11 @@ function UserDetailInner({ userId, identity }: InnerProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-semibold">
             {user.data?.display_name ?? userId}
-            <span className="ml-2 font-mono text-sm text-muted-foreground">{userId}</span>
+            <span className="ml-2 break-all font-mono text-sm text-muted-foreground">{userId}</span>
           </h1>
           {user.data && (
             <Badge className="mt-2" variant={user.data.role === "superadmin" ? "default" : "secondary"}>
@@ -102,7 +102,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           )}
         </div>
         {identity?.role === "superadmin" && (
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Button variant="outline" onClick={() => setResetOpen(true)}>
               {t("userDetail.resetPassword")}
             </Button>
@@ -137,10 +137,10 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             credentials.data.map((c) => (
               <div
                 key={c.credential_id}
-                className="flex items-center gap-3 rounded-md border p-3 text-sm"
+                className="flex flex-col gap-3 rounded-md border p-3 text-sm sm:flex-row sm:items-center"
               >
-                <div className="flex-1">
-                  <div className="font-mono text-xs">{c.credential_id}</div>
+                <div className="min-w-0 flex-1">
+                  <div className="break-all font-mono text-xs">{c.credential_id}</div>
                   <div className="text-muted-foreground">
                     {c.label ?? "—"} · {c.status}
                   </div>

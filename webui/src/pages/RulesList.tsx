@@ -182,9 +182,9 @@ export function RulesList() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">{t("rules.title")}</h1>
-        <Button asChild>
+        <Button asChild className="w-full sm:w-auto">
           <Link to="/rules/new">
             <Plus className="mr-1 h-4 w-4" />
             {t("rules.newRule")}
@@ -192,10 +192,10 @@ export function RulesList() {
         </Button>
       </div>
       {isAdmin && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <label className="text-sm text-muted-foreground">{t("rules.ownerFilter")}</label>
           <select
-            className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+            className="h-9 rounded-md border border-input bg-background px-2 text-sm sm:w-auto"
             value={ownerFilter ?? ""}
             onChange={(e) => {
               const next = new URLSearchParams(params);

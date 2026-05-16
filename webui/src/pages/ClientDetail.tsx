@@ -63,12 +63,12 @@ export function ClientDetail() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         <Button variant="ghost" size="sm" onClick={() => navigate("/clients")}>
           <ArrowLeft className="h-4 w-4 mr-1" />
           {t("clientDetail.back")}
         </Button>
-        <h1 className="text-2xl font-semibold font-mono">{clientName}</h1>
+        <h1 className="break-all font-mono text-2xl font-semibold">{clientName}</h1>
         {client?.connected && (
           <Badge variant={"success" as never}>{t("clients.connected")}</Badge>
         )}
@@ -82,7 +82,7 @@ export function ClientDetail() {
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto"
+            className="sm:ml-auto"
             onClick={() => {
               setReissueError(null);
               setConfirmOpen(true);
@@ -98,7 +98,7 @@ export function ClientDetail() {
       <ClientExhaustedBanner clientName={clientName} />
 
       <Tabs defaultValue="overview">
-        <TabsList>
+        <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="overview">{t("clientDetail.tabOverview")}</TabsTrigger>
           <TabsTrigger value="owners">{t("clientDetail.tabOwnerQuotas")}</TabsTrigger>
           <TabsTrigger value="traffic">{t("traffic.tab")}</TabsTrigger>
@@ -169,9 +169,9 @@ export function ClientDetail() {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex gap-4">
-      <span className="text-muted-foreground w-32">{label}</span>
-      <span className="font-mono">{value}</span>
+    <div className="grid gap-1 sm:grid-cols-[8rem_1fr] sm:gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="break-all font-mono">{value}</span>
     </div>
   );
 }

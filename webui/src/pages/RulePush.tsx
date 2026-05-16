@@ -122,7 +122,7 @@ export function RulePush() {
   }
 
   return (
-    <Card className="max-w-2xl">
+    <Card className="w-full max-w-2xl">
       <CardHeader>
         <CardTitle>{t("rulePush.title")}</CardTitle>
       </CardHeader>
@@ -132,7 +132,7 @@ export function RulePush() {
             <Label htmlFor="client">{t("rules.client")}</Label>
             <Input id="client" value={client} onChange={(e) => setClient(e.target.value)} required />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="ls">{t("rulePush.listenStart")}</Label>
               <Input id="ls" type="number" value={listenStart} onChange={(e) => setListenStart(e.target.value)} required />
@@ -165,7 +165,7 @@ export function RulePush() {
                 <Label htmlFor="target">{t("rulePush.targetHost")}</Label>
                 <Input id="target" value={target} onChange={(e) => setTarget(e.target.value)} required />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="ts">{t("rulePush.targetStart")}</Label>
                   <Input id="ts" type="number" value={targetStart} onChange={(e) => setTargetStart(e.target.value)} required />
@@ -183,7 +183,7 @@ export function RulePush() {
                 {targets.map((row, idx) => (
                   <div
                     key={idx}
-                    className="grid grid-cols-[1fr_120px_120px_72px_auto] gap-2 items-center"
+                    className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-[1fr_120px_120px_72px_auto] sm:items-center sm:border-0 sm:p-0"
                   >
                     <Input
                       placeholder={t("rulePush.targetHost")}
@@ -210,7 +210,7 @@ export function RulePush() {
                       <option value="v1">{t("rulePush.proxyProtocolV1")}</option>
                       <option value="v2">{t("rulePush.proxyProtocolV2")}</option>
                     </select>
-                    <span className="text-sm text-muted-foreground">
+                    <span className="text-sm text-muted-foreground sm:text-center">
                       {t("rulePush.priority")} {idx}
                     </span>
                     <Button
@@ -226,7 +226,7 @@ export function RulePush() {
                   </div>
                 ))}
               </div>
-              <Button type="button" variant="outline" size="sm" onClick={addTarget}>
+              <Button type="button" variant="outline" size="sm" onClick={addTarget} className="w-full sm:w-auto">
                 <Plus className="h-4 w-4 mr-1" />
                 {t("rulePush.addTarget")}
               </Button>
@@ -285,7 +285,7 @@ export function RulePush() {
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Button type="submit" disabled={push.isPending}>
               {push.isPending ? t("confirm.busy") : t("rulePush.submit")}
             </Button>

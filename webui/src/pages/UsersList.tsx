@@ -69,9 +69,9 @@ export function UsersList() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">{t("users.title")}</h1>
-        <Button asChild>
+        <Button asChild className="w-full sm:w-auto">
           <Link to="/users/new">
             <Plus className="mr-1 h-4 w-4" />
             {t("users.newUser")}
@@ -89,7 +89,7 @@ export function UsersList() {
             placeholder={t("users.filterPlaceholder")}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="max-w-xs"
+            className="w-full sm:max-w-xs"
           />
         }
         emptyState={
