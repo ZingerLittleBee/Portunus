@@ -210,7 +210,7 @@ wait_ready() {
   local timeout="$1" desc="$2"; shift 2
   local deadline
   deadline=$(( $(date +%s) + timeout ))
-  while (( $(date +%s) < deadline )); do
+  while (( $(date +%s) <= deadline )); do
     if "$@" >/dev/null 2>&1; then return 0; fi
     sleep 0.3
   done
@@ -478,13 +478,13 @@ add_users() {
     PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
       user-add "${uid}" --display-name "Demo ${uid}" \
-      --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log"
+      --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log" || [[ "${KEEP}" == "1" ]]
 
     PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
       grant-add --user-id "${uid}" --client "${edge}" \
       --listen-port-start "${port_start}" --listen-port-end "${port_end}" \
-      --protocols tcp --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log"
+      --protocols tcp --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log" || [[ "${KEEP}" == "1" ]]
 
     tok="$(PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
@@ -566,13 +566,18 @@ start_edges() {
     # CLI opens state.db directly — it fails with `store_in_use` while the
     # server holds the SQLite lock, and would also desync the server's
     # in-memory token cache (per crates/portunus-e2e/tests/common/mod.rs).
-    code="$(curl -s -o "${bundle}" -w '%{http_code}' \
-      -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
-      -H 'Content-Type: application/json' \
-      -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
-      "http://${HTTP_ENDPOINT}/v1/clients")" || true
-    [[ "${code}" == 2?? ]] \
-      || die "provision ${edge} failed (HTTP ${code:-curl-error}); see ${bundle}"
+    if [[ "${KEEP}" == "1" && -s "${bundle}" ]] \
+       && jq -e '.token' "${bundle}" >/dev/null 2>&1; then
+      log "reusing existing bundle for ${edge}"
+    else
+      code="$(curl -s -o "${bundle}" -w '%{http_code}' \
+        -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
+        "http://${HTTP_ENDPOINT}/v1/clients")" || true
+      [[ "${code}" == 2?? ]] \
+        || die "provision ${edge} failed (HTTP ${code:-curl-error}); see ${bundle}"
+    fi
 
     local extra_env=()
     [[ "${DISABLE_SPLICE}" == "1" ]] && extra_env+=(PORTUNUS_DISABLE_SPLICE=1)
@@ -682,7 +687,7 @@ push_rules() {
       -H 'Content-Type: application/json' \
       -d "{\"client\":\"${edge}\",\"listen_port\":${listen},\"target_host\":\"127.0.0.1\",\"target_port\":${target},\"protocol\":\"tcp\"}" \
       "http://${HTTP_ENDPOINT}/v1/rules")" || true
-    [[ "${code}" == 2?? ]] \
+    [[ "${code}" == 2?? || "${KEEP}" == "1" ]] \
       || die "push rule failed: ${edge}:${listen} user${u} (HTTP ${code:-curl-error})"
   done
   # Resolve rule ids per owner via the operator HTTP API.
