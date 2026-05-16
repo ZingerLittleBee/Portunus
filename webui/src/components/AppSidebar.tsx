@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -99,6 +100,12 @@ const THEME_ICON: Record<ThemeChoice, LucideIcon> = {
 export function AppSidebar() {
   const { t } = useTranslation();
   const identity = useIdentity();
+  const location = useLocation();
+  const { isMobile, setOpenMobile } = useSidebar();
+
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [isMobile, location.pathname, setOpenMobile]);
 
   return (
     <Sidebar collapsible="icon">
