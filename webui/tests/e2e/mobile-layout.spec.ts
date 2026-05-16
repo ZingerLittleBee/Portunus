@@ -1,15 +1,51 @@
 import { test, expect } from "./fixtures/server";
+import type { Page } from "@playwright/test";
 import { loginAs, api } from "./fixtures/helpers";
 
-async function expectNoPageOverflow(page: import("@playwright/test").Page): Promise<void> {
-  const overflow = await page.evaluate(() => {
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-    const root = document.documentElement;
-    return root.scrollWidth - window.innerWidth;
+async function expectNoPageOverflow(page: Page): Promise<void> {
+  const offenders = await page.evaluate(() => {
+    const viewportRight = document.documentElement.clientWidth;
+    const isInsideHorizontalScroller = (element: HTMLElement): boolean => {
+      let current = element.parentElement;
+      while (current) {
+        const style = getComputedStyle(current);
+        if (
+          (style.overflowX === "auto" || style.overflowX === "scroll") &&
+          current.scrollWidth > current.clientWidth
+        ) {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
+
+    return Array.from(document.body.querySelectorAll<HTMLElement>("body *"))
+      .filter((element) => !element.closest('[aria-hidden="true"], [data-state="closed"]'))
+      .filter((element) => !isInsideHorizontalScroller(element))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          tag: element.tagName.toLowerCase(),
+          className: element.className,
+          text: element.innerText?.slice(0, 80) ?? "",
+          display: style.display,
+          visibility: style.visibility,
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          width: Math.round(rect.width),
+        };
+      })
+      .filter(
+        (box) =>
+          box.display !== "none" &&
+          box.visibility !== "hidden" &&
+          box.width > 0 &&
+          (box.left < -1 || box.right > viewportRight + 1),
+      );
   });
-  expect(overflow).toBeLessThanOrEqual(1);
+  expect(offenders).toEqual([]);
 }
 
 test("mobile shell navigation closes and dense pages stay contained", async ({ page, request, server }) => {
