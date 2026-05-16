@@ -8,6 +8,15 @@ import type { TrafficBucket } from "@/api/types";
 import { useClientTraffic, useUserTraffic } from "@/api/traffic";
 import { Card } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyTitle } from "@/components/ui/empty";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatBytes } from "@/lib/format";
 
 import { TrafficChart } from "./TrafficChart";
@@ -65,30 +74,46 @@ export function TrafficPanel({ userId, clientName, defaultRange = "24h" }: Props
   return (
     <Card className="p-4 space-y-4">
       <div className="flex flex-wrap items-end gap-4">
-        <label className="flex flex-col text-sm">
-          <span className="text-muted-foreground">{t("traffic.timeRange")}</span>
-          <select
-            className="border rounded px-2 py-1 bg-background"
+        <div className="flex flex-col gap-1 text-sm">
+          <Label htmlFor="traffic-range" className="text-muted-foreground">
+            {t("traffic.timeRange")}
+          </Label>
+          <Select
             value={range}
-            onChange={(e) => setRange(e.target.value as RangeKey)}
+            onValueChange={(value) => setRange(value as RangeKey)}
           >
-            <option value="1h">{t("traffic.ranges.1h")}</option>
-            <option value="24h">{t("traffic.ranges.24h")}</option>
-            <option value="7d">{t("traffic.ranges.7d")}</option>
-          </select>
-        </label>
-        <label className="flex flex-col text-sm">
-          <span className="text-muted-foreground">{t("traffic.bucket")}</span>
-          <select
-            className="border rounded px-2 py-1 bg-background"
+            <SelectTrigger id="traffic-range" className="w-[9rem]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="1h">{t("traffic.ranges.1h")}</SelectItem>
+                <SelectItem value="24h">{t("traffic.ranges.24h")}</SelectItem>
+                <SelectItem value="7d">{t("traffic.ranges.7d")}</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1 text-sm">
+          <Label htmlFor="traffic-bucket" className="text-muted-foreground">
+            {t("traffic.bucket")}
+          </Label>
+          <Select
             value={bucket}
-            onChange={(e) => setBucket(e.target.value as BucketKey)}
+            onValueChange={(value) => setBucket(value as BucketKey)}
           >
-            <option value="auto">{t("traffic.buckets.auto")}</option>
-            <option value="1m">{t("traffic.buckets.1m")}</option>
-            <option value="1h">{t("traffic.buckets.1h")}</option>
-          </select>
-        </label>
+            <SelectTrigger id="traffic-bucket" className="w-[9rem]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="auto">{t("traffic.buckets.auto")}</SelectItem>
+                <SelectItem value="1m">{t("traffic.buckets.1m")}</SelectItem>
+                <SelectItem value="1h">{t("traffic.buckets.1h")}</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="flex flex-col text-sm">
           <span className="text-muted-foreground">{t("traffic.totalIn")}</span>
           <span className="font-medium">{formatBytes(totalIn)}</span>

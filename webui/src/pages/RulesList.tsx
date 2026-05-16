@@ -10,9 +10,19 @@ import { isSuperadmin } from "@/lib/permissions";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { EmptyState } from "@/components/EmptyState";
 import { parseRuleState, type Rule } from "@/api/types";
 import { summarizeRateLimit } from "@/components/RateLimitForm";
+
+const OWNER_FILTER_ALL = "__all";
 
 export function RulesList() {
   const { t } = useTranslation();
@@ -193,24 +203,35 @@ export function RulesList() {
       </div>
       {isAdmin && (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <label className="text-sm text-muted-foreground">{t("rules.ownerFilter")}</label>
-          <select
-            className="h-9 rounded-md border border-input bg-background px-2 text-sm sm:w-auto"
-            value={ownerFilter ?? ""}
-            onChange={(e) => {
+          <label htmlFor="owner-filter" className="text-sm text-muted-foreground">
+            {t("rules.ownerFilter")}
+          </label>
+          <Select
+            value={ownerFilter ?? OWNER_FILTER_ALL}
+            onValueChange={(value) => {
               const next = new URLSearchParams(params);
-              if (e.target.value) next.set("owner", e.target.value);
-              else next.delete("owner");
+              if (value === OWNER_FILTER_ALL) {
+                next.delete("owner");
+              } else {
+                next.set("owner", value);
+              }
               setParams(next);
             }}
           >
-            <option value="">—</option>
-            {(users.data ?? []).map((u) => (
-              <option key={u.user_id} value={u.user_id}>
-                {u.user_id}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger id="owner-filter" className="sm:w-[12rem]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value={OWNER_FILTER_ALL}>—</SelectItem>
+                {(users.data ?? []).map((u) => (
+                  <SelectItem key={u.user_id} value={u.user_id}>
+                    {u.user_id}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
         </div>
       )}
       <DataTable
