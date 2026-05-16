@@ -321,6 +321,42 @@ cargo bench -p portunus-client --bench data_plane -- --save-baseline v0.1.0
 # regenerate the JSON summary (see CHANGELOG for the snippet that built it)
 ```
 
+### Local multi-user demo
+
+`make demo` stands up a complete, self-verifying multi-tenant
+environment on loopback: it builds the binaries, starts the server,
+creates N RBAC users (each with its own grant + bearer token and an
+independent edge client), pushes K real forwarding rules per user to
+local echo upstreams, runs a real end-to-end TCP round-trip plus
+RBAC/cross-tenant checks, prints an operator cheat-sheet (tokens,
+rule ids, listen ports, log paths), then holds the environment open.
+
+```sh
+make demo                                         # 3 users × 2 rules, then hold open (Ctrl-C stops + cleans up)
+make demo DEMO_ARGS="--users 5 --rules-per-user 3" # scale it
+make demo DEMO_ARGS="--no-wait"                    # run + verify + exit (CI / quick regression)
+make demo DEMO_ARGS="--keep"                       # reuse /tmp/portunus-demo, skip wipe/bootstrap
+make demo DEMO_ARGS="--dry-run"                    # print the resolved topology only
+```
+
+Flags (forwarded to `scripts/demo.sh`): `--users N`,
+`--rules-per-user K`, `--base-listen P` (default 18001), `--keep`,
+`--disable-splice`, `--no-wait`, `--dry-run`. Once it prints
+`demo ready`, exercise it by hand:
+
+```sh
+# data plane — bytes are forwarded through the edge client to the echo upstream
+printf 'hello\n' | nc 127.0.0.1 18001
+
+# monitoring — per-rule byte counters (token + rule id from the cheat-sheet)
+curl -s -H "Authorization: Bearer <user-token>" \
+  http://127.0.0.1:7080/v1/rules/<rule_id>/stats | jq
+```
+
+State lives in an isolated `/tmp/portunus-demo` (never touches the
+`make dev` data dir). Stats refresh on the client's report interval
+(~5 s), so a freshly sent payload takes a moment to show up.
+
 ## License
 
 Dual-licensed under either of:
