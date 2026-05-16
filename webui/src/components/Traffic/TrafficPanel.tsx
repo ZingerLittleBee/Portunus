@@ -33,6 +33,7 @@ type BucketKey = "auto" | "1m" | "1h";
 
 interface BaseProps {
   defaultRange?: RangeKey;
+  framed?: boolean;
 }
 
 type Props = BaseProps &
@@ -48,7 +49,7 @@ function resolveBucket(range: RangeKey, bucket: BucketKey): TrafficBucket | unde
   return range === "7d" ? "1h" : "1m";
 }
 
-export function TrafficPanel({ userId, clientName, defaultRange = "24h" }: Props) {
+export function TrafficPanel({ userId, clientName, defaultRange = "24h", framed = true }: Props) {
   const { t } = useTranslation();
   const [range, setRange] = useState<RangeKey>(defaultRange);
   const [bucket, setBucket] = useState<BucketKey>("auto");
@@ -71,8 +72,8 @@ export function TrafficPanel({ userId, clientName, defaultRange = "24h" }: Props
   const totalIn = result.data?.total_bytes_in ?? 0;
   const totalOut = result.data?.total_bytes_out ?? 0;
 
-  return (
-    <Card className="p-4 space-y-4">
+  const content = (
+    <>
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex flex-col gap-1 text-sm">
           <Label htmlFor="traffic-range" className="text-muted-foreground">
@@ -138,6 +139,16 @@ export function TrafficPanel({ userId, clientName, defaultRange = "24h" }: Props
       ) : (
         <TrafficChart samples={samples} />
       )}
+    </>
+  );
+
+  if (!framed) {
+    return <div className="flex flex-col gap-4">{content}</div>;
+  }
+
+  return (
+    <Card className="flex flex-col gap-4 p-4">
+      {content}
     </Card>
   );
 }

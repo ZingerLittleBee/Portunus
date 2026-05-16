@@ -22,4 +22,12 @@ describe("chart components", () => {
       expect(text, file).not.toMatch(/\bTooltip\b[^}]*from "recharts"/s);
     }
   });
+
+  it("reserve top chart margin so y-axis max labels are not clipped", () => {
+    for (const file of chartFiles) {
+      const text = source(file);
+
+      expect(text, file).toMatch(/margin=\{\{[^}]*top:\s*(?:1[2-9]|[2-9]\d)/s);
+    }
+  });
 });

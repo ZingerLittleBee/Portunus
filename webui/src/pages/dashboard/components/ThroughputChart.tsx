@@ -88,7 +88,7 @@ export function ThroughputChart(props: ThroughputChartProps) {
             config={chartConfig}
             className="h-48 w-full"
           >
-            <LineChart data={data}>
+            <LineChart data={data} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
               <CartesianGrid vertical={false} />
               <XAxis
                 dataKey="ts"

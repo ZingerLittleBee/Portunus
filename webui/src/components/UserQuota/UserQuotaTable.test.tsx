@@ -1,6 +1,8 @@
 // webui/src/components/UserQuota/UserQuotaTable.test.tsx
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { UserQuotaTable } from "./UserQuotaTable";
 import type { AccessEntry } from "@/api/access-entries";
@@ -76,7 +78,12 @@ describe("UserQuotaTable", () => {
     expect(screen.queryByText(/add/i)).toBeFalsy();
   });
 
-  it("clicking + Add reveals an inline form", () => {
+  it("wraps the quota rows in a bordered table shell", () => {
+    const source = readFileSync(resolve(__dirname, "UserQuotaTable.tsx"), "utf8");
+    expect(source).toContain('className="overflow-x-auto rounded-lg border"');
+  });
+
+  it("clicking + Add opens the quota form in a dialog", () => {
     wrap(
       <UserQuotaTable
         userId="alice"
@@ -86,6 +93,31 @@ describe("UserQuotaTable", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /add/i }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(/add user quota/i)).toBeTruthy();
     expect(screen.getAllByRole("combobox").length).toBeGreaterThan(0);
+  });
+
+  it("opens row edit from a three-dot action menu", async () => {
+    wrap(
+      <UserQuotaTable
+        userId="alice"
+        entries={entries}
+        clients={[
+          { client_name: "edge-tokyo", connected: true },
+          { client_name: "edge-sg", connected: false },
+        ]}
+        readOnly={false}
+      />,
+    );
+
+    const tokyoRow = screen.getByText("edge-tokyo").closest("tr");
+    expect(tokyoRow).toBeTruthy();
+    if (!tokyoRow) throw new Error("edge-tokyo row was not rendered");
+    fireEvent.pointerDown(within(tokyoRow).getByRole("button", { name: /row actions/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /edit/i }));
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(/edit user quota/i)).toBeTruthy();
   });
 });

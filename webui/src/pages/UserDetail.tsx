@@ -23,7 +23,6 @@ import { canSeeUserDetail, type Identity } from "@/lib/permissions";
 import { PermissionDenied } from "@/components/PermissionDenied";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -88,7 +87,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
   const isSelf = identity?.user_id === userId;
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold">
@@ -116,11 +115,12 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         )}
       </div>
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4" /> {t("userDetail.credentials")}
-          </CardTitle>
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <KeyRound className="h-4 w-4" />
+            {t("userDetail.credentials")}
+          </h2>
           <Button
             size="sm"
             onClick={async () => {
@@ -131,8 +131,8 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           >
             {t("userDetail.issueCredential")}
           </Button>
-        </CardHeader>
-        <CardContent className="space-y-2">
+        </div>
+        <div className="flex flex-col gap-2">
           {credentials.data && credentials.data.length > 0 ? (
             credentials.data.map((c) => (
               <div
@@ -167,8 +167,8 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           ) : (
             <p className="text-sm text-muted-foreground">{t("userDetail.noCredentials")}</p>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       <ExhaustedBanner
         exhausted={exhaustedQuotas}
@@ -183,32 +183,24 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         }
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("userQuota.sectionTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {accessEntries.isLoading ? (
-            <p className="text-sm text-muted-foreground">{t("confirm.busy")}</p>
-          ) : (
-            <UserQuotaTable
-              userId={userId}
-              entries={accessEntries.data ?? []}
-              clients={clientLites}
-              readOnly={!isSuperadmin}
-            />
-          )}
-        </CardContent>
-      </Card>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold">{t("userQuota.sectionTitle")}</h2>
+        {accessEntries.isLoading ? (
+          <p className="text-sm text-muted-foreground">{t("confirm.busy")}</p>
+        ) : (
+          <UserQuotaTable
+            userId={userId}
+            entries={accessEntries.data ?? []}
+            clients={clientLites}
+            readOnly={!isSuperadmin}
+          />
+        )}
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("traffic.tab")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <TrafficPanel userId={userId} />
-        </CardContent>
-      </Card>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold">{t("traffic.tab")}</h2>
+        <TrafficPanel userId={userId} framed={false} />
+      </section>
 
       <Separator />
 

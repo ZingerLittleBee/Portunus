@@ -46,7 +46,7 @@ export function TrafficChart({ samples, height = 320 }: Props) {
 
   return (
     <ChartContainer config={chartConfig} className="w-full" style={{ height }}>
-      <AreaChart data={data}>
+      <AreaChart data={data} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
         <XAxis
           dataKey="ts"
           minTickGap={48}

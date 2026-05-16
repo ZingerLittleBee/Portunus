@@ -1,6 +1,8 @@
 // webui/src/components/UserQuota/UserQuotaForm.test.tsx
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { UserQuotaForm } from "./UserQuotaForm";
 import "@/i18n";
 
@@ -63,5 +65,10 @@ describe("UserQuotaForm", () => {
       />,
     );
     expect(screen.queryByLabelText(/bandwidth in/i)).toBeFalsy();
+  });
+
+  it("right-aligns dialog form actions", () => {
+    const source = readFileSync(resolve(__dirname, "UserQuotaForm.tsx"), "utf8");
+    expect(source).toContain("sm:justify-end");
   });
 });
