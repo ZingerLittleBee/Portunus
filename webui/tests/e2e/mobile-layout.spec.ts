@@ -3,6 +3,9 @@ import { loginAs, api } from "./fixtures/helpers";
 
 async function expectNoPageOverflow(page: import("@playwright/test").Page): Promise<void> {
   const overflow = await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     const root = document.documentElement;
     return root.scrollWidth - window.innerWidth;
   });
