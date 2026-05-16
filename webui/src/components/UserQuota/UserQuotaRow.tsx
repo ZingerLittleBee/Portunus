@@ -55,6 +55,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [editDialogContainer, setEditDialogContainer] = useState<HTMLDivElement | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [staleFailure, setStaleFailure] = useState<string | null>(null);
@@ -252,7 +253,10 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           if (!open) setServerError(null);
         }}
       >
-        <DialogContent className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto">
+        <DialogContent
+          ref={setEditDialogContainer}
+          className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto"
+        >
           <DialogHeader>
             <DialogTitle>{t("userQuota.editDialogTitle")}</DialogTitle>
             <DialogDescription>
@@ -281,6 +285,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
             onCancel={() => setEditOpen(false)}
             busy={update.isPending}
             framed={false}
+            popoverContainer={editDialogContainer}
             serverError={serverError}
           />
         </DialogContent>

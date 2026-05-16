@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import { useAuditLog } from "@/api/audit";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatClockTime } from "@/lib/format";
 
 export function RecentAuditPanel() {
   const { t } = useTranslation();
@@ -30,7 +31,7 @@ export function RecentAuditPanel() {
                   {e.actor && <span className="text-muted-foreground"> · {e.actor}</span>}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {new Date(e.timestamp).toLocaleTimeString()}
+                  {formatClockTime(e.timestamp)}
                 </span>
               </li>
             ))}

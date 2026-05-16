@@ -36,7 +36,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     let protected = Router::new()
         .route("/v1/clients", get(get_clients).post(post_clients))
-        .route("/v1/clients/{name}", delete(delete_client))
+        .route("/v1/clients/{name}", put(put_client).delete(delete_client))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/clients/{name}/reissue", post(post_reissue))
         .route("/v1/rules", get(get_rules).post(post_rules))
@@ -156,6 +156,11 @@ struct ProvisionBody {
     address: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateClientBody {
+    address: String,
+}
+
 async fn post_clients(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ProvisionBody>,
@@ -178,6 +183,26 @@ async fn delete_client(
 ) -> Result<StatusCode, ApiError> {
     cli::delete_client(&state, &name)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn put_client(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<UpdateClientBody>,
+) -> Result<Json<ClientView>, ApiError> {
+    cli::update_client(&state, &name, Some(&body.address))?;
+    let updated = cli::list_clients(&state)
+        .await
+        .into_iter()
+        .find(|client| client.client_name.as_str() == name)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "client_not_found",
+                "client not found",
+            )
+        })?;
+    Ok(Json(updated))
 }
 
 async fn post_reissue(

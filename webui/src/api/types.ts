@@ -307,6 +307,10 @@ export interface ProvisionClientBody {
   address: string;
 }
 
+export interface UpdateClientBody {
+  address: string;
+}
+
 export interface CredentialBundle {
   client_name: string;
   bearer_token: string;

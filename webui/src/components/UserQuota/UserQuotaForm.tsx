@@ -35,6 +35,7 @@ interface Props {
   onCancel: () => void;
   busy?: boolean;
   framed?: boolean;
+  popoverContainer?: HTMLElement | null | undefined;
   serverError?: string | null;
 }
 
@@ -42,8 +43,8 @@ const DEFAULTS: FormValues = {
   client_name: "",
   listen_port_start: 10_000,
   listen_port_end: 19_999,
-  protocols: ["tcp"],
-  unlimited: false,
+  protocols: ["tcp", "udp"],
+  unlimited: true,
   bandwidth_in_bps: null,
   bandwidth_out_bps: null,
   new_connections_per_sec: null,
@@ -74,6 +75,7 @@ export function UserQuotaForm({
   onCancel,
   busy,
   framed = true,
+  popoverContainer,
   serverError,
 }: Props) {
   const { t } = useTranslation();
@@ -123,6 +125,7 @@ export function UserQuotaForm({
               onChange={field.onChange}
               disabledClientNames={disabledClientNames}
               disabled={lockClient ?? false}
+              popoverContainer={popoverContainer}
             />
           )}
         />

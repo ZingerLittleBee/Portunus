@@ -36,6 +36,7 @@ interface Props {
 export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
   const { t } = useTranslation();
   const [adding, setAdding] = useState(false);
+  const [addDialogContainer, setAddDialogContainer] = useState<HTMLDivElement | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const create = useCreateAccessEntry(userId);
 
@@ -126,7 +127,10 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
           if (!open) setServerError(null);
         }}
       >
-        <DialogContent className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto">
+        <DialogContent
+          ref={setAddDialogContainer}
+          className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto"
+        >
           <DialogHeader>
             <DialogTitle>{t("userQuota.addDialogTitle")}</DialogTitle>
             <DialogDescription>{t("userQuota.addDialogBody")}</DialogDescription>
@@ -141,6 +145,7 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
             }}
             busy={create.isPending}
             framed={false}
+            popoverContainer={addDialogContainer}
             serverError={serverError}
           />
         </DialogContent>

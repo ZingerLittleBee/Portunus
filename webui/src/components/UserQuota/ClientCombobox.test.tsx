@@ -1,5 +1,5 @@
 // webui/src/components/UserQuota/ClientCombobox.test.tsx
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { ClientCombobox } from "./ClientCombobox";
 import "@/i18n";
@@ -53,5 +53,20 @@ describe("ClientCombobox", () => {
     fireEvent.click(screen.getByRole("combobox"));
     const sg = screen.getByText("edge-sg").closest("[role='option']");
     expect(sg?.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("selects a client when clicking a command item", () => {
+    const onChange = vi.fn();
+    render(
+      <ClientCombobox
+        clients={clients}
+        value=""
+        onChange={onChange}
+        disabledClientNames={new Set()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByText("edge-tokyo"));
+    expect(onChange).toHaveBeenCalledWith("edge-tokyo");
   });
 });

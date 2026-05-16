@@ -100,7 +100,7 @@ export function DataTable<Row>({
   return (
     <div className={cn("flex min-w-0 flex-col gap-2", className)}>
       {toolbar && <div className="flex flex-col gap-2 sm:flex-row sm:items-center">{toolbar}</div>}
-      <div className="overflow-x-auto rounded-md border">
+      <div className="overflow-x-auto rounded-lg border">
         <div
           className="grid border-b bg-muted/40 text-sm font-medium"
           role="row"

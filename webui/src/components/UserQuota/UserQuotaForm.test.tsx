@@ -27,6 +27,29 @@ describe("UserQuotaForm", () => {
     expect(screen.getByRole("combobox")).toBeTruthy();
   });
 
+  it("defaults new entries to unlimited tcp and udp access", () => {
+    render(
+      <UserQuotaForm
+        clients={clients}
+        disabledClientNames={new Set()}
+        defaultValues={undefined}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: /unlimited/i }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("checkbox", { name: "TCP" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("checkbox", { name: "UDP" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.queryByLabelText(/bandwidth in/i)).toBeFalsy();
+  });
+
   it("blocks submission when ports inverted", async () => {
     const onSubmit = vi.fn();
     render(

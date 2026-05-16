@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 
 const chartFiles = [
   "src/pages/dashboard/components/ThroughputChart.tsx",
+  "src/pages/dashboard/components/TopRulesPanel.tsx",
+  "src/pages/dashboard/components/TrafficComparisonChart.tsx",
+  "src/pages/dashboard/components/TrafficDirectionChart.tsx",
   "src/components/Traffic/TrafficChart.tsx",
 ];
 

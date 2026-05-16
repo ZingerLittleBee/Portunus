@@ -25,6 +25,7 @@ interface Props {
   onChange: (next: string) => void;
   disabledClientNames: Set<string>;
   disabled?: boolean;
+  popoverContainer?: HTMLElement | null | undefined;
 }
 
 export function ClientCombobox({
@@ -33,9 +34,16 @@ export function ClientCombobox({
   onChange,
   disabledClientNames,
   disabled,
+  popoverContainer,
 }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+
+  function selectClient(clientName: string, isDisabled: boolean) {
+    if (isDisabled) return;
+    onChange(clientName);
+    setOpen(false);
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -49,10 +57,10 @@ export function ClientCombobox({
           className="w-full justify-between"
         >
           {value || t("userQuota.combobox.placeholder")}
-          <ChevronsUpDown className="ml-2 h-4 w-4 opacity-50" />
+          <ChevronsUpDown className="ml-2 size-4 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+      <PopoverContent container={popoverContainer} className="w-[--radix-popover-trigger-width] p-0">
         <Command>
           <CommandInput placeholder={t("userQuota.combobox.search")} />
           <CommandList>
@@ -65,15 +73,15 @@ export function ClientCombobox({
                     key={c.client_name}
                     value={c.client_name}
                     disabled={isDisabled}
-                    onSelect={() => {
-                      if (isDisabled) return;
-                      onChange(c.client_name);
-                      setOpen(false);
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      selectClient(c.client_name, isDisabled);
                     }}
+                    onSelect={() => selectClient(c.client_name, isDisabled)}
                   >
                     <Check
                       className={cn(
-                        "mr-2 h-4 w-4",
+                        "mr-2 size-4",
                         value === c.client_name ? "opacity-100" : "opacity-0",
                       )}
                     />

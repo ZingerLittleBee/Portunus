@@ -19,6 +19,13 @@ const chartTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: false,
 });
 
+const clockTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "—";
   if (n < KB) return `${n} B`;
@@ -53,6 +60,12 @@ export function formatChartTimestamp(unixSec: number): string {
   return chartTimestampFormatter.format(d);
 }
 
+export function formatClockTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return clockTimeFormatter.format(d);
+}
+
 export function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -63,5 +76,6 @@ export function formatTimestamp(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    hour12: false,
   });
 }
