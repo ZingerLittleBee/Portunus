@@ -5,6 +5,20 @@ const MB = KB * 1024;
 const GB = MB * 1024;
 const TB = GB * 1024;
 
+const chartTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const chartTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "—";
   if (n < KB) return `${n} B`;
@@ -25,6 +39,18 @@ export function formatDuration(ms: number): string {
   const h = Math.floor(m / 60);
   const rm = m % 60;
   return `${h}h ${rm}m`;
+}
+
+export function formatChartTime(unixSec: number): string {
+  const d = new Date(unixSec * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+  return chartTimeFormatter.format(d);
+}
+
+export function formatChartTimestamp(unixSec: number): string {
+  const d = new Date(unixSec * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+  return chartTimestampFormatter.format(d);
 }
 
 export function formatTimestamp(iso: string): string {

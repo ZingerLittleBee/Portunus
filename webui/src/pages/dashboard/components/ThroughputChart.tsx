@@ -17,7 +17,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatChartTime, formatChartTimestamp } from "@/lib/format";
 
 import type { DashboardRangeId } from "@/pages/dashboard/useDashboardRange";
 
@@ -35,7 +35,7 @@ export interface ThroughputChartProps {
 export function ThroughputChart(props: ThroughputChartProps) {
   const { t } = useTranslation();
   const data = (props.samples ?? []).map((s) => ({
-    tsLabel: new Date(s.ts * 1000).toLocaleString(),
+    ts: s.ts,
     bytes_in: s.bytes_in,
     bytes_out: s.bytes_out,
   }));
@@ -91,8 +91,8 @@ export function ThroughputChart(props: ThroughputChartProps) {
             <LineChart data={data}>
               <CartesianGrid vertical={false} />
               <XAxis
-                dataKey="tsLabel"
-                tickFormatter={(v) => new Date(String(v)).toLocaleTimeString()}
+                dataKey="ts"
+                tickFormatter={(v) => formatChartTime(Number(v))}
                 fontSize={10}
                 tickLine={false}
                 axisLine={false}
@@ -108,7 +108,13 @@ export function ThroughputChart(props: ThroughputChartProps) {
               />
               <ChartTooltip
                 content={
-                  <ChartTooltipContent valueFormatter={(v) => formatBytes(Number(v))} />
+                  <ChartTooltipContent
+                    labelFormatter={(_, payload) => {
+                      const ts = payload[0]?.payload?.ts;
+                      return typeof ts === "number" ? formatChartTimestamp(ts) : null;
+                    }}
+                    valueFormatter={(v) => formatBytes(Number(v))}
+                  />
                 }
               />
               <Line

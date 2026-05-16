@@ -19,7 +19,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatChartTime, formatChartTimestamp } from "@/lib/format";
 
 interface Props {
   samples: TrafficSample[];
@@ -29,7 +29,7 @@ interface Props {
 export function TrafficChart({ samples, height = 320 }: Props) {
   const { t } = useTranslation();
   const data = samples.map((s) => ({
-    ts: new Date(s.ts * 1000).toLocaleString(),
+    ts: s.ts,
     bytes_in: s.bytes_in,
     bytes_out: s.bytes_out,
   }));
@@ -50,6 +50,7 @@ export function TrafficChart({ samples, height = 320 }: Props) {
         <XAxis
           dataKey="ts"
           minTickGap={48}
+          tickFormatter={(v) => formatChartTime(Number(v))}
           tickLine={false}
           axisLine={false}
           tickMargin={8}
@@ -62,7 +63,15 @@ export function TrafficChart({ samples, height = 320 }: Props) {
           width={80}
         />
         <ChartTooltip
-          content={<ChartTooltipContent valueFormatter={(v) => formatBytes(Number(v))} />}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(_, payload) => {
+                const ts = payload[0]?.payload?.ts;
+                return typeof ts === "number" ? formatChartTimestamp(ts) : null;
+              }}
+              valueFormatter={(v) => formatBytes(Number(v))}
+            />
+          }
         />
         <ChartLegend content={<ChartLegendContent />} />
         <Area
