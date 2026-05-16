@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-05-16
+
+Release-engineering fix: the v1.4.0 tag never produced Linux binaries
+because the forwarder failed to compile on Linux. This patch ships the
+working Linux/macOS artifacts, and folds in the role-aware Dashboard
+MVP and a local multi-user demo harness merged after v1.4.0.
+
+### Fixed
+
+- **Linux release build** — `splice.rs` referenced `super::quota::`
+  from inside `#[cfg(target_os = "linux")] mod linux`, which resolved
+  to the nonexistent `splice::quota` and broke `cargo build` on Linux
+  with E0433. The v1.4.0 Release workflow's Linux jobs failed, so no
+  Linux archives, Docker images, or GitHub release were published.
+  Now uses the absolute `crate::forwarder::quota::` path.
+- **bench regression gate** — pointed at the `portunus-forwarder`
+  baseline after the data-plane crate extraction.
+- **e2e** — superadmin dashboard heading + us1 grant creation updated
+  for the current quota form and sidebar sign-out flow.
+
+### Added
+
+- **Role-aware Dashboard** — `SuperadminDashboard` (global throughput
+  chart, top rules, offline clients, unhealthy targets, recent audit)
+  and `TenantDashboard` (5 KPIs + quota emphasis, scoped to the
+  caller's own resources). New superadmin-only `/v1/traffic/global`
+  endpoint and `useGlobalTraffic` / `useThroughputRate` hooks.
+- **Local demo harness** — `make demo` (scripts/demo.sh): bootstraps a
+  superadmin, provisions per-user edges over the HTTP API, pushes
+  rules, runs end-to-end echo + RBAC 403 checks, and tears down
+  cleanly. `--keep` re-runs are idempotent.
+
 ## [1.4.0] — 2026-05-14
 
 Per-(user, client) monthly traffic quota + history aggregation, plus a
