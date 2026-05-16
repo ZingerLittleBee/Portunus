@@ -239,7 +239,7 @@ function NavUser({ identity }: { identity: Identity | null | undefined }) {
             <DropdownMenuGroup>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
-                  <ThemeIcon />
+                  <ThemeIcon className="size-3.5" />
                   <span>{t(`theme.${theme}`)}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
@@ -251,7 +251,7 @@ function NavUser({ identity }: { identity: Identity | null | undefined }) {
                         checked={theme === opt}
                         onCheckedChange={(v) => v && setTheme(opt)}
                       >
-                        <Icon />
+                        <Icon className="size-3.5" />
                         <span>{t(`theme.${opt}`)}</span>
                       </DropdownMenuCheckboxItem>
                     );
@@ -261,7 +261,7 @@ function NavUser({ identity }: { identity: Identity | null | undefined }) {
 
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
-                  <Globe />
+                  <Globe className="size-3.5" />
                   <span>{t(`language.${currentLang}`)}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
@@ -281,7 +281,7 @@ function NavUser({ identity }: { identity: Identity | null | undefined }) {
             <DropdownMenuSeparator />
 
             <DropdownMenuItem onSelect={() => void signOut()}>
-              <LogOut />
+              <LogOut className="size-3.5" />
               <span>{t("nav.signOut")}</span>
             </DropdownMenuItem>
           </DropdownMenuContent>

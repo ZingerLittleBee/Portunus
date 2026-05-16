@@ -18,6 +18,7 @@ DRY_RUN=0
 DATA_DIR=/tmp/portunus-demo
 GRPC_ENDPOINT=127.0.0.1:7443
 HTTP_ENDPOINT=127.0.0.1:7080
+WEBUI_ENDPOINT=127.0.0.1:5173
 CARGO_PROFILE="${CARGO_PROFILE:-release}"
 
 usage() {
@@ -132,6 +133,9 @@ preflight() {
   require_cmd cargo
   require_cmd curl
   require_cmd jq
+  if [[ "${NO_WAIT}" != "1" ]]; then
+    require_cmd pnpm
+  fi
   if ! command -v socat >/dev/null 2>&1 \
      && ! command -v python3 >/dev/null 2>&1; then
     die "need either 'socat' or 'python3' for the echo upstream"
@@ -144,6 +148,7 @@ print_topology() {
   log "  data-dir   = ${DATA_DIR}"
   log "  gRPC       = ${GRPC_ENDPOINT}"
   log "  operator   = http://${HTTP_ENDPOINT}"
+  log "  web UI     = http://localhost:${WEBUI_ENDPOINT##*:}"
   log "  users      = ${USERS}  rules/user = ${RULES_PER_USER}"
   local u r idx listen target
   idx=0
@@ -161,6 +166,7 @@ print_topology() {
 SERVER_BIN=""
 CLIENT_BIN=""
 SUPERADMIN_TOKEN=""
+SUPERADMIN_DEMO_PASSWORD="${PORTUNUS_DEMO_PASSWORD:-portunus-demo-password}"
 
 resolve_bins() {
   local sub="release"
@@ -206,13 +212,27 @@ bootstrap_superadmin() {
   printf '%s' "${SUPERADMIN_TOKEN}" >"${DATA_DIR}/.superadmin-token"
 }
 
+reset_superadmin_password() {
+  local out
+  out="$(printf '%s\n' "${SUPERADMIN_DEMO_PASSWORD}" \
+        | "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
+          reset-password _superadmin --password-stdin --keep-api-tokens \
+          2>>"${DATA_DIR}/server.log")"
+  printf '%s\n' "${out}" | grep -q '^password_reset=ok ' \
+    || die "could not reset superadmin demo password from: ${out} (check ${DATA_DIR}/server.log)"
+}
+
 check_ports() {
-  local endpoint host port
-  for endpoint in "${GRPC_ENDPOINT}" "${HTTP_ENDPOINT}"; do
+  local endpoint host port endpoints
+  endpoints=("${GRPC_ENDPOINT}" "${HTTP_ENDPOINT}")
+  if [[ "${NO_WAIT}" != "1" ]]; then
+    endpoints+=("${WEBUI_ENDPOINT}")
+  fi
+  for endpoint in "${endpoints[@]}"; do
     host="${endpoint%:*}"
     port="${endpoint##*:}"
     if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
-      die "port ${port} (${endpoint}) already in use — kill the stale portunus-server first"
+      die "port ${port} (${endpoint}) already in use — kill the stale demo/dev process first"
     fi
   done
 }
@@ -236,6 +256,32 @@ wait_server() {
   wait_ready 15 "server.listening" server_listening || {
     log "--- server.log (tail) ---"; tail -n 30 "${DATA_DIR}/server.log" >&2
     die "server did not become ready"
+  }
+}
+
+# ---- web UI ----------------------------------------------------------------
+start_webui() {
+  if [[ "${NO_WAIT}" == "1" ]]; then
+    return 0
+  fi
+  log "starting Web UI (Vite http://localhost:${WEBUI_ENDPOINT##*:})..."
+  pnpm --dir webui dev --host "${WEBUI_ENDPOINT%:*}" \
+    --port "${WEBUI_ENDPOINT##*:}" --strictPort \
+    >>"${DATA_DIR}/webui.log" 2>&1 &
+  track "$!"
+}
+
+webui_ready() {
+  grep -q "http://127.0.0.1:${WEBUI_ENDPOINT##*:}/" "${DATA_DIR}/webui.log" 2>/dev/null
+}
+
+wait_webui() {
+  if [[ "${NO_WAIT}" == "1" ]]; then
+    return 0
+  fi
+  wait_ready 15 "web UI on ${WEBUI_ENDPOINT}" webui_ready || {
+    log "--- webui.log (tail) ---"; tail -n 30 "${DATA_DIR}/webui.log" >&2
+    die "web UI did not become ready"
   }
 }
 
@@ -466,6 +512,10 @@ print_cheatsheet() {
   local g u
   log "==================== demo ready ===================="
   print_topology
+  log "operator login: http://${HTTP_ENDPOINT}"
+  log "Web UI:         http://localhost:${WEBUI_ENDPOINT##*:}"
+  log "  user_id:  _superadmin"
+  log "  password: ${SUPERADMIN_DEMO_PASSWORD}"
   for ((u = 1; u <= USERS; u++)); do
     log "user${u} token: ${USER_TOKENS[u]}"
   done
@@ -475,8 +525,8 @@ print_cheatsheet() {
   log "data plane:   nc 127.0.0.1 ${RULE_LISTEN[0]}   (type text -> echoed)"
   log "monitoring:   curl -s -H \"Authorization: Bearer <user-token>\" \\"
   log "                http://${HTTP_ENDPOINT}/v1/rules/<rule_id>/stats | jq"
-  log "logs:         ${DATA_DIR}/server.log , ${DATA_DIR}/edge-*.log"
-  log "stop:         Ctrl-C here (tears down server / clients / upstreams)"
+  log "logs:         ${DATA_DIR}/server.log , ${DATA_DIR}/webui.log , ${DATA_DIR}/edge-*.log"
+  log "stop:         Ctrl-C here (tears down server / Web UI / clients / upstreams)"
   log "===================================================="
 }
 
@@ -490,8 +540,11 @@ main() {
   build_binaries
   prepare_data_dir
   bootstrap_superadmin
+  reset_superadmin_password
   start_server
   wait_server
+  start_webui
+  wait_webui
   log "server ready; superadmin token captured (${#SUPERADMIN_TOKEN} chars)"
   add_users
   log "users provisioned: ${USERS}"

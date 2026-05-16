@@ -325,11 +325,12 @@ cargo bench -p portunus-client --bench data_plane -- --save-baseline v0.1.0
 
 `make demo` stands up a complete, self-verifying multi-tenant
 environment on loopback: it builds the binaries, starts the server,
-creates N RBAC users (each with its own grant + bearer token and an
-independent edge client), pushes K real forwarding rules per user to
-local echo upstreams, runs a real end-to-end TCP round-trip plus
-RBAC/cross-tenant checks, prints an operator cheat-sheet (tokens,
-rule ids, listen ports, log paths), then holds the environment open.
+starts the Vite Web UI on http://localhost:5173, creates N RBAC users
+(each with its own grant + bearer token and an independent edge client),
+pushes K real forwarding rules per user to local echo upstreams, runs a
+real end-to-end TCP round-trip plus RBAC/cross-tenant checks, prints an
+operator cheat-sheet (Web UI login, tokens, rule ids, listen ports, log
+paths), then holds the environment open.
 
 ```sh
 make demo                                         # 3 users × 2 rules, then hold open (Ctrl-C stops + cleans up)
@@ -342,7 +343,9 @@ make demo DEMO_ARGS="--dry-run"                    # print the resolved topology
 Flags (forwarded to `scripts/demo.sh`): `--users N`,
 `--rules-per-user K`, `--base-listen P` (default 18001), `--keep`,
 `--disable-splice`, `--no-wait`, `--dry-run`. Once it prints
-`demo ready`, exercise it by hand:
+`demo ready`, log in at http://localhost:5173 with `_superadmin` and
+the printed demo password (`portunus-demo-password` by default; override
+with `PORTUNUS_DEMO_PASSWORD=...`), or exercise it by hand:
 
 ```sh
 # data plane — bytes are forwarded through the edge client to the echo upstream
