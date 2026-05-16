@@ -40,11 +40,57 @@ fn spawn_udp_echo() -> (Ipv4Addr, u16) {
 }
 
 fn pick_free_udp_port() -> u16 {
-    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
         .expect("bind ephemeral")
         .local_addr()
         .unwrap()
         .port()
+}
+
+fn push_udp_rule_retrying_port_conflicts(
+    http: &str,
+    client_name: &str,
+    target_port: u16,
+) -> (u16, reqwest::StatusCode, Value) {
+    let mut last_status = None;
+    let mut last_body = None;
+
+    for _ in 0..5 {
+        let udp_listen = pick_free_udp_port();
+        let (status, body) = common::push_rule_http_with_protocol(
+            http,
+            client_name,
+            udp_listen,
+            "127.0.0.1",
+            target_port,
+            "udp",
+            Some(3),
+        );
+        let activation_port_conflict = status.as_u16() == 422
+            && body
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str)
+                == Some("activation_failed")
+            && body
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("port_in_use"));
+
+        if !activation_port_conflict {
+            return (udp_listen, status, body);
+        }
+
+        last_status = Some(status);
+        last_body = Some(body);
+    }
+
+    (
+        pick_free_udp_port(),
+        last_status.expect("retry loop attempted at least once"),
+        last_body.expect("retry loop attempted at least once"),
+    )
 }
 
 /// 004-udp-forward T049 helper: bind `n` consecutive UDP ports on
@@ -112,16 +158,8 @@ fn test_udp_us1_happy_path() {
     assert!(connected.is_some(), "edge-01 must connect within 5s");
 
     let (_echo_ip, echo_port) = spawn_udp_echo();
-    let udp_listen = pick_free_udp_port();
-    let (status, body) = common::push_rule_http_with_protocol(
-        &http,
-        "edge-01",
-        udp_listen,
-        "127.0.0.1",
-        echo_port,
-        "udp",
-        Some(3),
-    );
+    let (udp_listen, status, body) =
+        push_udp_rule_retrying_port_conflicts(&http, "edge-01", echo_port);
     if !status.is_success() {
         eprintln!("--- server stderr ---");
         for l in server.stderr_lines.lock().unwrap().iter() {
