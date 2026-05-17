@@ -178,16 +178,20 @@ struct UpdateClientBody {
 async fn post_client_enrollments(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<EnrollmentBody>,
 ) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
     crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let req_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
     let enrollment = cli::enroll_client(
         &state,
         &body.name,
         Some(&body.address),
         body.ttl_secs.unwrap_or(600),
-        None,
+        req_host,
     )?;
     Ok((
         StatusCode::CREATED,
@@ -203,13 +207,17 @@ async fn post_client_enrollments(
 async fn post_client_reenrollment(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
+    headers: axum::http::HeaderMap,
     Path(name): Path<String>,
     Json(body): Json<ReEnrollmentBody>,
 ) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
     crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let req_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
     let enrollment =
-        cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600), None)?;
+        cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600), req_host)?;
     Ok((
         StatusCode::CREATED,
         Json(EnrollmentResponse {

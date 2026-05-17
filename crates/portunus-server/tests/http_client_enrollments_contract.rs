@@ -202,6 +202,34 @@ async fn existing_client_enrollment_does_not_rotate_until_redeemed() {
 }
 
 #[tokio::test]
+async fn enrollment_uri_derives_from_request_host() {
+    let (router, _tokens, _alice_token, _dir) = build_router();
+    let body_bytes =
+        serde_json::to_vec(&json!({"name": "edge-h", "address": "e.example.com", "ttl_secs": 300}))
+            .expect("body");
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/client-enrollments")
+        .header("content-type", "application/json")
+        .header("content-length", body_bytes.len().to_string())
+        .header("Authorization", format!("Bearer {SUPER_TOKEN}"))
+        .header("host", "public.example")
+        .body(Body::from(body_bytes))
+        .unwrap();
+    let resp = router.oneshot(request).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert!(
+        body["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("portunus://public.example:7443/enroll?"),
+        "got {}",
+        body["uri"]
+    );
+}
+
+#[tokio::test]
 async fn old_reissue_endpoint_is_removed() {
     let (router, tokens, _alice_token, _dir) = build_router();
     tokens
