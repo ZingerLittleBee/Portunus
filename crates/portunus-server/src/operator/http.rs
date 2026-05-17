@@ -136,6 +136,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/traffic/global",
             get(crate::operator::quota_http::get_global_traffic),
         )
+        // 014-advertised-endpoint: operator GET/PUT for the runtime
+        // advertised-endpoint override. Superadmin-only.
+        .route(
+            "/v1/settings/advertised-endpoint",
+            get(get_advertised_endpoint).put(put_advertised_endpoint),
+        )
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
@@ -1394,6 +1400,98 @@ async fn get_rule_stats(
     }
     Ok(Json(body))
 }
+
+// ---------------------------------------------------------------------------
+// Advertised-endpoint settings (014-advertised-endpoint)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct AdvertisedEndpointBody {
+    /// `null`/empty clears the override.
+    advertised_endpoint: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AdvertisedEndpointView {
+    r#override: Option<String>,
+    effective: Option<String>,
+    source: Option<crate::advertised::EndpointSource>,
+    diagnostic: Option<String>,
+}
+
+async fn get_advertised_endpoint(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+) -> Result<Json<AdvertisedEndpointView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let override_value = state
+        .settings
+        .get_advertised_endpoint()
+        .map_err(map_store_err)?;
+    let view =
+        match crate::advertised::resolve_advertised_endpoint(&crate::advertised::ResolveInputs {
+            override_value: override_value.clone(),
+            seed: state.advertised_seed.clone(),
+            req_host: None,
+            control_port: state.control_port,
+            san: &state.cert_san,
+        }) {
+            Ok(r) => AdvertisedEndpointView {
+                r#override: override_value,
+                effective: Some(r.endpoint),
+                source: Some(r.source),
+                diagnostic: None,
+            },
+            Err(e) => AdvertisedEndpointView {
+                r#override: override_value,
+                effective: None,
+                source: None,
+                diagnostic: Some(e.to_string()),
+            },
+        };
+    Ok(Json(view))
+}
+
+async fn put_advertised_endpoint(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    Json(body): Json<AdvertisedEndpointBody>,
+) -> Result<Json<AdvertisedEndpointView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let value = body.advertised_endpoint.filter(|s| !s.is_empty());
+    if let Some(v) = &value {
+        let (host, _) = crate::advertised::grammar::validate_authority(v).map_err(|reason| {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "endpoint_invalid", reason)
+        })?;
+        if !state.cert_san.covers(host) {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "endpoint_not_in_cert_san",
+                format!(
+                    "host {host} is not covered by the server certificate SAN; \
+                     reissue/redeploy the cert to cover it"
+                ),
+            ));
+        }
+    }
+    state
+        .settings
+        .set_advertised_endpoint(value)
+        .map_err(map_store_err)?;
+    get_advertised_endpoint(State(state), Extension(identity)).await
+}
+
+fn map_store_err(e: crate::store::StoreError) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "store_error",
+        e.to_string(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
 struct ApiErrorBody {
