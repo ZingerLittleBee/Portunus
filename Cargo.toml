@@ -8,7 +8,7 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ZingerLittleBee/Portunus"
 authors = ["Portunus contributors"]
-version = "1.4.1"
+version = "1.4.2"
 
 [workspace.lints.rust]
 # `deny` (not `forbid`) so that `crates/portunus-client/src/forwarder/splice.rs`

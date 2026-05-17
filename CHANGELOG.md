@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-05-17
+
 ### Changed
 
 - **Client installation** — direct credential-bundle provisioning is replaced
@@ -14,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-enrollment client bundles and the removed `/v1/clients` provisioning /
   `/v1/clients/{name}/reissue` operator endpoints are intentionally not
   compatible with this flow.
+
+### Added
+
+- **One-shot installer** — role-parameterised `scripts/install.sh`
+  (`server`/`client`): downloads and sha256-verifies the release binary,
+  optional `--systemd` hardened unit, `--dry-run`.
+- **Stepped install wizard** — Web UI enrollment guide with
+  Shell / systemd / Docker tabs, countdown and copy buttons.
 
 ## [1.4.1] — 2026-05-16
 
