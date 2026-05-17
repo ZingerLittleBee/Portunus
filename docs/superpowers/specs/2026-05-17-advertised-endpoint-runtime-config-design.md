@@ -107,17 +107,23 @@ port}`. Examples: `Host: localhost:5173` → `localhost:7443`;
 **Covered vs. uncovered, by tier kind:**
 
 - **Explicit operator config** (tier 1 SQLite override, tier 2
-  CLI/env seed): if present but its host is **not** SAN-covered,
-  resolution is a **hard error** (`ConfiguredEndpointNotCovered`),
-  *not* a silent fall-through. Reason: an operator who set a value
-  (or a seed left stale after cert rotation) must be told it is
-  unusable, never silently downgraded to a "valid but wrong"
-  lower-priority endpoint.
+  CLI/env seed): if present, it is first **grammar-validated** with
+  the same authority rules as §2 (tier 2 is raw `--advertised-endpoint`
+  / `PORTUNUS_ADVERTISED_ENDPOINT` input and has never been validated
+  before; tier 1 is validated on write but re-checked defensively in
+  case the DB row was hand-edited). A malformed explicit value is a
+  **hard error** (`ConfiguredEndpointInvalid`). A well-formed explicit
+  value whose host is **not** SAN-covered is a **hard error**
+  (`ConfiguredEndpointNotCovered`). Neither is a silent fall-through:
+  an operator who set a value (or a seed left stale/garbled after a
+  config or cert change) must be told it is unusable, never silently
+  downgraded to a "valid but wrong" lower-priority endpoint.
 - **Implicit candidates** (tier 3 auto-derive, tier 4 loopback): if
   not SAN-covered, skip with a `warn` and fall through.
 
-So precedence is: if tier 1 present → it must be covered or hard
-error; else if tier 2 present → it must be covered or hard error;
+So precedence is: if tier 1 present → it must be well-formed and
+covered or hard error; else if tier 2 present → it must be well-formed
+and covered or hard error;
 else try tier 3, then tier 4, skipping uncovered ones. If nothing
 usable remains, resolution **fails** with `NoSanCoveredCandidate`
 (see §4). Creation never fabricates an unusable endpoint.
@@ -147,9 +153,16 @@ ALTER TABLE client_enrollments ADD COLUMN advertised_endpoint TEXT;
 
 - `server_settings`: singleton (`id = 1`) operator override.
 - `client_enrollments.advertised_endpoint`: the endpoint frozen at
-  creation. `NULL` only for rows created before this migration;
-  `redeem()` of such a legacy row falls back to the loopback default
-  (documented; legacy rows are short-lived enrollments and will expire).
+  creation. `NULL` only for rows created before this migration. For a
+  legacy `NULL` row, `redeem()` does **not** invent a loopback value
+  (that could silently diverge from the original public URI and could
+  violate the SAN guarantee). Instead it runs the resolver once with
+  `req_host = None` (tiers 1 → 2 → 4) under the *same* error contract;
+  on `ConfiguredEndpoint*` / `NoSanCoveredCandidate` the redeem fails
+  with a gRPC `failed_precondition` rather than handing back a
+  "valid but wrong" bundle. This is the single bounded exception to
+  "redeem never resolves"; it disappears as legacy rows expire
+  (enrollments are short-TTL).
 
 New `store/settings_store.rs`:
 
@@ -222,19 +235,28 @@ helper MUST use webpki/rustls-equivalent name matching:
   `ResolvedAdvertisedEndpoint` carries the `host:port` string plus the
   winning `source` (override / seed / derived / loopback) for the UI.
   `ResolveEndpointError` variants:
+  - `ConfiguredEndpointInvalid { tier, reason }` — an **explicit**
+    candidate (tier 1 or tier 2) is present but fails authority
+    grammar (e.g. `https://x:7443`, `x/y:7443`, `x:bad`, IPv6
+    literal). Hard error; never downgraded to a lower tier.
   - `ConfiguredEndpointNotCovered { tier, host }` — an **explicit**
-    candidate (tier 1 SQLite override or tier 2 CLI/env seed) is
-    present but its host is not SAN-covered. Hard error; never
-    downgraded to a lower tier.
+    candidate is well-formed but its host is not SAN-covered. Hard
+    error; never downgraded to a lower tier.
   - `NoSanCoveredCandidate` — no explicit config present, and both
     auto-derive and loopback are absent/uncovered.
-  **Error surfaces (both variants):**
-  - Web UI / HTTP create-client → HTTP 422,
-    `endpoint_not_in_cert_san`, body distinguishes the two variants
-    and lists the candidate(s) tried with the reason each failed.
+  **Error surfaces (all three variants):**
+  - Web UI / HTTP create-client → HTTP 422. Machine code
+    `endpoint_invalid` for `ConfiguredEndpointInvalid`,
+    `endpoint_not_in_cert_san` for the two coverage variants; body
+    names the failing tier and lists the candidate(s) tried with the
+    reason each failed.
   - Offline `enroll-client` → non-zero exit with the same diagnostic.
-  - The gRPC `enroll` redeem path never resolves (it replays the
-    persisted row), so it cannot hit either error.
+  - The gRPC `enroll` redeem path normally replays the persisted row
+    and cannot hit these; the **only** exception is a legacy
+    pre-`V010` row with `advertised_endpoint = NULL` (see
+    Migration / Compatibility), which resolves with `req_host = None`
+    under this same contract and can therefore surface these errors as
+    a gRPC `Status` (`failed_precondition`).
 - `ClientEnrollmentStore::create` gains an `advertised_endpoint:
   String` input (resolved by the caller) and writes it to the new
   column. `CreatedEnrollment` / `redeem()` return it.
@@ -265,8 +287,9 @@ helper MUST use webpki/rustls-equivalent name matching:
     `override` is the raw SQLite value. `effective`/`source` are the
     resolution result *without* a request `Host` (server-side view);
     when resolution would error, `effective` and `source` are `null`
-    and `diagnostic` carries the `ConfiguredEndpointNotCovered` /
-    `NoSanCoveredCandidate` reason so the UI can render the problem
+    and `diagnostic` carries the `ConfiguredEndpointInvalid` /
+    `ConfiguredEndpointNotCovered` / `NoSanCoveredCandidate` reason so
+    the UI can render the problem
     inline rather than treating GET as broken.
   - **`PUT`** enforces grammar + SAN coverage; on failure returns
     422 with `endpoint_not_in_cert_san` (or the grammar error code),
@@ -294,13 +317,21 @@ No code change.
   `Host: public.example` → `public.example:7443`; reject (skip tier 3)
   for scheme/path/`@`userinfo/whitespace/IPv6-literal headers.
 - `resolve_advertised_endpoint`: each precedence branch;
-  **explicit-config not covered → `ConfiguredEndpointNotCovered`
-  hard error, never downgraded** (e.g. stale SQLite override or
-  CLI/env seed after cert rotation, even when loopback *is* covered);
-  implicit tiers (auto-derive, loopback) skip-and-fall-through when
-  uncovered; nothing usable → `NoSanCoveredCandidate`. Both map to
-  422 `endpoint_not_in_cert_san` on the create-client HTTP path and
-  non-zero exit offline.
+  **malformed explicit config → `ConfiguredEndpointInvalid` hard
+  error** (bad CLI flag *and* bad `PORTUNUS_ADVERTISED_ENDPOINT` env:
+  `https://x:7443`, `x/y:7443`, `x:bad`, IPv6 literal, host-only);
+  **well-formed explicit config not covered →
+  `ConfiguredEndpointNotCovered` hard error, never downgraded** (e.g.
+  stale SQLite override or CLI/env seed after cert rotation, even when
+  loopback *is* covered); implicit tiers (auto-derive, loopback)
+  skip-and-fall-through when uncovered; nothing usable →
+  `NoSanCoveredCandidate`. `ConfiguredEndpointInvalid` → 422
+  `endpoint_invalid`; the two coverage variants → 422
+  `endpoint_not_in_cert_san`; all → non-zero exit offline.
+- Legacy redeem: a pre-`V010` row (`advertised_endpoint = NULL`)
+  redeemed over gRPC resolves with `req_host = None`; covered → bundle
+  carries the resolved value; explicit-config error → gRPC
+  `failed_precondition`, no bundle issued.
 - `GET /v1/settings/advertised-endpoint`: 200 with
   `effective`/`source` populated on success; 200 with
   `effective: null` + `diagnostic` when resolution would error
@@ -321,11 +352,18 @@ No code change.
 ## Migration / Compatibility
 
 - Existing deployments: `server_settings.advertised_endpoint` is
-  `NULL`; new enrollments resolve via seed → loopback exactly as
-  today. No operator action required.
-- Legacy `client_enrollments` rows (pre-`V010`) have
-  `advertised_endpoint = NULL`; `redeem()` falls back to the loopback
-  default for those. Acceptable: enrollments are short-TTL and expire.
+  `NULL`; new enrollments resolve via seed → loopback. For a
+  **well-formed** seed this is byte-identical to today and needs no
+  operator action. One intentional behavior change: a **malformed**
+  `--advertised-endpoint` / `PORTUNUS_ADVERTISED_ENDPOINT` that the
+  old code silently baked into bundles now fails fast with
+  `ConfiguredEndpointInvalid` — surfacing a latent misconfiguration
+  rather than shipping unusable bundles.
+- Legacy `client_enrollments` rows (pre-`V010`,
+  `advertised_endpoint = NULL`): `redeem()` resolves once with
+  `req_host = None` under the standard error contract (see Storage
+  layer), failing closed rather than emitting a divergent/SAN-violating
+  bundle. Bounded: enrollments are short-TTL and expire.
 - `deploy/railway/start-server.sh` keeps working unchanged. The binary
   now reads `PORTUNUS_ADVERTISED_ENDPOINT` directly via an explicit
   `std::env::var` fallback in `main` (no clap `env` Cargo feature
