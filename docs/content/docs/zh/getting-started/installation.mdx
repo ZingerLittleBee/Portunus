@@ -39,13 +39,12 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ```
 
 脚本会检测操作系统和架构，下载对应的 release 二进制，校验其 SHA-256，
-并将 `portunus-server` 安装到 `/usr/local/bin`。参见
-[install.sh 标志](/zh/docs/configuration/client#安装二进制)
-——标志表（`--version`、`--bin-dir`、`--systemd`）对两个角色均适用。
+并将 `portunus-server` 安装到 `/usr/local/bin`。详见
+[install.sh 标志](/zh/docs/configuration/client#安装二进制)；标志表（`--version`、`--bin-dir`、`--systemd`）对两个角色均适用。
 
 Docker Compose 是推荐的生产部署路径。
 
-### 在 Server 主机上直接复制执行
+### 在 Server 主机上复制粘贴安装
 
 1. 创建并进入工作目录：
 
@@ -174,12 +173,12 @@ portunus-client --bundle ./client.bundle.json
 以宿主用户身份运行一次性接入和长驻容器，确保 `0600` bundle 由同一身份写入与读取：
 
 ```sh
-# One-shot: redeem the enrollment command into a host file.
+# 一次性：把接入命令兑换为宿主文件。
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
   ghcr.io/zingerlittlebee/portunus-client \
   enroll 'portunus://...' --out /work/client.bundle.json
 
-# Long-lived forwarder.
+# 长驻转发容器。
 docker run -d --name portunus-client --network host \
   --user "$(id -u):$(id -g)" \
   -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
@@ -235,7 +234,7 @@ portunus-client --version
 
 如需手动下载，请访问 GitHub
 [releases 页面](https://github.com/ZingerLittleBee/Portunus/releases)，
-选择适合你平台的归档。归档命名规律为
+选择适合你平台的归档。归档命名格式为
 `portunus-<version>-<target>.tar.gz`，支持以下四个目标平台：
 
 - `x86_64-unknown-linux-gnu`
