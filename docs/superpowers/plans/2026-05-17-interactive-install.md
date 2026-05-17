@@ -950,8 +950,8 @@ lifecycle_uninstall() {
     sudo systemctl daemon-reload 2>/dev/null || true
   fi
   if [ "$PURGE" = yes ]; then
-    local dd; dd="$(dirname "$mf")"
-    read -r -p "$(t confirm_purge_typed "$dd")" ans < <(tty_in)
+    local dd ans; dd="$(dirname "$mf")"
+    read -r -p "$(t confirm_purge_typed "$dd")" ans < <(tty_in) || ans=""
     [ "$ans" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
   fi
   rm -f "$mf" 2>/dev/null || true
