@@ -663,7 +663,7 @@ install_systemd_unit() {
   if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
     echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
-  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"
+  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
   if [ "$ROLE" = "client" ]; then
     id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
