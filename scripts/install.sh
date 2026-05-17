@@ -133,6 +133,55 @@ t() {
   printf "$val" "$@"
 }
 
+# ─── Meta ─────────────────────────────────────────────────────────────
+meta_path_for() {
+  # echo the .install-meta path for current ROLE/DEPLOY/paths.
+  if [ "${DEPLOY:-binary}" = "docker" ]; then
+    echo "${COMPOSE_DIR:-$PWD}/.install-meta"
+  elif [ "$ROLE" = "server" ]; then
+    echo "${DATA_DIR:-/var/lib/portunus}/.install-meta"
+  else
+    echo "/etc/portunus/.install-meta"
+  fi
+}
+
+meta_write() {
+  local f="$1"; shift
+  local dir; dir="$(dirname "$f")"
+  [ "$DRY_RUN" = yes ] && { echo "would write meta: $f ($*)"; return 0; }
+  mkdir -p "$dir" 2>/dev/null || true
+  : > "$f"
+  local kv
+  for kv in "$@"; do printf '%s\n' "$kv" >> "$f"; done
+  printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$f"
+  printf 'installer_version=%s\n' "${SELF_SCRIPT:-pipe}" >> "$f"
+}
+
+meta_read() {
+  local f="$1" key="$2" line
+  [ -r "$f" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in "${key}="*) printf '%s\n' "${line#*=}"; return 0 ;; esac
+  done < "$f"
+  return 1
+}
+
+detect_deploy() {
+  local hint="${1:-}" f
+  if [ -n "$hint" ]; then
+    for f in "$hint"/compose.yml "$hint"/compose.yaml "$hint"/docker-compose.yml "$hint"/docker-compose.yaml; do
+      [ -f "$f" ] && { echo "docker"; return 0; }
+    done
+  fi
+  if [ -f /etc/systemd/system/portunus-server.service ] || [ -f /etc/systemd/system/portunus-client.service ]; then
+    echo "binary"; return 0
+  fi
+  if command -v portunus-server >/dev/null 2>&1 || command -v portunus-client >/dev/null 2>&1; then
+    echo "binary"; return 0
+  fi
+  echo ""; return 0
+}
+
 # ─── Platform ─────────────────────────────────────────────────────────
 detect_platform() {
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -212,6 +261,9 @@ parse_args() {
       --print-i18n-keys) shift; resolve_lang; if [ "${1:-en}" = zh ]; then for k in "${!MSG_ZH[@]}"; do echo "$k"; done; else for k in "${!MSG_EN[@]}"; do echo "$k"; done; fi; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
       -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
+      --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
+      --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
       *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
     esac
     shift

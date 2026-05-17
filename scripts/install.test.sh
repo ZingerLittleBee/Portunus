@@ -45,4 +45,17 @@ bash "$script" status --help >/dev/null 2>&1 || fail "status+help"
 # --- non-interactive when no tty and no args: helpful error, non-zero ---
 if echo "" | bash "$script" </dev/null >/dev/null 2>&1; then fail "no-arg no-tty should error"; fi
 
+# --- meta round-trip via test seam ---
+tmpm="$(mktemp -d)"
+bash "$script" --meta-write "$tmpm/.install-meta" role=server deploy=docker version=1.2.3 lang=en >/dev/null || fail "meta write"
+val="$(bash "$script" --meta-read "$tmpm/.install-meta" version)" || fail "meta read"
+[ "$val" = "1.2.3" ] || fail "meta round-trip ($val)"
+rm -rf "$tmpm"
+
+# --- deploy-form detection from a compose fixture ---
+tmpd="$(mktemp -d)"
+printf 'services:\n  server:\n    image: portunus-server\n' > "$tmpd/compose.yml"
+[ "$(bash "$script" --detect-deploy "$tmpd")" = "docker" ] || fail "detect docker"
+rm -rf "$tmpd"
+
 echo "PASS"
