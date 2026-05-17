@@ -1484,10 +1484,11 @@ async fn put_advertised_endpoint(
 }
 
 fn map_store_err(e: crate::store::StoreError) -> ApiError {
+    tracing::warn!(event = "operator.store_error", error = %e);
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
         "store_error",
-        e.to_string(),
+        "store_error",
     )
 }
 
@@ -1600,10 +1601,17 @@ impl From<OperatorError> for ApiError {
             OperatorError::Rbac(rb) => crate::operator::auth_layer::rbac_status(rb),
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
+        let message = match &e {
+            OperatorError::Store(inner) => {
+                tracing::warn!(event = "operator.store_error", error = %inner);
+                "store_error".to_string()
+            }
+            _ => e.to_string(),
+        };
         Self {
             status,
             code: e.code().to_string(),
-            message: e.to_string(),
+            message,
         }
     }
 }
@@ -1669,5 +1677,83 @@ mod tests {
         // OutOfBounds — port 0 is not a real listening port.
         let err = build_range(0, Some(10)).unwrap_err();
         assert!(err.contains("out_of_bounds"), "got: {err}");
+    }
+
+    // ---- M1 security-hygiene: store-error redaction in HTTP responses ----
+    //
+    // `StoreError::Internal { message }` Display is `"internal: {message}"`.
+    // Both `map_store_err` (Site B) and `ApiError::from(OperatorError::Store(…))`
+    // (Site A) must NOT propagate that raw text into the response body.
+
+    const SENTINEL: &str = "SENSITIVE_SQL_abc123";
+
+    #[test]
+    fn map_store_err_redacts_internal_message() {
+        let store_err = crate::store::StoreError::Internal {
+            message: SENTINEL.into(),
+        };
+        let api_err = map_store_err(store_err);
+        assert_eq!(
+            api_err.status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "status must remain INTERNAL_SERVER_ERROR"
+        );
+        assert_eq!(api_err.code, "store_error", "code must be store_error");
+        assert_eq!(
+            api_err.message, "store_error",
+            "message must be generic, not raw store detail"
+        );
+        assert!(
+            !api_err.message.contains(SENTINEL),
+            "sentinel must not appear in message; got: {:?}",
+            api_err.message
+        );
+    }
+
+    #[test]
+    fn operator_error_store_from_redacts_message() {
+        let store_err = crate::store::StoreError::Internal {
+            message: SENTINEL.into(),
+        };
+        let api_err = ApiError::from(OperatorError::Store(store_err));
+        assert_eq!(
+            api_err.status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "status must remain INTERNAL_SERVER_ERROR"
+        );
+        assert_eq!(api_err.code, "store_error", "code must be store_error");
+        assert_eq!(
+            api_err.message, "store_error",
+            "message must be generic, not raw store detail"
+        );
+        assert!(
+            !api_err.message.contains(SENTINEL),
+            "sentinel must not appear in message; got: {:?}",
+            api_err.message
+        );
+    }
+
+    // Positive control: a non-Store OperatorError variant keeps its informative message.
+    // `ResolveEndpointError::NoSanCoveredCandidate` is the cheapest zero-field variant.
+    #[test]
+    fn operator_error_non_store_message_preserved() {
+        let err = OperatorError::AdvertisedEndpoint(
+            crate::advertised::ResolveEndpointError::NoSanCoveredCandidate,
+        );
+        let api_err = ApiError::from(err);
+        assert_eq!(
+            api_err.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "AdvertisedEndpoint → 422"
+        );
+        // The message must be informative (non-empty, not the generic "store_error").
+        assert_ne!(
+            api_err.message, "store_error",
+            "non-Store variant must keep its own message"
+        );
+        assert!(
+            !api_err.message.is_empty(),
+            "non-Store variant must have an informative message"
+        );
     }
 }
