@@ -23,4 +23,14 @@ echo "$out2" | grep -q '^artifact_version:[[:space:]]*2.0.0$' || fail "v-normali
 if bash "$script" bogus --dry-run >/dev/null 2>&1; then fail "bogus role accepted"; fi
 bash "$script" client --version 1.0.0 --yes --dry-run >/dev/null 2>&1 || fail "--yes flag rejected"
 
+# --- i18n key coverage: every EN key exists in ZH and vice-versa ---
+keys_en="$(bash "$script" --print-i18n-keys en | sort)"
+keys_zh="$(bash "$script" --print-i18n-keys zh | sort)"
+[ -n "$keys_en" ] || fail "no EN i18n keys"
+[ "$keys_en" = "$keys_zh" ] || fail "i18n EN/ZH key sets differ"
+
+# --- explicit lang override wins ---
+bash "$script" --lang zh --print-i18n menu_title | grep -q '管理' || fail "zh menu_title"
+PORTUNUS_LANG=en bash "$script" --print-i18n menu_title | grep -qi 'manager' || fail "en menu_title"
+
 echo "PASS"
