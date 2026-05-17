@@ -44,6 +44,14 @@ portunus-server enroll-client edge-01 --ttl-secs 600
 portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...' --out ./client.bundle.json
 ```
 
+`portunus-server enroll-client` is an **offline** command: it opens
+`state.db` directly and fails with `store_in_use` if a server is already
+running on the same `--data-dir`. With a running server (the normal
+production case) issue the enrollment from the Web UI **Clients** page, or
+via the operator HTTP API / Docker `operator` sidecar — all of which go
+through the live server. Reserve the host-binary CLI for bootstrap before
+the service starts.
+
 `portunus-client enroll` verifies the pinned certificate and writes the
 bundle with mode `0600` to the default location unless `--out` is
 supplied.

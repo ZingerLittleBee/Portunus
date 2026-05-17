@@ -38,6 +38,12 @@ portunus-server enroll-client edge-01 --ttl-secs 600
 portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...' --out ./client.bundle.json
 ```
 
+`portunus-server enroll-client` 是**离线**命令：它直接打开 `state.db`，若已有
+server 运行在同一 `--data-dir` 上，会以 `store_in_use` 失败。server 正在运行时
+（生产环境的常规情形），请从 Web UI **Clients** 页面，或经操作员 HTTP API /
+Docker `operator` 边车签发——这些路径都会走在线 server。主机二进制 CLI 仅用于
+服务启动前的初始化。
+
 `portunus-client enroll` 验证证书 pin 后，以 `0600` 写入 bundle；未指定 `--out`
 时写入默认位置。
 
