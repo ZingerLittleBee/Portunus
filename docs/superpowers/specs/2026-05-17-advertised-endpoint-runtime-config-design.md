@@ -77,10 +77,15 @@ Evaluated once when the enrollment row is created, then frozen:
 1. **SQLite operator-set value** (`server_settings.advertised_endpoint`,
    non-empty) — highest priority. What a Railway operator sets once in
    the Web UI to the TCP-Proxy `host:port`.
-2. **Startup seed** — CLI flag `--advertised-endpoint`, bound to clap
-   `env = "PORTUNUS_ADVERTISED_ENDPOINT"` (the binary reads the env
-   directly; the Railway script's flag bridge becomes redundant but
-   stays harmless). Held in `AppState` as `Option<String>`.
+2. **Startup seed** — CLI flag `--advertised-endpoint`. When the flag
+   is absent, `main` falls back to an explicit
+   `std::env::var("PORTUNUS_ADVERTISED_ENDPOINT")` read. (Not clap
+   `#[arg(env = ...)]`: the workspace pins `clap = { features =
+   ["derive"] }` — `Cargo.toml:74` — and `#[arg(env)]` would require
+   enabling clap's `env` Cargo feature; a manual `std::env` read keeps
+   the dependency surface unchanged. The Railway script's flag bridge
+   becomes redundant but stays harmless.) Held in `AppState` as
+   `Option<String>`.
 3. **Auto-derive** — hostname from the operator HTTP request `Host`
    header + the server's startup-resolved `control_listen` port.
    Only available on the Web UI / HTTP creation path.
@@ -90,8 +95,12 @@ Evaluated once when the enrollment row is created, then frozen:
 
 Each candidate, in order, must also pass **SAN coverage** (see below);
 the first candidate that is both present and SAN-covered wins. A
-candidate whose host is not in the current leaf cert SAN is skipped
-(logged at `warn`), never written into a URI/bundle it cannot honor.
+candidate whose host is not covered is skipped (logged at `warn`),
+never written into a URI/bundle it cannot honor. If **no** candidate
+is SAN-covered (e.g. a custom cert covering only
+`control.example.com` while seed/loopback are not), resolution
+**fails** — see the resolver error contract in §4. Creation does not
+fabricate an unusable endpoint.
 
 Rejected alternatives: Approach A (CLI/env first-run seeding into
 SQLite — ordering ambiguity when env is permanently set on Railway);
@@ -153,14 +162,30 @@ against the pinned self-signed leaf cert
 (`crates/portunus-client/src/control.rs:76`). An endpoint whose host
 is absent from the leaf cert SAN produces bundles that cannot connect.
 
-- Add a helper that extracts SAN DNS names / IP entries from
-  `state.server_cert_pem` (parse once at startup, cache on `AppState`).
+**Matching must mirror the client's TLS verifier, not literal SAN
+membership.** The client connects via tonic 0.14 (`tls-aws-lc`) over
+rustls/tokio-rustls, so the effective verifier is webpki. The coverage
+helper MUST use webpki/rustls-equivalent name matching:
+
+- DNS SAN entries: case-insensitive, ASCII-lowercased comparison.
+- Wildcard DNS SAN (`*.example.com`): matches exactly one leftmost
+  label (`a.example.com`), not multi-label (`a.b.example.com`) and not
+  the bare apex (`example.com`) — webpki rules.
+- IPv4 host (allowed by grammar) is matched against **IP** SAN
+  entries, never DNS SAN entries. (IPv6 hosts are rejected at the
+  grammar stage, so no IPv6 SAN logic is needed.)
+- Prefer a rustls/webpki name-matching primitive over a hand-rolled
+  comparator so semantics cannot drift from what the client accepts.
+
+- Parse the leaf cert SAN once at startup; cache the structured SAN set
+  on `AppState`.
 - `PUT /v1/settings/advertised-endpoint`: after grammar validation,
   reject (HTTP 422, machine code `endpoint_not_in_cert_san`) if the
-  host is not SAN-covered. Error text tells the operator the cert must
-  be reissued/redeployed to cover the host (out of scope here).
-- Creation-time resolution applies the same check per candidate
-  (skip-and-fall-through, as in Resolution Order).
+  host is not covered under the rules above. Error text tells the
+  operator the cert must be reissued/redeployed to cover the host
+  (out of scope here).
+- Creation-time resolution applies the same coverage predicate per
+  candidate (skip-and-fall-through, as in Resolution Order).
 
 ### 4. Resolution & issuance wiring
 
@@ -168,9 +193,19 @@ is absent from the leaf cert SAN produces bundles that cannot connect.
   `advertised_seed: Option<String>`, the parsed cert SAN set, and a
   settings-store handle.
 - New `resolve_advertised_endpoint(state, req_host: Option<&str>)
-  -> String` implementing the ordered, SAN-filtered resolution. Port
-  for auto-derive is the server's resolved `control_listen` port
+  -> Result<ResolvedAdvertisedEndpoint, ResolveEndpointError>`
+  implementing the ordered, SAN-filtered resolution. Port for
+  auto-derive is the server's resolved `control_listen` port
   (captured at bind in `serve.rs`), not the browser port.
+  `ResolvedAdvertisedEndpoint` carries the `host:port` string plus the
+  winning `source` (override / seed / derived / loopback) for the UI.
+  `ResolveEndpointError::NoSanCoveredCandidate` is returned when every
+  present candidate fails the coverage predicate. **Error surfaces:**
+  - Web UI / HTTP create-client → HTTP 422,
+    `endpoint_not_in_cert_san`, listing the candidates tried.
+  - Offline `enroll-client` → non-zero exit with the same diagnostic.
+  - The gRPC `enroll` redeem path never resolves (it replays the
+    persisted row), so it cannot hit this error.
 - `ClientEnrollmentStore::create` gains an `advertised_endpoint:
   String` input (resolved by the caller) and writes it to the new
   column. `CreatedEnrollment` / `redeem()` return it.
@@ -214,10 +249,14 @@ No code change.
   `client_enrollments.advertised_endpoint` column added;
   `store_schema_handshake` updated.
 - `resolve_advertised_endpoint`: each precedence branch; SAN
-  skip-and-fall-through (override host not in SAN → falls to seed);
-  no-host → loopback.
-- SAN parsing: DNS + IPv4 SAN extraction from a known test PEM;
-  coverage hit/miss.
+  skip-and-fall-through (override host not covered → falls to seed);
+  no-host → loopback; **no candidate covered →
+  `NoSanCoveredCandidate` error** (and the create-client HTTP path
+  maps it to 422 `endpoint_not_in_cert_san`).
+- SAN matching (webpki parity): exact DNS hit; case-insensitive DNS
+  hit; wildcard `*.example.com` matches `a.example.com` but rejects
+  `a.b.example.com` and bare `example.com`; IPv4 host matches IP SAN
+  only, not a same-text DNS SAN; miss → not covered.
 - Enrollment round-trip (the Blocker-1 regression): create via HTTP
   with `Host: public.example` → URI host == persisted row endpoint;
   gRPC `redeem` returns a bundle whose `server_endpoint` equals the URI
@@ -235,8 +274,8 @@ No code change.
 - Legacy `client_enrollments` rows (pre-`V010`) have
   `advertised_endpoint = NULL`; `redeem()` falls back to the loopback
   default for those. Acceptable: enrollments are short-TTL and expire.
-- `deploy/railway/start-server.sh` keeps working unchanged. With clap
-  `env` binding now required, the binary reads
-  `PORTUNUS_ADVERTISED_ENDPOINT` directly; the script's `--advertised-
-  endpoint` bridge is redundant but harmless and may be simplified
-  later (not in scope).
+- `deploy/railway/start-server.sh` keeps working unchanged. The binary
+  now reads `PORTUNUS_ADVERTISED_ENDPOINT` directly via an explicit
+  `std::env::var` fallback in `main` (no clap `env` Cargo feature
+  added); the script's `--advertised-endpoint` bridge is redundant but
+  harmless and may be simplified later (not in scope).
