@@ -81,4 +81,8 @@ bash "$script" uninstall server --dry-run >/dev/null 2>&1 || fail "uninstall dry
 # status dry-run exits 0
 bash "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 
+# Feed "0" (Exit) to the menu via stdin acting as the tty seam.
+out="$(printf '0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+echo "$out" | grep -qi 'Portunus Manager' || fail "menu title not shown"
+
 echo "PASS"

@@ -385,6 +385,7 @@ parse_args() {
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
+      --menu-stdin) MENU_FORCE_STDIN="yes"; resolve_lang; run_menu; exit $? ;;
       *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
     esac
     shift
@@ -418,7 +419,59 @@ main() {
   dispatch_verb
 }
 
-run_menu() { die "interactive menu not yet implemented"; }
+# ─── Interactive ──────────────────────────────────────────────────────
+MENU_FORCE_STDIN="no"
+ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
+  local p; p="$(t "$@")"; local a
+  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$p" a || a=""
+  else read -r -p "$p" a < /dev/tty || a=""; fi
+  printf '%s' "$a"
+}
+
+first_run_lang() {
+  [ -n "$LANG_CODE" ] && return 0
+  local a; a="$(ask lang_prompt)"
+  case "$a" in 2) LANG_CODE=zh ;; *) LANG_CODE=en ;; esac
+}
+
+wizard_install() {
+  local a
+  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
+  a="$(ask ask_deploy)"; case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
+  VERSION="$(ask ask_version)"
+  if [ "$DEPLOY" = binary ]; then BIN_DIR="$(ask ask_bindir "$DEFAULT_BIN_DIR")"; [ -z "$BIN_DIR" ] && BIN_DIR="$DEFAULT_BIN_DIR"; fi
+  if [ "$ROLE" = server ]; then
+    ADVERTISED="$(ask ask_advertised "$DOCS_FEATURE_URL")"
+    DATA_DIR="$(ask ask_datadir)"
+    OP_HTTP_LISTEN="$(ask ask_ophttp)"
+  fi
+  detect_platform; resolve_version_static
+  print_plan
+  confirm "$(t confirm_proceed)" || { echo "aborted"; return 1; }
+  VERB=install; dispatch_verb
+}
+
+run_menu() {
+  first_run_lang
+  while :; do
+    echo; echo "$(t menu_title)"
+    echo "$(t menu_install)"; echo "$(t menu_uninstall)"; echo "$(t menu_upgrade)"
+    echo "$(t menu_status)"; echo "$(t menu_service)"; echo "$(t menu_config)"
+    echo "$(t menu_env)"; echo "$(t menu_exit)"
+    local c; c="$(ask menu_select)"
+    case "$c" in
+      1) wizard_install || true ;;
+      2) VERB=uninstall; lifecycle_uninstall || true ;;
+      3) VERB=upgrade; lifecycle_upgrade || true ;;
+      4) VERB=status; lifecycle_status || true ;;
+      5) SERVICE_ACTION="$(ask menu_select)"; VERB=service; lifecycle_service || true ;;
+      6) CONFIG_OP=set; CONFIG_KEY="$(ask ask_advertised "$DOCS_FEATURE_URL")"; lifecycle_config || true ;;
+      7) VERB=env; lifecycle_env || true ;;
+      0|q|Q) return 0 ;;
+      *) ;;
+    esac
+  done
+}
 dispatch_verb() {
   case "$VERB" in
     install)
