@@ -433,8 +433,16 @@ fn main() -> ExitCode {
     }
 }
 
+fn advertised_seed(cli: &Cli) -> Option<String> {
+    cli.advertised_endpoint
+        .clone()
+        .or_else(|| std::env::var("PORTUNUS_ADVERTISED_ENDPOINT").ok())
+        .filter(|s| !s.is_empty())
+}
+
 fn run(cli: Cli) -> Result<(), u8> {
     let data_dir = portunus_server::data_dir::resolve(cli.data_dir.clone());
+    let seed = advertised_seed(&cli);
 
     match cli.cmd {
         Cmd::Serve {
@@ -442,7 +450,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         } => {
             let opts = serve::ServeOptions {
                 data_dir: data_dir.clone(),
-                advertised_endpoint: cli.advertised_endpoint.clone(),
+                advertised_endpoint: seed.clone(),
                 operator_http_listen,
             };
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -461,8 +469,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             address,
             ttl_secs,
         } => {
-            let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
-            match cli::enroll_client(&state, &name, address.as_deref(), ttl_secs) {
+            let state = build_offline_state(&data_dir, seed.clone())?;
+            match cli::enroll_client(&state, &name, address.as_deref(), ttl_secs, None) {
                 Ok(enrollment) => {
                     println!("client_name={}", enrollment.client_name);
                     println!("expires_at={}", enrollment.expires_at);
@@ -477,7 +485,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             }
         }
         Cmd::Revoke { name } => {
-            let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&data_dir, seed.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -490,7 +498,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 })
         }
         Cmd::ListClients { format } => {
-            let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
+            let state = build_offline_state(&data_dir, seed.clone())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -796,7 +804,7 @@ fn run(cli: Cli) -> Result<(), u8> {
 /// commands carry the correct fingerprint.
 fn build_offline_state(
     data_dir: &std::path::Path,
-    advertised_endpoint: Option<String>,
+    advertised_seed: Option<String>,
 ) -> Result<AppState, u8> {
     std::fs::create_dir_all(data_dir).map_err(|e| {
         eprintln!("data dir: {e}");
@@ -819,12 +827,17 @@ fn build_offline_state(
     let operator_store = Arc::new(
         portunus_server::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store)),
     );
-    let endpoint = advertised_endpoint.unwrap_or_else(|| "127.0.0.1:7443".to_string());
+    // Offline path has no bound socket; use the config's default control
+    // port for the resolver's tier-3/4 fallback.
+    let control_port = portunus_core::config::ServerConfig::default_for_data_dir(data_dir)
+        .control_listen
+        .port();
     AppState::new(
         tokens,
         operator_store,
         ConnectedClients::default(),
-        endpoint,
+        advertised_seed,
+        control_port,
         tls.leaf_fingerprint_hex,
         tls.cert_pem,
         // Offline operator commands (enroll-client, revoke,

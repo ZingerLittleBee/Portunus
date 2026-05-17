@@ -147,23 +147,15 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
     let http_listener = TcpListener::bind(cfg.operator_http_listen).await?;
     let http_addr = http_listener.local_addr()?;
 
-    let advertised = opts.advertised_endpoint.unwrap_or_else(|| {
-        // For local-loopback dev defaults like 0.0.0.0:7443, advertise the
-        // loopback address — operator can override on the CLI.
-        if grpc_addr.ip().is_unspecified() {
-            format!("127.0.0.1:{}", grpc_addr.port())
-        } else {
-            grpc_addr.to_string()
-        }
-    });
-
+    let control_port = grpc_addr.port();
     let cfg_arc = Arc::new(cfg.clone());
     let state = Arc::new(
         AppState::new(
             Arc::clone(&tokens),
             Arc::clone(&operator_store),
             clients.clone(),
-            advertised,
+            opts.advertised_endpoint.clone(),
+            control_port,
             tls.leaf_fingerprint_hex.clone(),
             tls.cert_pem.clone(),
             cfg.range_rule_max_ports,

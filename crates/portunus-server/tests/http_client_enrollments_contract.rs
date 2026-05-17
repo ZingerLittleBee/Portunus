@@ -47,9 +47,10 @@ fn build_router() -> (axum::Router, Arc<SqliteTokenStore>, String, TempDir) {
             Arc::clone(&tokens),
             operator_store,
             ConnectedClients::default(),
-            "control.example.com:7443",
+            Some("public.example:7443".to_string()),
+            7443,
             "a".repeat(64),
-            "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+            include_str!("../src/advertised/testdata/san_fixture.pem"),
             16,
             sqlite,
         )
@@ -102,14 +103,12 @@ async fn create_enrollment_returns_one_time_client_command_without_issuing_token
     assert_eq!(body["client_name"], "edge-01");
     assert!(body["expires_at"].as_str().is_some_and(|v| !v.is_empty()));
     let command = body["command"].as_str().expect("command");
-    assert!(
-        command.starts_with("portunus-client enroll 'portunus://control.example.com:7443/enroll?")
-    );
+    assert!(command.starts_with("portunus-client enroll 'portunus://public.example:7443/enroll?"));
     assert!(command.contains("pin=sha256:"));
     assert!(command.contains("code="));
     assert!(command.contains("cert="));
     let uri = body["uri"].as_str().expect("uri");
-    assert!(uri.starts_with("portunus://control.example.com:7443/enroll?"));
+    assert!(uri.starts_with("portunus://public.example:7443/enroll?"));
     assert!(uri.contains("pin=sha256:"));
     assert!(uri.contains("code="));
     assert!(uri.contains("cert="));
@@ -189,11 +188,9 @@ async fn existing_client_enrollment_does_not_rotate_until_redeemed() {
     let body = body_json(resp).await;
     assert_eq!(body["client_name"], "edge-01");
     let command = body["command"].as_str().expect("command");
-    assert!(
-        command.starts_with("portunus-client enroll 'portunus://control.example.com:7443/enroll?")
-    );
+    assert!(command.starts_with("portunus-client enroll 'portunus://public.example:7443/enroll?"));
     let uri = body["uri"].as_str().expect("uri");
-    assert!(uri.starts_with("portunus://control.example.com:7443/enroll?"));
+    assert!(uri.starts_with("portunus://public.example:7443/enroll?"));
     assert_eq!(command, format!("portunus-client enroll '{uri}'"));
     assert_eq!(
         tokens

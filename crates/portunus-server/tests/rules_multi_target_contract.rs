@@ -114,9 +114,10 @@ fn build_fixture() -> Fixture {
             tokens,
             operator_store,
             connected,
-            "127.0.0.1:0",
+            None,
+            0,
             "deadbeef",
-            "-----BEGIN CERTIFICATE-----\n",
+            include_str!("../src/advertised/testdata/san_fixture.pem"),
             16,
             std::sync::Arc::clone(&sqlite_store),
         )

@@ -125,7 +125,7 @@ mod tests {
         CertSanSet::from_pem(FIXTURE_PEM).unwrap()
     }
 
-    fn base<'a>(san: &'a CertSanSet) -> ResolveInputs<'a> {
+    fn base(san: &CertSanSet) -> ResolveInputs<'_> {
         ResolveInputs {
             override_value: None,
             seed: None,
