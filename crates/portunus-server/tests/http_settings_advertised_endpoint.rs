@@ -80,17 +80,16 @@ fn put_req(uri: &str, body: serde_json::Value) -> Request<Body> {
         .expect("request")
 }
 
-/// PUT without Authorization header — the protected route rejects it with 401.
-/// Tests that the route lives in the authenticated block (complementary to
-/// the CSRF check that would fire for cookie-authenticated requests).
-fn put_req_no_csrf(uri: &str, body: serde_json::Value) -> Request<Body> {
+/// PUT without an Authorization header — the protected route rejects it
+/// with 401. Verifies the route lives in the auth-protected block.
+fn put_req_no_auth(uri: &str, body: serde_json::Value) -> Request<Body> {
     let body_bytes = serde_json::to_vec(&body).expect("body");
     Request::builder()
         .method("PUT")
         .uri(uri)
         .header("content-type", "application/json")
         .header("content-length", body_bytes.len().to_string())
-        // No Authorization and no CSRF header — auth middleware rejects first.
+        // No Authorization header — auth middleware rejects first.
         .body(Body::from(body_bytes))
         .expect("request")
 }
@@ -172,10 +171,10 @@ async fn put_rejects_uncovered_host_with_422_not_in_cert_san() {
 }
 
 #[tokio::test]
-async fn put_missing_csrf_is_rejected() {
+async fn put_without_auth_is_rejected() {
     let (router, _op, _dir) = build_router();
     let resp = router
-        .oneshot(put_req_no_csrf(
+        .oneshot(put_req_no_auth(
             "/v1/settings/advertised-endpoint",
             json!({"advertised_endpoint": "public.example:7443"}),
         ))
