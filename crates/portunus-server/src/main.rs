@@ -47,15 +47,15 @@ enum Cmd {
         #[arg(long)]
         operator_http_listen: Option<SocketAddr>,
     },
-    /// Provision a new client and write its credential bundle.
-    ProvisionClient {
+    /// Create a short-lived one-time enrollment command for a new client.
+    EnrollClient {
         name: String,
         /// Public IP address or DNS name users connect to for this client.
         #[arg(long)]
         address: Option<String>,
-        /// Output path. Defaults to `<cwd>/<name>.bundle.json`.
-        #[arg(long)]
-        out: Option<PathBuf>,
+        /// How long the one-time enrollment code is valid, in seconds.
+        #[arg(long, default_value_t = 600)]
+        ttl_secs: u64,
     },
     /// Revoke a previously-provisioned client.
     Revoke { name: String },
@@ -456,11 +456,17 @@ fn run(cli: Cli) -> Result<(), u8> {
                 1
             })
         }
-        Cmd::ProvisionClient { name, address, out } => {
+        Cmd::EnrollClient {
+            name,
+            address,
+            ttl_secs,
+        } => {
             let state = build_offline_state(&data_dir, cli.advertised_endpoint.clone())?;
-            match cli::provision_client(&state, &name, address.as_deref(), out) {
-                Ok((path, _)) => {
-                    println!("{}", path.display());
+            match cli::enroll_client(&state, &name, address.as_deref(), ttl_secs) {
+                Ok(enrollment) => {
+                    println!("client_name={}", enrollment.client_name);
+                    println!("expires_at={}", enrollment.expires_at);
+                    println!("{}", enrollment.command);
                     Ok(())
                 }
                 Err(e) => {
@@ -785,9 +791,9 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 }
 
-/// Build a state suitable for *offline* operator commands (provision-client,
-/// revoke, list-clients). Loads (or generates) TLS material so that newly
-/// issued bundles carry the correct fingerprint.
+/// Build a state suitable for *offline* operator commands (enroll-client,
+/// revoke, list-clients). Loads (or generates) TLS material so that enrollment
+/// commands carry the correct fingerprint.
 fn build_offline_state(
     data_dir: &std::path::Path,
     advertised_endpoint: Option<String>,
@@ -821,7 +827,7 @@ fn build_offline_state(
         endpoint,
         tls.leaf_fingerprint_hex,
         tls.cert_pem,
-        // Offline operator commands (provision-client, revoke,
+        // Offline operator commands (enroll-client, revoke,
         // list-clients) never push range rules, so the cap is
         // effectively unused. Use the default to stay close to the
         // serve-path config.

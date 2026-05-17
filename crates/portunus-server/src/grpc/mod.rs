@@ -7,5 +7,6 @@
 //!   pumps server→client `RuleUpdate` (US2) / client→server `RuleStatus`
 //!   and `StatsReport` (US2/US3).
 
+pub mod enrollment;
 pub mod interceptor;
 pub mod service;
