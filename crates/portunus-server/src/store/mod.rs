@@ -28,6 +28,7 @@
 pub mod audit_query;
 pub mod audit_writer;
 pub mod backup;
+pub mod enrollment_store;
 pub mod error;
 pub mod operator_store;
 pub mod owner_cap_store;
