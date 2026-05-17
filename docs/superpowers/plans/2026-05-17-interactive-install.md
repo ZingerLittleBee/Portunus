@@ -1155,10 +1155,10 @@ Expected: FAIL with concrete shellcheck warnings (fix each: add `# shellcheck di
 
 - [ ] **Step 3: Update the English installation doc**
 
-In `docs/content/docs/getting-started/installation.mdx`, replace every `| sh -s --` with `| bash -s --` and every `| sudo sh -s --` with `| sudo bash -s --`. Then, immediately after the existing advertised-endpoint note added previously (the paragraph starting `**Deploying behind a proxy / on a cloud host?**`), add:
+In `docs/content/docs/getting-started/installation.mdx`, replace every Portunus-installer `| sh -s --` with `| bash -s --` and every `| sudo sh -s --` with `| sudo bash -s --` (do NOT change the unrelated `get.docker.com | sh` line). Then add a new `## Interactive manager` section immediately **before** the final `## Next steps` heading (the advertised-endpoint note from PR #11 is not on this branch; this end-of-doc anchor is stable here):
 
 ```mdx
-### Interactive manager
+## Interactive manager
 
 Run the installer with no arguments for a guided menu (works piped too):
 
@@ -1176,10 +1176,10 @@ Requires bash 4+.
 
 - [ ] **Step 4: Update the Chinese installation doc**
 
-In `docs/content/docs/zh/getting-started/installation.mdx`, apply the same `| sh`→`| bash` / `| sudo sh`→`| sudo bash` replacements, and after the existing zh advertised-endpoint note (`**部署在反向代理 / 云主机后面？**`) add:
+In `docs/content/docs/zh/getting-started/installation.mdx`, apply the same Portunus-installer `| sh`→`| bash` / `| sudo sh`→`| sudo bash` replacements (NOT the `get.docker.com | sh` line), and add a new `## 交互式管理器` section immediately **before** the final `## 下一步` heading:
 
 ```mdx
-### 交互式管理器
+## 交互式管理器
 
 无参数运行安装脚本进入向导菜单（管道方式也可用）：
 
@@ -1203,13 +1203,13 @@ In `docs/content/docs/deployment/docker.mdx`, append a short paragraph at the en
 > [Installation → Interactive manager](/en/docs/getting-started/installation).
 ```
 
-In `docs/content/docs/deployment/railway.mdx`, append:
+In `docs/content/docs/deployment/railway.mdx`, append at the end of the `## Notes` section (the `/features/advertised-endpoint` page from PR #11 is not on this branch — link the interactive manager instead):
 
 ```mdx
 > On Railway the gRPC host differs from the local bind; set the
-> advertised endpoint during install (the wizard prompts for it) or via
-> `Config` later — see
-> [Advertised Endpoint](/en/docs/features/advertised-endpoint).
+> advertised endpoint during install (the interactive wizard prompts for
+> it) or later via the installer's `Config` action — see
+> [Installation → Interactive manager](/en/docs/getting-started/installation).
 ```
 
 - [ ] **Step 6: Verify + commit**
