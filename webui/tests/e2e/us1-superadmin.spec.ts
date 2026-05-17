@@ -10,7 +10,7 @@
 // (UI side).
 
 import { test, expect } from "./fixtures/server";
-import { loginAs, api } from "./fixtures/helpers";
+import { loginAs, enrollClient } from "./fixtures/helpers";
 
 test("superadmin happy path", async ({ page, request, server }) => {
   await loginAs(page, server.superadminUserId, server.superadminPassword);
@@ -41,12 +41,8 @@ test("superadmin happy path", async ({ page, request, server }) => {
   // Scrubbed: the token text is no longer present anywhere on the page.
   expect(await page.evaluate(() => document.body.innerText)).not.toContain(issued);
 
-  // Provision a client (API path; the UI's provision form opens the same
-  // bundle modal that us2 covers indirectly via the credentials flow).
-  await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
-    method: "POST",
-    body: { name: "edge-01", address: "127.0.0.1" },
-  });
+  // Enroll a client through the same one-time command path the UI exposes.
+  await enrollClient(request, server.httpUrl, server.superadminToken, "edge-01");
 
   // Add a grant for alice (30000–30050 TCP+UDP). The standalone
   // /grants/new form was folded into the user-detail quota table, so

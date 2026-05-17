@@ -5,7 +5,7 @@
 // semantics reject the push after validation with client_not_connected.
 
 import { test, expect } from "./fixtures/server";
-import { loginAs, api } from "./fixtures/helpers";
+import { loginAs, enrollClient } from "./fixtures/helpers";
 
 test.describe("multi-target rule push", () => {
   test("operator toggles to multi-target mode and submits the new shape", async ({
@@ -17,10 +17,7 @@ test.describe("multi-target rule push", () => {
 
     // Provision a client so the rule-push body validates server-side
     // before the expected offline-client rejection.
-    await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
-      method: "POST",
-      body: { name: "edge-mt", address: "127.0.0.1" },
-    });
+    await enrollClient(request, server.httpUrl, server.superadminToken, "edge-mt");
 
     await page.goto("/rules/new");
 
@@ -80,10 +77,7 @@ test.describe("multi-target rule push", () => {
     server,
   }) => {
     await loginAs(page, server.superadminUserId, server.superadminPassword);
-    await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
-      method: "POST",
-      body: { name: "edge-st", address: "127.0.0.1" },
-    });
+    await enrollClient(request, server.httpUrl, server.superadminToken, "edge-st");
 
     await page.goto("/rules/new");
     await page.getByLabel(/^client$/i).fill("edge-st");

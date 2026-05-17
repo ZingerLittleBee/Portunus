@@ -1,4 +1,8 @@
 import { type Page, type APIRequestContext, expect } from "@playwright/test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export const userPassword = (userId: string): string => `${userId} correct horse battery staple`;
 
@@ -51,4 +55,33 @@ export async function provisionUserWithToken(
     { method: "POST", body: { label: "e2e" } },
   )) as { credential_id: string; token: string };
   return { userId, password, token: cred.token, credentialId: cred.credential_id };
+}
+
+function clientBin(): string {
+  return process.env.PORTUNUS_CLIENT_BIN ?? join(process.cwd(), "..", "target", "release", "portunus-client");
+}
+
+export async function enrollClient(
+  request: APIRequestContext,
+  baseURL: string,
+  superadminToken: string,
+  name: string,
+): Promise<string> {
+  const enrollment = (await api(request, baseURL, superadminToken, "/v1/client-enrollments", {
+    method: "POST",
+    body: { name, address: "127.0.0.1" },
+  })) as { command: string };
+  const uri = enrollment.command.split("'")[1];
+  if (!uri) throw new Error(`could not parse enrollment command: ${enrollment.command}`);
+  const out = join(mkdtempSync(join(tmpdir(), "portunus-webui-client-")), `${name}.bundle.json`);
+  const result = spawnSync(clientBin(), ["enroll", uri, "--out", out], {
+    encoding: "utf8",
+    env: { ...process.env, RUST_LOG: "warn" },
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `portunus-client enroll failed with ${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`,
+    );
+  }
+  return out;
 }

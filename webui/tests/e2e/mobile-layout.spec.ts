@@ -1,6 +1,6 @@
 import { test, expect } from "./fixtures/server";
 import type { Page } from "@playwright/test";
-import { loginAs, api } from "./fixtures/helpers";
+import { loginAs, enrollClient } from "./fixtures/helpers";
 
 async function expectNoPageOverflow(page: Page): Promise<void> {
   const offenders = await page.evaluate(() => {
@@ -59,10 +59,7 @@ test("mobile shell navigation closes and dense pages stay contained", async ({ p
   await expect(page.getByRole("dialog", { name: /sidebar/i })).toBeHidden();
   await expectNoPageOverflow(page);
 
-  await api(request, server.httpUrl, server.superadminToken, "/v1/clients", {
-    method: "POST",
-    body: { name: "edge-mobile-01", address: "127.0.0.1" },
-  });
+  await enrollClient(request, server.httpUrl, server.superadminToken, "edge-mobile-01");
 
   await page.goto("/users/new");
   await page.getByLabel(/^id$/i).fill("mobile-user");

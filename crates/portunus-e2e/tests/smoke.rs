@@ -19,7 +19,7 @@ fn portunus_server_help_works() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Portunus control plane"));
-    assert!(stdout.contains("provision-client"));
+    assert!(stdout.contains("enroll-client"));
 }
 
 #[test]
