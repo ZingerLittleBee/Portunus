@@ -1,0 +1,152 @@
+---
+title: Advertised Endpoint
+description: Runtime-configurable host:port that enrolled clients use to reach the gRPC control plane. Resolved once at enrollment creation, validated against the server certificate SAN.
+icon: Waypoints
+---
+
+The **advertised endpoint** is the `host:port` an edge client dials to
+reach the **gRPC control plane** (default port `7443`,
+`control_listen`). It is the authority embedded in the enrollment URI:
+
+```
+portunus://<advertised-endpoint>/enroll?pin=…&code=…&cert=…
+```
+
+It is **not** the operator HTTP / Web UI port (`7080`). Those stay
+loopback-pinned; the advertised endpoint is the public reach address.
+
+## Why it is configurable
+
+On reverse-proxied / PaaS deployments (Railway, fly.io, …) the
+public host the client must dial is not the host the server binds
+locally, and it can differ between environments. Instead of baking it
+into an environment variable only, the endpoint is resolved at runtime
+through a tiered, fail-closed resolver and can be set by an operator
+without redeploying.
+
+## Resolution tiers
+
+The effective endpoint is the **first** tier that yields a value:
+
+| # | Tier | Source | On invalid / not SAN-covered |
+|---|------|--------|------------------------------|
+| 1 | **Override** | Operator setting persisted in SQLite (Web UI / API) | **Hard error** (explicit config — fail closed) |
+| 2 | **Seed** | `--advertised-endpoint` CLI flag or `PORTUNUS_ADVERTISED_ENDPOINT` env | **Hard error** (explicit config — fail closed) |
+| 3 | **Derived** | The HTTP request `Host` header (HTTP enrollment only) | Falls through to the next tier (implicit) |
+| 4 | **Loopback** | `127.0.0.1:<control_port>` | — (last resort) |
+
+Explicit configuration (tiers 1–2) is **never silently downgraded**: a
+malformed or non-SAN-covered override/seed produces an error rather
+than quietly advertising loopback. The implicit `Host` derivation
+(tier 3) falls through when it cannot produce a covered endpoint.
+
+`PORTUNUS_ADVERTISED_ENDPOINT` is still honored — it is now the tier-2
+seed. The CLI flag and the env var are the same tier-2 string.
+
+## Resolve-once, replay-at-redeem
+
+The endpoint is resolved **once, at enrollment creation**, and
+persisted on the enrollment row. At redeem the persisted value is
+replayed **verbatim** into the client credential bundle
+(`server_endpoint`). Changing the override afterwards does **not**
+retroactively alter already-created enrollments — recreate the
+enrollment to pick up a new endpoint.
+
+Enrollments created before this feature (legacy `NULL`-endpoint rows)
+resolve fail-closed **at redeem time**: if resolution fails the redeem
+is rejected (`failed_precondition`), the enrollment is **not** consumed
+and the client token is **not** rotated — fix the configuration and the
+client can simply retry.
+
+## Certificate SAN requirement
+
+The resolved host **must be covered by the server certificate's
+Subject Alternative Name (SAN)**. The client pins and dials that host
+over TLS; advertising a host the cert does not vouch for would be
+unverifiable, so the resolver refuses it.
+
+Matching follows webpki semantics:
+
+- DNS names are matched **case-insensitively**.
+- A wildcard SAN matches **only the single left-most label**
+  (`*.example.com` covers `a.example.com`, **not** `example.com` and
+  **not** `a.b.example.com`).
+- An IP-literal host must be covered by an **IP** SAN (a DNS SAN does
+  not cover an IP).
+
+## Operator API
+
+`GET` / `PUT /v1/settings/advertised-endpoint` (superadmin only).
+
+`GET` always returns `200`:
+
+```json
+{
+  "override":   "proxy.example.com:34567",  // or null
+  "effective":  "proxy.example.com:34567",  // or null when unresolvable
+  "source":     "override",                  // override | seed | derived | loopback | null
+  "diagnostic": null                          // human-readable reason when effective is null
+}
+```
+
+`PUT` validates **grammar first, then SAN coverage**, before persisting:
+
+```sh
+curl -X PUT -H "Authorization: Bearer $TOK" -H "content-type: application/json" \
+  -d '{"advertised_endpoint":"proxy.example.com:34567"}' \
+  http://127.0.0.1:7080/v1/settings/advertised-endpoint
+```
+
+| Failure | Status | `error.code` |
+|---------|--------|--------------|
+| Not a bare `host:port` (scheme, path, IPv6, …) | `422` | `endpoint_invalid` |
+| Host not covered by the cert SAN | `422` | `endpoint_not_in_cert_san` |
+
+Send `{"advertised_endpoint": null}` (or `""`) to clear the override
+and fall back to the seed/loopback tiers.
+
+## Web UI
+
+**Settings → "Client connect address"**: shows the current effective
+endpoint and its source, lets a superadmin set or clear the override,
+and surfaces the same `422` validation messages inline. Leaving it
+empty auto-derives from the page's host.
+
+## What an admin does when the SAN does not match
+
+A `endpoint_not_in_cert_san` rejection (API/Web UI), or a
+`null` effective endpoint with a SAN diagnostic (GET / startup with an
+uncovered seed), means the desired client-facing host is **not** vouched
+for by the deployed server certificate. The endpoint is intentionally
+*not* applied — fixing it is an operator action:
+
+1. **Decide the client-facing host:port.** This is the public address
+   clients dial (e.g. the Railway TCP-proxy domain), not the local
+   bind address.
+2. **Inspect the deployed server certificate's SAN:**
+
+   ```sh
+   openssl x509 -in server.crt -noout -text \
+     | grep -A1 "Subject Alternative Name"
+   ```
+
+3. **If the host is already covered** (mind the wildcard / IP rules
+   above), the input was likely malformed or used the wrong label —
+   correct it and retry the `PUT` / Web UI Save.
+4. **If the host is not covered**, reissue or obtain a server
+   certificate whose SAN includes that host:
+   - a **DNS** SAN entry for a hostname (or a single-label
+     `*.` wildcard whose suffix covers it), or
+   - an **IP** SAN entry if clients dial an IP literal.
+5. **Redeploy** `server.crt` + `server.key` and restart the server.
+6. **Re-apply** the override (`PUT` / Web UI) or fix the
+   seed (`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`) —
+   it now returns `200` / resolves.
+7. **Recreate affected enrollments.** Enrollments created while the
+   endpoint was wrong froze the old (possibly loopback) value;
+   regenerate them. Legacy `NULL`-endpoint enrollments need no
+   recreation — their redeem simply succeeds once the configuration is
+   fixed.
+
+Until the certificate covers the host, the server **fails closed**: it
+will not hand a client a bundle pointing at an unverifiable host.

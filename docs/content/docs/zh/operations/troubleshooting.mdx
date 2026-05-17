@@ -334,6 +334,66 @@ PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
 不是"已收但未送达"的字节。中途 RST 会丢掉两条路径在途的字节；两侧
 计数器都同意"已送达总数"。这不是快路径引入的回归。
 
+## 通告地址
+
+完整模型见 [通告地址](/docs/zh/features/advertised-endpoint)。该地址
+fail-closed 解析，并按服务器证书 SAN 校验。
+
+### `endpoint_invalid`（HTTP 422）
+
+`PUT /v1/settings/advertised-endpoint`（或 Web UI 保存）拒绝了该值：
+它不是纯 `host:port`（带了 scheme、path、IPv6 字面量、空白……）。
+
+**修复**：提交纯 `host:port`，例如 `proxy.example.com:34567`。不要
+`https://`，不要结尾 path。
+
+### `endpoint_not_in_cert_san`（HTTP 422）
+
+主机格式正确但**未被服务器证书 SAN 覆盖**。该 override 被有意
+*不予持久化* —— 服务器 fail closed，不通告无法通过 TLS 证明的主机。
+GET 返回 `effective: null` 且带 SAN `diagnostic`、或启动日志报未覆盖
+seed，根因相同。
+
+**修复**（operator 操作）：
+
+1. 确认客户端可达的 `host:port`（client 拨号的公网地址 —— 例如
+   Railway TCP 代理域名）。
+2. 检查已部署证书的 SAN：
+
+   ```sh
+   openssl x509 -in server.crt -noout -text \
+     | grep -A1 "Subject Alternative Name"
+   ```
+
+3. 若主机**确实**在其中（注意：通配只匹配最左单标签；IP 字面量需要
+   IP SAN，而非 DNS SAN），说明输入用错了标签 —— 修正后重试。
+4. 若不在，重新签发 / 获取一张 SAN 包含该主机的证书（一条 DNS SAN、
+   一条覆盖它的单标签 `*.` 通配，或 IP 字面量对应的 IP SAN），重新
+   部署 `server.crt` + `server.key`，重启。
+5. 重新应用 override（`PUT` / Web UI）或修正 seed
+   （`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`）——
+   此时返回 `200`。
+6. 重建在地址错误期间创建的 enrollment（它们冻结了旧值）。legacy
+   `NULL`-endpoint enrollment 无需重建 —— 配置修好后其 redeem 成功。
+
+### 客户端 bundle 指向 `127.0.0.1` / loopback
+
+未设置 override 也未设置 seed，解析回落到第 4 层 loopback
+（`127.0.0.1:<control_port>`），远程 client 无法连接。
+
+**修复**：设置显式 override（Web UI / `PUT`）或 seed
+（`PORTUNUS_ADVERTISED_ENDPOINT`）为一个被 SAN 覆盖的公网
+`host:port`，然后重建受影响的 enrollment。
+
+### legacy enrollment redeem 报 `failed_precondition`
+
+一条升级前的 enrollment（存储 endpoint 为 NULL）在 redeem 时
+fail-closed 解析，而当前配置非法 / 未覆盖。该 enrollment **未被消费**，
+客户端 token **未轮换**。
+
+**修复**：修正通告地址配置（见上面的 `endpoint_not_in_cert_san`）；
+随后 client 可用同一个 code 再次 redeem —— 在成功前是幂等的。
+
 ## 哪里报 bug
 
 GitHub issues：https://github.com/ZingerLittleBee/Portunus/issues
