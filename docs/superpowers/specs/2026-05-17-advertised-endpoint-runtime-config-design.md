@@ -1,7 +1,7 @@
 # Advertised Endpoint: Runtime-Configurable (SQLite + Web UI)
 
 Date: 2026-05-17
-Status: Approved (design, rev 2 — incorporates review findings)
+Status: Implemented
 
 ## Problem
 
