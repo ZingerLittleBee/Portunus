@@ -1,7 +1,7 @@
 # Client enrollment install UX — design
 
 Date: 2026-05-17
-Status: revised after spec review round 1 (pending re-review)
+Status: revised after spec review round 2 (pending re-review)
 
 ## Problem
 
@@ -75,8 +75,9 @@ resolved in this revision:
 
 1. `scripts/install.sh` — new POSIX install script (role-parameterised,
    downloads binary + hardened unit, per-op `sudo`).
-2. Server/API: add `uri` to `ClientEnrollmentResponse` (proto + gRPC +
-   operator HTTP + CLI struct + WebUI type + wire-compat test).
+2. Operator HTTP/API: add `uri` to the enrollment response
+   (`EnrollmentCommand` struct + HTTP `EnrollmentResponse` + WebUI type
+   + HTTP contract test). No proto/gRPC change.
 3. WebUI `EnrollmentInstallGuide` — stepped wizard component replacing
    `EnrollmentCommandCard` / `ReEnrollmentCommandCard`.
 4. Docs rewrite — `configuration/client` as the single source of truth;
@@ -85,7 +86,8 @@ resolved in this revision:
 5. Update stale `deploy/systemd/install.sh` (drop `provision-client`,
    point at the enroll flow).
 6. Tests — shellcheck + deterministic dry-run smoke for the script;
-   updated WebUI unit tests; updated proto wire-compat test.
+   updated WebUI unit tests; extended operator HTTP contract test for
+   the new `uri` field (no proto/wire-compat change).
 
 ## API change: `uri` on `ClientEnrollmentResponse`
 
@@ -93,19 +95,48 @@ The server already builds `portunus://…` in `enrollment_command()`
 (`crates/portunus-server/src/operator/cli.rs`) and wraps it as
 `portunus-client enroll '<uri>'`. Expose the bare URI too:
 
-- `proto/portunus.proto`: add `string uri = N;` to the enrollment
-  response message (next free field number; update
-  `crates/portunus-proto/tests/enrollment_wire_compat.rs`).
-- `EnrollmentCommand` struct + gRPC `enrollment.rs` + operator
-  `http.rs`: populate `uri` (the value before the
-  `portunus-client enroll '…'` wrapper).
+- `crates/portunus-server/src/operator/cli.rs`: add `pub uri: String`
+  to `EnrollmentCommand` (the value before the
+  `portunus-client enroll '…'` wrapper). `enrollment_command()`
+  already computes it.
+- `crates/portunus-server/src/operator/http.rs`: add `uri` to the
+  `EnrollmentResponse` serialize struct; populate from
+  `EnrollmentCommand.uri`.
 - `webui/src/api/types.ts`: `ClientEnrollmentResponse.uri: string`.
+- `crates/portunus-server/tests/http_client_enrollments_contract.rs`:
+  pin the new `uri` field in the contract test.
+- **Unchanged**: `proto/portunus.proto`, the gRPC `ClientEnrollment`
+  service (its `Enroll` returns `CredentialBundle`, the redeem
+  response — unrelated), and `enrollment_wire_compat.rs`.
 - `command` stays for the plain Shell copy-paste; `uri` is used by the
   Docker tab and anywhere a bare URI is needed. No string parsing in
   the browser.
 
-This touches the server/proto surface again (small, additive, field is
+This touches only the operator-HTTP surface (small, additive, field is
 new — no compatibility concern since the flow itself is new).
+
+## Spec-review resolutions (round 2)
+
+Two further findings verified and accepted:
+
+7. **`uri` belongs to the operator-HTTP surface, not proto/gRPC** —
+   the gRPC `ClientEnrollment.Enroll` returns `CredentialBundle` (the
+   *redeem* response a client gets after presenting a code); it must
+   NOT carry the original one-time URI. The WebUI's
+   `ClientEnrollmentResponse` is the operator HTTP JSON
+   (`EnrollmentResponse` in `operator/http.rs`, serialized from the
+   `EnrollmentCommand` struct in `operator/cli.rs:459` — no proto
+   involved). `uri` is added to `EnrollmentCommand` + the HTTP
+   `EnrollmentResponse` + `webui/src/api/types.ts`, and pinned in the
+   **HTTP contract test** (`http_client_enrollments_contract.rs`).
+   `proto/portunus.proto`, the gRPC service, and
+   `enrollment_wire_compat.rs` stay **unchanged**.
+8. **Docker bundle identity** — the client image runs as `nonroot`
+   (UID 65532) and `enroll --out` writes mode `0600`. A host bind-mount
+   plus mismatched UID makes either the enroll write or the subsequent
+   read fail. Both the one-shot enroll and the long-running container
+   run with `--user "$(id -u):$(id -g)"` so the same host identity
+   writes and reads the `0600` bundle from a host directory it owns.
 
 ## 1. `scripts/install.sh`
 
@@ -231,12 +262,18 @@ Layout:
     ./client.bundle.json /etc/portunus/client.bundle.json`; 3) `sudo
     systemctl enable --now portunus-client` + `systemctl status
     portunus-client`.
-  - **Docker** — 1) one-shot enroll into a host volume:
-    `docker run --rm -v "$PWD:/work" ghcr.io/zingerlittlebee/portunus-client \
+  - **Docker** — both commands run as the invoking host user so the
+    same identity writes and later reads the `0600` bundle (the image
+    default is `nonroot`/UID 65532, which cannot write a host-owned
+    bind mount nor read a host-UID `0600` file). 1) one-shot enroll
+    into a host volume:
+    `docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+    ghcr.io/zingerlittlebee/portunus-client \
     enroll '<enrollment.uri>' --out /work/client.bundle.json`
     (args override the image `CMD`; entrypoint is already
     `portunus-client`); 2) long-running:
     `docker run -d --name portunus-client --network host \
+    --user "$(id -u):$(id -g)" \
     -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
     ghcr.io/zingerlittlebee/portunus-client`.
 - Each step: numbered, short description, copy-able command block with
@@ -285,16 +322,19 @@ prose, identical command blocks).
   switching, per-step copy, countdown render, expired state, reenroll
   collapsed step 1, Docker step uses `uri` (not parsed `command`). No
   new deps; fake timers for the countdown.
-- Proto: extend `crates/portunus-proto/tests/enrollment_wire_compat.rs`
-  for the new `uri` field number; existing Rust suites otherwise
-  unaffected.
+- Operator HTTP contract: extend
+  `crates/portunus-server/tests/http_client_enrollments_contract.rs`
+  to assert the new `uri` field is present and equals the bare
+  `portunus://…` URI. `enrollment_wire_compat.rs` and other Rust
+  suites are unaffected (no proto/gRPC change).
 
 ## Risks / notes
 
 - Scope expanded twice: a new top-level `install.sh` and a new `uri`
-  API field. The latter touches proto/gRPC/HTTP/CLI again — additive
-  and low-risk because the enrollment surface is brand new (no
-  compatibility concern), but it must land before the WebUI/docs work.
+  field on the operator-HTTP enrollment response only (`EnrollmentCommand`
+  + HTTP `EnrollmentResponse` + types + HTTP contract test). Proto/gRPC
+  untouched. Additive and low-risk (brand-new surface), but it must
+  land before the WebUI/docs work.
 - raw-URL-on-`main` means the script *and* the fetched unit files are
   unversioned; acceptable per user decision. The script's CLI contract
   and the unit `ExecStart` paths must stay stable so older docs keep
