@@ -35,7 +35,7 @@ sudo curl -fsSL https://get.docker.com | sh
 最快的路径是一行安装脚本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server
 ```
 
 脚本会检测操作系统和架构，下载对应的 release 二进制，校验其 SHA-256，
@@ -148,7 +148,7 @@ portunus-server --version
 最快的路径是一行安装脚本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
 ```
 
 生产环境推荐以容器方式运行 Client——参见下方 Docker 小节。
@@ -258,8 +258,8 @@ sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 一步完成二进制安装和加固 systemd unit 的安装：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server --systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- server --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- client --systemd
 ```
 
 这会创建服务用户和目录，并安装加固 unit（仅 Linux）。如果使用源码 checkout 安装，
@@ -267,6 +267,19 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 `/usr/local/bin`）。
 
 详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
+
+## 交互式管理器
+
+无参数运行安装脚本进入向导菜单（管道方式也可用）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+```
+
+提供 **安装 / 卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量**，覆盖
+二进制+systemd 与 Docker Compose；server 安装会提示通告地址（持久化到
+systemd drop-in 或 compose `.env`）。非交互 flag 不变，供 CI/自动化使用；
+`--dry-run` 仍不联网、不写文件。需要 bash 4+。
 
 ## 下一步
 

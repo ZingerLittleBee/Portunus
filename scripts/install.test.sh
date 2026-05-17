@@ -85,4 +85,11 @@ bash "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 out="$(printf '0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
 echo "$out" | grep -qi 'Portunus Manager' || fail "menu title not shown"
 
+# --- shellcheck (skipped if not installed, but must pass if present) ---
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"
+else
+  echo "note: shellcheck not installed; skipping lint gate" >&2
+fi
+
 echo "PASS"

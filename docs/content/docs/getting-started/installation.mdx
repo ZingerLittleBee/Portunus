@@ -37,7 +37,7 @@ sudo curl -fsSL https://get.docker.com | sh
 The fastest path is the one-line installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server
 ```
 
 This detects your OS/arch, downloads the matching release binary, verifies its
@@ -151,7 +151,7 @@ portunus-server --version
 The fastest path is the one-line installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
 ```
 
 For production, running the client as a container is recommended — see Docker below.
@@ -260,8 +260,8 @@ sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 Install the binary and the hardened systemd unit in one step:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server --systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- server --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- client --systemd
 ```
 
 This creates the service user and directories and installs the hardened unit
@@ -271,6 +271,21 @@ in `/usr/local/bin`).
 
 See [Deploying with systemd](/en/docs/deployment/systemd) for the full unit
 breakdown and hardening notes.
+
+## Interactive manager
+
+Run the installer with no arguments for a guided menu (works piped too):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+```
+
+It offers **Install / Uninstall / Upgrade / Status / Service / Config /
+Env** for both binary+systemd and Docker Compose deployments, and the
+server install prompts for the advertised endpoint (persisted to a
+systemd drop-in or compose `.env`). Non-interactive flags are unchanged
+for CI/automation; `--dry-run` still performs no network or writes.
+Requires bash 4+.
 
 ## Next steps
 

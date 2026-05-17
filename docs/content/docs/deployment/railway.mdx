@@ -87,3 +87,8 @@ host installer
   operator API.
 - `portunus-client` must dial the TCP Proxy endpoint, not the HTTP
   domain.
+
+> On Railway the gRPC host differs from the local bind; set the
+> advertised endpoint during install (the interactive wizard prompts for
+> it) or later via the installer's `Config` action — see
+> [Installation → Interactive manager](/en/docs/getting-started/installation).

@@ -102,6 +102,10 @@ services:
       - ./server.toml:/var/lib/portunus/server.toml:ro
 ```
 
+> The interactive installer (`curl … | bash`) can manage a Docker
+> Compose deployment end to end — see
+> [Installation → Interactive manager](/en/docs/getting-started/installation).
+
 ## Operator commands
 
 The runtime image is distroless, so it has no shell. The `operator` service is
