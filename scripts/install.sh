@@ -474,8 +474,8 @@ run_menu() {
       3) VERB=upgrade; lifecycle_upgrade || true ;;
       4) VERB=status; lifecycle_status || true ;;
       5) SERVICE_ACTION="$(ask menu_select)"; VERB=service; lifecycle_service || true ;;
-      6) CONFIG_OP=set; CONFIG_KEY="$(ask ask_advertised "$DOCS_FEATURE_URL")"; lifecycle_config || true ;;
-      7) VERB=env; lifecycle_env || true ;;
+      6) CONFIG_OP="set"; CONFIG_KEY="$(ask ask_advertised "$DOCS_FEATURE_URL")"; lifecycle_config || true ;;
+      7) VERB="env"; lifecycle_env || true ;;
       0|q|Q) return 0 ;;
       *) ;;
     esac
