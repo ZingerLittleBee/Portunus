@@ -29,6 +29,7 @@ it uses `sudo` only for the privileged steps).
 | `--version <X.Y.Z\|vX.Y.Z>` | Pin a release (default: latest). Either form works. |
 | `--bin-dir DIR` | Install location (default `/usr/local/bin`). |
 | `--systemd` | Also install + enable the hardened unit (Linux only; see systemd guide). |
+| `--yes` | Non-interactive; assume yes. Forward-compat (no prompts exist yet). |
 | `--dry-run` | Print the resolved target/URL and planned actions; do nothing. |
 
 For an already-root context: `curl -fsSL … | sudo sh -s -- client --systemd`.
@@ -40,7 +41,7 @@ For an already-root context: `curl -fsSL … | sudo sh -s -- client --systemd`.
 portunus-server enroll-client edge-01 --ttl-secs 600
 
 # Edge host: paste the printed command
-portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...'
+portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...' --out ./client.bundle.json
 ```
 
 `portunus-client enroll` verifies the pinned certificate and writes the
