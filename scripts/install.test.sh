@@ -72,4 +72,13 @@ echo "$o" | grep -q "compose_dir:.*$sb" || fail "compose_dir plan"
 [ -z "$(ls -A "$sb" 2>/dev/null)" ] || fail "docker dry-run wrote files"
 rm -rf "$sb"
 
+# config rejects unknown key
+if bash "$script" config set bogus x --dry-run >/dev/null 2>&1; then fail "bogus config key accepted"; fi
+# config accepts a scoped key in dry-run
+bash "$script" config get advertised-endpoint --dry-run >/dev/null 2>&1 || fail "config get scoped key"
+# uninstall dry-run performs nothing and exits 0
+bash "$script" uninstall server --dry-run >/dev/null 2>&1 || fail "uninstall dry-run"
+# status dry-run exits 0
+bash "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
+
 echo "PASS"

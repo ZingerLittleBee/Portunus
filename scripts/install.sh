@@ -409,8 +409,11 @@ main() {
   detect_platform
   resolve_version_static
   if [ "$DRY_RUN" = "yes" ]; then
-    if [ "$VERB" = "install" ]; then [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0; fi
-    echo "verb: ${VERB} (dry-run; no side effects)"; exit 0
+    case "$VERB" in
+      install) [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0 ;;
+      config) validate_config_key; echo "verb: config ${CONFIG_OP:-get} ${CONFIG_KEY} (dry-run)"; exit 0 ;;
+      *) echo "verb: ${VERB} (dry-run; no side effects)"; exit 0 ;;
+    esac
   fi
   dispatch_verb
 }
@@ -434,11 +437,117 @@ dispatch_verb() {
   esac
 }
 
-lifecycle_uninstall() { die "uninstall not yet implemented"; }
-lifecycle_upgrade()   { die "upgrade not yet implemented"; }
-lifecycle_status()    { die "status not yet implemented"; }
-lifecycle_service()   { die "service not yet implemented"; }
-lifecycle_config()    { die "config not yet implemented"; }
-lifecycle_env()       { die "env not yet implemented"; }
+# ─── Lifecycle ────────────────────────────────────────────────────────
+SCOPED_KEYS="advertised-endpoint data-dir operator-http-listen version-pin"
+validate_config_key() {
+  [ -n "$CONFIG_KEY" ] || die "config key required (allowed: $SCOPED_KEYS)"
+  case " $SCOPED_KEYS " in *" $CONFIG_KEY "*) ;; *) die "$(t unknown_config_key "$CONFIG_KEY")" ;; esac
+}
+
+current_meta_file() {
+  local f
+  for f in "/var/lib/portunus/.install-meta" "/etc/portunus/.install-meta" "${COMPOSE_DIR:-$PWD}/.install-meta"; do
+    [ -r "$f" ] && { echo "$f"; return 0; }
+  done
+  return 1
+}
+
+resolved_deploy() {
+  local mf; mf="$(current_meta_file 2>/dev/null || true)"
+  if [ -n "$mf" ]; then meta_read "$mf" deploy || echo "binary"; else detect_deploy "${COMPOSE_DIR:-}"; fi
+}
+
+lifecycle_status() {
+  local mf d; mf="$(current_meta_file 2>/dev/null || true)"
+  if [ -z "$mf" ]; then echo "$(t no_install_found)"; return 0; fi
+  d="$(meta_read "$mf" deploy || echo binary)"
+  echo "meta:    $mf"
+  echo "role:    $(meta_read "$mf" role || echo '?')"
+  echo "deploy:  $d"
+  echo "version: $(meta_read "$mf" version || echo '?')"
+  echo "advertised_endpoint_set: $(meta_read "$mf" advertised_endpoint_set || echo '?')"
+  if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) ps ) 2>/dev/null || true
+  else systemctl is-active "portunus-$(meta_read "$mf" role || echo server)" 2>/dev/null || true; fi
+}
+
+lifecycle_service() {
+  [ -n "$SERVICE_ACTION" ] || die "service action required: start|stop|restart"
+  local d r mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  d="$(meta_read "$mf" deploy || echo binary)"; r="$(meta_read "$mf" role || echo server)"
+  if [ "$d" = docker ]; then
+    ( cd "$(dirname "$mf")" && case "$SERVICE_ACTION" in start) $(compose_cmd) up -d ;; stop) $(compose_cmd) down ;; restart) $(compose_cmd) restart ;; esac )
+  else sudo systemctl "$SERVICE_ACTION" "portunus-$r"; fi
+}
+
+lifecycle_upgrade() {
+  local mf cur; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  ROLE="$(meta_read "$mf" role || echo server)"; DEPLOY="$(meta_read "$mf" deploy || echo binary)"
+  cur="$(meta_read "$mf" version || echo 0)"
+  detect_platform; resolve_latest_tag
+  if [ "$cur" = "$artifact_version" ]; then echo "$(t upgrade_current "$cur")"; return 0; fi
+  confirm "$(t confirm_proceed)" || return 0
+  if [ "$DEPLOY" = docker ]; then COMPOSE_DIR="$(dirname "$mf")"; install_docker
+  else install_binary; lifecycle_service_restart_quiet; fi
+  meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" "version=$artifact_version" "lang=${LANG_CODE:-en}"
+}
+lifecycle_service_restart_quiet() { systemctl restart "portunus-${ROLE}" 2>/dev/null || true; }
+
+lifecycle_uninstall() {
+  local mf r d; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  r="$(meta_read "$mf" role || echo server)"; d="$(meta_read "$mf" deploy || echo binary)"
+  if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" || return 0; fi
+  if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
+  else
+    sudo rm -f "/usr/local/bin/portunus-$r" "/etc/systemd/system/portunus-$r.service"
+    sudo rm -f "/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
+    sudo systemctl daemon-reload 2>/dev/null || true
+  fi
+  if [ "$PURGE" = yes ]; then
+    local dd; dd="$(dirname "$mf")"
+    read -r -p "$(t confirm_purge_typed "$dd")" ans < <(tty_in)
+    [ "$ans" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
+  fi
+  rm -f "$mf" 2>/dev/null || true
+}
+
+lifecycle_config() {
+  validate_config_key
+  local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local d; d="$(meta_read "$mf" deploy || echo binary)"
+  local target_file
+  if [ "$d" = docker ]; then target_file="$(dirname "$mf")/.env"; else target_file="/etc/systemd/system/portunus-server.service.d/10-portunus.conf"; fi
+  local envkey
+  case "$CONFIG_KEY" in
+    advertised-endpoint) envkey="PORTUNUS_ADVERTISED_ENDPOINT" ;;
+    operator-http-listen) envkey="PORTUNUS_OPERATOR_HTTP_LISTEN" ;;
+    data-dir) envkey="PORTUNUS_DATA_DIR" ;;
+    version-pin) envkey="PORTUNUS_VERSION_PIN" ;;
+  esac
+  if [ "${CONFIG_OP:-get}" = get ]; then
+    grep -E "(Environment=)?${envkey}=" "$target_file" 2>/dev/null | sed "s/.*${envkey}=//" || echo "<unset>"
+    return 0
+  fi
+  [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
+  if [ "$d" = docker ]; then
+    grep -v "^${envkey}=" "$target_file" 2>/dev/null > "$target_file.tmp" || true
+    echo "${envkey}=${CONFIG_VALUE}" >> "$target_file.tmp"; mv "$target_file.tmp" "$target_file"
+  else
+    sudo install -d -m 0755 "$(dirname "$target_file")"
+    { echo "[Service]"; echo "Environment=${envkey}=${CONFIG_VALUE}"; } | sudo tee "$target_file" >/dev/null
+    sudo systemctl daemon-reload 2>/dev/null || true
+  fi
+  echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+  if confirm "$(t restart_now)"; then SERVICE_ACTION=restart; lifecycle_service; fi
+}
+
+lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
+
+tty_in() { if [ -t 0 ]; then cat; else cat /dev/tty; fi; }
+confirm() {
+  local prompt="$1" ans
+  [ "$ASSUME_YES" = yes ] && return 0
+  read -r -p "$prompt" ans < <(tty_in) || return 1
+  case "$ans" in y|Y|yes|YES|"") return 0 ;; *) return 1 ;; esac
+}
 
 main "$@"
