@@ -153,7 +153,7 @@ fn format_chain<E: std::error::Error + std::fmt::Debug + 'static>(e: &E) -> Stri
     out
 }
 
-fn extract_host(endpoint: &str) -> String {
+pub(crate) fn extract_host(endpoint: &str) -> String {
     endpoint
         .rsplit_once(':')
         .map_or_else(|| endpoint.to_string(), |(h, _)| h.to_string())
