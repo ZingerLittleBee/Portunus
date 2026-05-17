@@ -187,6 +187,7 @@ async fn post_client_enrollments(
         &body.name,
         Some(&body.address),
         body.ttl_secs.unwrap_or(600),
+        None,
     )?;
     Ok((
         StatusCode::CREATED,
@@ -207,7 +208,8 @@ async fn post_client_reenrollment(
 ) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
     crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
-    let enrollment = cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600))?;
+    let enrollment =
+        cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600), None)?;
     Ok((
         StatusCode::CREATED,
         Json(EnrollmentResponse {
@@ -1476,7 +1478,11 @@ impl From<OperatorError> for ApiError {
             // is the same semantic class as the surrounding gates —
             // client connected but its version cannot honour the new
             // field. 422 mirrors v0.9 / v0.10.
-            | OperatorError::RateLimitUnsupportedByClient { .. } => {
+            | OperatorError::RateLimitUnsupportedByClient { .. }
+            // 010-advertised-endpoint: malformed/uncovered config or no
+            // SAN-covered candidate — operator-config-level failure that
+            // cannot be satisfied as-is. 422 mirrors the capability gates.
+            | OperatorError::AdvertisedEndpoint(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,

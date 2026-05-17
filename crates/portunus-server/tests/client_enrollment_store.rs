@@ -41,6 +41,7 @@ fn created_code_redeems_once_and_issues_client_token() {
             },
             expires_at: now + Duration::minutes(10),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
 
@@ -77,6 +78,7 @@ fn expired_code_does_not_issue_client_token() {
             },
             expires_at: now + Duration::seconds(1),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
 
@@ -101,6 +103,7 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
             },
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create older enrollment");
     let newer = enrollments
@@ -111,6 +114,7 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
             },
             expires_at: now + Duration::minutes(5),
             now: now + Duration::seconds(1),
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create newer enrollment");
 
@@ -146,6 +150,7 @@ fn existing_client_code_redeems_by_rotating_token_in_place() {
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
     assert_eq!(created.client_address.as_deref(), Some("edge.example.com"));
@@ -185,6 +190,7 @@ fn new_client_enrollment_rejects_existing_client_inside_store_transaction() {
             },
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect_err("new enrollment must reject existing client");
 
@@ -206,6 +212,7 @@ fn existing_client_enrollment_requires_existing_client_inside_store_transaction(
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect_err("re-enrollment must require existing client");
 
@@ -246,6 +253,7 @@ fn creating_enrollment_prunes_old_consumed_and_expired_rows() {
             },
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
 
