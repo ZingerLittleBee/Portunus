@@ -64,6 +64,6 @@ describe("EnrollmentInstallGuide", () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="provision" />);
     const [firstCopy] = screen.getAllByRole("button", { name: /copy/i });
     fireEvent.click(firstCopy);
-    expect(navigator.clipboard.writeText).toHaveBeenCalled();
+    expect((navigator.clipboard as Clipboard).writeText).toHaveBeenCalled();
   });
 });
