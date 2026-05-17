@@ -44,8 +44,10 @@ impl SqliteSettingsStore {
     pub fn set_advertised_endpoint(&self, value: Option<String>) -> Result<(), StoreError> {
         let normalized = value.filter(|s| !s.is_empty());
         if let Some(v) = &normalized {
-            validate_authority_inline(v).map_err(|reason| StoreError::Internal {
-                message: format!("invalid advertised_endpoint: {reason}"),
+            crate::advertised::grammar::validate_authority(v).map_err(|reason| {
+                StoreError::Internal {
+                    message: format!("invalid advertised_endpoint: {reason}"),
+                }
             })?;
         }
         self.store.with_write_tx(|tx| {
@@ -56,41 +58,6 @@ impl SqliteSettingsStore {
             .map_err(map_rusqlite)?;
             Ok(())
         })
-    }
-}
-
-// TEMPORARY — replaced by `crate::advertised::grammar::validate_authority`
-// in a later task. Kept minimal but correct so this task's tests are stable.
-fn validate_authority_inline(s: &str) -> Result<(), String> {
-    if s.len() > 255 {
-        return Err("too long".into());
-    }
-    if s.contains("://") || s.contains('/') || s.contains('@') || s.contains('[') {
-        return Err("not a bare host:port".into());
-    }
-    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("whitespace/control".into());
-    }
-    let (host, port) = s.rsplit_once(':').ok_or("missing :port")?;
-    let p: u32 = port.parse().map_err(|_| "bad port")?;
-    if !(1..=65535).contains(&p) {
-        return Err("port out of range".into());
-    }
-    if host.is_empty() {
-        return Err("empty host".into());
-    }
-    let is_ipv4 = host.parse::<std::net::Ipv4Addr>().is_ok();
-    let is_dns = host.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-    });
-    if is_ipv4 || is_dns {
-        Ok(())
-    } else {
-        Err("host not RFC1123 hostname or IPv4".into())
     }
 }
 
