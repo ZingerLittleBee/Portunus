@@ -209,8 +209,7 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d
 are created later by operator rules. If you avoid host networking, publish each
 forwarded port explicitly.
 
-See [Deploy with Docker](/en/docs/deployment/docker) for the full client
-container reference, backup, and production notes.
+See [Client Configuration](/en/docs/configuration/client#docker) for why both commands run as your host user, and [Deploy with Docker](/en/docs/deployment/docker) for production notes.
 
 For a source build:
 
