@@ -135,6 +135,13 @@ target=""
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 
+# Single script-level cleanup: a RETURN trap would re-fire on every later
+# function return (where the local tmp is out of scope ⇒ set -u abort).
+CLEANUP_DIRS=()
+_cleanup() { local d; for d in "${CLEANUP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; return 0; }
+trap _cleanup EXIT
+mktemp_tracked() { local d; d="$(mktemp -d)"; CLEANUP_DIRS+=("$d"); printf '%s' "$d"; }
+
 # ─── Platform ─────────────────────────────────────────────────────────
 detect_platform() {
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -640,7 +647,7 @@ install_binary() {
   local asset checksums tmp src expected actual
   asset="portunus-${artifact_version}-${target}.tar.gz"
   checksums="portunus-${artifact_version}-checksums.txt"
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  tmp="$(mktemp_tracked)"
   echo "→ downloading ${asset} (${tag})"
   curl -fsSL "$(rel "$asset")" -o "$tmp/$asset" || die "download failed: $asset"
   curl -fsSL "$(rel "$checksums")" -o "$tmp/$checksums" || die "download failed: $checksums"
@@ -663,7 +670,7 @@ install_systemd_unit() {
   if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
     echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
-  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp_tracked)"
   curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
   if [ "$ROLE" = "client" ]; then
     id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
