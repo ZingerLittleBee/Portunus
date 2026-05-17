@@ -1072,14 +1072,23 @@ wizard_install() {
   VERB=install; dispatch_verb
 }
 
+reset_menu_state() {
+  ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"; COMPOSE_DIR=""
+  WANT_SYSTEMD="no"; ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
+  SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
+}
+
 run_menu() {
   first_run_lang
   while :; do
+    reset_menu_state
     echo; echo "$(t menu_title)"
     echo "$(t menu_install)"; echo "$(t menu_uninstall)"; echo "$(t menu_upgrade)"
     echo "$(t menu_status)"; echo "$(t menu_service)"; echo "$(t menu_config)"
     echo "$(t menu_env)"; echo "$(t menu_exit)"
-    local c; c="$(ask menu_select)"
+    local c
+    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$(t menu_select)" c || return 0
+    else read -r -p "$(t menu_select)" c < /dev/tty || return 0; fi
     case "$c" in
       1) wizard_install || true ;;
       2) VERB=uninstall; lifecycle_uninstall || true ;;
