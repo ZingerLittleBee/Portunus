@@ -1,7 +1,7 @@
 # Client enrollment install UX — design
 
 Date: 2026-05-17
-Status: approved (pending spec review)
+Status: revised after spec review round 1 (pending re-review)
 
 ## Problem
 
@@ -21,16 +21,91 @@ Out of scope / intentional: no backward compatibility with the old
 credential-bundle flow (already removed); no new frontend dependencies;
 no speckit `specs/NNN-*` workflow (lightweight design doc only).
 
+## Spec-review resolutions (round 1)
+
+All six findings verified against the repo and accepted. How each is
+resolved in this revision:
+
+1. **Version naming** — release assets use the Cargo version *without*
+   `v` (`portunus-1.4.1-<target>.tar.gz`), while `releases/latest`
+   returns `tag_name=v1.4.1`. The script tracks two distinct values:
+   `tag` (`vX.Y.Z`, used for the GitHub release URL path) and
+   `artifact_version` (`X.Y.Z`, used in asset/checksum filenames).
+   `--version` input is normalised (accepts `v1.4.1` or `1.4.1`).
+   (§1, §1 "Version resolution")
+2. **Docker / verbatim command** — the API gains an explicit `uri`
+   field on `ClientEnrollmentResponse` (server already constructs the
+   `portunus://…` URI; it is now returned alongside `command`). The UI
+   never string-parses `command`. Docker steps pass `enroll <uri> --out
+   /work/client.bundle.json` as container args (overriding the image
+   `CMD`, entrypoint is already `portunus-client`) writing into a
+   mounted volume that the long-running container then mounts.
+   (§"API change", §2 Docker tab)
+3. **systemd write privilege** — the new installer's `--systemd` path
+   creates `/etc/portunus` as root (mirroring the existing
+   `deploy/systemd/install.sh`). The operator runs `enroll --out
+   ./client.bundle.json` as themselves, then a `sudo install -o root -g
+   portunus-client -m 0640 ./client.bundle.json
+   /etc/portunus/client.bundle.json` step. No step assumes a non-root
+   shell can write `/etc/portunus`. (§1 "--systemd", §2 systemd tab)
+4. **Reuse existing hardened units** — there are already hardened,
+   role-specific units at `deploy/systemd/portunus-client.service` and
+   `deploy/systemd/portunus-server.service` (users `portunus-client` /
+   `portunus-server`, `--bundle`, `LimitNOFILE`, `CAP_NET_BIND_SERVICE`,
+   full hardening block). The installer **downloads and installs those
+   exact unit files** (raw URL on `main`, same mechanism as the script);
+   it does NOT generate a new minimal unit. The stale
+   `deploy/systemd/install.sh` (references the removed `provision-client`
+   command) is updated to the enroll flow and kept as the
+   "from-a-checkout" path; the new `scripts/install.sh` is the
+   "curl one-liner" path. (§1 "--systemd", §3, §5)
+5. **sudo model for `curl | sh`** — the script escalates *individual*
+   privileged operations with `sudo` (`sudo install` for the binary,
+   `sudo install -d` for dirs, `sudo install` for units, `sudo
+   systemctl`). It never tries to re-exec itself. Docs also show the
+   `curl … | sudo sh -s -- …` alternative for already-root contexts.
+   (§1 "Privilege model")
+6. **dry-run vs latest resolution** — `--dry-run` short-circuits
+   *before any network call*, including latest-version resolution; it
+   prints `version: <resolved at run time>` when `--version` is absent.
+   The smoke test always passes an explicit `--version` so it is
+   network-free and deterministic. (§1 "--dry-run", §4)
+
 ## Deliverables
 
-1. `scripts/install.sh` — new POSIX install script (role-parameterised).
-2. WebUI `EnrollmentInstallGuide` — stepped wizard component replacing
+1. `scripts/install.sh` — new POSIX install script (role-parameterised,
+   downloads binary + hardened unit, per-op `sudo`).
+2. Server/API: add `uri` to `ClientEnrollmentResponse` (proto + gRPC +
+   operator HTTP + CLI struct + WebUI type + wire-compat test).
+3. WebUI `EnrollmentInstallGuide` — stepped wizard component replacing
    `EnrollmentCommandCard` / `ReEnrollmentCommandCard`.
-3. Docs rewrite — `configuration/client` as the single source of truth;
+4. Docs rewrite — `configuration/client` as the single source of truth;
    `deployment/{systemd,docker,railway}`, `cli/walkthrough`, `README.md`
    updated to reference it; ZH mirrors kept 1:1.
-4. Tests — shellcheck + dry-run smoke for the script; updated WebUI unit
-   tests for the new component.
+5. Update stale `deploy/systemd/install.sh` (drop `provision-client`,
+   point at the enroll flow).
+6. Tests — shellcheck + deterministic dry-run smoke for the script;
+   updated WebUI unit tests; updated proto wire-compat test.
+
+## API change: `uri` on `ClientEnrollmentResponse`
+
+The server already builds `portunus://…` in `enrollment_command()`
+(`crates/portunus-server/src/operator/cli.rs`) and wraps it as
+`portunus-client enroll '<uri>'`. Expose the bare URI too:
+
+- `proto/portunus.proto`: add `string uri = N;` to the enrollment
+  response message (next free field number; update
+  `crates/portunus-proto/tests/enrollment_wire_compat.rs`).
+- `EnrollmentCommand` struct + gRPC `enrollment.rs` + operator
+  `http.rs`: populate `uri` (the value before the
+  `portunus-client enroll '…'` wrapper).
+- `webui/src/api/types.ts`: `ClientEnrollmentResponse.uri: string`.
+- `command` stays for the plain Shell copy-paste; `uri` is used by the
+  Docker tab and anywhere a bare URI is needed. No string parsing in
+  the browser.
+
+This touches the server/proto surface again (small, additive, field is
+new — no compatibility concern since the flow itself is new).
 
 ## 1. `scripts/install.sh`
 
@@ -42,122 +117,153 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ```
 
 - **Positional `role`** (required): `client` | `server`. Installs only
-  the matching binary from the release tarball.
+  the matching binary.
 - **Flags**:
-  - `--version vX.Y.Z` — default: resolve latest via
-    `https://api.github.com/repos/ZingerLittleBee/Portunus/releases/latest`.
-  - `--bin-dir DIR` — default `/usr/local/bin`; if not writable, re-exec
-    the install step via `sudo`.
-  - `--systemd` — also generate, `daemon-reload`, and `enable --now` a
-    systemd unit for the role (see below). Requires root/sudo.
-  - `--yes` — non-interactive (assume yes on prompts).
-  - `--dry-run` — print resolved `os/arch/target`, version, download URL,
-    and the install/unit actions; download nothing, write nothing.
-- **Resolution**: `uname -s` → `linux|darwin`; `uname -m` →
-  `x86_64|aarch64` (map `arm64`→`aarch64`). Compose
-  `target = <arch>-unknown-linux-gnu` (linux) or `<arch>-apple-darwin`
-  (darwin). Asset: `portunus-${version}-${target}.tar.gz`; also fetch
-  `portunus-${version}-checksums.txt`.
-- **Integrity**: verify the tarball sha256 against the checksums file
-  before extracting; abort on mismatch. Extract to a temp dir, copy only
-  `portunus-${role}` into `--bin-dir`, `chmod 0755`.
-- **Errors**: unsupported OS/arch, checksum mismatch, network failure,
-  missing `sudo` when needed → clear message, non-zero exit, no silent
-  fallback.
-- **Output**: on success print the next step for the role:
-  - client → the `portunus-client enroll '...'` reminder + `portunus-client`.
-  - server → `portunus-server --data-dir <dir> serve` hint.
+  - `--version <X.Y.Z|vX.Y.Z>` — optional; input normalised. Default:
+    resolve latest (see below).
+  - `--bin-dir DIR` — default `/usr/local/bin`.
+  - `--systemd` — also install + enable the hardened unit (Linux only).
+  - `--yes` — non-interactive.
+  - `--dry-run` — print plan, do nothing, no network.
 
-### `--systemd` unit generation
+### Version resolution
 
-Generated unit path: `/etc/systemd/system/portunus-<role>.service`.
+- `releases/latest` API
+  (`https://api.github.com/repos/ZingerLittleBee/Portunus/releases/latest`)
+  returns `tag_name` like `v1.4.1`.
+- `tag = v1.4.1` (used in the release download URL path:
+  `…/releases/download/${tag}/…`).
+- `artifact_version = ${tag#v}` = `1.4.1` (used in asset names).
+- Asset: `portunus-${artifact_version}-${target}.tar.gz`; checksums:
+  `portunus-${artifact_version}-checksums.txt`.
+- `--version` accepts either form; internally split into the same two
+  values (`tag` always has the `v`, `artifact_version` never does).
 
-- **client** (`portunus-client --systemd`):
-  - Create system user `portunus` (`useradd --system --no-create-home
-    --shell /usr/sbin/nologin portunus`) if absent.
-  - Expected bundle path: `/etc/portunus/client.bundle.json` (the wizard
-    and docs instruct `enroll --out /etc/portunus/client.bundle.json`,
-    `chown portunus:`, `chmod 0600`).
-  - Unit:
-    ```ini
-    [Unit]
-    Description=Portunus edge client
-    After=network-online.target
-    Wants=network-online.target
+### Platform resolution
 
-    [Service]
-    User=portunus
-    Environment=PORTUNUS_CLIENT_BUNDLE=/etc/portunus/client.bundle.json
-    ExecStart=<bin-dir>/portunus-client
-    Restart=on-failure
-    RestartSec=5
+`uname -s` → `linux|darwin`; `uname -m` → `x86_64|aarch64` (map
+`arm64`→`aarch64`). `target = <arch>-unknown-linux-gnu` (linux) or
+`<arch>-apple-darwin` (darwin). Unsupported OS/arch → clear error,
+non-zero exit.
 
-    [Install]
-    WantedBy=multi-user.target
-    ```
-- **server** (`portunus-server --systemd`):
-  - Data dir `/var/lib/portunus` (`--data-dir`), owned by `portunus`.
-  - `ExecStart=<bin-dir>/portunus-server --data-dir /var/lib/portunus serve`.
-  - Same `[Unit]`/`Restart` shape; `WantedBy=multi-user.target`.
+### Integrity & install
 
-`--systemd` is a no-op-with-warning on non-Linux / no `systemctl`.
-Bundle/data provisioning is the operator's step (script does not enroll).
+Verify the tarball sha256 against the checksums file before extracting;
+abort on mismatch. Extract to a temp dir; install only
+`portunus-${role}` into `--bin-dir` (`sudo install -m 0755` when the
+dir is not writable by the current user).
+
+### Privilege model
+
+The script runs unprivileged and escalates *individual* operations:
+
+- binary: `install -m 0755 … <bin-dir>` or `sudo install …` if needed.
+- `--systemd` dirs/units: `sudo install -d …`, `sudo install -m 0644
+  <unit> /etc/systemd/system/…`, `sudo systemctl daemon-reload`,
+  `sudo systemctl enable --now portunus-<role>`.
+
+It never re-execs itself. Docs also document `curl … | sudo sh -s -- …`
+for contexts that are already root.
+
+### `--systemd` (Linux only; warn-and-skip elsewhere)
+
+Installs the **existing repo unit verbatim** — fetched from
+`https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/deploy/systemd/portunus-<role>.service`
+(same raw-URL mechanism as the script). Steps:
+
+- **client**:
+  1. `id portunus-client || sudo useradd --system --no-create-home
+     --shell /usr/sbin/nologin portunus-client`
+  2. `sudo install -d -o root -g portunus-client -m 0750 /etc/portunus`
+  3. `sudo install -m 0644 <fetched unit> /etc/systemd/system/portunus-client.service`
+  4. `sudo systemctl daemon-reload`
+  5. Print: enrollment is a separate operator step — run `enroll --out
+     ./client.bundle.json`, then `sudo install -o root -g
+     portunus-client -m 0640 ./client.bundle.json
+     /etc/portunus/client.bundle.json`, then `sudo systemctl enable
+     --now portunus-client`.
+- **server**:
+  1. `id portunus-server || sudo useradd --system …`
+  2. `sudo install -d -o portunus-server -g portunus-server -m 0750
+     /var/lib/portunus`
+  3. install `portunus-server.service`, `daemon-reload`.
+  4. Print: `sudo systemctl enable --now portunus-server`.
+
+The unit's `ExecStart` already encodes `--bundle
+/etc/portunus/client.bundle.json` / `--data-dir /var/lib/portunus`; the
+script does not template `ExecStart`. The script does not enroll and
+does not `enable --now` the client (bundle must exist first).
+
+### `--dry-run`
+
+Short-circuits before *any* network call (including latest resolution).
+Prints: resolved `os/arch/target`, `version` (the explicit value, or
+the literal `<latest, resolved at run time>` when `--version` absent),
+the would-be download URL, and the install/unit actions. Exit 0.
+
+### Errors
+
+Unsupported OS/arch, checksum mismatch, network failure, missing `sudo`
+when required → clear message, non-zero exit, no silent fallback.
 
 ## 2. WebUI `EnrollmentInstallGuide`
 
 New component `webui/src/components/EnrollmentInstallGuide.tsx`, used by
 both `ClientProvision` (mode `provision`) and `ClientDetail` (mode
-`reenroll`). Replaces `EnrollmentCommandCard` and
-`ReEnrollmentCommandCard` (both removed).
+`reenroll`). Replaces and removes `EnrollmentCommandCard` /
+`ReEnrollmentCommandCard`.
 
 Props: `{ enrollment: ClientEnrollmentResponse; mode: "provision" |
-"reenroll" }`.
+"reenroll" }` (`enrollment` now carries both `command` and `uri`).
 
 Layout:
-- Header: client name + **live countdown** derived from
-  `enrollment.expires_at` (native `setInterval`, 1 s tick, cleared on
-  unmount). At/after expiry: red state + "create a new command" hint;
-  the raw command stays visible but marked stale.
+- Header: client name + **live countdown** from `enrollment.expires_at`
+  (native `setInterval`, 1 s, cleared on unmount). At/after expiry: red
+  state + "create a new command" hint; command stays visible but marked
+  stale.
 - Tabs (shadcn `Tabs`): **Shell / systemd / Docker**.
-  - **Shell** — step 1 `curl … install.sh | sh -s -- client`; step 2 the
-    `enrollment.command`; step 3 `portunus-client`.
-  - **systemd** — step 1 `curl … install.sh | sh -s -- client --systemd`;
-    step 2 `enrollment.command` with
-    `--out /etc/portunus/client.bundle.json` then
-    `chown portunus: /etc/portunus/client.bundle.json`; step 3
-    `systemctl status portunus-client`.
-  - **Docker** — step 1 one-shot
-    `docker run --rm … ghcr.io/zingerlittlebee/portunus-client … enroll …`
-    (note: install.sh not used in container mode); step 2 long-running
-    `docker run -d … portunus-client`.
-- Each step: numbered, short description, command in a copy-able block
-  with the existing copy/copied affordance (per-step copy state).
-- `reenroll` mode: step 1 (install binary) rendered collapsed with an
-  "already installed? skip" note; steps 2–3 expanded.
-
-The `enrollment.command` string is taken verbatim from the API
-(`portunus-client enroll '<uri>'`); the component only wraps/derives the
-surrounding steps. The systemd `--out` variant is presentational — it
-appends `--out …` to the displayed command, the server-issued command is
-unchanged.
+  - **Shell** — 1) `curl … install.sh | sh -s -- client`; 2)
+    `enrollment.command` (verbatim); 3) `portunus-client`.
+  - **systemd** — 1) `curl … install.sh | sudo sh -s -- client
+    --systemd`; 2) `enrollment.command` with ` --out
+    ./client.bundle.json` appended (display-only; the issued command is
+    unchanged) then `sudo install -o root -g portunus-client -m 0640
+    ./client.bundle.json /etc/portunus/client.bundle.json`; 3) `sudo
+    systemctl enable --now portunus-client` + `systemctl status
+    portunus-client`.
+  - **Docker** — 1) one-shot enroll into a host volume:
+    `docker run --rm -v "$PWD:/work" ghcr.io/zingerlittlebee/portunus-client \
+    enroll '<enrollment.uri>' --out /work/client.bundle.json`
+    (args override the image `CMD`; entrypoint is already
+    `portunus-client`); 2) long-running:
+    `docker run -d --name portunus-client --network host \
+    -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+    ghcr.io/zingerlittlebee/portunus-client`.
+- Each step: numbered, short description, copy-able command block with
+  the existing copy/copied affordance (per-step copy state).
+- `reenroll` mode: step 1 (install binary) collapsed with an "already
+  installed? skip" note; steps 2–3 expanded.
 
 i18n: add keys under `clientProvision.guide.*` (steps, tab labels,
-countdown, expired, skip note) in `en.json` and `zh-CN.json`; remove now
-unused `clientProvision.enrollment.*` / `clientDetail.reenrollHint` keys
-that the old cards used (keep keys still referenced elsewhere).
+countdown, expired, skip note) in `en.json` and `zh-CN.json`; remove the
+now-unused `clientProvision.enrollment.*` / `clientDetail.reenrollHint`
+keys (keep keys still referenced elsewhere).
 
 ## 3. Docs
 
 `docs/content/docs/configuration/client.mdx` is the **single source of
-truth** for the install snippets (install.sh usage, enroll, bundle
-resolution, systemd unit, Docker). Other pages give the context and link
-to it rather than duplicating command text (prevents drift):
+truth** for install snippets (install.sh usage incl. version/sudo
+model, enroll, bundle resolution, systemd via the hardened unit, Docker
+volume layout). Other pages give context and link to it rather than
+duplicating command text. When a command must appear on multiple pages
+it is copied from `configuration/client` with a comment naming the
+canonical location.
 
 | Page (+ `docs/content/docs/zh/...` mirror) | Change |
 |---|---|
-| `configuration/client` | Authoritative: install.sh flags, enroll, bundle resolution chain, systemd + Docker variants |
-| `deployment/systemd` | `install.sh client --systemd` walkthrough; link to client config for bundle provisioning |
-| `deployment/docker` | Container enroll/run; explicitly note install.sh is host-only |
+| `configuration/client` | Authoritative: install.sh flags + version/sudo model, enroll, bundle resolution chain, systemd (hardened unit) + Docker (volume) variants |
+| `deployment/systemd` | `install.sh client --systemd` walkthrough using the hardened unit; the privileged enroll→install→enable sequence |
+| `deployment/docker` | Container enroll into a mounted volume + long-running mount; note install.sh is host-only |
 | `deployment/railway` | Container path, adapted from the Docker section |
 | `cli/walkthrough` | End-to-end quickstart: install server → bootstrap → issue enrollment → install client → enroll → run |
 | `README.md` | Top-of-readme quickstart switched to the install.sh one-liner |
@@ -167,27 +273,35 @@ prose, identical command blocks).
 
 ## 4. Testing
 
-- `scripts/install.sh`: passes `shellcheck`; a shell smoke test invoking
-  `sh scripts/install.sh client --dry-run` asserts it prints the correct
-  resolved target and asset URL and exits 0 without network/writes.
-  (Place under `scripts/` or `crates/portunus-e2e` shell harness — pick
-  the lighter of the two during planning.)
+- `scripts/install.sh`: passes `shellcheck`; a deterministic smoke test
+  invoking `sh scripts/install.sh client --version 1.4.1 --dry-run`
+  asserts the resolved target and asset URL
+  (`…/releases/download/v1.4.1/portunus-1.4.1-<target>.tar.gz`) and
+  exit 0 with no network and no writes. (Lives under `scripts/` or the
+  `crates/portunus-e2e` shell harness — pick the lighter during
+  planning.)
 - WebUI: rewrite `webui/tests/unit/client-provision-enrollment.test.ts`
-  and `webui/tests/unit/client-detail-reenrollment.test.ts` to cover the
-  new component — tab switching, per-step copy, countdown render, expired
-  state, reenroll collapsed step 1. No new deps; countdown uses native
-  timers (fake timers in tests).
-- Existing Rust suites unaffected (no server/proto changes in this work).
+  and `webui/tests/unit/client-detail-reenrollment.test.ts` — tab
+  switching, per-step copy, countdown render, expired state, reenroll
+  collapsed step 1, Docker step uses `uri` (not parsed `command`). No
+  new deps; fake timers for the countdown.
+- Proto: extend `crates/portunus-proto/tests/enrollment_wire_compat.rs`
+  for the new `uri` field number; existing Rust suites otherwise
+  unaffected.
 
 ## Risks / notes
 
-- Scope expansion vs the original "update UI + docs" ask: a new
-  `install.sh` is now a first-class deliverable. Accepted by the user.
-- `install.sh --systemd` adds real complexity (user creation, unit
-  generation, root). Kept minimal and Linux-only; non-Linux warns.
-- raw-URL-on-`main` means the script is unversioned; acceptable per user
-  decision. A breaking script change would affect old docs — mitigated by
-  keeping the script's CLI contract stable.
-- One-source-of-truth docs: if a command must appear on multiple pages,
-  it is copied from `configuration/client` and a comment notes the
-  canonical location to reduce drift.
+- Scope expanded twice: a new top-level `install.sh` and a new `uri`
+  API field. The latter touches proto/gRPC/HTTP/CLI again — additive
+  and low-risk because the enrollment surface is brand new (no
+  compatibility concern), but it must land before the WebUI/docs work.
+- raw-URL-on-`main` means the script *and* the fetched unit files are
+  unversioned; acceptable per user decision. The script's CLI contract
+  and the unit `ExecStart` paths must stay stable so older docs keep
+  working.
+- Two install entry points now coexist: `scripts/install.sh` (curl
+  one-liner, downloads binary + unit) and `deploy/systemd/install.sh`
+  (from a checkout, units only). The latter is updated to the enroll
+  flow so they do not contradict each other; docs point at the former.
+- `--systemd` complexity is contained by reusing the existing hardened
+  unit verbatim instead of generating one.
