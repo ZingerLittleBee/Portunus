@@ -10,6 +10,7 @@ pub mod host_header;
 pub mod resolve;
 pub mod san;
 
+pub use resolve::ResolveInputs;
 pub use resolve::resolve_advertised_endpoint;
 pub use san::CertSanSet;
 
