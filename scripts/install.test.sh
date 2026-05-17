@@ -24,4 +24,7 @@ echo "$out2" | grep -q '^artifact_version:[[:space:]]*2.0.0$' || fail "v-normali
 # Unknown role is rejected non-zero.
 if sh "$script" bogus --dry-run >/dev/null 2>&1; then fail "bogus role accepted"; fi
 
+# --yes is accepted (forward-compat stub).
+sh "$script" client --version 1.0.0 --yes --dry-run >/dev/null 2>&1 || fail "--yes flag rejected"
+
 echo "PASS"

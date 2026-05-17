@@ -14,7 +14,7 @@ ROLE=""
 VERSION=""
 BIN_DIR="/usr/local/bin"
 WANT_SYSTEMD="no"
-ASSUME_YES="no"
+ASSUME_YES="no"  # forward-compat stub; no interactive prompts exist yet
 DRY_RUN="no"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -120,7 +120,7 @@ curl -fsSL "$(rel "$asset")" -o "$tmp/$asset" || die "download failed: $asset"
 curl -fsSL "$(rel "$checksums")" -o "$tmp/$checksums" || die "download failed: $checksums"
 
 echo "→ verifying sha256"
-expected="$(grep " ${asset}\$" "$tmp/$checksums" | awk '{print $1}')"
+expected="$(grep -F " ${asset}" "$tmp/$checksums" | awk '{print $1}')"
 [ -n "$expected" ] || die "no checksum entry for $asset"
 if command -v sha256sum >/dev/null 2>&1; then
   actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
