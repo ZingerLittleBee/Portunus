@@ -14,7 +14,8 @@ pub fn validate_authority(s: &str) -> Result<(&str, u16), String> {
     if s.is_empty() {
         return Err("empty".into());
     }
-    if s.len() > 255 {
+    if s.len() > 263 {
+        // 253 host + ':' + 5 port digits + small headroom; coarse anti-DoS bound, real host limit enforced below
         return Err("too long (> 255)".into());
     }
     if s.contains("://") {
@@ -39,6 +40,12 @@ pub fn validate_authority(s: &str) -> Result<(&str, u16), String> {
     if host.is_empty() {
         return Err("empty host".into());
     }
+    if port_str.is_empty()
+        || !port_str.bytes().all(|b| b.is_ascii_digit())
+        || (port_str.len() > 1 && port_str.starts_with('0'))
+    {
+        return Err("port must be a decimal 1..=65535".into());
+    }
     let port: u16 = port_str
         .parse()
         .map_err(|_| "port must be a decimal 1..=65535".to_string())?;
@@ -57,6 +64,13 @@ fn is_ipv4(host: &str) -> bool {
 
 fn is_rfc1123_hostname(host: &str) -> bool {
     if host.len() > 253 {
+        return false;
+    }
+    if host
+        .split('.')
+        .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        // All-numeric host that did not parse as IPv4 → malformed IP, reject.
         return false;
     }
     host.split('.').all(|label| {
@@ -87,6 +101,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed() {
+        let long_label = format!("{}:1", "a".repeat(254));
         for bad in [
             "",
             "host-only",
@@ -100,8 +115,34 @@ mod tests {
             "x y:7443",
             "x:7443?q=1",
             &"a".repeat(300),
+            "host:+7443",
+            "host:07443",
+            "999.999.999.999:7443",
+            "host:",
+            ":7443",
+            &long_label,
         ] {
             assert!(validate_authority(bad).is_err(), "should reject {bad:?}");
         }
+    }
+
+    #[test]
+    fn accepts_boundaries() {
+        assert_eq!(validate_authority("host:65535").unwrap(), ("host", 65535));
+        assert_eq!(
+            validate_authority("255.255.255.255:7443").unwrap(),
+            ("255.255.255.255", 7443)
+        );
+        // 253-char hostname: 63+1+63+1+63+1+60 = 253 chars across labels.
+        let host253 = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        assert_eq!(host253.len(), 253);
+        let input = format!("{host253}:1");
+        assert_eq!(validate_authority(&input).unwrap(), (host253.as_str(), 1));
     }
 }

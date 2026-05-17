@@ -553,7 +553,8 @@ pub fn validate_authority(s: &str) -> Result<(&str, u16), String> {
     if s.is_empty() {
         return Err("empty".into());
     }
-    if s.len() > 255 {
+    if s.len() > 263 {
+        // 253 host + ':' + 5 port digits + small headroom; coarse anti-DoS bound, real host limit enforced below
         return Err("too long (> 255)".into());
     }
     if s.contains("://") {
@@ -578,6 +579,12 @@ pub fn validate_authority(s: &str) -> Result<(&str, u16), String> {
     if host.is_empty() {
         return Err("empty host".into());
     }
+    if port_str.is_empty()
+        || !port_str.bytes().all(|b| b.is_ascii_digit())
+        || (port_str.len() > 1 && port_str.starts_with('0'))
+    {
+        return Err("port must be a decimal 1..=65535".into());
+    }
     let port: u16 = port_str
         .parse()
         .map_err(|_| "port must be a decimal 1..=65535".to_string())?;
@@ -596,6 +603,13 @@ fn is_ipv4(host: &str) -> bool {
 
 fn is_rfc1123_hostname(host: &str) -> bool {
     if host.len() > 253 {
+        return false;
+    }
+    if host
+        .split('.')
+        .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        // All-numeric host that did not parse as IPv4 → malformed IP, reject.
         return false;
     }
     host.split('.').all(|label| {
@@ -642,6 +656,8 @@ mod tests {
     }
 }
 ```
+
+> Note: digit-only port guard, all-numeric-host rejection, and 263-char bound added per code review 2026-05-17.
 
 - [ ] **Step 2: Run it to verify it fails, then passes**
 
