@@ -86,21 +86,41 @@ Evaluated once when the enrollment row is created, then frozen:
    the dependency surface unchanged. The Railway script's flag bridge
    becomes redundant but stays harmless.) Held in `AppState` as
    `Option<String>`.
-3. **Auto-derive** — hostname from the operator HTTP request `Host`
-   header + the server's startup-resolved `control_listen` port.
-   Only available on the Web UI / HTTP creation path.
+3. **Auto-derive** — host parsed from the operator HTTP request `Host`
+   header (contract below) + the server's startup-resolved
+   `control_listen` port. Only available on the Web UI / HTTP creation
+   path.
 4. **Loopback fallback** — existing `127.0.0.1:{control_port}` logic
    (used by gRPC-initiated and offline creation that have no request
    host and no seed/override).
 
-Each candidate, in order, must also pass **SAN coverage** (see below);
-the first candidate that is both present and SAN-covered wins. A
-candidate whose host is not covered is skipped (logged at `warn`),
-never written into a URI/bundle it cannot honor. If **no** candidate
-is SAN-covered (e.g. a custom cert covering only
-`control.example.com` while seed/loopback are not), resolution
-**fails** — see the resolver error contract in §4. Creation does not
-fabricate an unusable endpoint.
+**`Host` header parsing contract (tier 3):** treat the header as an
+HTTP authority. Strip an optional `:port` (the *browser* port, e.g.
+`localhost:5173`, `ops.example.com:443`) and discard it — the
+control-plane port always comes from the server's resolved
+`control_listen`. Reject (→ skip tier 3) if the header contains a
+scheme, path, `@` userinfo, whitespace/control chars, or is an IPv6
+literal (`[...]`). The surviving bare host is then `host:{control
+port}`. Examples: `Host: localhost:5173` → `localhost:7443`;
+`Host: public.example:443` → `public.example:7443`.
+
+**Covered vs. uncovered, by tier kind:**
+
+- **Explicit operator config** (tier 1 SQLite override, tier 2
+  CLI/env seed): if present but its host is **not** SAN-covered,
+  resolution is a **hard error** (`ConfiguredEndpointNotCovered`),
+  *not* a silent fall-through. Reason: an operator who set a value
+  (or a seed left stale after cert rotation) must be told it is
+  unusable, never silently downgraded to a "valid but wrong"
+  lower-priority endpoint.
+- **Implicit candidates** (tier 3 auto-derive, tier 4 loopback): if
+  not SAN-covered, skip with a `warn` and fall through.
+
+So precedence is: if tier 1 present → it must be covered or hard
+error; else if tier 2 present → it must be covered or hard error;
+else try tier 3, then tier 4, skipping uncovered ones. If nothing
+usable remains, resolution **fails** with `NoSanCoveredCandidate`
+(see §4). Creation never fabricates an unusable endpoint.
 
 Rejected alternatives: Approach A (CLI/env first-run seeding into
 SQLite — ordering ambiguity when env is permanently set on Railway);
@@ -184,8 +204,10 @@ helper MUST use webpki/rustls-equivalent name matching:
   host is not covered under the rules above. Error text tells the
   operator the cert must be reissued/redeployed to cover the host
   (out of scope here).
-- Creation-time resolution applies the same coverage predicate per
-  candidate (skip-and-fall-through, as in Resolution Order).
+- Creation-time resolution applies the same coverage *predicate*, but
+  the *consequence* of a miss depends on tier kind: explicit config
+  (tier 1/2) → hard error; implicit (tier 3/4) → skip-and-fall-through.
+  See "Covered vs. uncovered, by tier kind" in Resolution Order.
 
 ### 4. Resolution & issuance wiring
 
@@ -199,13 +221,20 @@ helper MUST use webpki/rustls-equivalent name matching:
   (captured at bind in `serve.rs`), not the browser port.
   `ResolvedAdvertisedEndpoint` carries the `host:port` string plus the
   winning `source` (override / seed / derived / loopback) for the UI.
-  `ResolveEndpointError::NoSanCoveredCandidate` is returned when every
-  present candidate fails the coverage predicate. **Error surfaces:**
+  `ResolveEndpointError` variants:
+  - `ConfiguredEndpointNotCovered { tier, host }` — an **explicit**
+    candidate (tier 1 SQLite override or tier 2 CLI/env seed) is
+    present but its host is not SAN-covered. Hard error; never
+    downgraded to a lower tier.
+  - `NoSanCoveredCandidate` — no explicit config present, and both
+    auto-derive and loopback are absent/uncovered.
+  **Error surfaces (both variants):**
   - Web UI / HTTP create-client → HTTP 422,
-    `endpoint_not_in_cert_san`, listing the candidates tried.
+    `endpoint_not_in_cert_san`, body distinguishes the two variants
+    and lists the candidate(s) tried with the reason each failed.
   - Offline `enroll-client` → non-zero exit with the same diagnostic.
   - The gRPC `enroll` redeem path never resolves (it replays the
-    persisted row), so it cannot hit this error.
+    persisted row), so it cannot hit either error.
 - `ClientEnrollmentStore::create` gains an `advertised_endpoint:
   String` input (resolved by the caller) and writes it to the new
   column. `CreatedEnrollment` / `redeem()` return it.
@@ -227,9 +256,21 @@ helper MUST use webpki/rustls-equivalent name matching:
   saving writes SQLite, clearing reverts to auto-derive.
 - New operator HTTP endpoints `GET` / `PUT
   /v1/settings/advertised-endpoint` reusing existing operator-API auth
-  + CSRF middleware. `PUT` enforces grammar + SAN coverage; surfaces
-  `endpoint_not_in_cert_san` distinctly so the UI can explain the cert
-  requirement.
+  + CSRF middleware.
+  - **`GET` always returns 200** (it is a status/read endpoint, not a
+    failure). Body:
+    `{ override: string|null, effective: string|null,
+       source: "override"|"seed"|"derived"|"loopback"|null,
+       diagnostic: string|null }`.
+    `override` is the raw SQLite value. `effective`/`source` are the
+    resolution result *without* a request `Host` (server-side view);
+    when resolution would error, `effective` and `source` are `null`
+    and `diagnostic` carries the `ConfiguredEndpointNotCovered` /
+    `NoSanCoveredCandidate` reason so the UI can render the problem
+    inline rather than treating GET as broken.
+  - **`PUT`** enforces grammar + SAN coverage; on failure returns
+    422 with `endpoint_not_in_cert_san` (or the grammar error code),
+    distinct enough that the UI can explain the cert requirement.
 - Help text: on platforms where the HTTP domain differs from the TCP
   path (Railway), set the TCP-Proxy `host:port` here, and ensure the
   server cert covers that host.
@@ -248,11 +289,22 @@ No code change.
 - Migration: `V010` applies; `server_settings` singleton row present;
   `client_enrollments.advertised_endpoint` column added;
   `store_schema_handshake` updated.
-- `resolve_advertised_endpoint`: each precedence branch; SAN
-  skip-and-fall-through (override host not covered → falls to seed);
-  no-host → loopback; **no candidate covered →
-  `NoSanCoveredCandidate` error** (and the create-client HTTP path
-  maps it to 422 `endpoint_not_in_cert_san`).
+- `Host` parsing contract: `Host: localhost:5173` → `localhost:7443`;
+  `Host: public.example:443` → `public.example:7443`; bare
+  `Host: public.example` → `public.example:7443`; reject (skip tier 3)
+  for scheme/path/`@`userinfo/whitespace/IPv6-literal headers.
+- `resolve_advertised_endpoint`: each precedence branch;
+  **explicit-config not covered → `ConfiguredEndpointNotCovered`
+  hard error, never downgraded** (e.g. stale SQLite override or
+  CLI/env seed after cert rotation, even when loopback *is* covered);
+  implicit tiers (auto-derive, loopback) skip-and-fall-through when
+  uncovered; nothing usable → `NoSanCoveredCandidate`. Both map to
+  422 `endpoint_not_in_cert_san` on the create-client HTTP path and
+  non-zero exit offline.
+- `GET /v1/settings/advertised-endpoint`: 200 with
+  `effective`/`source` populated on success; 200 with
+  `effective: null` + `diagnostic` when resolution would error
+  (never a non-200).
 - SAN matching (webpki parity): exact DNS hit; case-insensitive DNS
   hit; wildcard `*.example.com` matches `a.example.com` but rejects
   `a.b.example.com` and bare `example.com`; IPv4 host matches IP SAN
