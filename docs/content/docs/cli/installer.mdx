@@ -1,0 +1,253 @@
+---
+title: install.sh manager
+description: The self-contained bash lifecycle manager — install, upgrade, status, service, config, env, and uninstall for both binary+systemd and Docker Compose deployments.
+icon: Terminal
+---
+
+`scripts/install.sh` is a single self-contained **bash 4+** script that
+covers the whole lifecycle of a Portunus node:
+
+```
+install · uninstall · upgrade · status · service · config · env
+```
+
+It manages both deploy forms — a **release binary + systemd unit** and a
+**Docker Compose** stack — and it is bilingual (English / 中文). The
+non-interactive flag interface that CI, automation, and the documented
+`curl … | bash` one-liner depend on is unchanged; the interactive menu
+is purely additive.
+
+The same script is reachable two ways:
+
+```sh
+# Always-current copy, piped (interactive menu or non-interactive verbs):
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+
+# A checked-out / downloaded copy, run directly:
+bash scripts/install.sh <verb> [flags]
+```
+
+<Callout type="info">
+Requires **bash 4.0+**. The script hard-errors below that. macOS ships
+bash 3.2 — `brew install bash` and run it with that interpreter (the
+piped `curl … | bash` form uses whichever `bash` is first on `PATH`).
+</Callout>
+
+## Two modes
+
+**Interactive** — no actionable verb/role and a terminal is reachable
+(stdin is a TTY, or `/dev/tty` is readable when piped). You get a menu:
+
+```text
+Portunus Manager
+  [1] Install
+  [2] Uninstall
+  [3] Upgrade
+  [4] Status
+  [5] Service (start/stop/restart)
+  [6] Config
+  [7] Env
+  [0] Exit
+Select [0-7]:
+```
+
+Because it reads from `/dev/tty` when piped, `curl … | bash` reaches the
+menu. Pick `1` for a guided install wizard (role → deploy form → version
+→ paths → advertised endpoint → plan preview → confirm).
+
+**Non-interactive** — any verb/role/recognized flag, or `--yes`, or no
+usable terminal. This is the contract for CI and automation; behaviour
+matches the historical downloader plus the new verbs.
+
+## Synopsis
+
+```text
+install.sh <client|server|install|uninstall|upgrade|status|service|config|env>
+           [start|stop|restart] [get|set <key> [value]]
+           [--version V] [--deploy binary|docker]
+           [--bin-dir DIR] [--compose-dir DIR]
+           [--advertised-endpoint HOST:PORT] [--data-dir DIR]
+           [--operator-http-listen ADDR]
+           [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]
+```
+
+A bare role is shorthand for install: `client` ≡ `install client`,
+`server` ≡ `install server`.
+
+## Verbs
+
+| Verb | What it does |
+| --- | --- |
+| `install <client\|server>` | Guided or flag-driven install. Default deploy form is `binary`. |
+| `uninstall [client\|server]` | Remove the binary + unit + drop-in, or `docker compose down`. Confirms first. |
+| `upgrade [client\|server]` | Resolve latest, compare to recorded version, reuse recorded config. No-op when current. |
+| `status` | Recorded metadata + a live probe (`systemctl is-active` / `docker compose ps`). Read-only. |
+| `service <start\|stop\|restart>` | Dispatch to `systemctl` or `docker compose` by the recorded deploy form. |
+| `config <get\|set> <key> [value]` | Read/write one scoped key (see below). |
+| `env` | Print all scoped keys and their persisted values. |
+
+## Flags
+
+| Flag | Meaning |
+| --- | --- |
+| `--version <X.Y.Z\|vX.Y.Z>` | Pin a release. Omitted ⇒ latest, resolved at run time. |
+| `--deploy <binary\|docker>` | Deploy form. Default `binary`. |
+| `--bin-dir <DIR>` | Binary install dir (default `/usr/local/bin`). |
+| `--compose-dir <DIR>` | Docker compose directory (default: current directory). |
+| `--advertised-endpoint <HOST:PORT>` | Server reach address (see below). Blank ⇒ runtime auto. |
+| `--data-dir <DIR>` | Server data dir (default `/var/lib/portunus`). |
+| `--operator-http-listen <ADDR>` | Operator HTTP listen address override. |
+| `--systemd` | Also install the hardened systemd unit (Linux only). |
+| `--lang <en\|zh>` | Force UI language (also via `PORTUNUS_LANG`). |
+| `--yes` | Assume yes for ordinary confirmations. **Does not** bypass the `--purge` typed token. |
+| `--purge` | With `uninstall`, also delete the data dir / compose volume. Requires a typed confirmation. |
+| `--dry-run` | Print the plan; perform **zero** network and **zero** filesystem changes. |
+
+`--version`, `--bin-dir`, `--systemd`, `--yes`, `--dry-run` and the bare
+`client` / `server` form are the original downloader interface and behave
+exactly as before.
+
+## Deploy forms
+
+### Binary + systemd
+
+```sh
+# binary only
+curl -fsSL .../scripts/install.sh | bash -s -- server --version 1.4.2
+# binary + hardened unit + service user + drop-in
+curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
+  --advertised-endpoint host.example:7443
+```
+
+Downloads the release archive, verifies its SHA-256, and installs
+`portunus-<role>` to `--bin-dir`. With `--systemd` it fetches the
+hardened unit, creates the `portunus-server` / `portunus-client` service
+user and directories, and (for the server) writes a systemd **drop-in**
+at `/etc/systemd/system/portunus-server.service.d/10-portunus.conf` with
+the advertised endpoint. The shipped unit is never edited — all
+server config goes through the drop-in.
+
+### Docker Compose
+
+```sh
+mkdir -p ~/portunus && cd ~/portunus
+curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
+  --compose-dir ~/portunus --advertised-endpoint host.example:7443
+```
+
+Writes `compose.yml` (kept if it already exists) and a sibling `.env`
+holding the scoped variables, then `docker compose pull && up -d`.
+Docker Compose **v2** is required (legacy `docker-compose` is detected
+but v2 is preferred). Server config goes through the `.env` sidecar; an
+existing compose file is never rewritten.
+
+## Install metadata
+
+Each install records an `.install-meta` file (shell `key=value`) so later
+subcommands know how to act:
+
+| Deploy form / role | Path |
+| --- | --- |
+| binary server | `<data-dir>/.install-meta` (default `/var/lib/portunus/.install-meta`) |
+| binary client | `/etc/portunus/.install-meta` |
+| docker | `<compose-dir>/.install-meta` |
+
+Fields include `role`, `deploy`, `version`, `lang`,
+`advertised_endpoint_set`, `installed_at`, `installer_version`.
+
+Lifecycle verbs resolve the metadata in this order: an explicit
+`--compose-dir`, then the **current directory**, then
+`/var/lib/portunus`, then `/etc/portunus`. For a Docker deployment, run
+lifecycle commands **from the compose directory** (or pass
+`--compose-dir`) so a stale binary install does not shadow it.
+
+## Scoped config & env
+
+`config` and `env` accept only these four keys (anything else is a hard
+error):
+
+| Key | Maps to env var |
+| --- | --- |
+| `advertised-endpoint` | `PORTUNUS_ADVERTISED_ENDPOINT` |
+| `data-dir` | `PORTUNUS_DATA_DIR` |
+| `operator-http-listen` | `PORTUNUS_OPERATOR_HTTP_LISTEN` |
+| `version-pin` | `PORTUNUS_VERSION_PIN` |
+
+`set` writes the value into the systemd drop-in (binary) or the compose
+`.env` (docker), **merge-preserving** the other keys, then offers a
+service restart. `get` prints the persisted value (`<unset>` if none).
+`env` dumps all four.
+
+```sh
+# binary server (run anywhere — meta is at /var/lib/portunus)
+sudo bash install.sh config set advertised-endpoint host.example:7443
+bash install.sh config get advertised-endpoint
+bash install.sh env
+
+# docker (run from the compose dir, or pass --compose-dir)
+cd ~/portunus
+bash install.sh config set operator-http-listen 0.0.0.0:7080
+bash install.sh env
+```
+
+## Server advertised endpoint
+
+When installing a **server**, the wizard prompts for the advertised
+endpoint — the public `host:port` that Clients dial. The server
+certificate SAN must cover that host. Leave it blank to let the server
+auto-resolve it at run time. The installer only does a light `host:port`
+sanity check and persists the value (systemd drop-in or compose `.env`
+as `PORTUNUS_ADVERTISED_ENDPOINT`); authoritative SAN/grammar validation
+is performed by the server itself at startup.
+
+## Lifecycle examples
+
+```sh
+# Status (read-only): recorded meta + live probe
+bash install.sh status
+
+# Service control (dispatches systemctl or docker compose)
+sudo bash install.sh service restart
+bash install.sh service stop
+
+# Upgrade in place, reusing recorded config (no-op when already current)
+sudo bash install.sh upgrade
+
+# Uninstall (keeps data) — confirms first
+sudo bash install.sh uninstall
+
+# Uninstall and delete data — requires typing the token 'purge'
+sudo bash install.sh uninstall --purge
+```
+
+## Language
+
+Resolution order: `--lang` / `PORTUNUS_LANG` → `LC_ALL` / `LANG`
+autodetect (`zh*` ⇒ 中文, else English) → first-run prompt when
+interactive → otherwise English. The chosen language is stored in
+`.install-meta` and reused by later subcommands.
+
+```sh
+PORTUNUS_LANG=zh curl -fsSL .../scripts/install.sh | bash
+bash install.sh --lang en status
+```
+
+## Safety
+
+- **`--dry-run`** prints the plan and performs zero network and zero
+  filesystem changes — for every verb.
+- **`--purge`** additionally deletes the data dir / compose volume and
+  requires you to type the literal token `purge`. **`--yes` never
+  bypasses that typed token.**
+- Destructive actions always confirm; `uninstall` defaults to `[y/N]`.
+- The shipped systemd unit and an existing base compose file are never
+  edited — server config is applied through the drop-in / `.env`
+  sidecar.
+- Re-running `install` over an existing node is detected via
+  `.install-meta`; use `upgrade` to move versions while reusing the
+  recorded configuration.
+
+## See also
+
+- [Installation](/en/docs/getting-started/installation) — quick start and the other install paths.
+- [Docker deployment](/en/docs/deployment/docker) · [systemd deployment](/en/docs/deployment/systemd).

@@ -1,0 +1,238 @@
+---
+title: install.sh 管理器
+description: 自包含的 bash 全生命周期管理脚本——为二进制+systemd 与 Docker Compose 两种部署形态提供安装、升级、状态、服务控制、配置、环境变量与卸载。
+icon: Terminal
+---
+
+`scripts/install.sh` 是一个自包含的 **bash 4+** 脚本，覆盖 Portunus 节点的
+完整生命周期：
+
+```
+install · uninstall · upgrade · status · service · config · env
+```
+
+它同时管理两种部署形态——**release 二进制 + systemd unit** 与
+**Docker Compose** ——并且是双语的（English / 中文）。CI、自动化以及文档中
+`curl … | bash` 一行命令所依赖的非交互 flag 接口保持不变；交互式菜单是纯粹的
+增量功能。
+
+同一个脚本有两种使用方式：
+
+```sh
+# 始终最新的副本，管道方式（交互菜单或非交互 verb）：
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+
+# 已 checkout / 下载的本地副本，直接运行：
+bash scripts/install.sh <verb> [flags]
+```
+
+<Callout type="info">
+需要 **bash 4.0+**。低于该版本脚本会硬报错。macOS 自带 bash 3.2 ——
+请 `brew install bash` 并用该解释器运行（管道 `curl … | bash` 形式使用
+`PATH` 中第一个 `bash`）。
+</Callout>
+
+## 两种模式
+
+**交互模式** —— 未给出可执行的 verb/role 且终端可达（stdin 是 TTY，或管道
+时 `/dev/tty` 可读）。会进入菜单：
+
+```text
+Portunus Manager
+  [1] Install
+  [2] Uninstall
+  [3] Upgrade
+  [4] Status
+  [5] Service (start/stop/restart)
+  [6] Config
+  [7] Env
+  [0] Exit
+Select [0-7]:
+```
+
+因为管道时它从 `/dev/tty` 读取，所以 `curl … | bash` 也能进入菜单。选 `1`
+进入引导式安装向导（角色 → 部署形态 → 版本 → 路径 → 通告地址 → 计划预览
+→ 确认）。
+
+**非交互模式** —— 出现任意 verb/role/已识别 flag，或 `--yes`，或没有可用
+终端。这是 CI 与自动化的契约；行为与历史下载器加上新 verb 一致。
+
+## 用法
+
+```text
+install.sh <client|server|install|uninstall|upgrade|status|service|config|env>
+           [start|stop|restart] [get|set <key> [value]]
+           [--version V] [--deploy binary|docker]
+           [--bin-dir DIR] [--compose-dir DIR]
+           [--advertised-endpoint HOST:PORT] [--data-dir DIR]
+           [--operator-http-listen ADDR]
+           [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]
+```
+
+裸角色是安装的简写：`client` ≡ `install client`，`server` ≡
+`install server`。
+
+## Verb
+
+| Verb | 作用 |
+| --- | --- |
+| `install <client\|server>` | 引导式或 flag 驱动安装。默认部署形态为 `binary`。 |
+| `uninstall [client\|server]` | 删除二进制 + unit + drop-in，或 `docker compose down`。会先确认。 |
+| `upgrade [client\|server]` | 解析最新版本，与记录版本比较，复用记录的配置。已是最新则空操作。 |
+| `status` | 记录的元数据 + 实时探测（`systemctl is-active` / `docker compose ps`）。只读。 |
+| `service <start\|stop\|restart>` | 按记录的部署形态分发到 `systemctl` 或 `docker compose`。 |
+| `config <get\|set> <key> [value]` | 读写单个限定键（见下）。 |
+| `env` | 打印全部限定键及其持久化值。 |
+
+## Flag
+
+| Flag | 含义 |
+| --- | --- |
+| `--version <X.Y.Z\|vX.Y.Z>` | 固定某个 release。省略 ⇒ 运行时解析最新。 |
+| `--deploy <binary\|docker>` | 部署形态。默认 `binary`。 |
+| `--bin-dir <DIR>` | 二进制安装目录（默认 `/usr/local/bin`）。 |
+| `--compose-dir <DIR>` | Docker compose 目录（默认：当前目录）。 |
+| `--advertised-endpoint <HOST:PORT>` | server 通告地址（见下）。留空 ⇒ 运行时自动。 |
+| `--data-dir <DIR>` | server 数据目录（默认 `/var/lib/portunus`）。 |
+| `--operator-http-listen <ADDR>` | Operator HTTP 监听地址覆写。 |
+| `--systemd` | 同时安装加固 systemd unit（仅 Linux）。 |
+| `--lang <en\|zh>` | 强制界面语言（也可用 `PORTUNUS_LANG`）。 |
+| `--yes` | 普通确认默认为是。**不会**绕过 `--purge` 的输入令牌。 |
+| `--purge` | 配合 `uninstall`，额外删除数据目录 / compose 卷。需键入确认令牌。 |
+| `--dry-run` | 打印计划；**不**联网、**不**写文件。 |
+
+`--version`、`--bin-dir`、`--systemd`、`--yes`、`--dry-run` 以及裸
+`client` / `server` 形式是原下载器接口，行为与之前完全一致。
+
+## 部署形态
+
+### 二进制 + systemd
+
+```sh
+# 仅二进制
+curl -fsSL .../scripts/install.sh | bash -s -- server --version 1.4.2
+# 二进制 + 加固 unit + 服务用户 + drop-in
+curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
+  --advertised-endpoint host.example:7443
+```
+
+下载 release 归档，校验其 SHA-256，并将 `portunus-<role>` 安装到
+`--bin-dir`。带 `--systemd` 时它会拉取加固 unit、创建
+`portunus-server` / `portunus-client` 服务用户与目录，并（对 server）在
+`/etc/systemd/system/portunus-server.service.d/10-portunus.conf` 写入
+含通告地址的 systemd **drop-in**。出厂 unit 永不被改写——所有 server
+配置都走 drop-in。
+
+### Docker Compose
+
+```sh
+mkdir -p ~/portunus && cd ~/portunus
+curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
+  --compose-dir ~/portunus --advertised-endpoint host.example:7443
+```
+
+写入 `compose.yml`（若已存在则保留）与同级 `.env`（保存限定变量），然后
+`docker compose pull && up -d`。需要 Docker Compose **v2**（旧版
+`docker-compose` 可被检测，但优先 v2）。server 配置走 `.env` 旁挂文件；
+已存在的 compose 文件永不被改写。
+
+## 安装元数据
+
+每次安装会记录一个 `.install-meta` 文件（shell `key=value`），供后续
+子命令判断如何动作：
+
+| 部署形态 / 角色 | 路径 |
+| --- | --- |
+| 二进制 server | `<data-dir>/.install-meta`（默认 `/var/lib/portunus/.install-meta`） |
+| 二进制 client | `/etc/portunus/.install-meta` |
+| docker | `<compose-dir>/.install-meta` |
+
+字段包括 `role`、`deploy`、`version`、`lang`、
+`advertised_endpoint_set`、`installed_at`、`installer_version`。
+
+生命周期 verb 按此顺序解析元数据：显式 `--compose-dir`、然后**当前
+目录**、然后 `/var/lib/portunus`、然后 `/etc/portunus`。对 Docker
+部署，请**在 compose 目录中**运行生命周期命令（或传 `--compose-dir`），
+以免陈旧的二进制安装将其遮蔽。
+
+## 限定 config 与 env
+
+`config` 与 `env` 仅接受以下四个键（其它键为硬错误）：
+
+| 键 | 映射的环境变量 |
+| --- | --- |
+| `advertised-endpoint` | `PORTUNUS_ADVERTISED_ENDPOINT` |
+| `data-dir` | `PORTUNUS_DATA_DIR` |
+| `operator-http-listen` | `PORTUNUS_OPERATOR_HTTP_LISTEN` |
+| `version-pin` | `PORTUNUS_VERSION_PIN` |
+
+`set` 把值写入 systemd drop-in（二进制）或 compose `.env`（docker），
+并**合并保留**其它键，随后提供重启服务的选项。`get` 打印持久化值
+（未设置则为 `<unset>`）。`env` 打印全部四个。
+
+```sh
+# 二进制 server（任意目录运行——meta 在 /var/lib/portunus）
+sudo bash install.sh config set advertised-endpoint host.example:7443
+bash install.sh config get advertised-endpoint
+bash install.sh env
+
+# docker（在 compose 目录中运行，或传 --compose-dir）
+cd ~/portunus
+bash install.sh config set operator-http-listen 0.0.0.0:7080
+bash install.sh env
+```
+
+## server 通告地址
+
+安装 **server** 时，向导会提示通告地址——Client 拨号的公网
+`host:port`。server 证书 SAN 必须覆盖该 host。留空则让 server 在运行
+时自动解析。安装器只做轻量 `host:port` 合法性检查，并把值持久化
+（systemd drop-in 或 compose `.env` 中的 `PORTUNUS_ADVERTISED_ENDPOINT`）；
+权威的 SAN/语法校验由 server 在启动时完成。
+
+## 生命周期示例
+
+```sh
+# 状态（只读）：记录的 meta + 实时探测
+bash install.sh status
+
+# 服务控制（分发到 systemctl 或 docker compose）
+sudo bash install.sh service restart
+bash install.sh service stop
+
+# 原地升级，复用记录的配置（已是最新则空操作）
+sudo bash install.sh upgrade
+
+# 卸载（保留数据）——会先确认
+sudo bash install.sh uninstall
+
+# 卸载并删除数据——需键入令牌 'purge'
+sudo bash install.sh uninstall --purge
+```
+
+## 语言
+
+解析顺序：`--lang` / `PORTUNUS_LANG` → `LC_ALL` / `LANG` 自动探测
+（`zh*` ⇒ 中文，否则英文）→ 交互时首次运行提示 → 否则英文。所选语言
+存入 `.install-meta`，后续子命令复用。
+
+```sh
+PORTUNUS_LANG=zh curl -fsSL .../scripts/install.sh | bash
+bash install.sh --lang en status
+```
+
+## 安全
+
+- **`--dry-run`** 打印计划，对每个 verb 都**不**联网、**不**写文件。
+- **`--purge`** 额外删除数据目录 / compose 卷，并要求你键入字面令牌
+  `purge`。**`--yes` 永不绕过该输入令牌。**
+- 破坏性操作总会确认；`uninstall` 默认 `[y/N]`。
+- 出厂 systemd unit 与已存在的基础 compose 文件永不被改写——server
+  配置通过 drop-in / `.env` 旁挂文件应用。
+- 在已存在节点上重复 `install` 会经由 `.install-meta` 检测；用
+  `upgrade` 在复用记录配置的同时切换版本。
+
+## 参见
+
+- [安装](/zh/docs/getting-started/installation) —— 快速开始与其它安装路径。
+- [Docker 部署](/zh/docs/deployment/docker) · [systemd 部署](/zh/docs/deployment/systemd)。
