@@ -310,15 +310,26 @@
     "submit": "Create enrollment",
     "address": "Client entry address",
     "addressHint": "Public IP address or DNS name users connect to for this client's forwarding rules. Do not include a URL scheme or port.",
-    "enrollment": {
-      "heading": "Enrollment command",
-      "hint": "Run this once on {{name}}. The code is single-use, expires quickly, and the server only issues the bearer token after the client redeems it.",
-      "expiresAt": "Expires at {{expiresAt}}",
-      "commandLabel": "Client command",
-      "copy": "Copy command",
-      "copied": "Copied"
-    },
-    "backToList": "Back to clients"
+    "backToList": "Back to clients",
+    "guide": {
+      "heading": "Install {{name}}",
+      "expiresIn": "Expires in {{remaining}}",
+      "expired": "This command has expired — create a new one.",
+      "tabShell": "Shell",
+      "tabSystemd": "systemd",
+      "tabDocker": "Docker",
+      "copy": "Copy",
+      "copied": "Copied",
+      "skipNote": "Already installed on this host? Skip to step {{step}}.",
+      "stepInstall": "Install the binary",
+      "stepEnroll": "Redeem the one-time enrollment command",
+      "stepRun": "Run the forwarder",
+      "stepEnrollSystemd": "Redeem the command, then place the bundle",
+      "stepEnableSystemd": "Enable and start the service",
+      "stepEnrollDocker": "Enroll once into a host volume",
+      "stepRunDocker": "Run the long-lived container",
+      "dockerNote": "install.sh is host-only; in Docker both commands run as your host user so the 0600 bundle is writable and readable by one identity."
+    }
   },
   "clientDetail": {
     "back": "Back",
@@ -334,8 +345,7 @@
     "reenroll": "Re-enroll client",
     "reenrollConfirmTitle": "Create re-enrollment command for {{name}}?",
     "reenrollConfirmBody": "The current token keeps working until the client redeems the new one-time command. Redemption rotates the token and disconnects the old live session.",
-    "reenrollConfirmAction": "Create command",
-    "reenrollHint": "Run this once on {{name}}. The existing token is replaced only after this command is redeemed."
+    "reenrollConfirmAction": "Create command"
   },
   "ownerQuotas": {
     "help": "Per-owner caps apply across all rules a user pushes to this client. Per-owner ceilings bind before per-rule caps.",
