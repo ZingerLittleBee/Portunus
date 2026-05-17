@@ -232,15 +232,6 @@ pub enum DeleteOutcome {
     StillActive,
 }
 
-/// Outcome of `SqliteTokenStore::reissue`. `Rotated` carries the new
-/// plaintext token (server-side it's hashed before the transaction
-/// commits — same one-shot disclosure contract as `issue`).
-#[derive(Debug, PartialEq, Eq)]
-pub enum ReissueOutcome {
-    Rotated(String),
-    NotFound,
-}
-
 /// Outcome of updating editable client metadata.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UpdateClientOutcome {
@@ -297,31 +288,6 @@ impl SqliteTokenStore {
                 }
             }
         })
-    }
-
-    /// Rotate a client's bearer token in place. Works on active OR
-    /// revoked rows: rotation clears `revoked_at`, refreshes the hash
-    /// and `issued_at`, and hands back the new plaintext exactly once.
-    /// The caller is responsible for disconnecting any live session so
-    /// the forwarder picks up the new credentials.
-    pub fn reissue(&self, name: &ClientName) -> Result<ReissueOutcome, StoreError> {
-        let token = token::generate_token();
-        let hash_hex = fingerprint::hex(&token::hash_token(&token));
-        let issued_at = Utc::now().to_rfc3339();
-        let rows = self.store.with_write_tx(|tx| {
-            tx.execute(
-                "UPDATE client_tokens \
-                 SET token_hash = ?, issued_at = ?, revoked_at = NULL \
-                 WHERE client_name = ?",
-                rusqlite::params![hash_hex, issued_at, name.as_str()],
-            )
-            .map_err(map_rusqlite)
-        })?;
-        if rows == 0 {
-            Ok(ReissueOutcome::NotFound)
-        } else {
-            Ok(ReissueOutcome::Rotated(token))
-        }
     }
 }
 
@@ -456,48 +422,6 @@ mod tests {
             s.delete_revoked(&cn("never-existed")).unwrap(),
             DeleteOutcome::NotFound
         );
-    }
-
-    #[test]
-    fn reissue_rotates_token_and_invalidates_old() {
-        let (_d, s) = fresh();
-        let old = s.issue(cn("edge-01")).unwrap();
-        let new = match s.reissue(&cn("edge-01")).unwrap() {
-            ReissueOutcome::Rotated(t) => t,
-            ReissueOutcome::NotFound => panic!("expected Rotated, got NotFound"),
-        };
-        assert_ne!(old, new);
-        // Old token no longer authenticates.
-        assert!(matches!(
-            s.verify(&old).unwrap_err(),
-            AuthError::Failed(AuthFailureReason::NotFound)
-        ));
-        // New token does.
-        assert_eq!(s.verify(&new).unwrap().client_name.as_str(), "edge-01");
-    }
-
-    #[test]
-    fn reissue_revives_revoked_client() {
-        let (_d, s) = fresh();
-        s.issue(cn("edge-01")).unwrap();
-        s.revoke(&cn("edge-01")).unwrap();
-        let new = match s.reissue(&cn("edge-01")).unwrap() {
-            ReissueOutcome::Rotated(t) => t,
-            ReissueOutcome::NotFound => panic!("expected Rotated, got NotFound"),
-        };
-        assert_eq!(s.verify(&new).unwrap().client_name.as_str(), "edge-01");
-        let row = s.list().unwrap();
-        assert_eq!(row.len(), 1);
-        assert_eq!(row[0].revoked_at, None, "reissue must clear revoked_at");
-    }
-
-    #[test]
-    fn reissue_reports_not_found() {
-        let (_d, s) = fresh();
-        assert!(matches!(
-            s.reissue(&cn("nope")).unwrap(),
-            ReissueOutcome::NotFound
-        ));
     }
 
     #[test]

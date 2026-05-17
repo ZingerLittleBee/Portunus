@@ -4,8 +4,57 @@ description: How portunus-client picks up its bundle, and what env vars influenc
 icon: Cog
 ---
 
-`portunus-client` is configured almost entirely from the **bundle** that
-the server emits via `provision-client`. There is no `client.toml`.
+`portunus-client` is configured by redeeming a short-lived **enrollment
+command**. There is no `client.toml`. An operator issues a one-time
+command (Web UI **Clients** page, or `portunus-server enroll-client`),
+the edge host redeems it, and the client writes a local bundle that
+holds the bearer token.
+
+This page is the canonical reference for installing and enrolling a
+client. Deployment guides (systemd, Docker, Railway) link here.
+
+## Install the binary
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+```
+
+`install.sh <client|server>` detects your OS/arch, downloads the
+matching release binary, verifies its SHA-256 against the published
+checksums, and installs it to `/usr/local/bin` (`--bin-dir` to change;
+it uses `sudo` only for the privileged steps).
+
+| Flag | Effect |
+| --- | --- |
+| `--version <X.Y.Z\|vX.Y.Z>` | Pin a release (default: latest). Either form works. |
+| `--bin-dir DIR` | Install location (default `/usr/local/bin`). |
+| `--systemd` | Also install + enable the hardened unit (Linux only; see systemd guide). |
+| `--yes` | Non-interactive; assume yes. Forward-compat (no prompts exist yet). |
+| `--dry-run` | Print the resolved target/URL and planned actions; do nothing. |
+
+For an already-root context: `curl -fsSL … | sudo sh -s -- client --systemd`.
+
+## Enroll
+
+```sh
+# Operator side (or use the Web UI Clients page):
+portunus-server enroll-client edge-01 --ttl-secs 600
+
+# Edge host: paste the printed command
+portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...' --out ./client.bundle.json
+```
+
+`portunus-server enroll-client` is an **offline** command: it opens
+`state.db` directly and fails with `store_in_use` if a server is already
+running on the same `--data-dir`. With a running server (the normal
+production case) issue the enrollment from the Web UI **Clients** page, or
+via the operator HTTP API / Docker `operator` sidecar — all of which go
+through the live server. Reserve the host-binary CLI for bootstrap before
+the service starts.
+
+`portunus-client enroll` verifies the pinned certificate and writes the
+bundle with mode `0600` to the default location unless `--out` is
+supplied.
 
 ## The bundle
 
@@ -19,19 +68,9 @@ the server emits via `provision-client`. There is no `client.toml`.
 }
 ```
 
-Generated on the server:
-
-```sh
-portunus-server provision-client edge-01 --out ./edge-01.bundle.json
-```
-
-File mode is `0600`. Transfer it to the edge host over a trusted
-channel (`scp`, `rsync`, secrets manager, etc.).
-
 <Callout type="warn">
-  Edit `server_endpoint` if the address Host B reaches the server on
-  differs from what the server advertised by default. The default is
-  the hostname returned by the server, which may need adjustment.
+  Edit `server_endpoint` if the address the edge host reaches the
+  server on differs from what the server advertised by default.
 </Callout>
 
 ## Run the client
@@ -54,11 +93,44 @@ When `--bundle` is omitted, the client searches in this order:
 If none resolve the client exits `1` listing every attempted path.
 
 ```sh
-# Drop the bundle in XDG config and just run the binary
 mkdir -p ~/.config/portunus
 mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
 portunus-client
 ```
+
+## systemd
+
+`install.sh client --systemd` installs the hardened
+`portunus-client.service` (runs as the `portunus-client` user,
+`--bundle /etc/portunus/client.bundle.json`). Provision the bundle:
+
+```sh
+portunus-client enroll 'portunus://...' --out ./client.bundle.json
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
+sudo systemctl enable --now portunus-client
+```
+
+See the [systemd deployment guide](/en/docs/deployment/systemd).
+
+## Docker
+
+The client image entrypoint is already `portunus-client`. Run both the
+one-shot enroll and the long-lived container as your host user so the
+`0600` bundle is written and read by one identity:
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  ghcr.io/zingerlittlebee/portunus-client \
+  enroll 'portunus://...' --out /work/client.bundle.json
+
+docker run -d --name portunus-client --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+See the [Docker deployment guide](/en/docs/deployment/docker).
 
 ## Flags
 

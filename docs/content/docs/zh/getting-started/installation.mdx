@@ -1,6 +1,6 @@
 ---
 title: 安装
-description: 分别安装 Portunus Server 与 Client。推荐使用 Docker，也可使用 release 二进制或源码编译。
+description: 使用一行脚本、Docker Compose 或源码编译安装 portunus-server 与 portunus-client。
 icon: Download
 ---
 
@@ -15,7 +15,8 @@ icon: Download
 
 ## 前置条件
 
-- 推荐路径需要 **Docker / Podman**。
+- **curl** 用于一行安装脚本。
+- **Docker / Podman** 用于推荐的容器路径。
 - **Rust 1.88+ 稳定版** 仅在从源码编译时需要。`protoc` 已通过
   `prost-build` 内联，无需额外安装。
 - 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
@@ -31,9 +32,19 @@ sudo curl -fsSL https://get.docker.com | sh
 
 ## 安装 Server
 
-Server 推荐使用 Docker Compose 安装。
+最快的路径是一行安装脚本：
 
-### 在 Server 主机上直接复制执行
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+```
+
+脚本会检测操作系统和架构，下载对应的 release 二进制，校验其 SHA-256，
+并将 `portunus-server` 安装到 `/usr/local/bin`。详见
+[install.sh 标志](/zh/docs/configuration/client#安装二进制)；标志表（`--version`、`--bin-dir`、`--systemd`）对两个角色均适用。
+
+Docker Compose 是推荐的生产部署路径。
+
+### 在 Server 主机上复制粘贴安装
 
 1. 创建并进入工作目录：
 
@@ -104,22 +115,16 @@ volumes:
   portunus-data:
     name: portunus-data
 ```
+
 示例默认使用 `:latest`；如果需要完全可复现的生产部署，请固定到具体版本 tag，
-例如 `:1.0.0`。
+例如 `:vX.Y.Z`。
 
 如果需要非默认监听地址或其他覆写，再把可选 `server.toml` 放到
-`<data-dir>/server.toml`，例如 `./server.toml:/var/lib/portunus/server.toml:ro`。
+`<data-dir>/server.toml`，例如
+`./server.toml:/var/lib/portunus/server.toml:ro`。
 
 操作员命令、Client Compose、备份迁移和生产注意事项见
 [Docker 部署](/zh/docs/deployment/docker)。
-
-如果使用宿主机二进制，下载 Server 主机对应的 release 归档，解压后只安装
-`portunus-server`：
-
-```sh
-tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-server /usr/local/bin/
-```
 
 如果从源码编译：
 
@@ -130,6 +135,8 @@ cargo build --release -p portunus-server
 sudo install -m 0755 target/release/portunus-server /usr/local/bin/
 ```
 
+如需手动下载二进制归档，请参见下方 [Release 二进制](#release-二进制)。
+
 在 Server 主机上验证：
 
 ```sh
@@ -138,42 +145,47 @@ portunus-server --version
 
 ## 安装 Client
 
-Client 也推荐使用 Docker Compose 安装。
-
-### 在边缘主机上直接复制执行
-
-先通过 Server 侧 operator 流程生成 client bundle，并把 bundle 文件拷贝到边缘
-主机。下面假设 bundle 文件名是 `edge-01.bundle.json`。
-
-1. 创建并进入工作目录：
+最快的路径是一行安装脚本：
 
 ```sh
-mkdir -p ~/portunus-client && cd ~/portunus-client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
-2. 把 `edge-01.bundle.json` 放到这个目录中，然后写入
-   `docker-compose.yml`：
+生产环境推荐以容器方式运行 Client——参见下方 Docker 小节。
+
+### 接入并启动
+
+向操作员申请一条接入命令——可通过 Web UI **Clients** 页面；也可在宿主机二进制
+部署的服务端执行 `portunus-server enroll-client <name>`；或者对于 Docker 部署的
+服务端，执行 `docker compose run --rm operator enroll-client <name>`（参见
+[操作员命令](/zh/docs/deployment/docker#操作员命令)）。然后在边缘主机上：
 
 ```sh
-cat > docker-compose.yml <<'EOF'
-services:
-  client:
-    image: ghcr.io/zingerlittlebee/portunus-client:latest
-    container_name: portunus-client
-    network_mode: host
-    volumes:
-      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
-    restart: unless-stopped
-EOF
+portunus-client enroll 'portunus://...' --out ./client.bundle.json
+portunus-client --bundle ./client.bundle.json
 ```
 
-3. 启动 Client 并验证：
+参见 [Client 配置 — 接入](/zh/docs/configuration/client#接入enroll)，
+了解 bundle 解析顺序、`0600` 权限和默认路径。
+
+### Docker
+
+以宿主用户身份运行一次性接入和长驻容器，确保 `0600` bundle 由同一身份写入与读取：
 
 ```sh
-docker compose up -d && docker compose logs -f -t
+# 一次性：把接入命令兑换为宿主文件。
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  ghcr.io/zingerlittlebee/portunus-client \
+  enroll 'portunus://...' --out /work/client.bundle.json
+
+# 长驻转发容器。
+docker run -d --name portunus-client --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  ghcr.io/zingerlittlebee/portunus-client
 ```
 
-### Compose 文件参考
+Compose 等价写法（`compose.client.yaml`），在 bundle 已存在的情况下：
 
 ```yaml
 services:
@@ -181,21 +193,23 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
+    user: "${HOST_UID}:${HOST_GID}"
     volumes:
-      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
     restart: unless-stopped
+```
+
+用以下命令启动：
+
+```sh
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d
 ```
 
 Client 推荐使用 `--network host`，因为转发监听端口是在后续 operator 推送规则时
 动态创建的。如果不用 host networking，需要显式发布每个转发监听端口。
 
-如果使用宿主机二进制，在边缘主机上从同格式 release 归档里只安装
-`portunus-client`：
-
-```sh
-tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /usr/local/bin/
-```
+参见 [Client 配置](/zh/docs/configuration/client#docker) 了解为何两条命令都要以
+宿主用户身份运行，以及 [Docker 部署](/zh/docs/deployment/docker) 了解生产注意事项。
 
 如果从源码编译：
 
@@ -206,6 +220,8 @@ cargo build --release -p portunus-client
 sudo install -m 0755 target/release/portunus-client /usr/local/bin/
 ```
 
+如需手动下载二进制归档，请参见下方 [Release 二进制](#release-二进制)。
+
 在 Client 主机上验证：
 
 ```sh
@@ -214,45 +230,41 @@ portunus-client --version
 
 ## Release 二进制
 
-按主机平台下载对应归档：
+推荐的安装方式是 `install.sh`——它会自动解析最新版本，下载正确归档，并校验 SHA-256。
 
-| 平台 | 归档 |
-| --- | --- |
-| Linux x86_64 | [`portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz) |
-| Linux arm64 | [`portunus-1.0.0-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-aarch64-unknown-linux-gnu.tar.gz) |
-| macOS Apple Silicon | [`portunus-1.0.0-aarch64-apple-darwin.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-aarch64-apple-darwin.tar.gz) |
-| macOS Intel | [`portunus-1.0.0-x86_64-apple-darwin.tar.gz`](https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-x86_64-apple-darwin.tar.gz) |
+如需手动下载，请访问 GitHub
+[releases 页面](https://github.com/ZingerLittleBee/Portunus/releases)，
+选择适合你平台的归档。归档命名格式为
+`portunus-<version>-<target>.tar.gz`，支持以下四个目标平台：
 
-校验和随 release 一起发布：
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+每次 release 同时发布对应的 `portunus-<version>-checksums.txt`。
+
+解压并安装：
 
 ```sh
-curl -LO https://github.com/ZingerLittleBee/Portunus/releases/download/v1.0.0/portunus-1.0.0-checksums.txt
+# pick the asset for your platform from the releases page, then:
+tar -xzf portunus-<version>-<target>.tar.gz
+sudo install -m 0755 portunus-<version>-<target>/portunus-server /usr/local/bin/
+sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 ```
-
-解压并把两个二进制放到 `PATH`：
-
-```sh
-tar -xzf portunus-1.0.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-server /usr/local/bin/
-sudo install -m 0755 portunus-1.0.0-x86_64-unknown-linux-gnu/portunus-client /usr/local/bin/
-```
-
-完整 release 页面：
-[`github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0`](https://github.com/ZingerLittleBee/Portunus/releases/tag/v1.0.0)。
 
 ## systemd
 
+一步完成二进制安装和加固 systemd unit 的安装：
+
 ```sh
-cd deploy/systemd
-sudo ./install.sh
-# 创建：
-#   /var/lib/portunus/    state.db + 自动生成的 TLS 材料 + 可选 server.toml
-#   /etc/portunus/        client bundle 目录
-#   portunus-server / portunus-client 系统用户
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client --systemd
 ```
 
-unit 安装器假设 `portunus-server` 与 `portunus-client` 已经在宿主机上，
-通常来自上面的 release 归档。
+这会创建服务用户和目录，并安装加固 unit（仅 Linux）。如果使用源码 checkout 安装，
+改用 `cd deploy/systemd && sudo ./install.sh server client`（二进制必须已在
+`/usr/local/bin`）。
 
 详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
 

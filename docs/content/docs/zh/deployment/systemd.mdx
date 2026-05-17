@@ -10,18 +10,21 @@ unit 都设置了 `User=`、`ProtectSystem=full`、`CapabilityBoundingSet=`、
 
 ## 一键安装
 
+在边缘主机上，一步安装客户端二进制与加固单元：
+
 ```sh
-cd deploy/systemd
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- client --systemd
 ```
 
-脚本会：
+该命令下载并校验 release 二进制、创建 `portunus-client` 服务用户、布置
+`/etc/portunus`（mode 0750），并安装加固的 `portunus-client.service`。对于
+server 端，使用 `… | sudo sh -s -- server --systemd`（创建 `portunus-server`、
+`/var/lib/portunus`）。二进制获取与标志说明统一记录在
+[Client 配置](/zh/docs/configuration/client#安装二进制)中。
 
-- 创建服务用户（`portunus-server`、`portunus-client`）。
-- 按 FHS 铺好目录：
-  - `/var/lib/portunus/` —— `state.db`、自动生成的 TLS 材料、可选 `server.toml`（mode 0750）。
-  - `/etc/portunus/` —— client bundle 目录。
-- 安装 `portunus-server.service` 和 `portunus-client.service`。
+如果从源码 checkout 安装，也可以只安装 unit 文件：
+`cd deploy/systemd && sudo ./install.sh client`（需要二进制已在 `PATH` 上）。
 
 ## server.service
 
@@ -104,13 +107,15 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 4. 通过 SSH tunnel 或本机浏览器打开 http://127.0.0.1:7080/，
 #    粘贴 setup token，创建第一个 superadmin 密码。
 
-# 5. 在 Web UI Credentials 页面创建 API Token，然后用 CLI 配发首个 Client。
-export PORTUNUS_OPERATOR_TOKEN=<paste-token>
-portunus-server provision-client edge-01 \
-  --out /tmp/edge-01.bundle.json
+# 5. 创建首个 Client（Web UI Clients 页面，或 CLI）：
+portunus-server --data-dir /var/lib/portunus enroll-client edge-01
 
-# 6. 把 bundle 拷到边缘主机（scp / rsync），落到那台机器的
-#    /etc/portunus/client.bundle.json，权限 0600。
+# 6. 在边缘主机：安装并接入，然后放置 bundle
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- client --systemd
+portunus-client enroll 'portunus://...' --out ./client.bundle.json
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
 
 # 7. 在边缘主机上启用 client unit
 sudo systemctl enable --now portunus-client

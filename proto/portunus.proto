@@ -33,6 +33,27 @@ service Control {
   rpc Channel(stream ClientMessage) returns (stream ServerMessage);
 }
 
+// Short-lived client enrollment. This service intentionally does NOT use the
+// bearer-token interceptor because the whole point is to mint the first client
+// bearer from a one-time join code. Transport is still TLS, and the enrolling
+// client pins the server certificate before sending the code.
+service ClientEnrollment {
+  rpc Enroll(EnrollClientRequest) returns (CredentialBundle);
+}
+
+message EnrollClientRequest {
+  string code = 1;
+}
+
+message CredentialBundle {
+  uint32 version = 1;
+  string client_name = 2;
+  string server_endpoint = 3;
+  string server_cert_sha256 = 4;
+  string server_cert_pem = 5;
+  string token = 6;
+}
+
 // ============================================================================
 // Top-level envelope messages (wrapping a oneof allows future variants
 // without breaking).

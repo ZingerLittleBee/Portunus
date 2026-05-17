@@ -56,15 +56,20 @@ On first server launch the server creates `./srv/server.crt`,
 {"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
 ```
 
-## 3. Provision a forwarding client
+## 3. Enroll a forwarding client
 
 ```sh
-portunus-server --data-dir ./srv \
-  provision-client edge-01 --out ./edge-01.bundle.json
+portunus-server --data-dir ./srv enroll-client edge-01
 ```
 
-The bundle (mode 0600) contains the server endpoint, pinned cert SHA-256,
-and the client's bearer token. Transfer it to Host B over a trusted channel.
+On Host B, install the client then redeem the printed command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+portunus-client enroll 'portunus://...' --out ./edge-01.bundle.json
+```
+
+It verifies the pinned certificate and writes the bundle with mode 0600.
 
 ## 4. Start the client (Host B)
 

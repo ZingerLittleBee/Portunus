@@ -52,8 +52,8 @@ service variable.
 
 Set `PORTUNUS_ADVERTISED_ENDPOINT` after creating the TCP Proxy. Railway shows
 the generated proxy domain and proxy port in the TCP Proxy settings. Use that
-exact `host:port` value; client bundles created before this variable is set
-will advertise the wrong endpoint and should be reissued.
+exact `host:port` value; enrollment commands created before this variable is
+set will advertise the wrong endpoint and should be recreated.
 
 ## First-run onboarding
 
@@ -73,18 +73,17 @@ incomplete.
 ## Client endpoint
 
 After creating a TCP Proxy for application port `7443`, set
-`PORTUNUS_ADVERTISED_ENDPOINT` to the proxy `host:port` and redeploy. Then
-provision clients from the Web UI. The generated bundle will tell
-`portunus-client` to dial the TCP Proxy endpoint.
+`PORTUNUS_ADVERTISED_ENDPOINT` to the proxy `host:port` and redeploy.
+Then enroll clients from the Web UI **Clients** page; the enrollment
+command makes `portunus-client` dial the TCP Proxy endpoint. Install and
+run the edge client with Docker (see
+[Client Configuration](/en/docs/configuration/client#docker)) or the
+host installer
+([`install.sh`](/en/docs/configuration/client#install-the-binary)).
 
 ## Notes
 
 - Railway's HTTP domain should be used only for the Web UI and `/v1/*`
   operator API.
-- `portunus-client` must dial the TCP Proxy endpoint, not the HTTP domain.
-- Prometheus metrics remain loopback-only on `127.0.0.1:7081`; Railway does
-  not expose them by default.
-- Set `PORTUNUS_CONTROL_LISTEN` only if you deliberately change the TCP Proxy
-  application port. The default is `0.0.0.0:7443`.
-- Set `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN=https://your.custom.domain` when
-  using a custom domain instead of Railway's generated domain.
+- `portunus-client` must dial the TCP Proxy endpoint, not the HTTP
+  domain.

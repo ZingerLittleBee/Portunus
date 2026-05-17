@@ -2,6 +2,7 @@
 
 mod bundle;
 mod control;
+mod enroll;
 mod port_groups;
 mod wire;
 
@@ -10,7 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::{error, info};
 
 use crate::bundle::{CredentialBundle, resolve_bundle_path};
@@ -20,7 +21,10 @@ use portunus_forwarder::shutdown::Shutdown;
 #[derive(Parser, Debug)]
 #[command(name = "portunus-client", version, about = "Portunus edge client")]
 struct Cli {
-    /// Path to the `.bundle.json` produced by `portunus-server provision-client`.
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
+    /// Path to the `.bundle.json` produced by `portunus-client enroll`.
     /// When omitted, the resolver searches `$PORTUNUS_CLIENT_BUNDLE`,
     /// `$XDG_CONFIG_HOME/portunus/client.bundle.json`,
     /// `$HOME/.config/portunus/client.bundle.json`, and
@@ -45,12 +49,47 @@ struct Cli {
     stats_report_interval_secs: u64,
 }
 
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Redeem a one-time enrollment URI and write a client bundle.
+    Enroll {
+        uri: String,
+        /// Output path. Defaults to the normal client bundle location.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing();
 
     // Install rustls crypto provider for TLS dialing.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    if let Some(Cmd::Enroll { uri, out }) = cli.cmd {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                error!(event = "client.runtime_failed", error = %e);
+                return ExitCode::from(1);
+            }
+        };
+        return match runtime.block_on(enroll::enroll(&uri, out)) {
+            Ok(path) => {
+                println!("{}", path.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                error!(event = "client.enrollment_failed", error = %e);
+                ExitCode::from(1)
+            }
+        };
+    }
 
     let bundle_path = match resolve_bundle_path(cli.bundle.as_deref()) {
         Ok(p) => p,

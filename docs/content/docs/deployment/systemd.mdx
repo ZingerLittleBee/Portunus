@@ -11,18 +11,24 @@ the workload.
 
 ## One-shot install
 
+On the edge host, install the client binary and the hardened unit in one
+step:
+
 ```sh
-cd deploy/systemd
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- client --systemd
 ```
 
-The script:
+This downloads + checksum-verifies the release binary, creates the
+`portunus-client` service user, lays out `/etc/portunus` (mode 0750),
+and installs the hardened `portunus-client.service`. For the server,
+use `… | sudo sh -s -- server --systemd` (creates `portunus-server`,
+`/var/lib/portunus`). Binary acquisition and flags are documented once
+in [Client Configuration](/en/docs/configuration/client#install-the-binary).
 
-- Creates service users (`portunus-server`, `portunus-client`).
-- Lays out FHS directories:
-  - `/var/lib/portunus/` — `state.db`, generated TLS material, optional `server.toml` (mode 0750).
-  - `/etc/portunus/` — client bundle directory.
-- Installs `portunus-server.service` and `portunus-client.service`.
+From a source checkout you can instead install only the units with
+`cd deploy/systemd && sudo ./install.sh client` (the binary must already
+be on `PATH`).
 
 ## server.service
 
@@ -105,14 +111,15 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 4. Open http://127.0.0.1:7080/ over SSH tunnel or local browser,
 #    paste the setup token, and create the first superadmin password.
 
-# 5. Create an API token from the Web UI Credentials page, then provision
-#    the first client with the CLI.
-export PORTUNUS_OPERATOR_TOKEN=<paste-token>
-portunus-server provision-client edge-01 \
-  --out /tmp/edge-01.bundle.json
+# 5. Create the first client (Web UI Clients page, or the CLI):
+portunus-server --data-dir /var/lib/portunus enroll-client edge-01
 
-# 6. Move the bundle to the edge host (scp / rsync), drop into
-#    /etc/portunus/client.bundle.json there, mode 0600.
+# 6. On the edge host: install + enroll, then place the bundle
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- client --systemd
+portunus-client enroll 'portunus://...' --out ./client.bundle.json
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
 
 # 7. Enable the client unit on the edge host
 sudo systemctl enable --now portunus-client

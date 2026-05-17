@@ -1,15 +1,15 @@
-//! `CredentialBundle` reader (mirror of `portunus-server/src/bundle.rs`).
+//! `CredentialBundle` reader/writer for the local client bundle.
 //!
-//! The same JSON schema is consumed here. We do NOT pull `portunus-server`
-//! into the client's compile graph — duplicating the small struct keeps the
+//! The enrollment RPC returns this schema. We do NOT pull `portunus-server`
+//! into the client's compile graph; duplicating the small struct keeps the
 //! two binaries decoupled.
 
 use std::path::{Path, PathBuf};
 
 use portunus_core::ClientName;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CredentialBundle {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -38,6 +38,39 @@ impl CredentialBundle {
         Ok(bundle)
     }
 
+    pub fn from_enrollment(
+        version: u32,
+        client_name: ClientName,
+        server_endpoint: String,
+        server_cert_sha256: String,
+        server_cert_pem: String,
+        token: String,
+    ) -> std::io::Result<Self> {
+        if version != 1 {
+            return Err(std::io::Error::other(format!(
+                "unsupported bundle version: {version}"
+            )));
+        }
+        let bundle = Self {
+            version,
+            client_name,
+            server_endpoint,
+            server_cert_sha256,
+            server_cert_pem,
+            token,
+        };
+        bundle.verify_pin_consistency()?;
+        Ok(bundle)
+    }
+
+    pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
+        let body = serde_json::to_vec_pretty(self)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_secret(path, &body)
+    }
+
     /// Confirm `sha256(DER(server_cert_pem)) == server_cert_sha256`. A bundle
     /// that fails this check is corrupt or maliciously assembled — fail
     /// loudly rather than dialling out under a forged pin.
@@ -52,6 +85,25 @@ impl CredentialBundle {
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn write_secret(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(body)?;
+    file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_secret(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, body)
 }
 
 /// 008-sqlite-storage T078 — bundle path resolution per FR-020.

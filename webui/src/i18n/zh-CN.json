@@ -286,7 +286,7 @@
     "connected": "已连接",
     "disconnected": "离线",
     "revoked": "已撤销",
-    "provision": "签发客户端",
+    "provision": "接入客户端",
     "actions": "客户端操作",
     "edit": "编辑",
     "editDialogTitle": "编辑客户端",
@@ -303,53 +303,32 @@
     "showRevoked": "显示已撤销",
     "revokedCount": "{{count}} 条已撤销",
     "emptyTitle": "暂无客户端",
-    "emptyBody": "签发一个客户端凭证包以便转发器接入。"
+    "emptyBody": "创建一次性接入命令,让转发器自行领取凭证。"
   },
   "clientProvision": {
-    "title": "签发客户端",
-    "submit": "签发凭证包",
+    "title": "接入客户端",
+    "submit": "创建接入命令",
     "address": "客户端入口地址",
     "addressHint": "用户访问该客户端转发规则时连接的公网 IP 或域名。不要填写 URL 协议或端口。",
-    "bundleHeading": "凭证包",
-    "bundleHint": "凭证包内含 bearer 令牌。服务端只保存其哈希值,离开本页面后明文将无法再次取出。请立即保存到本地,并通过安全渠道传给客户端。",
-    "reissueHint": "新凭证包已生成。原 bearer 令牌已失效;同名运行中的转发器将在重新部署新凭证后自动重连。请立即保存文件 —— 离开本页明文将丢失。",
-    "download": "下载凭证包",
-    "copy": "复制 JSON",
-    "reveal": "显示",
-    "hide": "隐藏",
     "backToList": "返回客户端列表",
-    "install": {
-      "heading": "在客户端机器上安装",
-      "hint": "在准备转发流量的主机上依次执行以下步骤。凭证包已经 base64 编码内联到每条命令里,无需另外复制文件。",
+    "guide": {
+      "heading": "安装 {{name}}",
+      "expiresIn": "{{remaining}} 后过期",
+      "expired": "该命令已过期 —— 请重新创建。",
+      "tabShell": "Shell",
+      "tabSystemd": "systemd",
       "tabDocker": "Docker",
-      "tabLinux": "Linux (systemd)",
-      "tabManual": "手动",
       "copy": "复制",
       "copied": "已复制",
-      "stepLabel": "第 {{n}} 步",
-      "docker": {
-        "step1Title": "把凭证包落到目标主机",
-        "step1Hint": "把 base64 字符串解码成 ./portunus/bundle.json,权限 0600。",
-        "step2Title": "运行转发器",
-        "step2Hint": "拉取发布的 client 镜像并使用 host 网络,以便转发端口直接绑定在宿主机网卡上。",
-        "step3Title": "查看日志确认连接",
-        "step3Hint": "几秒内应能看到 connected 行。"
-      },
-      "linux": {
-        "step1Title": "安装二进制",
-        "step1Hint": "自动识别 x86_64 / aarch64,下载发布 tarball 并把 portunus-client 装到 /usr/local/bin。",
-        "step2Title": "安装凭证包",
-        "step2Hint": "把凭证解码到 /etc/portunus/client.bundle.json,属主为专用系统用户。",
-        "step3Title": "安装并启动 systemd 服务",
-        "step3Hint": "写入 unit 文件、重载 systemd、设为开机自启并立即启动。",
-        "step4Title": "验证",
-        "step4Hint": "systemctl 显示 active (running);journalctl 跟踪实时日志。"
-      },
-      "manual": {
-        "step1Title": "解码凭证包",
-        "step2Title": "运行 client",
-        "step2Hint": "假设 portunus-client 已在 PATH 中。开发环境构建命令:cargo build --release -p portunus-client"
-      }
+      "skipNote": "该主机已安装？直接跳到第 {{step}} 步。",
+      "stepInstall": "安装二进制",
+      "stepEnroll": "兑换一次性接入命令",
+      "stepRun": "运行转发器",
+      "stepEnrollSystemd": "兑换命令，并放置 bundle",
+      "stepEnableSystemd": "启用并启动服务",
+      "stepEnrollDocker": "一次性接入到宿主卷",
+      "stepRunDocker": "运行长驻容器",
+      "dockerNote": "install.sh 仅用于宿主机；Docker 下两条命令都以你的宿主用户身份运行，使 0600 的 bundle 由同一身份写入与读取。"
     }
   },
   "clientDetail": {
@@ -363,10 +342,10 @@
     "connectedAt": "连接时间",
     "provisionedAt": "签发时间",
     "revokedAt": "吊销时间",
-    "reissue": "重新签发凭证",
-    "reissueConfirmTitle": "为 {{name}} 重新签发凭证?",
-    "reissueConfirmBody": "将轮换 bearer 令牌。原令牌立刻失效,同名运行中的客户端会立即断开 —— 需要部署下方的新凭证后才会重连。",
-    "reissueConfirmAction": "重新签发"
+    "reenroll": "重新接入客户端",
+    "reenrollConfirmTitle": "为 {{name}} 创建重新接入命令?",
+    "reenrollConfirmBody": "当前 token 会继续可用,直到客户端兑换新的一次性命令。兑换成功后才会轮换 token 并断开旧的在线会话。",
+    "reenrollConfirmAction": "创建命令"
   },
   "ownerQuotas": {
     "help": "所有者级别的上限会应用到该用户在此客户端上推送的全部规则。所有者上限优先于单规则上限生效。",

@@ -119,7 +119,7 @@ const copy = {
     edgeData: "your traffic",
     workflowTitle: "Four steps from install to live traffic.",
     workflow: [
-      "Generate a signed client bundle from the server.",
+      "Generate a one-time client enrollment command from the server.",
       "Run the client on the host that owns your public ports.",
       "Add forwarding rules from the CLI, HTTP API, or Web UI.",
       "Watch traffic, quotas, and rejects in real time, without touching user data.",

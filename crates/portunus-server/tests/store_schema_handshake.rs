@@ -41,8 +41,8 @@ fn fresh_store_has_current_schema() {
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 8,
-        "current target schema is 8 (V001 + V002 + V003 + V004 + V005 + V006 + V007 + V008)"
+        v, 9,
+        "current target schema is 9 (V001 + V002 + V003 + V004 + V005 + V006 + V007 + V008 + V009)"
     );
     assert_eq!(v, Store::target_schema_version());
 
@@ -54,6 +54,7 @@ fn fresh_store_has_current_schema() {
             assert!(table_exists(conn, "login_attempts"));
             assert!(table_exists(conn, "onboarding_setup"));
             assert!(column_exists(conn, "client_tokens", "client_address"));
+            assert!(table_exists(conn, "client_enrollments"));
             Ok(())
         })
         .expect("inspect schema");

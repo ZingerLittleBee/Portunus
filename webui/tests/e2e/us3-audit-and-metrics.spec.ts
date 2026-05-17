@@ -38,7 +38,8 @@ test("superadmin sees mixed allow/deny entries; tenant cannot reach /audit", asy
   page.on("request", (req) => {
     if (req.url().includes("/v1/audit")) before.push(req.url());
   });
-  await page.getByLabel(/filter by outcome/i).selectOption("deny");
+  await page.getByLabel(/filter by outcome/i).click();
+  await page.getByRole("option", { name: "deny", exact: true }).click();
   // Give a beat for any rogue refetch; no request should be appended.
   await page.waitForTimeout(250);
   expect(before.length).toBe(0);

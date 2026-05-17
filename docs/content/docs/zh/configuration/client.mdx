@@ -1,13 +1,53 @@
 ---
 title: Client 配置
-description: portunus-client 如何拾取下发包，以及哪些环境变量会影响行为。
+description: portunus-client 如何拾取 bundle，以及哪些环境变量会影响行为。
 icon: Cog
 ---
 
-`portunus-client` 几乎所有配置都来自 Server 通过 `provision-client` 签出的
-**下发包**。没有 `client.toml`。
+`portunus-client` 通过兑换短期 **enrollment 命令** 完成配置。没有 `client.toml`。
+操作员通过 Web UI **Clients** 页面或 `portunus-server enroll-client` 发出一次性
+命令，边缘主机兑换后，client 会在本地写入包含 bearer token 的 bundle 文件。
 
-## 下发包
+本页是安装与接入客户端的权威参考，部署指南（systemd、Docker、Railway）均链接至此。
+
+## 安装二进制
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+```
+
+`install.sh <client|server>` 会检测系统架构，下载对应发行版二进制，校验 SHA-256，并安装到 `/usr/local/bin`（用 `--bin-dir` 修改；仅特权步骤使用 `sudo`）。
+
+| 标志 | 作用 |
+| --- | --- |
+| `--version <X.Y.Z\|vX.Y.Z>` | 固定版本（默认最新）。两种格式均可。 |
+| `--bin-dir DIR` | 安装位置（默认 `/usr/local/bin`）。 |
+| `--systemd` | 同时安装并启用加固 unit（仅 Linux；参见 systemd 指南）。 |
+| `--yes` | 非交互式；自动确认。前向兼容（目前尚无交互提示）。 |
+| `--dry-run` | 打印解析到的目标/URL 及计划动作；不实际执行。 |
+
+如果已是 root 环境：`curl -fsSL … | sudo sh -s -- client --systemd`。
+
+## 接入（enroll）
+
+```sh
+# 操作员侧（或使用 Web UI Clients 页面）：
+portunus-server enroll-client edge-01 --ttl-secs 600
+
+# 边缘主机：粘贴输出的命令
+portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...' --out ./client.bundle.json
+```
+
+`portunus-server enroll-client` 是**离线**命令：它直接打开 `state.db`，若已有
+server 运行在同一 `--data-dir` 上，会以 `store_in_use` 失败。server 正在运行时
+（生产环境的常规情形），请从 Web UI **Clients** 页面，或经操作员 HTTP API /
+Docker `operator` 边车签发——这些路径都会走在线 server。主机二进制 CLI 仅用于
+服务启动前的初始化。
+
+`portunus-client enroll` 验证证书 pin 后，以 `0600` 写入 bundle；未指定 `--out`
+时写入默认位置。
+
+## bundle 文件
 
 ```json
 {
@@ -19,21 +59,12 @@ icon: Cog
 }
 ```
 
-由 Server 签出：
-
-```sh
-portunus-server provision-client edge-01 --out ./edge-01.bundle.json
-```
-
-文件 mode 是 `0600`。请通过可信通道（scp / rsync / 密钥管理）传到边缘
-主机。
-
 <Callout type="warn">
   如果主机 B 实际访问 Server 的地址与 Server 默认通告的不同，请编辑
   `server_endpoint`。默认值是 Server 返回的 hostname，可能需要调整。
 </Callout>
 
-## 启动 Client
+## 运行客户端
 
 ### 显式 `--bundle`
 
@@ -53,11 +84,42 @@ portunus-client --bundle ./edge-01.bundle.json
 全部失败时退出 `1` 并把尝试过的全部路径打印出来。
 
 ```sh
-# 把 bundle 放进 XDG config，直接跑二进制
 mkdir -p ~/.config/portunus
 mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
 portunus-client
 ```
+
+## systemd
+
+`install.sh client --systemd` 会安装加固的 `portunus-client.service`（以
+`portunus-client` 用户运行，`--bundle /etc/portunus/client.bundle.json`）。
+配置 bundle：
+
+```sh
+portunus-client enroll 'portunus://...' --out ./client.bundle.json
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
+sudo systemctl enable --now portunus-client
+```
+
+参见 [systemd 部署指南](/zh/docs/deployment/systemd)。
+
+## Docker
+
+客户端镜像入口点已是 `portunus-client`；一次性 enroll 与长驻容器都要以你的宿主用户身份运行，使 0600 的 bundle 由同一身份写入与读取（镜像默认 nonroot/UID 65532，无法写入宿主属主的挂载，也无法读取宿主 UID 的 0600 文件）。
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  ghcr.io/zingerlittlebee/portunus-client \
+  enroll 'portunus://...' --out /work/client.bundle.json
+
+docker run -d --name portunus-client --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+参见 [Docker 部署指南](/zh/docs/deployment/docker)。
 
 ## 标志
 

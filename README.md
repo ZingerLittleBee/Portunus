@@ -29,8 +29,17 @@ The release notes and performance baseline are in
 
 ## Install
 
-Docker Compose is the recommended install path. Published images default to
-the newest stable release via `:latest`:
+The fastest install is the one-line script (detects OS/arch, verifies
+the release checksum):
+
+```sh
+# Edge host
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+# Control plane host
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+```
+
+Docker Compose is also supported; published images default to `:latest`:
 
 ```sh
 docker pull ghcr.io/zingerlittlebee/portunus-server:latest
@@ -56,9 +65,6 @@ cargo build --release -p portunus-server -p portunus-client
 ## Basic flow
 
 ```sh
-# Host A — start the server (state.db + TLS material auto-generated)
-./target/release/portunus-server --data-dir ./srv serve
-
 # Operator (Host A) — bootstrap the superadmin operator account (v0.5.0+).
 # Prints the bearer token EXACTLY ONCE — capture it now.
 ./target/release/portunus-server --data-dir ./srv bootstrap-superadmin --name ops
@@ -67,12 +73,17 @@ cargo build --release -p portunus-server -p portunus-client
 # Every operator subcommand below reads PORTUNUS_OPERATOR_TOKEN from env.
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 
-# Operator — provision a forwarding client and copy the bundle
+# Operator — create a one-time enrollment command for the edge host.
 ./target/release/portunus-server --data-dir ./srv \
-  provision-client edge-01 --out ./edge-01.bundle.json
+  enroll-client edge-01 --ttl-secs 600
+# → portunus-client enroll 'portunus://host:7443/enroll?...'
 
-# Host B — start the client against the issued bundle
-./target/release/portunus-client --bundle ./edge-01.bundle.json
+# Host A — start the server (state.db + TLS material auto-generated)
+./target/release/portunus-server --data-dir ./srv serve
+
+# Host B — redeem the enrollment URI (writes the bundle), then start
+./target/release/portunus-client enroll 'portunus://host:7443/enroll?...' --out ./client.bundle.json
+./target/release/portunus-client --bundle ./client.bundle.json
 
 # Operator — push a rule (8080 on edge-01 → example.com:80)
 ./target/release/portunus-server push-rule edge-01 8080 example.com:80

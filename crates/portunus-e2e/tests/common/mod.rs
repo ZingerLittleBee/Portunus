@@ -3,7 +3,7 @@
 //! - [`spawn_server`] launches the `portunus-server` binary against a fresh
 //!   temp data dir.
 //! - [`spawn_client`] launches the `portunus-client` binary against a bundle
-//!   path produced via `provision-client`.
+//!   path produced by the enrollment flow.
 //!
 //! Both helpers return a handle that kills the child on drop, so tests can
 //! assert on side-effects without leaking processes.
@@ -237,36 +237,6 @@ pub fn spawn_client(bundle_path: &Path, extra_args: &[&str]) -> ClientHandle {
     }
 }
 
-/// Run `portunus-server provision-client <name>` synchronously; return the
-/// path to the generated bundle file.
-pub fn provision_client(data_dir: &Path, name: &str) -> PathBuf {
-    provision_client_with_endpoint(data_dir, name, None)
-}
-
-/// Same as [`provision_client`] but lets the caller override the endpoint
-/// that gets baked into the bundle (needed because the running server binds
-/// to an OS-assigned port).
-pub fn provision_client_with_endpoint(
-    data_dir: &Path,
-    name: &str,
-    advertised: Option<&str>,
-) -> PathBuf {
-    let out = fresh_tempdir("bundle out").keep();
-    let bundle = out.join(format!("{name}.bundle.json"));
-    let mut cmd = cmd_for("portunus-server");
-    cmd.arg("--data-dir").arg(data_dir);
-    if let Some(ep) = advertised {
-        cmd.arg("--advertised-endpoint").arg(ep);
-    }
-    cmd.arg("provision-client")
-        .arg(name)
-        .arg("--out")
-        .arg(&bundle);
-    let status = cmd.status().expect("run provision-client");
-    assert!(status.success(), "provision-client failed: {status:?}");
-    bundle
-}
-
 /// Hit the *running* server's loopback HTTP `GET /v1/clients` and return the
 /// parsed JSON array.  We must use the live server because connected-client
 /// state is in-memory — the CLI's offline `list-clients` would always show
@@ -286,28 +256,40 @@ pub fn list_clients_http(operator_http_addr: &str) -> serde_json::Value {
     resp.json().expect("parse JSON body")
 }
 
-/// Provision a client via the running server's HTTP API. Returns the path to
-/// a written `<name>.bundle.json` alongside the parsed bundle. This is the
-/// workflow tests want: the offline CLI mutates the on-disk token store but
-/// not the live server's in-memory cache, so the resulting token would be
-/// rejected. Going through HTTP keeps both views consistent.
+/// Enroll a client via the running server's HTTP + unauthenticated gRPC APIs.
+/// Returns the path to the written `<name>.bundle.json`.
 pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
-    let url = format!("http://{operator_http_addr}/v1/clients");
+    let endpoint = format!("http://{operator_http_addr}/v1/client-enrollments");
     let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
-        .post(&url)
+        .post(&endpoint)
         .header(k, v)
         .json(&serde_json::json!({ "name": name, "address": "127.0.0.1" }))
         .send()
-        .expect("POST /v1/clients");
+        .expect("POST /v1/client-enrollments");
     assert!(
         resp.status().is_success(),
-        "provision HTTP failed: {resp:?}"
+        "enrollment HTTP failed: {resp:?}"
     );
-    let bundle_value: serde_json::Value = resp.json().expect("parse bundle JSON");
+    let enrollment: serde_json::Value = resp.json().expect("parse enrollment JSON");
+    let command = enrollment["command"].as_str().expect("enrollment command");
+    let uri = command
+        .split_once('\'')
+        .and_then(|(_, rest)| rest.rsplit_once('\'').map(|(uri, _)| uri.to_string()))
+        .expect("extract enrollment URI");
     let out_dir = fresh_tempdir("bundle out").keep();
     let path = out_dir.join(format!("{name}.bundle.json"));
-    std::fs::write(&path, serde_json::to_vec_pretty(&bundle_value).unwrap()).expect("write bundle");
+    let status = cmd_for("portunus-client")
+        .arg("enroll")
+        .arg(uri)
+        .arg("--out")
+        .arg(&path)
+        .status()
+        .expect("run portunus-client enroll");
+    assert!(
+        status.success(),
+        "portunus-client enroll failed: {status:?}"
+    );
     path
 }
 

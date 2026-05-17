@@ -32,6 +32,7 @@ use tonic::transport::{Identity, ServerTlsConfig};
 use tracing::{error, info};
 
 use crate::clients::ConnectedClients;
+use crate::grpc::enrollment::ClientEnrollmentService;
 use crate::grpc::interceptor::AuthInterceptor;
 use crate::grpc::service::ControlService;
 use crate::metrics::Metrics;
@@ -39,6 +40,7 @@ use crate::operator::http;
 use crate::shutdown::Shutdown;
 use crate::state::AppState;
 use crate::tls::ServerTlsMaterial;
+use portunus_proto::v1::client_enrollment_server::ClientEnrollmentServer;
 use portunus_proto::v1::control_server::ControlServer;
 
 #[derive(Debug, Clone)]
@@ -196,6 +198,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
     let control = ControlServer::new(ControlService::new(Arc::clone(&state)));
     let intercepted: InterceptedService<_, AuthInterceptor> =
         InterceptedService::new(control, interceptor);
+    let enrollment = ClientEnrollmentServer::new(ClientEnrollmentService::new(Arc::clone(&state)));
 
     let identity = Identity::from_pem(tls.cert_pem.as_bytes(), tls.key_pem.as_bytes());
     let tls_acceptor = ServerTlsConfig::new().identity(identity);
@@ -249,6 +252,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
             .tls_config(tls_acceptor)
             .map_err(|e| PortunusError::Tls(e.to_string()))?
             .add_service(intercepted)
+            .add_service(enrollment)
             .serve_with_incoming_shutdown(
                 tokio_stream::wrappers::TcpListenerStream::new(grpc_listener),
                 async move { grpc_shutdown.cancelled().await },

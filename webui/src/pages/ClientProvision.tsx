@@ -2,33 +2,38 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
-import { useProvisionClient } from "@/api/clients";
+import { useCreateClientEnrollment } from "@/api/clients";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ClientInstallSteps } from "@/components/ClientInstallSteps";
-import { CredentialBundleCard } from "@/components/CredentialBundleCard";
-import type { CredentialBundle } from "@/api/types";
+import { EnrollmentInstallGuide } from "@/components/EnrollmentInstallGuide";
+import type { ClientEnrollmentResponse } from "@/api/types";
 
 export function ClientProvision() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const provision = useProvisionClient();
+  const enrollmentMutation = useCreateClientEnrollment();
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
-  const [bundle, setBundle] = useState<CredentialBundle | null>(null);
+  const [enrollment, setEnrollment] = useState<ClientEnrollmentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     try {
-      const res = await provision.mutateAsync({ name, address });
-      setBundle(res);
+      const res = await enrollmentMutation.mutateAsync({ name, address });
+      setEnrollment(res);
     } catch (err) {
-      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      if (err instanceof ApiError) {
+        setError(`${err.code}: ${err.message}`);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError(String(err));
+      }
     }
   }
 
@@ -48,7 +53,7 @@ export function ClientProvision() {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="client-a"
                 required
-                disabled={!!bundle}
+                disabled={!!enrollment}
               />
             </div>
             <div className="space-y-2">
@@ -59,17 +64,17 @@ export function ClientProvision() {
                 onChange={(e) => setAddress(e.target.value)}
                 placeholder="68.77.201.69 or edge.example.com"
                 required
-                disabled={!!bundle}
+                disabled={!!enrollment}
               />
               <p className="text-xs text-muted-foreground">
                 {t("clientProvision.addressHint")}
               </p>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
-            {!bundle && (
+            {!enrollment && (
               <div className="flex gap-2">
-                <Button type="submit" disabled={provision.isPending}>
-                  {provision.isPending ? t("confirm.busy") : t("clientProvision.submit")}
+                <Button type="submit" disabled={enrollmentMutation.isPending}>
+                  {enrollmentMutation.isPending ? t("confirm.busy") : t("clientProvision.submit")}
                 </Button>
                 <Button type="button" variant="outline" onClick={() => navigate(-1)}>
                   {t("confirm.cancel")}
@@ -80,10 +85,9 @@ export function ClientProvision() {
         </CardContent>
       </Card>
 
-      {bundle && (
+      {enrollment && (
         <>
-          <CredentialBundleCard bundle={bundle} intent="provision" />
-          <ClientInstallSteps bundle={bundle} />
+          <EnrollmentInstallGuide enrollment={enrollment} mode="provision" />
           <Button variant="link" onClick={() => navigate("/clients")}>
             {t("clientProvision.backToList")}
           </Button>
