@@ -56,6 +56,7 @@ die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 
 # ─── i18n ─────────────────────────────────────────────────────────────
+# Convention: every '%' in a message value MUST be a '%s' directive with a matching t() arg (values are used as printf format strings).
 declare -A MSG_EN MSG_ZH
 MSG_EN=(
   [menu_title]="Portunus Manager"
@@ -124,7 +125,7 @@ resolve_lang() {
 }
 
 t() {
-  local key="$1"; shift || true
+  local key="${1:-}"; shift || true
   local val
   if [ "${LANG_CODE:-en}" = "zh" ]; then val="${MSG_ZH[$key]:-}"; else val="${MSG_EN[$key]:-}"; fi
   [ -n "$val" ] || val="${MSG_EN[$key]:-$key}"
