@@ -1,5 +1,5 @@
 {
   "title": "CLI Reference",
   "icon": "Terminal",
-  "pages": ["portunus-server", "walkthrough", "portunus-client"]
+  "pages": ["installer", "portunus-server", "walkthrough", "portunus-client"]
 }

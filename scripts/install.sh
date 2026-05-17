@@ -1,73 +1,229 @@
-#!/bin/sh
-# Portunus installer. Downloads a release binary (and optionally installs
-# the hardened systemd unit) for one role.
+#!/usr/bin/env bash
+# Portunus lifecycle manager: install/uninstall/upgrade/status/service/
+# config/env for client and server, binary+systemd or Docker Compose.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
-#   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server --systemd
+#   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
+#   curl -fsSL .../scripts/install.sh | bash        # interactive menu
 #
-# Flags: --version <X.Y.Z|vX.Y.Z>  --bin-dir DIR  --systemd  --yes  --dry-run
-set -eu
+set -euo pipefail
 
-REPO="ZingerLittleBee/Portunus"
-RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
-ROLE=""
-VERSION=""
-BIN_DIR="/usr/local/bin"
-WANT_SYSTEMD="no"
-ASSUME_YES="no"  # forward-compat stub; no interactive prompts exist yet
-DRY_RUN="no"
-
-die() { echo "error: $*" >&2; exit 1; }
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    client|server) ROLE="$1" ;;
-    --version) shift; [ $# -gt 0 ] || die "--version needs a value"; VERSION="$1" ;;
-    --bin-dir) shift; [ $# -gt 0 ] || die "--bin-dir needs a value"; BIN_DIR="$1" ;;
-    --systemd) WANT_SYSTEMD="yes" ;;
-    --yes) ASSUME_YES="yes" ;;
-    --dry-run) DRY_RUN="yes" ;;
-    -h|--help) echo "usage: install.sh <client|server> [--version V] [--bin-dir DIR] [--systemd] [--yes] [--dry-run]"; exit 0 ;;
-    *) die "unknown argument: $1" ;;
-  esac
-  shift
-done
-
-[ -n "$ROLE" ] || die "role required: client or server"
-
-# Platform.
-os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-arch="$(uname -m)"
-case "$arch" in
-  x86_64|amd64) arch="x86_64" ;;
-  aarch64|arm64) arch="aarch64" ;;
-  *) die "unsupported arch: $arch" ;;
-esac
-case "$os" in
-  linux) target="${arch}-unknown-linux-gnu" ;;
-  darwin) target="${arch}-apple-darwin" ;;
-  *) die "unsupported os: $os" ;;
-esac
-
-# Version: tag always has a leading v; artifact_version never does.
-if [ -n "$VERSION" ]; then
-  case "$VERSION" in
-    v*) tag="$VERSION"; artifact_version="${VERSION#v}" ;;
-    *)  tag="v$VERSION"; artifact_version="$VERSION" ;;
-  esac
-  resolved_version="$artifact_version"
-else
-  resolved_version="<latest, resolved at run time>"
-  tag=""
-  artifact_version=""
+# ─── Guard ────────────────────────────────────────────────────────────
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "Portunus installer requires bash 4.0+ (found ${BASH_VERSION:-unknown})." >&2
+  echo "On macOS: 'brew install bash' then run it with that bash." >&2
+  exit 1
 fi
 
-rel() {
-  # echo the release download URL for asset $1; requires resolved version.
-  echo "https://github.com/${REPO}/releases/download/${tag}/$1"
+SELF_SCRIPT=""
+case "${BASH_SOURCE[0]:-}" in
+  "" | bash | sh | -bash | -sh) ;;
+  *) [ -r "${BASH_SOURCE[0]}" ] && SELF_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")" || true ;;
+esac
+
+# ─── Constants ────────────────────────────────────────────────────────
+REPO="ZingerLittleBee/Portunus"
+RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
+DEFAULT_BIN_DIR="/usr/local/bin"
+DOCS_FEATURE_URL="https://github.com/${REPO}/blob/main/docs/content/docs/features/advertised-endpoint.mdx"
+
+# ─── Globals ──────────────────────────────────────────────────────────
+VERB=""           # install|uninstall|upgrade|status|service|config|env
+ROLE=""           # client|server
+DEPLOY=""         # binary|docker
+VERSION=""        # user-supplied version (may have leading v)
+BIN_DIR="$DEFAULT_BIN_DIR"
+COMPOSE_DIR=""
+WANT_SYSTEMD="no"
+ADVERTISED=""     # advertised endpoint host:port ("" = unset/auto)
+DATA_DIR=""
+OP_HTTP_LISTEN=""
+SERVICE_ACTION="" # start|stop|restart
+CONFIG_OP=""      # get|set
+CONFIG_KEY=""
+CONFIG_VALUE=""
+ASSUME_YES="no"
+PURGE="no"
+DRY_RUN="no"
+LANG_CODE="${PORTUNUS_LANG:-}"
+tag=""
+artifact_version=""
+resolved_version=""
+os=""
+arch=""
+target=""
+
+die() { echo "error: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+# Single script-level cleanup: a RETURN trap would re-fire on every later
+# function return (where the local tmp is out of scope ⇒ set -u abort).
+CLEANUP_DIRS=()
+_cleanup() { local d; for d in "${CLEANUP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; return 0; }
+trap _cleanup EXIT
+# Register from the caller's own shell — a helper used via $(...) would
+# push to CLEANUP_DIRS in a subshell and the entry would be lost.
+track_tmp() { CLEANUP_DIRS+=("$1"); }
+
+# ─── i18n ─────────────────────────────────────────────────────────────
+# Convention: every '%' in a message value MUST be a '%s' directive with a matching t() arg (values are used as printf format strings).
+declare -A MSG_EN MSG_ZH
+MSG_EN=(
+  [menu_title]="Portunus Manager"
+  [menu_install]="  [1] Install"
+  [menu_uninstall]="  [2] Uninstall"
+  [menu_upgrade]="  [3] Upgrade"
+  [menu_status]="  [4] Status"
+  [menu_service]="  [5] Service (start/stop/restart)"
+  [menu_config]="  [6] Config"
+  [menu_env]="  [7] Env"
+  [menu_exit]="  [0] Exit"
+  [menu_select]="Select [0-7]: "
+  [lang_prompt]="Select language [1] English [2] 中文: "
+  [ask_role]="Install which role? [1] server [2] client: "
+  [ask_deploy]="Deploy form? [1] binary+systemd [2] docker compose: "
+  [ask_version]="Version (blank = latest): "
+  [ask_bindir]="Install dir [%s]: "
+  [ask_advertised]="Advertised endpoint host:port (blank = auto; cert SAN must cover it; see %s): "
+  [ask_datadir]="Server data dir (blank = default): "
+  [ask_ophttp]="Operator HTTP listen (blank = default): "
+  [confirm_proceed]="Proceed? [Y/n]: "
+  [confirm_uninstall]="Uninstall portunus-%s (%s)? [y/N]: "
+  [confirm_purge_typed]="Type 'purge' to also delete data at %s: "
+  [need_role]="role required: client or server"
+  [no_install_found]="No Portunus install detected (no .install-meta and no probe match)."
+  [done_next]="Done. Next steps:"
+  [restart_now]="Apply now (restart service)? [y/N]: "
+  [upgrade_current]="Already at %s; nothing to upgrade."
+  [unknown_config_key]="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)"
+)
+MSG_ZH=(
+  [menu_title]="Portunus 管理器"
+  [menu_install]="  [1] 安装    Install"
+  [menu_uninstall]="  [2] 卸载    Uninstall"
+  [menu_upgrade]="  [3] 升级    Upgrade"
+  [menu_status]="  [4] 状态    Status"
+  [menu_service]="  [5] 服务控制 Service (start/stop/restart)"
+  [menu_config]="  [6] 配置    Config"
+  [menu_env]="  [7] 环境变量 Env"
+  [menu_exit]="  [0] 退出    Exit"
+  [menu_select]="选择 [0-7]: "
+  [lang_prompt]="选择语言 [1] English [2] 中文: "
+  [ask_role]="安装哪个角色? [1] server [2] client: "
+  [ask_deploy]="部署方式? [1] 二进制+systemd [2] docker compose: "
+  [ask_version]="版本 (留空=最新): "
+  [ask_bindir]="安装目录 [%s]: "
+  [ask_advertised]="通告地址 host:port (留空=自动; 证书 SAN 须覆盖该 host; 参见 %s): "
+  [ask_datadir]="服务端 data 目录 (留空=默认): "
+  [ask_ophttp]="Operator HTTP 监听 (留空=默认): "
+  [confirm_proceed]="继续? [Y/n]: "
+  [confirm_uninstall]="卸载 portunus-%s (%s)? [y/N]: "
+  [confirm_purge_typed]="输入 'purge' 以同时删除数据 %s: "
+  [need_role]="必须指定角色: client 或 server"
+  [no_install_found]="未检测到 Portunus 安装 (无 .install-meta 且探测未命中)。"
+  [done_next]="完成。后续步骤:"
+  [restart_now]="现在生效 (重启服务)? [y/N]: "
+  [upgrade_current]="已是 %s; 无需升级。"
+  [unknown_config_key]="未知配置键: %s (允许: advertised-endpoint data-dir operator-http-listen version-pin)"
+)
+
+resolve_lang() {
+  if [ -z "$LANG_CODE" ]; then
+    case "${LC_ALL:-${LANG:-}}" in zh*|*zh_*) LANG_CODE="zh" ;; *) LANG_CODE="" ;; esac
+  fi
+  case "$LANG_CODE" in zh|en) ;; *) LANG_CODE="" ;; esac
 }
 
+t() {
+  local key="${1:-}"; shift || true
+  local val
+  if [ "${LANG_CODE:-en}" = "zh" ]; then val="${MSG_ZH[$key]:-}"; else val="${MSG_EN[$key]:-}"; fi
+  [ -n "$val" ] || val="${MSG_EN[$key]:-$key}"
+  # shellcheck disable=SC2059
+  printf "$val" "$@"
+}
+
+# ─── Meta ─────────────────────────────────────────────────────────────
+meta_path_for() {
+  # echo the .install-meta path for current ROLE/DEPLOY/paths.
+  if [ "${DEPLOY:-binary}" = "docker" ]; then
+    echo "${COMPOSE_DIR:-$PWD}/.install-meta"
+  elif [ "$ROLE" = "server" ]; then
+    echo "${DATA_DIR:-/var/lib/portunus}/.install-meta"
+  else
+    echo "/etc/portunus/.install-meta"
+  fi
+}
+
+meta_write() {
+  local f="$1"; shift
+  local dir; dir="$(dirname "$f")"
+  [ "$DRY_RUN" = yes ] && { echo "would write meta: $f ($*)"; return 0; }
+  mkdir -p "$dir" 2>/dev/null || true
+  : > "$f"
+  local kv
+  for kv in "$@"; do printf '%s\n' "$kv" >> "$f"; done
+  printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$f"
+  printf 'installer_version=%s\n' "${SELF_SCRIPT:-pipe}" >> "$f"
+}
+
+meta_read() {
+  local f="$1" key="$2" line
+  [ -r "$f" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in "${key}="*) printf '%s\n' "${line#*=}"; return 0 ;; esac
+  done < "$f"
+  return 1
+}
+
+detect_deploy() {
+  local hint="${1:-}" f
+  if [ -n "$hint" ]; then
+    for f in "$hint"/compose.yml "$hint"/compose.yaml "$hint"/docker-compose.yml "$hint"/docker-compose.yaml; do
+      [ -f "$f" ] && { echo "docker"; return 0; }
+    done
+  fi
+  if [ -f /etc/systemd/system/portunus-server.service ] || [ -f /etc/systemd/system/portunus-client.service ]; then
+    echo "binary"; return 0
+  fi
+  if command -v portunus-server >/dev/null 2>&1 || command -v portunus-client >/dev/null 2>&1; then
+    echo "binary"; return 0
+  fi
+  echo ""; return 0
+}
+
+# ─── Platform ─────────────────────────────────────────────────────────
+detect_platform() {
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *) die "unsupported arch: $arch" ;;
+  esac
+  case "$os" in
+    linux) target="${arch}-unknown-linux-gnu" ;;
+    darwin) target="${arch}-apple-darwin" ;;
+    *) die "unsupported os: $os" ;;
+  esac
+}
+
+resolve_version_static() {
+  if [ -n "$VERSION" ]; then
+    case "$VERSION" in
+      v*) tag="$VERSION"; artifact_version="${VERSION#v}" ;;
+      *)  tag="v$VERSION"; artifact_version="$VERSION" ;;
+    esac
+    resolved_version="$artifact_version"
+  else
+    resolved_version="<latest, resolved at run time>"; tag=""; artifact_version=""
+  fi
+}
+
+rel() { echo "https://github.com/${REPO}/releases/download/${tag}/$1"; }
+
+# ─── Plan / dry-run ───────────────────────────────────────────────────
 print_plan() {
+  local asset checksums
   asset="portunus-${artifact_version:-<latest>}-${target}.tar.gz"
   checksums="portunus-${artifact_version:-<latest>}-checksums.txt"
   echo "portunus install (dry-run)"
@@ -84,97 +240,398 @@ print_plan() {
     echo "download_url:     <github releases/latest, resolved at run time>"
     echo "checksums_url:    <github releases/latest, resolved at run time>"
   fi
+  echo "deploy:           ${DEPLOY:-binary}"
+  if [ "${DEPLOY:-binary}" = "docker" ]; then
+    echo "compose_dir:      ${COMPOSE_DIR:-$PWD}"
+    echo "env_file:         ${COMPOSE_DIR:-$PWD}/.env"
+  fi
   echo "bin_dir:          ${BIN_DIR}"
   echo "systemd:          ${WANT_SYSTEMD}"
-  echo "actions:          download+verify+install portunus-${ROLE} -> ${BIN_DIR}$( [ "$WANT_SYSTEMD" = yes ] && echo ' + install systemd unit' )"
+  echo "advertised:       ${ADVERTISED:-<unset, runtime auto>}"
+  if [ "$ROLE" = "server" ] && [ "${DEPLOY:-binary}" != "docker" ]; then
+    echo "drop-in:          /etc/systemd/system/portunus-server.service.d/10-portunus.conf"
+    echo "data_dir:         ${DATA_DIR:-/var/lib/portunus}"
+    echo "op_http_listen:   ${OP_HTTP_LISTEN:-<default>}"
+  fi
+  echo "actions:          download+verify+install portunus-${ROLE} -> ${BIN_DIR}$( [ "$WANT_SYSTEMD" = yes ] && echo ' + systemd unit' )"
 }
 
-# --dry-run short-circuits BEFORE any network call (incl. latest resolution).
-if [ "$DRY_RUN" = "yes" ]; then
-  print_plan
-  exit 0
-fi
-
-need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
-need curl
-need tar
-need uname
-
-# Resolve latest if no explicit --version.
-if [ -z "$tag" ]; then
-  need sed
+# ─── Download / install (binary) ──────────────────────────────────────
+resolve_latest_tag() {
+  need curl; need sed
   tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
     | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
   [ -n "$tag" ] || die "could not resolve latest release tag"
-  artifact_version="${tag#v}"
-  resolved_version="$artifact_version"
-fi
-
-asset="portunus-${artifact_version}-${target}.tar.gz"
-checksums="portunus-${artifact_version}-checksums.txt"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-echo "→ downloading ${asset} (${tag})"
-curl -fsSL "$(rel "$asset")" -o "$tmp/$asset" || die "download failed: $asset"
-curl -fsSL "$(rel "$checksums")" -o "$tmp/$checksums" || die "download failed: $checksums"
-
-echo "→ verifying sha256"
-expected="$(grep -F " ${asset}" "$tmp/$checksums" | awk '{print $1}')"
-[ -n "$expected" ] || die "no checksum entry for $asset"
-if command -v sha256sum >/dev/null 2>&1; then
-  actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
-else
-  actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
-fi
-[ "$expected" = "$actual" ] || die "checksum mismatch for $asset"
-
-tar -xzf "$tmp/$asset" -C "$tmp"
-src="$tmp/portunus-${artifact_version}-${target}/portunus-${ROLE}"
-[ -f "$src" ] || die "binary not found in archive: portunus-${ROLE}"
-
-maybe_sudo() {
-  if [ -w "$1" ] || [ "$(id -u)" = "0" ]; then sudo_cmd=""; else sudo_cmd="sudo"; fi
+  artifact_version="${tag#v}"; resolved_version="$artifact_version"
 }
-maybe_sudo "$BIN_DIR"
-echo "→ installing portunus-${ROLE} to ${BIN_DIR}"
-${sudo_cmd:-} install -m 0755 "$src" "${BIN_DIR}/portunus-${ROLE}"
 
-if [ "$WANT_SYSTEMD" = "yes" ]; then
+maybe_sudo() { if [ -w "$1" ] || [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo"; fi; }
+
+install_binary() {
+  need curl; need tar
+  [ -n "$tag" ] || resolve_latest_tag
+  local asset checksums tmp src expected actual
+  asset="portunus-${artifact_version}-${target}.tar.gz"
+  checksums="portunus-${artifact_version}-checksums.txt"
+  tmp="$(mktemp -d)"; track_tmp "$tmp"
+  echo "→ downloading ${asset} (${tag})"
+  curl -fsSL "$(rel "$asset")" -o "$tmp/$asset" || die "download failed: $asset"
+  curl -fsSL "$(rel "$checksums")" -o "$tmp/$checksums" || die "download failed: $checksums"
+  echo "→ verifying sha256"
+  expected="$(grep -F " ${asset}" "$tmp/$checksums" | awk '{print $1}')"
+  [ -n "$expected" ] || die "no checksum entry for $asset"
+  if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+  else actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"; fi
+  [ "$expected" = "$actual" ] || die "checksum mismatch for $asset"
+  tar -xzf "$tmp/$asset" -C "$tmp"
+  src="$tmp/portunus-${artifact_version}-${target}/portunus-${ROLE}"
+  [ -f "$src" ] || die "binary not found in archive: portunus-${ROLE}"
+  maybe_sudo "$BIN_DIR"
+  echo "→ installing portunus-${ROLE} to ${BIN_DIR}"
+  ${SUDO:-} install -m 0755 "$src" "${BIN_DIR}/portunus-${ROLE}"
+}
+
+# ─── Systemd ──────────────────────────────────────────────────────────
+install_systemd_unit() {
   if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
-    echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2
-  else
-    unit="portunus-${ROLE}.service"
-    echo "→ fetching hardened unit ${unit}"
-    curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
-    if [ "$ROLE" = "client" ]; then
-      id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
-      sudo install -d -o root -g portunus-client -m 0750 /etc/portunus
-    else
-      id portunus-server >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
-      sudo install -d -o portunus-server -g portunus-server -m 0750 /var/lib/portunus
-    fi
-    sudo install -m 0644 "$tmp/$unit" "/etc/systemd/system/$unit"
-    sudo systemctl daemon-reload
-    echo "→ installed /etc/systemd/system/$unit"
+    echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
-fi
+  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
+  curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
+  if [ "$ROLE" = "client" ]; then
+    id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
+    sudo install -d -o root -g portunus-client -m 0750 /etc/portunus
+  else
+    id portunus-server >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
+    sudo install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
+  fi
+  sudo install -m 0644 "$tmp/$unit" "/etc/systemd/system/$unit"
+}
 
-echo
-echo "Done. Next steps:"
-if [ "$ROLE" = "client" ]; then
-  echo "  1. Get an enrollment command from the operator (Web UI Clients page)."
-  echo "  2. portunus-client enroll 'portunus://...' --out ./client.bundle.json"
-  if [ "$WANT_SYSTEMD" = "yes" ]; then
-    echo "  3. sudo install -o root -g portunus-client -m 0640 ./client.bundle.json /etc/portunus/client.bundle.json"
-    echo "  4. sudo systemctl enable --now portunus-client"
-  else
-    echo "  3. portunus-client"
+# ─── Server config (drop-in / .env) ───────────────────────────────────
+write_server_dropin() {
+  local d="/etc/systemd/system/portunus-server.service.d" f
+  f="$d/10-portunus.conf"
+  sudo install -d -m 0755 "$d"
+  {
+    echo "[Service]"
+    [ -n "$ADVERTISED" ] && echo "Environment=PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}"
+  } | sudo tee "$f" >/dev/null
+  sudo systemctl daemon-reload || true
+  echo "→ wrote $f"
+}
+
+# ─── Docker ───────────────────────────────────────────────────────────
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then echo "docker compose";
+  elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose";
+  else die "docker compose v2 (or docker-compose) required"; fi
+}
+
+write_compose_env() {
+  local dir="$1" f="$1/.env"
+  mkdir -p "$dir"
+  : > "$f"
+  [ -n "$ADVERTISED" ]      && echo "PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}" >> "$f"
+  [ -n "$OP_HTTP_LISTEN" ]  && echo "PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}" >> "$f"
+  echo "→ wrote $f"
+}
+
+write_compose_file() {
+  local dir="$1" f="$1/compose.yml"
+  [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
+  cat > "$f" <<YAML
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-${ROLE}:${artifact_version:-latest}
+    container_name: portunus-${ROLE}
+    env_file: [ .env ]
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+volumes:
+  portunus-data:
+    name: portunus-data
+YAML
+  echo "→ wrote $f"
+}
+
+install_docker() {
+  need docker
+  local dir dc; dir="${COMPOSE_DIR:-$PWD}"; dc="$(compose_cmd)"
+  [ -n "$tag" ] || resolve_latest_tag
+  write_compose_file "$dir"
+  write_compose_env "$dir"
+  ( cd "$dir" && $dc pull && $dc up -d )
+}
+
+# ─── Arg parse + dispatch (minimal; expanded in Task 2) ───────────────
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      client|server) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
+      install|uninstall|upgrade|status|service|config|env) VERB="$1" ;;
+      start|stop|restart) SERVICE_ACTION="$1" ;;
+      get|set) CONFIG_OP="$1" ;;
+      --version) shift; [ $# -gt 0 ] || die "--version needs a value"; VERSION="$1" ;;
+      --bin-dir) shift; [ $# -gt 0 ] || die "--bin-dir needs a value"; BIN_DIR="$1" ;;
+      --compose-dir) shift; [ $# -gt 0 ] || die "--compose-dir needs a value"; COMPOSE_DIR="$1" ;;
+      --deploy) shift; case "${1:-}" in binary|docker) DEPLOY="$1" ;; *) die "--deploy must be binary|docker" ;; esac ;;
+      --advertised-endpoint) shift; [ $# -gt 0 ] || die "--advertised-endpoint needs a value"; ADVERTISED="$1" ;;
+      --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
+      --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
+      --lang) shift; [ $# -gt 0 ] || die "--lang needs a value"; LANG_CODE="$1" ;;
+      --systemd) WANT_SYSTEMD="yes" ;;
+      --yes) ASSUME_YES="yes" ;;
+      --purge) PURGE="yes" ;;
+      --dry-run) DRY_RUN="yes" ;;
+      --print-i18n-keys) shift; resolve_lang; if [ "${1:-en}" = zh ]; then for k in "${!MSG_ZH[@]}"; do echo "$k"; done; else for k in "${!MSG_EN[@]}"; do echo "$k"; done; fi; exit 0 ;;
+      --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
+      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
+      --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
+      --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
+      --menu-stdin) MENU_FORCE_STDIN="yes"; resolve_lang; run_menu; exit $? ;;
+      *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
+    esac
+    shift
+  done
+}
+
+is_interactive() {
+  if [ -t 0 ]; then return 0; fi
+  if [ -r /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then exec 3<&-; return 0; fi
+  return 1
+}
+
+main() {
+  parse_args "$@"
+  resolve_lang
+  # No actionable verb/role and a TTY ⇒ interactive menu (Task 7).
+  if [ -z "$VERB" ] && [ -z "$ROLE" ]; then
+    if is_interactive; then run_menu; exit $?; fi
+    die "no command given and no terminal; run 'install.sh -h' or pass a role"
   fi
-else
-  if [ "$WANT_SYSTEMD" = "yes" ]; then
-    echo "  sudo systemctl enable --now portunus-server"
-  else
-    echo "  portunus-server --data-dir /var/lib/portunus serve"
+  [ -n "$VERB" ] || VERB="install"
+  detect_platform
+  resolve_version_static
+  if [ "$DRY_RUN" = "yes" ]; then
+    case "$VERB" in
+      install) [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0 ;;
+      config) validate_config_key; echo "verb: config ${CONFIG_OP:-get} ${CONFIG_KEY} (dry-run)"; exit 0 ;;
+      *) echo "verb: ${VERB} (dry-run; no side effects)"; exit 0 ;;
+    esac
   fi
-fi
+  dispatch_verb
+}
+
+# ─── Interactive ──────────────────────────────────────────────────────
+MENU_FORCE_STDIN="no"
+ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
+  local p; p="$(t "$@")"; local a
+  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$p" a || a=""
+  else read -r -p "$p" a < /dev/tty 2>/dev/null || a=""; fi
+  printf '%s' "$a"
+}
+
+first_run_lang() {
+  [ -n "$LANG_CODE" ] && return 0
+  local a; a="$(ask lang_prompt)"
+  case "$a" in 2) LANG_CODE=zh ;; *) LANG_CODE=en ;; esac
+}
+
+wizard_install() {
+  local a
+  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
+  a="$(ask ask_deploy)"; case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
+  VERSION="$(ask ask_version)"
+  if [ "$DEPLOY" = binary ]; then BIN_DIR="$(ask ask_bindir "$DEFAULT_BIN_DIR")"; [ -z "$BIN_DIR" ] && BIN_DIR="$DEFAULT_BIN_DIR"; fi
+  if [ "$ROLE" = server ]; then
+    ADVERTISED="$(ask ask_advertised "$DOCS_FEATURE_URL")"
+    DATA_DIR="$(ask ask_datadir)"
+    OP_HTTP_LISTEN="$(ask ask_ophttp)"
+  fi
+  detect_platform; resolve_version_static
+  print_plan
+  confirm "$(t confirm_proceed)" || { echo "aborted"; return 1; }
+  VERB=install; dispatch_verb
+}
+
+reset_menu_state() {
+  ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"; COMPOSE_DIR=""
+  WANT_SYSTEMD="no"; ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
+  SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
+}
+
+run_menu() {
+  first_run_lang
+  while :; do
+    reset_menu_state
+    echo; echo "$(t menu_title)"
+    echo "$(t menu_install)"; echo "$(t menu_uninstall)"; echo "$(t menu_upgrade)"
+    echo "$(t menu_status)"; echo "$(t menu_service)"; echo "$(t menu_config)"
+    echo "$(t menu_env)"; echo "$(t menu_exit)"
+    local c
+    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$(t menu_select)" c || return 0
+    else read -r -p "$(t menu_select)" c < /dev/tty || return 0; fi
+    case "$c" in
+      1) wizard_install || true ;;
+      2) VERB=uninstall; lifecycle_uninstall || true ;;
+      3) VERB=upgrade; lifecycle_upgrade || true ;;
+      4) VERB=status; lifecycle_status || true ;;
+      5) SERVICE_ACTION="$(ask menu_select)"; VERB=service; lifecycle_service || true ;;
+      6) CONFIG_OP="set"; CONFIG_KEY="$(ask ask_advertised "$DOCS_FEATURE_URL")"; lifecycle_config || true ;;
+      7) VERB="env"; lifecycle_env || true ;;
+      0|q|Q) return 0 ;;
+      *) ;;
+    esac
+  done
+}
+dispatch_verb() {
+  case "$VERB" in
+    install)
+      [ -n "$ROLE" ] || die "$(t need_role)"
+      [ -z "$DEPLOY" ] && DEPLOY="binary"
+      if [ "$DEPLOY" = "docker" ]; then install_docker; else
+        install_binary
+        [ "$WANT_SYSTEMD" = yes ] && install_systemd_unit
+        [ "$ROLE" = "server" ] && [ "$WANT_SYSTEMD" = yes ] && write_server_dropin
+      fi
+      meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+      echo; echo "$(t done_next)"
+      ;;
+    uninstall|upgrade|status|service|config|env) lifecycle_"$VERB" ;;
+    *) die "verb '${VERB}' not yet implemented" ;;
+  esac
+}
+
+# ─── Lifecycle ────────────────────────────────────────────────────────
+SCOPED_KEYS="advertised-endpoint data-dir operator-http-listen version-pin"
+validate_config_key() {
+  [ -n "$CONFIG_KEY" ] || die "config key required (allowed: $SCOPED_KEYS)"
+  case " $SCOPED_KEYS " in *" $CONFIG_KEY "*) ;; *) die "$(t unknown_config_key "$CONFIG_KEY")" ;; esac
+}
+
+current_meta_file() {
+  # User-targeted locations first: an explicit --compose-dir, then the
+  # cwd (where a Docker user runs lifecycle ops), then system paths.
+  # Otherwise a stale binary meta would shadow a Docker deployment.
+  local f
+  for f in ${COMPOSE_DIR:+"$COMPOSE_DIR/.install-meta"} "$PWD/.install-meta" "/var/lib/portunus/.install-meta" "/etc/portunus/.install-meta"; do
+    [ -r "$f" ] && { echo "$f"; return 0; }
+  done
+  return 1
+}
+
+resolved_deploy() {
+  local mf; mf="$(current_meta_file 2>/dev/null || true)"
+  if [ -n "$mf" ]; then meta_read "$mf" deploy || echo "binary"; else detect_deploy "${COMPOSE_DIR:-}"; fi
+}
+
+lifecycle_status() {
+  local mf d; mf="$(current_meta_file 2>/dev/null || true)"
+  if [ -z "$mf" ]; then echo "$(t no_install_found)"; return 0; fi
+  d="$(meta_read "$mf" deploy || echo binary)"
+  echo "meta:    $mf"
+  echo "role:    $(meta_read "$mf" role || echo '?')"
+  echo "deploy:  $d"
+  echo "version: $(meta_read "$mf" version || echo '?')"
+  echo "advertised_endpoint_set: $(meta_read "$mf" advertised_endpoint_set || echo '?')"
+  if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) ps ) 2>/dev/null || true
+  else systemctl is-active "portunus-$(meta_read "$mf" role || echo server)" 2>/dev/null || true; fi
+}
+
+lifecycle_service() {
+  [ -n "$SERVICE_ACTION" ] || die "service action required: start|stop|restart"
+  local d r mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  d="$(meta_read "$mf" deploy || echo binary)"; r="$(meta_read "$mf" role || echo server)"
+  if [ "$d" = docker ]; then
+    ( cd "$(dirname "$mf")" && case "$SERVICE_ACTION" in start) $(compose_cmd) up -d ;; stop) $(compose_cmd) down ;; restart) $(compose_cmd) restart ;; esac )
+  else sudo systemctl "$SERVICE_ACTION" "portunus-$r"; fi
+}
+
+lifecycle_upgrade() {
+  local mf cur; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  ROLE="$(meta_read "$mf" role || echo server)"; DEPLOY="$(meta_read "$mf" deploy || echo binary)"
+  cur="$(meta_read "$mf" version || echo 0)"
+  detect_platform; resolve_latest_tag
+  if [ "$cur" = "$artifact_version" ]; then echo "$(t upgrade_current "$cur")"; return 0; fi
+  confirm "$(t confirm_proceed)" || return 0
+  if [ "$DEPLOY" = docker ]; then COMPOSE_DIR="$(dirname "$mf")"; install_docker
+  else install_binary; lifecycle_service_restart_quiet; fi
+  meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" "version=$artifact_version" "lang=${LANG_CODE:-en}"
+}
+lifecycle_service_restart_quiet() { systemctl restart "portunus-${ROLE}" 2>/dev/null || true; }
+
+lifecycle_uninstall() {
+  local mf r d; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  r="$(meta_read "$mf" role || echo server)"; d="$(meta_read "$mf" deploy || echo binary)"
+  if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" || return 0; fi
+  if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
+  else
+    sudo rm -f "/usr/local/bin/portunus-$r" "/etc/systemd/system/portunus-$r.service"
+    sudo rm -f "/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
+    sudo systemctl daemon-reload 2>/dev/null || true
+  fi
+  if [ "$PURGE" = yes ]; then
+    local dd; dd="$(dirname "$mf")"
+    read_tty "$(t confirm_purge_typed "$dd")" || REPLY_TTY=""
+    [ "$REPLY_TTY" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
+  fi
+  rm -f "$mf" 2>/dev/null || true
+}
+
+lifecycle_config() {
+  validate_config_key
+  local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local d; d="$(meta_read "$mf" deploy || echo binary)"
+  local target_file
+  if [ "$d" = docker ]; then target_file="$(dirname "$mf")/.env"; else target_file="/etc/systemd/system/portunus-server.service.d/10-portunus.conf"; fi
+  local envkey
+  case "$CONFIG_KEY" in
+    advertised-endpoint) envkey="PORTUNUS_ADVERTISED_ENDPOINT" ;;
+    operator-http-listen) envkey="PORTUNUS_OPERATOR_HTTP_LISTEN" ;;
+    data-dir) envkey="PORTUNUS_DATA_DIR" ;;
+    version-pin) envkey="PORTUNUS_VERSION_PIN" ;;
+  esac
+  if [ "${CONFIG_OP:-get}" = get ]; then
+    grep -E "(Environment=)?${envkey}=" "$target_file" 2>/dev/null | sed "s/.*${envkey}=//" || echo "<unset>"
+    return 0
+  fi
+  [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
+  if [ "$d" = docker ]; then
+    grep -v "^${envkey}=" "$target_file" 2>/dev/null > "$target_file.tmp" || true
+    echo "${envkey}=${CONFIG_VALUE}" >> "$target_file.tmp"; mv "$target_file.tmp" "$target_file"
+  else
+    local keep=""
+    [ -f "$target_file" ] && keep="$(grep -E '^Environment=' "$target_file" 2>/dev/null | grep -vE "^Environment=${envkey}=" || true)"
+    sudo install -d -m 0755 "$(dirname "$target_file")"
+    { echo "[Service]"; [ -n "$keep" ] && printf '%s\n' "$keep"; echo "Environment=${envkey}=${CONFIG_VALUE}"; } | sudo tee "$target_file" >/dev/null
+    sudo systemctl daemon-reload 2>/dev/null || true
+  fi
+  echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+  if confirm "$(t restart_now)"; then SERVICE_ACTION=restart; lifecycle_service; fi
+}
+
+lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
+
+# Read one line straight from the terminal into REPLY_TTY. A per-prompt
+# `cat`/process-sub left a zombie reader on the tty, so a second prompt
+# in the same command (uninstall→purge, set→restart) raced it.
+read_tty() {
+  REPLY_TTY=""
+  if [ -t 0 ]; then read -r -p "$1" REPLY_TTY
+  elif [ -r /dev/tty ]; then read -r -p "$1" REPLY_TTY </dev/tty
+  else return 1; fi
+}
+confirm() {
+  local prompt="$1"
+  [ "$ASSUME_YES" = yes ] && return 0
+  read_tty "$prompt" || return 1
+  case "$REPLY_TTY" in y|Y|yes|YES|"") return 0 ;; *) return 1 ;; esac
+}
+
+main "$@"
