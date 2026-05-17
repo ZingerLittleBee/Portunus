@@ -85,6 +85,7 @@ impl ClientEnrollmentStore {
         &self,
         code: &str,
         now: DateTime<Utc>,
+        resolve_legacy: impl FnOnce() -> Result<String, RedeemEnrollmentError>,
     ) -> Result<IssuedClientCredential, RedeemEnrollmentError> {
         if code.is_empty() || code.len() > 256 {
             return Err(RedeemEnrollmentError::InvalidCode);
@@ -147,6 +148,22 @@ impl ClientEnrollmentStore {
                 }
             };
 
+            // Resolve the effective advertised endpoint BEFORE any
+            // consume / token-mint write. For a legacy pre-V010 NULL
+            // row this calls the fail-closed resolver; on failure we
+            // early-return here so the `UPDATE consumed_at` and the
+            // `client_tokens` insert/rotate below never run — the
+            // transaction commits with zero mutations and the
+            // enrollment stays redeemable (idempotent / retryable
+            // once the operator fixes the advertised-endpoint config).
+            let effective_endpoint = match row.advertised_endpoint.clone() {
+                Some(ep) => ep,
+                None => match resolve_legacy() {
+                    Ok(ep) => ep,
+                    Err(e) => return Ok(Err(e)),
+                },
+            };
+
             let existing_client: bool = tx
                 .query_row(
                     "SELECT 1 FROM client_tokens WHERE client_name = ? LIMIT 1",
@@ -197,7 +214,7 @@ impl ClientEnrollmentStore {
                 client_name,
                 token: client_token,
                 rotated_existing: existing_client,
-                advertised_endpoint: row.advertised_endpoint.clone(),
+                advertised_endpoint: Some(effective_endpoint),
             }))
         })?
     }
@@ -252,6 +269,12 @@ pub enum RedeemEnrollmentError {
     Expired,
     #[error("already_used")]
     AlreadyUsed,
+    /// Legacy pre-V010 NULL-endpoint row could not be resolved
+    /// fail-closed at redeem time. Surfaced BEFORE any consume / token
+    /// write so the enrollment stays redeemable once the operator fixes
+    /// the advertised-endpoint config (idempotent / retryable).
+    #[error("advertised_endpoint: {0}")]
+    AdvertisedEndpoint(String),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -326,6 +349,34 @@ mod tests {
         Arc::new(Store::open(dir.path()).unwrap())
     }
 
+    fn consumed_at_of(store: &Store, code: &str) -> Option<String> {
+        let hash = fingerprint::hex(&token::hash_token(code));
+        store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT consumed_at FROM client_enrollments WHERE code_hash = ?",
+                    rusqlite::params![hash],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap()
+    }
+
+    fn token_hash_of(store: &Store, client_name: &str) -> Option<String> {
+        store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT token_hash FROM client_tokens WHERE client_name = ?",
+                    rusqlite::params![client_name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_rusqlite)
+            })
+            .unwrap()
+    }
+
     #[test]
     fn create_persists_and_redeem_returns_advertised_endpoint() {
         let store = test_store();
@@ -342,28 +393,43 @@ mod tests {
                 advertised_endpoint: "public.example:7443".to_string(),
             })
             .unwrap();
-        let issued = es.redeem(&created.code, Utc::now()).unwrap();
+        // Persisted-endpoint rows must NEVER invoke the legacy resolver.
+        let issued = es
+            .redeem(&created.code, Utc::now(), || {
+                panic!("resolver must not run for persisted-endpoint rows")
+            })
+            .unwrap();
         assert_eq!(
             issued.advertised_endpoint.as_deref(),
             Some("public.example:7443")
         );
     }
 
-    #[test]
-    fn legacy_null_row_redeems_with_none_endpoint() {
-        let store = test_store();
-        let es = ClientEnrollmentStore::new(Arc::clone(&store));
-        // Simulate a pre-V010 row: insert directly with NULL endpoint.
+    /// Insert a pre-V010-style row (NULL `advertised_endpoint`) plus a
+    /// pre-existing `client_tokens` row, so a redeem of this legacy code
+    /// would *rotate* the existing token. Returns the legacy code.
+    fn seed_legacy_existing_client(store: &Store, name: &str, code: &str) -> String {
         let now = Utc::now();
-        let code = "legacycode000000000000000000000000000000000000000000000000000000";
+        let prior_token = "prior-token-for-existing-client";
         store
             .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO client_tokens \
+                     (client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, NULL, NULL)",
+                    rusqlite::params![
+                        name,
+                        fingerprint::hex(&token::hash_token(prior_token)),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .unwrap();
                 tx.execute(
                     "INSERT INTO client_enrollments \
                      (client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
                      VALUES (?, NULL, ?, ?, ?, NULL, NULL)",
                     rusqlite::params![
-                        "legacy-1",
+                        name,
                         fingerprint::hex(&token::hash_token(code)),
                         now.to_rfc3339(),
                         (now + chrono::Duration::seconds(300)).to_rfc3339(),
@@ -373,7 +439,56 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let issued = es.redeem(code, Utc::now()).unwrap();
-        assert_eq!(issued.advertised_endpoint, None);
+        fingerprint::hex(&token::hash_token(prior_token))
+    }
+
+    #[test]
+    fn legacy_failed_resolution_leaves_enrollment_unconsumed_and_token_unrotated() {
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+        let code = "legacycode000000000000000000000000000000000000000000000000000000";
+        let prior_hash = seed_legacy_existing_client(&store, "legacy-1", code);
+
+        // Fail-closed resolver: the redeem must surface the error and
+        // roll back — no consume, no token rotation.
+        let err = es
+            .redeem(code, Utc::now(), || {
+                Err(RedeemEnrollmentError::AdvertisedEndpoint(
+                    "advertised_endpoint_unresolved".to_string(),
+                ))
+            })
+            .unwrap_err();
+        assert!(matches!(err, RedeemEnrollmentError::AdvertisedEndpoint(_)));
+
+        // Enrollment still redeemable: consumed_at IS NULL.
+        assert_eq!(
+            consumed_at_of(&store, code),
+            None,
+            "failed legacy resolution must NOT consume the enrollment"
+        );
+        // Existing client's token must be byte-identical (not rotated).
+        assert_eq!(
+            token_hash_of(&store, "legacy-1").as_deref(),
+            Some(prior_hash.as_str()),
+            "failed legacy resolution must NOT rotate the client token"
+        );
+
+        // Now a SUCCEEDING resolver redeems normally and consumes.
+        let issued = es
+            .redeem(code, Utc::now(), || Ok("public.example:7443".to_string()))
+            .unwrap();
+        assert_eq!(
+            issued.advertised_endpoint.as_deref(),
+            Some("public.example:7443")
+        );
+        assert!(
+            consumed_at_of(&store, code).is_some(),
+            "successful redeem must consume the enrollment"
+        );
+        assert_ne!(
+            token_hash_of(&store, "legacy-1").as_deref(),
+            Some(prior_hash.as_str()),
+            "successful redeem must rotate the existing client token"
+        );
     }
 }

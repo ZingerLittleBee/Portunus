@@ -33,9 +33,33 @@ impl ClientEnrollment for ClientEnrollmentService {
         request: Request<EnrollClientRequest>,
     ) -> Result<Response<WireCredentialBundle>, Status> {
         let code = request.into_inner().code;
+        let state = &self.state;
+        // Legacy pre-V010 NULL-endpoint rows resolve fail-closed
+        // INSIDE the redeem transaction so a resolution failure rolls
+        // back the consume + token mint (idempotent / retryable).
+        let resolve_legacy = || -> Result<String, RedeemEnrollmentError> {
+            let override_value = state.settings.get_advertised_endpoint().map_err(|e| {
+                warn!(event = "client.enrollment_failed", error = %e);
+                RedeemEnrollmentError::Store(e)
+            })?;
+            crate::advertised::resolve_advertised_endpoint(
+                &crate::advertised::resolve::ResolveInputs {
+                    override_value,
+                    seed: state.advertised_seed.clone(),
+                    req_host: None,
+                    control_port: state.control_port,
+                    san: &state.cert_san,
+                },
+            )
+            .map(|r| r.endpoint)
+            .map_err(|e| {
+                warn!(event = "client.enrollment_failed", error = %e);
+                RedeemEnrollmentError::AdvertisedEndpoint(e.http_code().to_string())
+            })
+        };
         let issued = self
             .enrollments
-            .redeem(&code, Utc::now())
+            .redeem(&code, Utc::now(), resolve_legacy)
             .map_err(map_redeem_error)?;
         info!(
             event = "client.enrollment_redeemed",
@@ -50,30 +74,10 @@ impl ClientEnrollment for ClientEnrollmentService {
                 disconnected,
             );
         }
-        let server_endpoint = if let Some(ep) = issued.advertised_endpoint.clone() {
-            ep
-        } else {
-            // Legacy pre-V010 row: resolve once, fail closed.
-            let override_value = self
-                .state
-                .settings
-                .get_advertised_endpoint()
-                .map_err(|e| Status::internal(format!("settings: {e}")))?;
-            crate::advertised::resolve_advertised_endpoint(
-                &crate::advertised::resolve::ResolveInputs {
-                    override_value,
-                    seed: self.state.advertised_seed.clone(),
-                    req_host: None,
-                    control_port: self.state.control_port,
-                    san: &self.state.cert_san,
-                },
-            )
-            .map_err(|e| {
-                warn!(event = "client.enrollment_failed", error = %e);
-                Status::failed_precondition(e.http_code())
-            })?
-            .endpoint
-        };
+        // `advertised_endpoint` is always `Some` after a successful
+        // redeem: persisted rows carry their value; legacy NULL rows
+        // were resolved inside the redeem transaction above.
+        let server_endpoint = issued.advertised_endpoint.clone().unwrap_or_default();
         Ok(Response::new(WireCredentialBundle {
             version: 1,
             client_name: issued.client_name.to_string(),
@@ -90,6 +94,7 @@ fn map_redeem_error(err: RedeemEnrollmentError) -> Status {
         RedeemEnrollmentError::InvalidCode => Status::unauthenticated("enrollment_invalid"),
         RedeemEnrollmentError::Expired => Status::unauthenticated("enrollment_expired"),
         RedeemEnrollmentError::AlreadyUsed => Status::unauthenticated("enrollment_used"),
+        RedeemEnrollmentError::AdvertisedEndpoint(code) => Status::failed_precondition(code),
         RedeemEnrollmentError::Store(e) => {
             warn!(event = "client.enrollment_failed", error = %e);
             Status::internal("enrollment_store_error")
