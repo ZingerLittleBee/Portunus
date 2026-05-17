@@ -235,7 +235,78 @@ print_plan() {
   echo "bin_dir:          ${BIN_DIR}"
   echo "systemd:          ${WANT_SYSTEMD}"
   echo "advertised:       ${ADVERTISED:-<unset, runtime auto>}"
+  if [ "$ROLE" = "server" ] && [ "${DEPLOY:-binary}" != "docker" ]; then
+    echo "drop-in:          /etc/systemd/system/portunus-server.service.d/10-portunus.conf"
+    echo "data_dir:         ${DATA_DIR:-/var/lib/portunus}"
+    echo "op_http_listen:   ${OP_HTTP_LISTEN:-<default>}"
+  fi
   echo "actions:          download+verify+install portunus-${ROLE} -> ${BIN_DIR}$( [ "$WANT_SYSTEMD" = yes ] && echo ' + systemd unit' )"
+}
+
+# ─── Download / install (binary) ──────────────────────────────────────
+resolve_latest_tag() {
+  need curl; need sed
+  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  [ -n "$tag" ] || die "could not resolve latest release tag"
+  artifact_version="${tag#v}"; resolved_version="$artifact_version"
+}
+
+maybe_sudo() { if [ -w "$1" ] || [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo"; fi; }
+
+install_binary() {
+  need curl; need tar
+  [ -n "$tag" ] || resolve_latest_tag
+  local asset checksums tmp src expected actual
+  asset="portunus-${artifact_version}-${target}.tar.gz"
+  checksums="portunus-${artifact_version}-checksums.txt"
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  echo "→ downloading ${asset} (${tag})"
+  curl -fsSL "$(rel "$asset")" -o "$tmp/$asset" || die "download failed: $asset"
+  curl -fsSL "$(rel "$checksums")" -o "$tmp/$checksums" || die "download failed: $checksums"
+  echo "→ verifying sha256"
+  expected="$(grep -F " ${asset}" "$tmp/$checksums" | awk '{print $1}')"
+  [ -n "$expected" ] || die "no checksum entry for $asset"
+  if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+  else actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"; fi
+  [ "$expected" = "$actual" ] || die "checksum mismatch for $asset"
+  tar -xzf "$tmp/$asset" -C "$tmp"
+  src="$tmp/portunus-${artifact_version}-${target}/portunus-${ROLE}"
+  [ -f "$src" ] || die "binary not found in archive: portunus-${ROLE}"
+  maybe_sudo "$BIN_DIR"
+  echo "→ installing portunus-${ROLE} to ${BIN_DIR}"
+  ${SUDO:-} install -m 0755 "$src" "${BIN_DIR}/portunus-${ROLE}"
+}
+
+# ─── Systemd ──────────────────────────────────────────────────────────
+install_systemd_unit() {
+  if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
+  fi
+  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"
+  curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
+  if [ "$ROLE" = "client" ]; then
+    id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
+    sudo install -d -o root -g portunus-client -m 0750 /etc/portunus
+  else
+    id portunus-server >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
+    sudo install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
+  fi
+  sudo install -m 0644 "$tmp/$unit" "/etc/systemd/system/$unit"
+  rm -rf "$tmp"
+}
+
+# ─── Server config (drop-in / .env) ───────────────────────────────────
+write_server_dropin() {
+  local d="/etc/systemd/system/portunus-server.service.d" f
+  f="$d/10-portunus.conf"
+  sudo install -d -m 0755 "$d"
+  {
+    echo "[Service]"
+    [ -n "$ADVERTISED" ] && echo "Environment=PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}"
+  } | sudo tee "$f" >/dev/null
+  sudo systemctl daemon-reload || true
+  echo "→ wrote $f"
 }
 
 # ─── Arg parse + dispatch (minimal; expanded in Task 2) ───────────────
@@ -295,6 +366,30 @@ main() {
 }
 
 run_menu() { die "interactive menu not yet implemented"; }
-dispatch_verb() { die "verb '${VERB}' not yet implemented"; }
+dispatch_verb() {
+  case "$VERB" in
+    install)
+      [ -n "$ROLE" ] || die "$(t need_role)"
+      [ -z "$DEPLOY" ] && DEPLOY="binary"
+      if [ "$DEPLOY" = "docker" ]; then install_docker; else
+        install_binary
+        [ "$WANT_SYSTEMD" = yes ] && install_systemd_unit
+        [ "$ROLE" = "server" ] && [ "$WANT_SYSTEMD" = yes ] && write_server_dropin
+      fi
+      meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+      echo; echo "$(t done_next)"
+      ;;
+    uninstall|upgrade|status|service|config|env) lifecycle_"$VERB" ;;
+    *) die "verb '${VERB}' not yet implemented" ;;
+  esac
+}
+
+install_docker() { die "docker install not yet implemented"; }
+lifecycle_uninstall() { die "uninstall not yet implemented"; }
+lifecycle_upgrade()   { die "upgrade not yet implemented"; }
+lifecycle_status()    { die "status not yet implemented"; }
+lifecycle_service()   { die "service not yet implemented"; }
+lifecycle_config()    { die "config not yet implemented"; }
+lifecycle_env()       { die "env not yet implemented"; }
 
 main "$@"

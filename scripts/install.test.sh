@@ -58,4 +58,11 @@ printf 'services:\n  server:\n    image: portunus-server\n' > "$tmpd/compose.yml
 [ "$(bash "$script" --detect-deploy "$tmpd")" = "docker" ] || fail "detect docker"
 rm -rf "$tmpd"
 
+# --- server binary dry-run mentions drop-in target, writes nothing ---
+sentinel="$(mktemp -d)"
+o="$(bash "$script" server --version 1.0.0 --systemd --advertised-endpoint h.example:7443 --data-dir "$sentinel/data" --dry-run)" || fail "server dry-run"
+echo "$o" | grep -q 'drop-in:.*portunus-server.service.d/10-portunus.conf' || fail "drop-in plan line"
+[ -z "$(ls -A "$sentinel" 2>/dev/null)" ] || fail "dry-run wrote files"
+rm -rf "$sentinel"
+
 echo "PASS"
