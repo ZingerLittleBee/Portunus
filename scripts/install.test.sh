@@ -33,4 +33,16 @@ keys_zh="$(bash "$script" --print-i18n-keys zh | sort)"
 bash "$script" --lang zh --print-i18n menu_title | grep -q '管理' || fail "zh menu_title"
 PORTUNUS_LANG=en bash "$script" --print-i18n menu_title | grep -qi 'manager' || fail "en menu_title"
 
+# --- new flags accepted in dry-run plan ---
+o="$(bash "$script" server --deploy docker --advertised-endpoint h.example:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --version 1.0.0 --dry-run)" || fail "new flags exit"
+echo "$o" | grep -q '^deploy:[[:space:]]*docker$' || fail "deploy docker"
+echo "$o" | grep -q '^advertised:[[:space:]]*h.example:7443$' || fail "advertised line"
+
+# --- bare role implies install verb; explicit verb parsed ---
+bash "$script" install client --version 1.0.0 --dry-run >/dev/null 2>&1 || fail "install verb"
+bash "$script" status --help >/dev/null 2>&1 || fail "status+help"
+
+# --- non-interactive when no tty and no args: helpful error, non-zero ---
+if echo "" | bash "$script" </dev/null >/dev/null 2>&1; then fail "no-arg no-tty should error"; fi
+
 echo "PASS"

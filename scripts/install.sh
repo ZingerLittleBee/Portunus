@@ -193,30 +193,56 @@ print_plan() {
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      client|server) ROLE="$1"; VERB="${VERB:-install}" ;;
+      client|server) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
       install|uninstall|upgrade|status|service|config|env) VERB="$1" ;;
+      start|stop|restart) SERVICE_ACTION="$1" ;;
+      get|set) CONFIG_OP="$1" ;;
       --version) shift; [ $# -gt 0 ] || die "--version needs a value"; VERSION="$1" ;;
       --bin-dir) shift; [ $# -gt 0 ] || die "--bin-dir needs a value"; BIN_DIR="$1" ;;
+      --compose-dir) shift; [ $# -gt 0 ] || die "--compose-dir needs a value"; COMPOSE_DIR="$1" ;;
+      --deploy) shift; case "${1:-}" in binary|docker) DEPLOY="$1" ;; *) die "--deploy must be binary|docker" ;; esac ;;
+      --advertised-endpoint) shift; [ $# -gt 0 ] || die "--advertised-endpoint needs a value"; ADVERTISED="$1" ;;
+      --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
+      --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
+      --lang) shift; [ $# -gt 0 ] || die "--lang needs a value"; LANG_CODE="$1" ;;
       --systemd) WANT_SYSTEMD="yes" ;;
       --yes) ASSUME_YES="yes" ;;
+      --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
-      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [flags]"; exit 0 ;;
-      --lang) shift; [ $# -gt 0 ] || die "--lang needs a value"; LANG_CODE="$1" ;;
       --print-i18n-keys) shift; resolve_lang; if [ "${1:-en}" = zh ]; then for k in "${!MSG_ZH[@]}"; do echo "$k"; done; else for k in "${!MSG_EN[@]}"; do echo "$k"; done; fi; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      *) die "unknown argument: $1" ;;
+      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
     esac
     shift
   done
 }
 
+is_interactive() {
+  if [ -t 0 ]; then return 0; fi
+  if [ -r /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then exec 3<&-; return 0; fi
+  return 1
+}
+
 main() {
   parse_args "$@"
-  [ -n "$ROLE" ] || die "role required: client or server"
+  resolve_lang
+  # No actionable verb/role and a TTY ⇒ interactive menu (Task 7).
+  if [ -z "$VERB" ] && [ -z "$ROLE" ]; then
+    if is_interactive; then run_menu; exit $?; fi
+    die "no command given and no terminal; run 'install.sh -h' or pass a role"
+  fi
+  [ -n "$VERB" ] || VERB="install"
   detect_platform
   resolve_version_static
-  if [ "$DRY_RUN" = "yes" ]; then print_plan; exit 0; fi
-  die "non-dry-run install not yet implemented (scaffold task)"
+  if [ "$DRY_RUN" = "yes" ]; then
+    if [ "$VERB" = "install" ]; then [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0; fi
+    echo "verb: ${VERB} (dry-run; no side effects)"; exit 0
+  fi
+  dispatch_verb
 }
+
+run_menu() { die "interactive menu not yet implemented"; }
+dispatch_verb() { die "verb '${VERB}' not yet implemented"; }
 
 main "$@"
