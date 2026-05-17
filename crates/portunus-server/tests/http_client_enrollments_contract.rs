@@ -219,6 +219,7 @@ async fn enrollment_uri_derives_from_request_host() {
     let resp = router.oneshot(request).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
+    // build_router() sets a tier-2 seed Some("public.example:7443") that preempts tier-3 Host derivation, so this asserts a SAN-covered 201 without isolating the Host-wiring path.
     assert!(
         body["uri"]
             .as_str()
