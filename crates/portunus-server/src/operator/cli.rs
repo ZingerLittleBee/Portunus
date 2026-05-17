@@ -8,8 +8,10 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use portunus_auth::{AuthError, Authenticator};
 use portunus_core::{
     ClientName, ClientNameError, Hostname, HostnameError, PortRange, PortRangeError, RequestId,
@@ -23,10 +25,13 @@ use thiserror::Error;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::bundle::CredentialBundle;
 use crate::operator::ClientView;
 use crate::rules::{Protocol, Rule, RuleStoreError};
 use crate::state::AppState;
+use crate::store::StoreError;
+use crate::store::enrollment_store::{
+    ClientEnrollmentStore, CreateEnrollment, CreateEnrollmentError, EnrollmentTarget,
+};
 
 #[derive(Debug, Error)]
 pub enum OperatorError {
@@ -38,9 +43,11 @@ pub enum OperatorError {
     Io(#[from] std::io::Error),
     #[error("auth: {0}")]
     Auth(#[from] AuthError),
+    #[error("store: {0}")]
+    Store(#[from] StoreError),
     #[error("client_not_connected: {0}")]
     ClientNotConnected(ClientName),
-    /// `client-delete` / `client-reissue` invoked with a name that has
+    /// Client mutation invoked with a name that has
     /// no row in `client_tokens`. Maps to HTTP 404 / exit 8 (shares the
     /// generic `not_found` family with `RuleNotFound`).
     #[error("client_not_found: {0}")]
@@ -76,6 +83,8 @@ pub enum OperatorError {
     InvalidTargetHost { code: &'static str, message: String },
     #[error("invalid_client_address: {0}")]
     InvalidClientAddress(String),
+    #[error("invalid_enrollment_ttl: {0} must be greater than 0 seconds")]
+    InvalidEnrollmentTtl(u64),
     /// Range size > server-configured cap (FR-008, 002-port-range-forward).
     #[error("exceeds_cap: requested={requested} cap={cap}")]
     ExceedsCap { requested: u32, cap: u32 },
@@ -245,6 +254,7 @@ impl OperatorError {
             | Self::InvalidTarget(_)
             | Self::InvalidTargetHost { .. }
             | Self::InvalidClientAddress(_)
+            | Self::InvalidEnrollmentTtl(_)
             | Self::ExceedsCap { .. }
             | Self::RangeInvalid(_)
             | Self::UnsupportedProtocol { .. }
@@ -317,6 +327,7 @@ impl OperatorError {
             Self::InvalidProtocol(_) => "invalid_protocol",
             Self::InvalidTarget(_) => "invalid_target",
             Self::InvalidClientAddress(_) => "invalid_client_address",
+            Self::InvalidEnrollmentTtl(_) => "invalid_enrollment_ttl",
             // `InvalidTargetHost` and `SniValidation` (below) both
             // store an operator-api-stable subcode in their `code`
             // field; merging the arms keeps the dispatch trivial.
@@ -337,6 +348,7 @@ impl OperatorError {
             Self::Rbac(e) => e.code(),
             Self::Io(_) => "io_error",
             Self::Auth(_) => "auth_error",
+            Self::Store(_) => "store_error",
             // 007-multi-target-failover (operator-api.md §1):
             Self::RuleShapeConflict => "rule_shape_conflict",
             Self::RuleShapeMissing => "rule_shape_missing",
@@ -434,68 +446,109 @@ impl From<RuleStoreError> for OperatorError {
     }
 }
 
-/// Issue a fresh bearer token for `raw_name` and assemble the credential
-/// bundle, without touching the filesystem.
-///
-/// Used directly by the HTTP `POST /v1/clients` handler, which only needs
-/// the bundle in the response body. The CLI path goes through
-/// [`provision_client`] which additionally writes the bundle to disk.
-pub fn issue_bundle(
-    state: &AppState,
-    raw_name: &str,
-    client_address: Option<&str>,
-) -> Result<(ClientName, CredentialBundle), OperatorError> {
-    let name = ClientName::from_str(raw_name)?;
-    let address = client_address.map(validate_client_address).transpose()?;
-    let token = match state
-        .tokens
-        .issue_with_address(name.clone(), address.as_deref())
-    {
-        Ok(t) => t,
-        Err(AuthError::ClientAlreadyExists(n)) => {
-            return Err(OperatorError::ClientAlreadyExists(n));
+impl From<CreateEnrollmentError> for OperatorError {
+    fn from(value: CreateEnrollmentError) -> Self {
+        match value {
+            CreateEnrollmentError::ClientAlreadyExists(name) => Self::ClientAlreadyExists(name),
+            CreateEnrollmentError::ClientNotFound(name) => Self::ClientNotFound(name),
+            CreateEnrollmentError::Store(e) => Self::Store(e),
         }
-        Err(e) => return Err(OperatorError::Auth(e)),
-    };
-    let bundle = CredentialBundle::new(
-        name.clone(),
-        state.server_endpoint.clone(),
-        state.server_cert_sha256.clone(),
-        state.server_cert_pem.clone(),
-        token,
-    );
-    info!(
-        event = "audit.provision",
-        outcome = "success",
-        client_name = %name,
-    );
-    Ok((name, bundle))
+    }
 }
 
-/// `provision-client <name> [--out path]`.
-///
-/// Returns the `(bundle_path, bundle)` pair on success. The bundle file is
-/// written atomically with mode 0600. When `out` is `None`, the file is
-/// written to `<cwd>/<name>.bundle.json`.
-pub fn provision_client(
+pub struct EnrollmentCommand {
+    pub client_name: ClientName,
+    pub expires_at: chrono::DateTime<Utc>,
+    pub command: String,
+}
+
+/// Create a short-lived one-time enrollment URI for `portunus-client enroll`.
+pub fn enroll_client(
     state: &AppState,
     raw_name: &str,
     client_address: Option<&str>,
-    out: Option<PathBuf>,
-) -> Result<(PathBuf, CredentialBundle), OperatorError> {
-    let (name, bundle) = issue_bundle(state, raw_name, client_address)?;
-    let path = out.unwrap_or_else(|| {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(format!("{name}.bundle.json"))
-    });
-    bundle.write_to(&path)?;
+    ttl_secs: u64,
+) -> Result<EnrollmentCommand, OperatorError> {
+    let name = ClientName::from_str(raw_name)?;
+    if ttl_secs == 0 {
+        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
+    }
+    let address = client_address.map(validate_client_address).transpose()?;
+
+    create_enrollment_command(
+        state,
+        name,
+        EnrollmentTarget::New {
+            client_address: address,
+        },
+        ttl_secs,
+        "audit.client_enrollment_created",
+    )
+}
+
+/// Create a short-lived enrollment URI for an existing client. The bearer
+/// token is not rotated until the client redeems the code.
+pub fn enroll_existing_client(
+    state: &AppState,
+    raw_name: &str,
+    ttl_secs: u64,
+) -> Result<EnrollmentCommand, OperatorError> {
+    let name = ClientName::from_str(raw_name)?;
+    if ttl_secs == 0 {
+        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
+    }
+
+    create_enrollment_command(
+        state,
+        name,
+        EnrollmentTarget::Existing,
+        ttl_secs,
+        "audit.client_reenrollment_created",
+    )
+}
+
+fn create_enrollment_command(
+    state: &AppState,
+    name: ClientName,
+    target: EnrollmentTarget,
+    ttl_secs: u64,
+    event: &'static str,
+) -> Result<EnrollmentCommand, OperatorError> {
+    let now = Utc::now();
+    let ttl = chrono::Duration::from_std(Duration::from_secs(ttl_secs)).map_err(|e| {
+        StoreError::Internal {
+            message: format!("invalid enrollment ttl: {e}"),
+        }
+    })?;
+    let enrollments = ClientEnrollmentStore::new(Arc::clone(&state.store));
+    let created = enrollments.create(CreateEnrollment {
+        client_name: name.clone(),
+        target,
+        expires_at: now + ttl,
+        now,
+    })?;
+    let command = enrollment_command(state, &created.code);
     info!(
-        event = "audit.provision_written",
-        client_name = %name,
-        bundle_path = %path.display(),
+        event,
+        client_name = %created.client_name,
+        expires_at = %created.expires_at,
     );
-    Ok((path, bundle))
+    Ok(EnrollmentCommand {
+        client_name: name,
+        expires_at: created.expires_at,
+        command,
+    })
+}
+
+fn enrollment_command(state: &AppState, code: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let cert = URL_SAFE_NO_PAD.encode(state.server_cert_pem.as_bytes());
+    let uri = format!(
+        "portunus://{}/enroll?pin=sha256:{}&code={}&cert={}",
+        state.server_endpoint, state.server_cert_sha256, code, cert
+    );
+    format!("portunus-client enroll '{uri}'")
 }
 
 /// `revoke <name>`. Idempotent.
@@ -564,42 +617,6 @@ pub fn update_client(
             Err(OperatorError::ClientNotFound(name))
         }
     }
-}
-
-/// Rotate a client's credential and return the new bundle. Works on
-/// active OR revoked rows — a revoked client is brought back to life
-/// with a fresh token. Any live forwarder under this name is forcibly
-/// disconnected so it reconnects with the rotated credentials.
-pub async fn reissue_client(
-    state: &AppState,
-    raw_name: &str,
-) -> Result<(ClientName, CredentialBundle), OperatorError> {
-    let name = ClientName::from_str(raw_name)?;
-    let token = match state
-        .tokens
-        .reissue(&name)
-        .map_err(|e| OperatorError::Auth(AuthError::StoreCorrupt(e.to_string())))?
-    {
-        crate::store::token_store::ReissueOutcome::Rotated(t) => t,
-        crate::store::token_store::ReissueOutcome::NotFound => {
-            return Err(OperatorError::ClientNotFound(name));
-        }
-    };
-    let was_connected = state.clients.disconnect(&name).await;
-    let bundle = CredentialBundle::new(
-        name.clone(),
-        state.server_endpoint.clone(),
-        state.server_cert_sha256.clone(),
-        state.server_cert_pem.clone(),
-        token,
-    );
-    info!(
-        event = "audit.client_reissue",
-        outcome = "success",
-        client_name = %name,
-        was_connected,
-    );
-    Ok((name, bundle))
 }
 
 /// `list-clients`. Joins the union of provisioned + currently-connected.

@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bundle::CredentialBundle;
 use crate::operator::ClientView;
 use crate::operator::auth_layer::auth_middleware;
 use crate::operator::cli::{self, OperatorError};
@@ -35,10 +34,11 @@ pub fn router(state: Arc<AppState>) -> Router {
     };
 
     let protected = Router::new()
-        .route("/v1/clients", get(get_clients).post(post_clients))
+        .route("/v1/clients", get(get_clients))
         .route("/v1/clients/{name}", put(put_client).delete(delete_client))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
-        .route("/v1/clients/{name}/reissue", post(post_reissue))
+        .route("/v1/clients/{name}/enrollment", post(post_client_reenrollment))
+        .route("/v1/client-enrollments", post(post_client_enrollments))
         .route("/v1/rules", get(get_rules).post(post_rules))
         .route(
             "/v1/rules/{rule_id}",
@@ -151,9 +151,22 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 #[derive(Debug, Deserialize)]
-struct ProvisionBody {
+struct EnrollmentBody {
     name: String,
     address: String,
+    ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReEnrollmentBody {
+    ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct EnrollmentResponse {
+    client_name: String,
+    expires_at: String,
+    command: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,12 +174,46 @@ struct UpdateClientBody {
     address: String,
 }
 
-async fn post_clients(
+async fn post_client_enrollments(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<ProvisionBody>,
-) -> Result<(StatusCode, Json<CredentialBundle>), ApiError> {
-    let (_name, bundle) = cli::issue_bundle(&state, &body.name, Some(&body.address))?;
-    Ok((StatusCode::CREATED, Json(bundle)))
+    Extension(identity): Extension<OperatorIdentity>,
+    Json(body): Json<EnrollmentBody>,
+) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let enrollment = cli::enroll_client(
+        &state,
+        &body.name,
+        Some(&body.address),
+        body.ttl_secs.unwrap_or(600),
+    )?;
+    Ok((
+        StatusCode::CREATED,
+        Json(EnrollmentResponse {
+            client_name: enrollment.client_name.to_string(),
+            expires_at: enrollment.expires_at.to_rfc3339(),
+            command: enrollment.command,
+        }),
+    ))
+}
+
+async fn post_client_reenrollment(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    Path(name): Path<String>,
+    Json(body): Json<ReEnrollmentBody>,
+) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let enrollment = cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(EnrollmentResponse {
+            client_name: enrollment.client_name.to_string(),
+            expires_at: enrollment.expires_at.to_rfc3339(),
+            command: enrollment.command,
+        }),
+    ))
 }
 
 async fn post_revoke(
@@ -203,14 +250,6 @@ async fn put_client(
             )
         })?;
     Ok(Json(updated))
-}
-
-async fn post_reissue(
-    State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-) -> Result<(StatusCode, Json<CredentialBundle>), ApiError> {
-    let (_name, bundle) = cli::reissue_client(&state, &name).await?;
-    Ok((StatusCode::OK, Json(bundle)))
 }
 
 async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>> {
