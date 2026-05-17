@@ -546,9 +546,11 @@ meta_read() {
 }
 
 detect_deploy() {
-  local hint="${1:-}"
-  if [ -n "$hint" ] && ls "$hint"/compose.y*ml "$hint"/docker-compose.y*ml >/dev/null 2>&1; then
-    echo "docker"; return 0
+  local hint="${1:-}" f
+  if [ -n "$hint" ]; then
+    for f in "$hint"/compose.yml "$hint"/compose.yaml "$hint"/docker-compose.yml "$hint"/docker-compose.yaml; do
+      [ -f "$f" ] && { echo "docker"; return 0; }
+    done
   fi
   if [ -f /etc/systemd/system/portunus-server.service ] || [ -f /etc/systemd/system/portunus-client.service ]; then
     echo "binary"; return 0
