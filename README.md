@@ -29,8 +29,17 @@ The release notes and performance baseline are in
 
 ## Install
 
-Docker Compose is the recommended install path. Published images default to
-the newest stable release via `:latest`:
+The fastest install is the one-line script (detects OS/arch, verifies
+the release checksum):
+
+```sh
+# Edge host
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+# Control plane host
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+```
+
+Docker Compose is also supported; published images default to `:latest`:
 
 ```sh
 docker pull ghcr.io/zingerlittlebee/portunus-server:latest
@@ -72,9 +81,9 @@ export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 # Host A — start the server (state.db + TLS material auto-generated)
 ./target/release/portunus-server --data-dir ./srv serve
 
-# Host B — redeem the enrollment URI, then start from the written bundle
-./target/release/portunus-client enroll 'portunus://host:7443/enroll?...'
-./target/release/portunus-client
+# Host B — redeem the enrollment URI (writes the bundle), then start
+./target/release/portunus-client enroll 'portunus://host:7443/enroll?...' --out ./client.bundle.json
+./target/release/portunus-client --bundle ./client.bundle.json
 
 # Operator — push a rule (8080 on edge-01 → example.com:80)
 ./target/release/portunus-server push-rule edge-01 8080 example.com:80

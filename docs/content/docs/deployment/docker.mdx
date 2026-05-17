@@ -144,10 +144,28 @@ Use the actual superadmin user ID. For `bootstrap-superadmin` installs that ID
 is `_superadmin`; for Web onboarding it is the ID chosen during setup, for
 example `admin`.
 
-## Client compose
+## Client
 
-Create `compose.client.yaml` on each edge host after the server provisions a
-client bundle:
+The client image's entrypoint is already `portunus-client`, so pass
+`enroll …` as arguments to override the default `CMD`. Run **both** the
+one-shot enroll and the long-lived container as your host user — the
+image defaults to `nonroot` (UID 65532), which cannot write a
+host-owned bind mount nor read a host-UID `0600` bundle:
+
+```sh
+# One-shot: redeem the enrollment command into a host file.
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  ghcr.io/zingerlittlebee/portunus-client \
+  enroll 'portunus://...' --out /work/client.bundle.json
+
+# Long-lived forwarder.
+docker run -d --name portunus-client --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+Compose equivalent (`compose.client.yaml`), after the bundle exists:
 
 ```yaml
 services:
@@ -155,21 +173,18 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
+    user: "${HOST_UID}:${HOST_GID}"
     volumes:
-      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
     restart: unless-stopped
 ```
 
-Start the client:
-
-```sh
-docker compose -f compose.client.yaml up -d
-```
-
-Host networking is the least surprising mode for `portunus-client`: pushed
-rules bind listeners on the edge host, and Docker cannot know those ports
-before the operator creates the rules. If you avoid host networking, publish
-every forwarded listen port explicitly.
+Start it with `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f
+compose.client.yaml up -d`. Host networking is the least surprising mode
+for `portunus-client`: pushed rules bind listeners on the edge host and
+Docker cannot know those ports before the operator creates the rules.
+`install.sh` is host-only — containers use the image directly. Binary
+and enroll details: [Client Configuration](/en/docs/configuration/client).
 
 ## Backup & migration
 
