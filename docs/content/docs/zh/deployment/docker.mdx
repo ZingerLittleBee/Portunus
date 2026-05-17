@@ -138,9 +138,24 @@ docker compose up -d server
 这里要使用真实的超管用户 ID：`bootstrap-superadmin` 创建的是 `_superadmin`，
 Web onboarding 创建的是初始化时选择的 ID，例如 `admin`。
 
-## Client Compose
+## Client
 
-Server 配发 Client bundle 后，在每台边缘主机上创建 `compose.client.yaml`：
+客户端镜像入口点已是 `portunus-client`;一次性 enroll 与长驻容器都要以你的宿主用户身份运行,使 0600 的 bundle 由同一身份写入与读取(镜像默认 nonroot/UID 65532,无法写入宿主属主的挂载,也无法读取宿主 UID 的 0600 文件)。
+
+```sh
+# 一次性：把 enrollment 命令兑换为宿主文件。
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  ghcr.io/zingerlittlebee/portunus-client \
+  enroll 'portunus://...' --out /work/client.bundle.json
+
+# 长驻转发容器。
+docker run -d --name portunus-client --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+Compose 等价写法（`compose.client.yaml`），bundle 已存在后：
 
 ```yaml
 services:
@@ -148,20 +163,16 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
+    user: "${HOST_UID}:${HOST_GID}"
     volumes:
-      - ./edge-01.bundle.json:/etc/portunus/client.bundle.json:ro
+      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
     restart: unless-stopped
 ```
 
-启动 Client：
-
-```sh
-docker compose -f compose.client.yaml up -d
-```
-
-`portunus-client` 用 host networking 最省心：operator 推送的规则会在 edge
-宿主机上绑定 listener，而 Docker 事先不知道这些端口。如果不用 host networking，
-需要显式发布每个转发监听端口。
+用 `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d`
+启动。`portunus-client` 使用 host networking 最省心：operator 推送的规则会在 edge
+宿主机上绑定 listener，而 Docker 事先不知道这些端口。`install.sh` 仅用于宿主机
+安装 —— 容器直接使用镜像。二进制与 enroll 详情：[Client 配置](/zh/docs/configuration/client)。
 
 ## 备份与迁移
 

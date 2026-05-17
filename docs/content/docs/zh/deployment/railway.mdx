@@ -67,8 +67,10 @@ onboarding 还没完成，每次重启都会轮换。
 ## Client endpoint
 
 给 application port `7443` 创建 TCP Proxy 后，把 `PORTUNUS_ADVERTISED_ENDPOINT`
-设为 proxy 的 `host:port` 并重新部署。之后从 Web UI 接入 client。接入命令会让
-`portunus-client` 连接 TCP Proxy endpoint。
+设为 proxy 的 `host:port` 并重新部署。之后从 Web UI **Clients** 页面接入 client；
+接入命令会让 `portunus-client` 连接 TCP Proxy endpoint。使用 Docker（参见
+[Client 配置](/zh/docs/configuration/client#docker)）或宿主机安装程序
+（[`install.sh`](/zh/docs/configuration/client#安装二进制)）安装并运行边缘客户端。
 
 ## 注意事项
 
