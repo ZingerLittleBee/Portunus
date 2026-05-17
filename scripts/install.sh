@@ -577,9 +577,9 @@ lifecycle_uninstall() {
     sudo systemctl daemon-reload 2>/dev/null || true
   fi
   if [ "$PURGE" = yes ]; then
-    local dd ans; dd="$(dirname "$mf")"
-    read -r -p "$(t confirm_purge_typed "$dd")" ans < <(tty_in) || ans=""
-    [ "$ans" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
+    local dd; dd="$(dirname "$mf")"
+    read_tty "$(t confirm_purge_typed "$dd")" || REPLY_TTY=""
+    [ "$REPLY_TTY" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
   fi
   rm -f "$mf" 2>/dev/null || true
 }
@@ -618,12 +618,20 @@ lifecycle_config() {
 
 lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
 
-tty_in() { if [ -t 0 ]; then cat; else cat /dev/tty 2>/dev/null || true; fi; }
+# Read one line straight from the terminal into REPLY_TTY. A per-prompt
+# `cat`/process-sub left a zombie reader on the tty, so a second prompt
+# in the same command (uninstall→purge, set→restart) raced it.
+read_tty() {
+  REPLY_TTY=""
+  if [ -t 0 ]; then read -r -p "$1" REPLY_TTY
+  elif [ -r /dev/tty ]; then read -r -p "$1" REPLY_TTY </dev/tty
+  else return 1; fi
+}
 confirm() {
-  local prompt="$1" ans
+  local prompt="$1"
   [ "$ASSUME_YES" = yes ] && return 0
-  read -r -p "$prompt" ans < <(tty_in) || return 1
-  case "$ans" in y|Y|yes|YES|"") return 0 ;; *) return 1 ;; esac
+  read_tty "$prompt" || return 1
+  case "$REPLY_TTY" in y|Y|yes|YES|"") return 0 ;; *) return 1 ;; esac
 }
 
 main "$@"
