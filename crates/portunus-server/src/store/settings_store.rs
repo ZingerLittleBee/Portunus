@@ -6,6 +6,7 @@ use rusqlite::OptionalExtension;
 
 use crate::store::{Store, StoreError, map_rusqlite};
 
+#[derive(Clone, Debug)]
 pub struct SqliteSettingsStore {
     store: Arc<Store>,
 }
