@@ -9,6 +9,7 @@
 //! everything tests need to assemble an `AppState` and call into the
 //! axum router is re-exported here.
 
+pub mod advertised;
 pub mod clients;
 pub mod data_dir;
 pub mod grpc;
