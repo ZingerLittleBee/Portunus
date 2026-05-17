@@ -59,9 +59,12 @@ install_client() {
     useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
   install -d -o root -g portunus-client -m 0750 /etc/portunus
   if [[ ! -f /etc/portunus/client.bundle.json ]]; then
-    echo "→ /etc/portunus/client.bundle.json not present yet. Provision one on the server:"
-    echo "    portunus-server --data-dir /var/lib/portunus provision-client <name> --out client.bundle.json"
-    echo "  scp it here, then: install -o root -g portunus-client -m 0640 client.bundle.json /etc/portunus/"
+    echo "→ /etc/portunus/client.bundle.json not present yet. Enroll this host:"
+    echo "    1. Operator creates an enrollment command (Web UI Clients page,"
+    echo "       or: portunus-server --data-dir /var/lib/portunus enroll-client <name>)."
+    echo "    2. On this host, redeem it to a local file:"
+    echo "       portunus-client enroll 'portunus://...' --out ./client.bundle.json"
+    echo "    3. install -o root -g portunus-client -m 0640 ./client.bundle.json /etc/portunus/client.bundle.json"
   fi
 
   install -m 0644 "$UNIT_DIR/portunus-client.service" "$TARGET_UNIT_DIR/"
