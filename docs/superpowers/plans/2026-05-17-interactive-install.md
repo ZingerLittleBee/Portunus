@@ -817,11 +817,11 @@ YAML
 
 install_docker() {
   need docker
-  local dir; dir="${COMPOSE_DIR:-$PWD}"
+  local dir dc; dir="${COMPOSE_DIR:-$PWD}"; dc="$(compose_cmd)"
   [ -n "$tag" ] || resolve_latest_tag
   write_compose_file "$dir"
   write_compose_env "$dir"
-  ( cd "$dir" && $(compose_cmd) pull && $(compose_cmd) up -d )
+  ( cd "$dir" && $dc pull && $dc up -d )
 }
 ```
 
