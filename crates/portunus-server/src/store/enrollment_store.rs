@@ -59,14 +59,15 @@ impl ClientEnrollmentStore {
             .map_err(map_rusqlite)?;
             tx.execute(
                 "INSERT INTO client_enrollments \
-                 (client_name, client_address, code_hash, issued_at, expires_at, consumed_at) \
-                 VALUES (?, ?, ?, ?, ?, NULL)",
+                 (client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
+                 VALUES (?, ?, ?, ?, ?, NULL, ?)",
                 rusqlite::params![
                     input.client_name.as_str(),
                     client_address.as_deref(),
                     code_hash,
                     issued_at,
-                    expires_at
+                    expires_at,
+                    input.advertised_endpoint
                 ],
             )
             .map_err(map_rusqlite)?;
@@ -96,7 +97,7 @@ impl ClientEnrollmentStore {
         self.store.with_write_tx(|tx| {
             let mut stmt = tx
                 .prepare(
-                    "SELECT id, client_name, client_address, code_hash, expires_at, consumed_at \
+                    "SELECT id, client_name, client_address, code_hash, expires_at, consumed_at, advertised_endpoint \
                          FROM client_enrollments",
                 )
                 .map_err(map_rusqlite)?;
@@ -109,6 +110,7 @@ impl ClientEnrollmentStore {
                         code_hash: row.get(3)?,
                         expires_at: row.get(4)?,
                         consumed_at: row.get(5)?,
+                        advertised_endpoint: row.get(6)?,
                     })
                 })
                 .map_err(map_rusqlite)?;
@@ -195,6 +197,7 @@ impl ClientEnrollmentStore {
                 client_name,
                 token: client_token,
                 rotated_existing: existing_client,
+                advertised_endpoint: row.advertised_endpoint.clone(),
             }))
         })?
     }
@@ -206,6 +209,7 @@ pub struct CreateEnrollment {
     pub target: EnrollmentTarget,
     pub expires_at: DateTime<Utc>,
     pub now: DateTime<Utc>,
+    pub advertised_endpoint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +231,7 @@ pub struct IssuedClientCredential {
     pub client_name: ClientName,
     pub token: String,
     pub rotated_existing: bool,
+    pub advertised_endpoint: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -258,6 +263,7 @@ struct EnrollmentRow {
     code_hash: String,
     expires_at: String,
     consumed_at: Option<String>,
+    advertised_endpoint: Option<String>,
 }
 
 enum ExistingClient {
@@ -306,4 +312,68 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>, RedeemEnrollmentError> {
                 detail: format!("bad RFC3339 ts: {e}"),
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use tempfile::tempdir;
+
+    fn test_store() -> Arc<Store> {
+        let dir = tempdir().unwrap();
+        Arc::new(Store::open(dir.path()).unwrap())
+    }
+
+    #[test]
+    fn create_persists_and_redeem_returns_advertised_endpoint() {
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+        let now = Utc::now();
+        let created = es
+            .create(CreateEnrollment {
+                client_name: ClientName::from_str("edge-1").unwrap(),
+                target: EnrollmentTarget::New {
+                    client_address: None,
+                },
+                expires_at: now + chrono::Duration::seconds(300),
+                now,
+                advertised_endpoint: "public.example:7443".to_string(),
+            })
+            .unwrap();
+        let issued = es.redeem(&created.code, Utc::now()).unwrap();
+        assert_eq!(
+            issued.advertised_endpoint.as_deref(),
+            Some("public.example:7443")
+        );
+    }
+
+    #[test]
+    fn legacy_null_row_redeems_with_none_endpoint() {
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+        // Simulate a pre-V010 row: insert directly with NULL endpoint.
+        let now = Utc::now();
+        let code = "legacycode000000000000000000000000000000000000000000000000000000";
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO client_enrollments \
+                     (client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
+                     VALUES (?, NULL, ?, ?, ?, NULL, NULL)",
+                    rusqlite::params![
+                        "legacy-1",
+                        fingerprint::hex(&token::hash_token(code)),
+                        now.to_rfc3339(),
+                        (now + chrono::Duration::seconds(300)).to_rfc3339(),
+                    ],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let issued = es.redeem(code, Utc::now()).unwrap();
+        assert_eq!(issued.advertised_endpoint, None);
+    }
 }
