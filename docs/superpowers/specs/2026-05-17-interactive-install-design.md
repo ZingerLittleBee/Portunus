@@ -1,6 +1,6 @@
 # Interactive `install.sh` — Design
 
-> Status: Draft
+> Status: Implemented
 > Reference studied: `/Users/zingerbee/Documents/ServerBee/deploy/install.sh`
 > Replaces: `scripts/install.sh` (current 180-line POSIX downloader)
 
