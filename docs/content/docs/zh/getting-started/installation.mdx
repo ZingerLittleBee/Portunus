@@ -91,6 +91,14 @@ docker compose up -d && docker compose logs -f -t
 Web UI 在 Server 主机的 `http://127.0.0.1:7080/`。Client 控制面 listener
 仍然是 `0.0.0.0:7443`。
 
+**部署在反向代理 / 云主机后面？** enrollment URI 必须嵌入边缘 client
+能拨号的**公网** `host:port`。若不配置，未经浏览器请求创建的 enrollment
+（例如 Docker operator 的 `enroll-client`）会回落到 `127.0.0.1:7443`，
+远程 client 无法连接。通过 `PORTUNUS_ADVERTISED_ENDPOINT=host:port`
+（或 Web UI **设置 → 客户端连接地址**）设置通告地址，并确保服务器证书
+SAN 覆盖该主机 —— 参见
+[通告地址](/zh/docs/features/advertised-endpoint)。
+
 ### Compose 文件参考
 
 ```yaml
