@@ -6,6 +6,7 @@ import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 
@@ -22,21 +23,28 @@ function AdvertisedEndpointCard() {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">{t("settings.advertisedDescription")}</p>
+        <Label htmlFor="advertised-endpoint">{t("settings.advertisedHeading")}</Label>
         <Input
+          id="advertised-endpoint"
           value={current}
           placeholder="proxy.example.com:34567"
           onChange={(e) => setValue(e.target.value)}
         />
         <div className="flex gap-2">
           <Button
-            onClick={() => save.mutate(current.trim() === "" ? null : current.trim())}
+            onClick={() => {
+              const trimmed = current.trim();
+              save.mutate(trimmed === "" ? null : trimmed, {
+                onSuccess: () => setValue(null),
+              });
+            }}
             disabled={save.isPending}
           >
             {t("settings.advertisedSave")}
           </Button>
           <Button
             variant="outline"
-            onClick={() => { setValue(""); save.mutate(null); }}
+            onClick={() => save.mutate(null, { onSuccess: () => setValue(null) })}
             disabled={save.isPending}
           >
             {t("settings.advertisedClear")}
