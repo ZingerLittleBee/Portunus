@@ -1,6 +1,6 @@
 ---
 title: Client 配置
-description: portunus-client 如何拾取下发包，以及哪些环境变量会影响行为。
+description: portunus-client 如何拾取 bundle，以及哪些环境变量会影响行为。
 icon: Cog
 ---
 
@@ -8,7 +8,7 @@ icon: Cog
 操作员通过 Web UI **Clients** 页面或 `portunus-server enroll-client` 发出一次性
 命令，边缘主机兑换后，client 会在本地写入包含 bearer token 的 bundle 文件。
 
-本页是安装与接入客户端的权威参考，部署指南(systemd、Docker、Railway)均链接至此。
+本页是安装与接入客户端的权威参考，部署指南（systemd、Docker、Railway）均链接至此。
 
 ## 安装二进制
 
@@ -16,7 +16,7 @@ icon: Cog
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
-`install.sh <client|server>` 会检测系统架构,下载对应发行版二进制,校验 SHA-256,并安装到 `/usr/local/bin`(用 `--bin-dir` 修改;仅特权步骤使用 `sudo`)。
+`install.sh <client|server>` 会检测系统架构，下载对应发行版二进制，校验 SHA-256，并安装到 `/usr/local/bin`（用 `--bin-dir` 修改；仅特权步骤使用 `sudo`）。
 
 | 标志 | 作用 |
 | --- | --- |
@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 如果已是 root 环境：`curl -fsSL … | sudo sh -s -- client --systemd`。
 
-## 接入(enroll)
+## 接入（enroll）
 
 ```sh
 # 操作员侧（或使用 Web UI Clients 页面）：
@@ -100,7 +100,7 @@ sudo systemctl enable --now portunus-client
 
 ## Docker
 
-客户端镜像入口点已是 `portunus-client`;一次性 enroll 与长驻容器都要以你的宿主用户身份运行,使 0600 的 bundle 由同一身份写入与读取(镜像默认 nonroot/UID 65532,无法写入宿主属主的挂载,也无法读取宿主 UID 的 0600 文件)。
+客户端镜像入口点已是 `portunus-client`；一次性 enroll 与长驻容器都要以你的宿主用户身份运行，使 0600 的 bundle 由同一身份写入与读取（镜像默认 nonroot/UID 65532，无法写入宿主属主的挂载，也无法读取宿主 UID 的 0600 文件）。
 
 ```sh
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
