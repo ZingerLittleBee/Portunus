@@ -988,8 +988,10 @@ lifecycle_config() {
     grep -v "^${envkey}=" "$target_file" 2>/dev/null > "$target_file.tmp" || true
     echo "${envkey}=${CONFIG_VALUE}" >> "$target_file.tmp"; mv "$target_file.tmp" "$target_file"
   else
+    local keep=""
+    [ -f "$target_file" ] && keep="$(grep -E '^Environment=' "$target_file" 2>/dev/null | grep -vE "^Environment=${envkey}=" || true)"
     sudo install -d -m 0755 "$(dirname "$target_file")"
-    { echo "[Service]"; echo "Environment=${envkey}=${CONFIG_VALUE}"; } | sudo tee "$target_file" >/dev/null
+    { echo "[Service]"; [ -n "$keep" ] && printf '%s\n' "$keep"; echo "Environment=${envkey}=${CONFIG_VALUE}"; } | sudo tee "$target_file" >/dev/null
     sudo systemctl daemon-reload 2>/dev/null || true
   fi
   echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
@@ -998,7 +1000,7 @@ lifecycle_config() {
 
 lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
 
-tty_in() { if [ -t 0 ]; then cat; else cat /dev/tty; fi; }
+tty_in() { if [ -t 0 ]; then cat; else cat /dev/tty 2>/dev/null || true; fi; }
 confirm() {
   local prompt="$1" ans
   [ "$ASSUME_YES" = yes ] && return 0
@@ -1054,7 +1056,7 @@ MENU_FORCE_STDIN="no"
 ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
   local p; p="$(t "$@")"; local a
   if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$p" a || a=""
-  else read -r -p "$p" a < /dev/tty || a=""; fi
+  else read -r -p "$p" a < /dev/tty 2>/dev/null || a=""; fi
   printf '%s' "$a"
 }
 
