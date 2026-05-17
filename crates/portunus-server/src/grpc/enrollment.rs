@@ -34,11 +34,17 @@ impl ClientEnrollment for ClientEnrollmentService {
     ) -> Result<Response<WireCredentialBundle>, Status> {
         let code = request.into_inner().code;
         let state = &self.state;
-        // Legacy pre-V010 NULL-endpoint rows resolve fail-closed
-        // INSIDE the redeem transaction so a resolution failure rolls
-        // back the consume + token mint (idempotent / retryable).
-        let resolve_legacy = || -> Result<String, RedeemEnrollmentError> {
-            let override_value = state.settings.get_advertised_endpoint().map_err(|e| {
+        // Read the operator override BEFORE entering redeem()'s write
+        // transaction. resolve_legacy() runs inside that tx (which holds the
+        // only pooled connection on 1-vCPU hosts); doing the settings DB read
+        // here — sequentially, before the tx — avoids a nested pool checkout
+        // self-deadlock. The resolver itself is pure (no DB), so it stays in
+        // the closure. Persisted-endpoint rows never invoke the closure, so a
+        // settings-read failure is only surfaced for legacy NULL rows
+        // (unchanged behavior).
+        let pre_override = state.settings.get_advertised_endpoint();
+        let resolve_legacy = move || -> Result<String, RedeemEnrollmentError> {
+            let override_value = pre_override.map_err(|e| {
                 warn!(event = "client.enrollment_failed", error = %e);
                 RedeemEnrollmentError::Store(e)
             })?;

@@ -491,4 +491,76 @@ mod tests {
             "successful redeem must rotate the existing client token"
         );
     }
+
+    /// Regression test for C1 (1-vCPU deadlock): the settings read is
+    /// hoisted out of the redeem write transaction in `grpc/enrollment.rs`
+    /// so no nested pool checkout occurs. This test constructs the
+    /// `resolve_legacy` closure exactly as the fixed `enroll` handler does
+    /// (real `SqliteSettingsStore.get_advertised_endpoint()` called before
+    /// `redeem`, result moved into a closure that calls the pure resolver)
+    /// and exercises it against a real `ClientEnrollmentStore` with a seeded
+    /// legacy NULL-`advertised_endpoint` row. Confirms:
+    /// - the hoisted settings read composes correctly with the closure;
+    /// - the pure resolver (`resolve_advertised_endpoint`) resolves the
+    ///   override to the expected endpoint string;
+    /// - `redeem` succeeds, returns `advertised_endpoint == Some("public.example:7443")`,
+    ///   and the enrollment is consumed.
+    #[test]
+    fn legacy_null_row_redeems_via_hoisted_settings_read_and_pure_resolver() {
+        use crate::advertised::CertSanSet;
+        use crate::store::settings_store::SqliteSettingsStore;
+
+        const FIXTURE_PEM: &str = include_str!("../advertised/testdata/san_fixture.pem");
+        const OVERRIDE_EP: &str = "public.example:7443";
+        const CODE: &str = "legacyc1code0000000000000000000000000000000000000000000000000000";
+
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+
+        // Persist the operator override so the settings read returns Some.
+        let settings = SqliteSettingsStore::new(Arc::clone(&store));
+        settings
+            .set_advertised_endpoint(Some(OVERRIDE_EP.to_string()))
+            .expect("set override");
+
+        // Seed a legacy NULL-advertised_endpoint enrollment row.
+        seed_legacy_existing_client(&store, "legacy-c1", CODE);
+
+        // Build the resolve closure EXACTLY as the fixed enroll() handler:
+        // hoist the settings DB read before redeem, move the Result into
+        // the closure, run the pure resolver inside.
+        let cert_san = std::sync::Arc::new(CertSanSet::from_pem(FIXTURE_PEM).unwrap());
+        let advertised_seed: Option<String> = None;
+        let control_port: u16 = 7443;
+
+        let pre_override = settings.get_advertised_endpoint(); // ← hoisted (no DB inside redeem tx)
+        let resolve_legacy = move || -> Result<String, RedeemEnrollmentError> {
+            let override_value = pre_override.map_err(RedeemEnrollmentError::Store)?;
+            crate::advertised::resolve_advertised_endpoint(
+                &crate::advertised::resolve::ResolveInputs {
+                    override_value,
+                    seed: advertised_seed,
+                    req_host: None,
+                    control_port,
+                    san: &cert_san,
+                },
+            )
+            .map(|r| r.endpoint)
+            .map_err(|e| RedeemEnrollmentError::AdvertisedEndpoint(e.http_code().to_string()))
+        };
+
+        let issued = es
+            .redeem(CODE, Utc::now(), resolve_legacy)
+            .expect("redeem must succeed for legacy NULL row with valid settings");
+
+        assert_eq!(
+            issued.advertised_endpoint.as_deref(),
+            Some(OVERRIDE_EP),
+            "resolved endpoint must match the settings override"
+        );
+        assert!(
+            consumed_at_of(&store, CODE).is_some(),
+            "enrollment must be consumed after successful redeem"
+        );
+    }
 }
