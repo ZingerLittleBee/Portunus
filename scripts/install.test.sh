@@ -65,4 +65,11 @@ echo "$o" | grep -q 'drop-in:.*portunus-server.service.d/10-portunus.conf' || fa
 [ -z "$(ls -A "$sentinel" 2>/dev/null)" ] || fail "dry-run wrote files"
 rm -rf "$sentinel"
 
+sb="$(mktemp -d)"
+o="$(bash "$script" server --deploy docker --compose-dir "$sb" --advertised-endpoint d.example:7443 --version 1.0.0 --dry-run)" || fail "docker dry-run"
+echo "$o" | grep -q '^deploy:[[:space:]]*docker$' || fail "docker deploy plan"
+echo "$o" | grep -q "compose_dir:.*$sb" || fail "compose_dir plan"
+[ -z "$(ls -A "$sb" 2>/dev/null)" ] || fail "docker dry-run wrote files"
+rm -rf "$sb"
+
 echo "PASS"

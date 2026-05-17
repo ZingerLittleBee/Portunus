@@ -232,6 +232,10 @@ print_plan() {
     echo "checksums_url:    <github releases/latest, resolved at run time>"
   fi
   echo "deploy:           ${DEPLOY:-binary}"
+  if [ "${DEPLOY:-binary}" = "docker" ]; then
+    echo "compose_dir:      ${COMPOSE_DIR:-$PWD}"
+    echo "env_file:         ${COMPOSE_DIR:-$PWD}/.env"
+  fi
   echo "bin_dir:          ${BIN_DIR}"
   echo "systemd:          ${WANT_SYSTEMD}"
   echo "advertised:       ${ADVERTISED:-<unset, runtime auto>}"
@@ -306,6 +310,53 @@ write_server_dropin() {
   } | sudo tee "$f" >/dev/null
   sudo systemctl daemon-reload || true
   echo "→ wrote $f"
+}
+
+# ─── Docker ───────────────────────────────────────────────────────────
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then echo "docker compose";
+  elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose";
+  else die "docker compose v2 (or docker-compose) required"; fi
+}
+
+write_compose_env() {
+  local dir="$1" f="$1/.env"
+  mkdir -p "$dir"
+  : > "$f"
+  [ -n "$ADVERTISED" ]      && echo "PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}" >> "$f"
+  [ -n "$OP_HTTP_LISTEN" ]  && echo "PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}" >> "$f"
+  echo "→ wrote $f"
+}
+
+write_compose_file() {
+  local dir="$1" f="$1/compose.yml"
+  [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
+  cat > "$f" <<YAML
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-${ROLE}:${artifact_version:-latest}
+    container_name: portunus-${ROLE}
+    env_file: [ .env ]
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+volumes:
+  portunus-data:
+    name: portunus-data
+YAML
+  echo "→ wrote $f"
+}
+
+install_docker() {
+  need docker
+  local dir; dir="${COMPOSE_DIR:-$PWD}"
+  [ -n "$tag" ] || resolve_latest_tag
+  write_compose_file "$dir"
+  write_compose_env "$dir"
+  ( cd "$dir" && $(compose_cmd) pull && $(compose_cmd) up -d )
 }
 
 # ─── Arg parse + dispatch (minimal; expanded in Task 2) ───────────────
@@ -383,7 +434,6 @@ dispatch_verb() {
   esac
 }
 
-install_docker() { die "docker install not yet implemented"; }
 lifecycle_uninstall() { die "uninstall not yet implemented"; }
 lifecycle_upgrade()   { die "upgrade not yet implemented"; }
 lifecycle_status()    { die "status not yet implemented"; }
