@@ -2,11 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, apiFetch } from "@/api/client";
 import type {
+  ClientEnrollmentBody,
+  ClientReEnrollmentBody,
+  ClientEnrollmentResponse,
   ClientView,
-  CredentialBundle,
   OwnerListEntry,
   OwnerRateLimitView,
-  ProvisionClientBody,
   RateLimit,
   UpdateClientBody,
 } from "@/api/types";
@@ -21,14 +22,31 @@ export function useClientsList() {
   });
 }
 
-export function useProvisionClient() {
+export function useCreateClientEnrollment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: ProvisionClientBody) =>
-      apiFetch<CredentialBundle>("/v1/clients", {
+    mutationFn: (body: ClientEnrollmentBody) =>
+      apiFetch<ClientEnrollmentResponse>("/v1/client-enrollments", {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
+export function useCreateClientReEnrollment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, ...body }: { name: string } & ClientReEnrollmentBody) =>
+      apiFetch<ClientEnrollmentResponse>(
+        `/v1/clients/${encodeURIComponent(name)}/enrollment`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+      ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
     },
@@ -64,19 +82,6 @@ export function useUpdateClient() {
       apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(name)}`, {
         method: "PUT",
         body: JSON.stringify(body),
-      }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
-    },
-  });
-}
-
-export function useReissueClient() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<CredentialBundle>(`/v1/clients/${encodeURIComponent(name)}/reissue`, {
-        method: "POST",
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });

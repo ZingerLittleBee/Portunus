@@ -286,7 +286,7 @@
     "connected": "Connected",
     "disconnected": "Offline",
     "revoked": "Revoked",
-    "provision": "Provision client",
+    "provision": "Enroll client",
     "actions": "Client actions",
     "edit": "Edit",
     "editDialogTitle": "Edit client",
@@ -303,54 +303,22 @@
     "showRevoked": "Show revoked",
     "revokedCount": "{{count}} revoked",
     "emptyTitle": "No clients yet",
-    "emptyBody": "Provision a client bundle so a forwarder can connect."
+    "emptyBody": "Create an enrollment command so a forwarder can connect."
   },
   "clientProvision": {
-    "title": "Provision client",
-    "submit": "Issue bundle",
+    "title": "Enroll client",
+    "submit": "Create enrollment",
     "address": "Client entry address",
     "addressHint": "Public IP address or DNS name users connect to for this client's forwarding rules. Do not include a URL scheme or port.",
-    "bundleHeading": "Credential bundle",
-    "bundleHint": "This bundle contains the bearer token. The server only ever stores its hash — once you leave this page the plaintext is gone for good. Save it to disk now and share it with the client over a secure channel.",
-    "reissueHint": "New bundle issued. The previous bearer token is invalidated and any live forwarder under this name will reconnect on the new credentials once redeployed. Save the file now — leaving this page discards the plaintext.",
-    "download": "Download bundle",
-    "copy": "Copy JSON",
-    "reveal": "Reveal",
-    "hide": "Hide",
-    "backToList": "Back to clients",
-    "install": {
-      "heading": "Install on the client machine",
-      "hint": "Run the steps below on the host that will forward traffic. The credential bundle is base64-embedded into each command so you don't have to copy a separate file.",
-      "tabDocker": "Docker",
-      "tabLinux": "Linux (systemd)",
-      "tabManual": "Manual",
-      "copy": "Copy",
-      "copied": "Copied",
-      "stepLabel": "Step {{n}}",
-      "docker": {
-        "step1Title": "Materialise the bundle on the target host",
-        "step1Hint": "Decodes the base64 blob into ./portunus/bundle.json with 0600 permissions.",
-        "step2Title": "Run the forwarder",
-        "step2Hint": "Pulls the published client image and binds the host network so forwarded ports land on the host's interfaces.",
-        "step3Title": "Tail logs to verify",
-        "step3Hint": "You should see a 'connected' line within a few seconds."
-      },
-      "linux": {
-        "step1Title": "Install the binary",
-        "step1Hint": "Detects x86_64/aarch64, downloads the release tarball, and drops portunus-client into /usr/local/bin.",
-        "step2Title": "Install the bundle",
-        "step2Hint": "Decodes the bundle into /etc/portunus/client.bundle.json owned by a dedicated system user.",
-        "step3Title": "Install + start the systemd unit",
-        "step3Hint": "Writes the unit, reloads systemd, enables it on boot, and starts it now.",
-        "step4Title": "Verify",
-        "step4Hint": "systemctl shows active (running); journalctl tails the live log."
-      },
-      "manual": {
-        "step1Title": "Decode the bundle",
-        "step2Title": "Run the client",
-        "step2Hint": "Assumes portunus-client is on your PATH. For local development build it with: cargo build --release -p portunus-client"
-      }
-    }
+    "enrollment": {
+      "heading": "Enrollment command",
+      "hint": "Run this once on {{name}}. The code is single-use, expires quickly, and the server only issues the bearer token after the client redeems it.",
+      "expiresAt": "Expires at {{expiresAt}}",
+      "commandLabel": "Client command",
+      "copy": "Copy command",
+      "copied": "Copied"
+    },
+    "backToList": "Back to clients"
   },
   "clientDetail": {
     "back": "Back",
@@ -363,10 +331,11 @@
     "connectedAt": "Connected at",
     "provisionedAt": "Provisioned at",
     "revokedAt": "Revoked at",
-    "reissue": "Re-issue credential",
-    "reissueConfirmTitle": "Re-issue credential for {{name}}?",
-    "reissueConfirmBody": "Rotates the bearer token. The existing token stops working immediately and any running client process is disconnected — it will reconnect once you redeploy the new bundle below.",
-    "reissueConfirmAction": "Re-issue"
+    "reenroll": "Re-enroll client",
+    "reenrollConfirmTitle": "Create re-enrollment command for {{name}}?",
+    "reenrollConfirmBody": "The current token keeps working until the client redeems the new one-time command. Redemption rotates the token and disconnects the old live session.",
+    "reenrollConfirmAction": "Create command",
+    "reenrollHint": "Run this once on {{name}}. The existing token is replaced only after this command is redeemed."
   },
   "ownerQuotas": {
     "help": "Per-owner caps apply across all rules a user pushes to this client. Per-owner ceilings bind before per-rule caps.",

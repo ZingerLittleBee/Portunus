@@ -302,22 +302,24 @@ export interface ClientView {
   connected_at: string | null;
 }
 
-export interface ProvisionClientBody {
+export interface ClientEnrollmentBody {
   name: string;
   address: string;
+  ttl_secs?: number;
+}
+
+export interface ClientReEnrollmentBody {
+  ttl_secs?: number;
+}
+
+export interface ClientEnrollmentResponse {
+  client_name: string;
+  expires_at: string;
+  command: string;
 }
 
 export interface UpdateClientBody {
   address: string;
-}
-
-export interface CredentialBundle {
-  client_name: string;
-  bearer_token: string;
-  server_endpoint: string;
-  server_cert_sha256: string;
-  server_cert_pem: string;
-  issued_at: string;
 }
 
 // -----------------------------------------------------------------------------

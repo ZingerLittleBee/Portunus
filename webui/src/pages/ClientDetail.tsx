@@ -6,13 +6,13 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, Check, Clock, Copy, RefreshCw, Terminal } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import {
   useClientOwnersList,
   useClientsList,
-  useReissueClient,
+  useCreateClientReEnrollment,
 } from "@/api/clients";
 import { useClientQuotas } from "@/api/quotas";
 import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
@@ -22,15 +22,14 @@ import { canProvisionClient } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ClientInstallSteps } from "@/components/ClientInstallSteps";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CredentialBundleCard } from "@/components/CredentialBundleCard";
-import type { CredentialBundle } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { formatTimestamp } from "@/lib/format";
-import type { OwnerListEntry } from "@/api/types";
+import type { ClientEnrollmentResponse, OwnerListEntry } from "@/api/types";
 
 export function ClientDetail() {
   const { t } = useTranslation();
@@ -43,21 +42,21 @@ export function ClientDetail() {
     queryFn: fetchIdentity,
     staleTime: 60_000,
   });
-  const canReissue = canProvisionClient(identity);
-  const reissue = useReissueClient();
+  const canReEnroll = canProvisionClient(identity);
+  const reenroll = useCreateClientReEnrollment();
 
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [reissuedBundle, setReissuedBundle] = useState<CredentialBundle | null>(null);
-  const [reissueError, setReissueError] = useState<string | null>(null);
+  const [reenrollment, setReenrollment] = useState<ClientEnrollmentResponse | null>(null);
+  const [reenrollError, setReenrollError] = useState<string | null>(null);
 
-  async function doReissue() {
-    setReissueError(null);
+  async function doReenroll() {
+    setReenrollError(null);
     try {
-      const bundle = await reissue.mutateAsync(clientName);
-      setReissuedBundle(bundle);
+      const enrollment = await reenroll.mutateAsync({ name: clientName });
+      setReenrollment(enrollment);
       setConfirmOpen(false);
     } catch (err) {
-      setReissueError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setReenrollError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
     }
   }
 
@@ -78,19 +77,19 @@ export function ClientDetail() {
         {client?.revoked_at && (
           <Badge variant="destructive">{t("clients.revoked")}</Badge>
         )}
-        {canReissue && client && (
+        {canReEnroll && client && (
           <Button
             variant="outline"
             size="sm"
             className="sm:ml-auto"
             onClick={() => {
-              setReissueError(null);
+              setReenrollError(null);
               setConfirmOpen(true);
             }}
-            disabled={reissue.isPending}
+            disabled={reenroll.isPending}
           >
             <RefreshCw className="mr-1 h-4 w-4" />
-            {t("clientDetail.reissue")}
+            {t("clientDetail.reenroll")}
           </Button>
         )}
       </div>
@@ -131,11 +130,8 @@ export function ClientDetail() {
               )}
             </CardContent>
           </Card>
-          {reissuedBundle && (
-            <>
-              <CredentialBundleCard bundle={reissuedBundle} intent="reissue" />
-              <ClientInstallSteps bundle={reissuedBundle} />
-            </>
+          {reenrollment && (
+            <ReEnrollmentCommandCard reenrollment={reenrollment} />
           )}
         </TabsContent>
         <TabsContent value="owners">
@@ -151,19 +147,74 @@ export function ClientDetail() {
         onOpenChange={(open) => {
           if (!open) {
             setConfirmOpen(false);
-            setReissueError(null);
+            setReenrollError(null);
           }
         }}
-        title={t("clientDetail.reissueConfirmTitle", { name: clientName })}
-        description={t("clientDetail.reissueConfirmBody")}
-        confirmLabel={t("clientDetail.reissueConfirmAction")}
+        title={t("clientDetail.reenrollConfirmTitle", { name: clientName })}
+        description={t("clientDetail.reenrollConfirmBody")}
+        confirmLabel={t("clientDetail.reenrollConfirmAction")}
         destructive
-        busy={reissue.isPending}
-        onConfirm={doReissue}
+        busy={reenroll.isPending}
+        onConfirm={doReenroll}
       >
-        {reissueError && <p className="text-sm text-destructive">{reissueError}</p>}
+        {reenrollError && <p className="text-sm text-destructive">{reenrollError}</p>}
       </ConfirmDialog>
     </div>
+  );
+}
+
+function ReEnrollmentCommandCard({
+  reenrollment,
+}: {
+  reenrollment: ClientEnrollmentResponse;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(reenrollment.command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Terminal className="h-5 w-5" />
+          {t("clientProvision.enrollment.heading")}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          {t("clientDetail.reenrollHint", { name: reenrollment.client_name })}
+        </p>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Clock className="h-4 w-4" />
+          <span>
+            {t("clientProvision.enrollment.expiresAt", {
+              expiresAt: new Date(reenrollment.expires_at).toLocaleString(),
+            })}
+          </span>
+        </div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <Label>{t("clientProvision.enrollment.commandLabel")}</Label>
+            <Button variant="outline" size="sm" onClick={handleCopy}>
+              {copied ? <Check className="mr-1 h-4 w-4" /> : <Copy className="mr-1 h-4 w-4" />}
+              {copied ? t("clientProvision.enrollment.copied") : t("clientProvision.enrollment.copy")}
+            </Button>
+          </div>
+          <ScrollArea className="rounded-md bg-muted">
+            <pre className="p-3 text-xs leading-relaxed">{reenrollment.command}</pre>
+          </ScrollArea>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
