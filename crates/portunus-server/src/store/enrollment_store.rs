@@ -492,19 +492,26 @@ mod tests {
         );
     }
 
-    /// Regression test for C1 (1-vCPU deadlock): the settings read is
-    /// hoisted out of the redeem write transaction in `grpc/enrollment.rs`
-    /// so no nested pool checkout occurs. This test constructs the
-    /// `resolve_legacy` closure exactly as the fixed `enroll` handler does
-    /// (real `SqliteSettingsStore.get_advertised_endpoint()` called before
-    /// `redeem`, result moved into a closure that calls the pure resolver)
-    /// and exercises it against a real `ClientEnrollmentStore` with a seeded
-    /// legacy NULL-`advertised_endpoint` row. Confirms:
+    /// Verifies the hoisted-settings-read + pure-resolver path (the C1
+    /// fix in `grpc/enrollment.rs`) composes correctly through a real
+    /// redeem of a legacy NULL-`advertised_endpoint` row. This test
+    /// constructs the `resolve_legacy` closure exactly as the fixed
+    /// `enroll` handler does (real `SqliteSettingsStore.get_advertised_endpoint()`
+    /// called before `redeem`, result moved into a closure that calls the
+    /// pure resolver) and exercises it against a real `ClientEnrollmentStore`
+    /// with a seeded legacy NULL-`advertised_endpoint` row. Confirms:
     /// - the hoisted settings read composes correctly with the closure;
     /// - the pure resolver (`resolve_advertised_endpoint`) resolves the
     ///   override to the expected endpoint string;
     /// - `redeem` succeeds, returns `advertised_endpoint == Some("public.example:7443")`,
     ///   and the enrollment is consumed.
+    ///
+    /// Note: this does NOT reproduce the C1 1-vCPU nested-pool-checkout
+    /// deadlock — at the default test-host pool size (> 1) this would
+    /// pass even against the original buggy nested-checkout code. The
+    /// deadlock is prevented structurally: the closure no longer performs
+    /// any pool access (the settings read is hoisted ahead of the redeem
+    /// transaction). This test guards that composition, not the deadlock.
     #[test]
     fn legacy_null_row_redeems_via_hoisted_settings_read_and_pure_resolver() {
         use crate::advertised::CertSanSet;
