@@ -259,10 +259,10 @@ pub fn list_clients_http(operator_http_addr: &str) -> serde_json::Value {
 /// Enroll a client via the running server's HTTP + unauthenticated gRPC APIs.
 /// Returns the path to the written `<name>.bundle.json`.
 pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
-    let url = format!("http://{operator_http_addr}/v1/client-enrollments");
+    let endpoint = format!("http://{operator_http_addr}/v1/client-enrollments");
     let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
-        .post(&url)
+        .post(&endpoint)
         .header(k, v)
         .json(&serde_json::json!({ "name": name, "address": "127.0.0.1" }))
         .send()
