@@ -516,8 +516,11 @@ validate_config_key() {
 }
 
 current_meta_file() {
+  # User-targeted locations first: an explicit --compose-dir, then the
+  # cwd (where a Docker user runs lifecycle ops), then system paths.
+  # Otherwise a stale binary meta would shadow a Docker deployment.
   local f
-  for f in "/var/lib/portunus/.install-meta" "/etc/portunus/.install-meta" "${COMPOSE_DIR:-$PWD}/.install-meta"; do
+  for f in ${COMPOSE_DIR:+"$COMPOSE_DIR/.install-meta"} "$PWD/.install-meta" "/var/lib/portunus/.install-meta" "/etc/portunus/.install-meta"; do
     [ -r "$f" ] && { echo "$f"; return 0; }
   done
   return 1
