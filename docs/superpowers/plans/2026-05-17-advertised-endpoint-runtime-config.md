@@ -884,6 +884,12 @@ fn bytes_to_ip(bytes: &[u8]) -> Option<IpAddr> {
 /// `san` is already ASCII-lowercased; `host` too.
 fn dns_matches(san: &str, host: &str) -> bool {
     if let Some(suffix) = san.strip_prefix("*.") {
+        // webpki (is_valid_dns_id) requires >=3 labels total, i.e. the
+        // wildcard suffix must itself contain a dot. "*.com"/"*.example"
+        // are MalformedDnsIdentifier in webpki and never match — mirror that.
+        if !suffix.contains('.') {
+            return false;
+        }
         // Wildcard matches exactly one leftmost label.
         match host.split_once('.') {
             Some((label, rest)) => !label.is_empty() && rest == suffix,
@@ -980,6 +986,8 @@ cargo fmt --all
 git add crates/portunus-server/src/advertised/san.rs crates/portunus-server/src/advertised/testdata/san_fixture.pem
 git commit -m "feat(advertised): cert SAN extraction + webpki-parity matching"
 ```
+
+> Note: single-label wildcard suffix rejection + PEM-label check + absent/uppercase-SAN tests added per code review 2026-05-17.
 
 ---
 

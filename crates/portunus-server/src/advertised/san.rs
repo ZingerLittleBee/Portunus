@@ -26,6 +26,12 @@ impl CertSanSet {
     pub fn from_pem(pem: &str) -> Result<Self, String> {
         let (_, pem_block) =
             parse_x509_pem(pem.as_bytes()).map_err(|e| format!("pem parse: {e}"))?;
+        if pem_block.label != "CERTIFICATE" {
+            return Err(format!(
+                "expected CERTIFICATE PEM block, found {:?}",
+                pem_block.label
+            ));
+        }
         let (_, cert) = X509Certificate::from_der(&pem_block.contents)
             .map_err(|e| format!("der parse: {e}"))?;
         let mut dns = Vec::new();
@@ -74,6 +80,12 @@ fn bytes_to_ip(bytes: &[u8]) -> Option<IpAddr> {
 /// `san` is already ASCII-lowercased; `host` too.
 fn dns_matches(san: &str, host: &str) -> bool {
     if let Some(suffix) = san.strip_prefix("*.") {
+        // webpki (is_valid_dns_id) requires >=3 labels total, i.e. the
+        // wildcard suffix must itself contain a dot. "*.com"/"*.example"
+        // are MalformedDnsIdentifier in webpki and never match — mirror that.
+        if !suffix.contains('.') {
+            return false;
+        }
         // Wildcard matches exactly one leftmost label.
         match host.split_once('.') {
             Some((label, rest)) => !label.is_empty() && rest == suffix,
@@ -122,5 +134,32 @@ mod tests {
     #[test]
     fn miss_is_uncovered() {
         assert!(!set().covers("not.in.cert"));
+    }
+
+    #[test]
+    fn wildcard_single_label_suffix_rejected() {
+        // webpki MalformedDnsIdentifier: wildcard suffix with no dot.
+        assert!(!dns_matches("*.com", "foo.com"));
+        assert!(!dns_matches("*.example", "foo.example"));
+        // A properly multi-label wildcard still matches.
+        assert!(dns_matches("*.wild.example", "a.wild.example"));
+    }
+
+    #[test]
+    fn absent_san_is_uncovered() {
+        // Cert generated with no SAN extension at all.
+        const NO_SAN_PEM: &str = include_str!("testdata/san_fixture_no_san.pem");
+        let s = CertSanSet::from_pem(NO_SAN_PEM).expect("parse no-san fixture");
+        assert!(!s.covers("no-san.example"));
+        assert!(!s.covers("127.0.0.1"));
+    }
+
+    #[test]
+    fn san_case_insensitive_from_cert() {
+        // Cert SAN entry is uppercase: DNS:Public.Example.
+        const UPPER_PEM: &str = include_str!("testdata/san_fixture_upper.pem");
+        let s = CertSanSet::from_pem(UPPER_PEM).expect("parse uppercase fixture");
+        assert!(s.covers("public.example"));
+        assert!(s.covers("PUBLIC.EXAMPLE"));
     }
 }
