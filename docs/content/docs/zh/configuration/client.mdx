@@ -4,10 +4,32 @@ description: portunus-client 如何拾取下发包，以及哪些环境变量会
 icon: Cog
 ---
 
-`portunus-client` 几乎所有配置都来自 Server 通过 `provision-client` 签出的
-**下发包**。没有 `client.toml`。
+`portunus-client` 几乎所有配置都来自 Server 签出的 **client bundle**。没有
+`client.toml`。
+
+推荐用一次性 enrollment URI 初始化边缘主机：Server 只签出短期 join code，
+Client 兑换后在本机写入正式 bundle。这样不用手动复制含正式 bearer token
+的 JSON 文件。
+
+```sh
+# Server 主机，生成 10 分钟有效的一次性 enrollment 命令。
+# 这是离线 operator 命令：需要在 serve 启动前执行，
+# 或先停止正在使用同一 data-dir 的 server。
+portunus-server enroll-client edge-01 --ttl-secs 600
+
+# Edge 主机，粘贴上一条命令输出的 portunus-client enroll 'portunus://...'
+portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...'
+
+# 之后正常启动；会自动读取 ~/.config/portunus/client.bundle.json
+portunus-client
+```
+
+enrollment URI 里包含 Server 证书 PEM、SHA-256 pin 和一次性 code。Client 会先
+确认 PEM 与 pin 匹配，再通过 TLS 兑换正式 token；code 兑换后立即失效。
 
 ## 下发包
+
+底层 bundle 仍是这个 JSON 形状：
 
 ```json
 {
@@ -19,14 +41,8 @@ icon: Cog
 }
 ```
 
-由 Server 签出：
-
-```sh
-portunus-server provision-client edge-01 --out ./edge-01.bundle.json
-```
-
-文件 mode 是 `0600`。请通过可信通道（scp / rsync / 密钥管理）传到边缘
-主机。
+`portunus-client enroll` 默认把 bundle 以 `0600` 写到标准位置；需要指定路径时
+可加 `--out`。
 
 <Callout type="warn">
   如果主机 B 实际访问 Server 的地址与 Server 默认通告的不同，请编辑

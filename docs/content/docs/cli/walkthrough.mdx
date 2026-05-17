@@ -60,11 +60,11 @@ On first server launch the server creates `./srv/server.crt`,
 
 ```sh
 portunus-server --data-dir ./srv \
-  provision-client edge-01 --out ./edge-01.bundle.json
+  enroll-client edge-01
 ```
 
-The bundle (mode 0600) contains the server endpoint, pinned cert SHA-256,
-and the client's bearer token. Transfer it to Host B over a trusted channel.
+Run the printed `portunus-client enroll 'portunus://...'` command on Host B.
+It verifies the pinned certificate and writes the local bundle with mode 0600.
 
 ## 4. Start the client (Host B)
 

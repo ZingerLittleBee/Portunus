@@ -69,9 +69,11 @@ Responses on missing / invalid authentication:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/v1/clients` | Provision a client; response carries the bundle |
+| `POST` | `/v1/client-enrollments` | Create a one-time enrollment command for a new client |
+| `POST` | `/v1/clients/{name}/enrollment` | Create a one-time re-enrollment command for an existing client |
 | `GET` | `/v1/clients` | List clients; superadmin sees all |
-| `DELETE` | `/v1/clients/{name}` | Revoke + disconnect |
+| `POST` | `/v1/clients/{name}/revoke` | Revoke + disconnect |
+| `DELETE` | `/v1/clients/{name}` | Delete a revoked client row |
 
 ### Rules
 

@@ -18,7 +18,7 @@ icon: Stethoscope
 server 的叶证书指纹与 bundle 中的 `server_cert_sha256` 不匹配。
 **client 非零退出**，server 不会有任何日志（TLS 握手根本没完成）。
 
-**修复**：在 server 证书重新生成后，重新 `provision-client` 签发 bundle；
+**修复**：在 server 证书重新生成后，重新用 `enroll-client` 生成接入命令；
 或在 server 端恢复原 `server.crt` + `server.key`。
 
 ### `auth.failure { reason: "token_revoked" }`
@@ -30,7 +30,7 @@ portunus-server revoke edge-01
 # 重启后 Client 日志：auth.failure reason=token_revoked
 ```
 
-**修复**：重新签发 bundle（`provision-client`），并替换边缘主机上的文件。
+**修复**：生成重新接入命令，并在边缘主机执行。
 
 ### Connect refused / network unreachable
 

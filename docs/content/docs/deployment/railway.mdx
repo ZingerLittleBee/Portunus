@@ -52,8 +52,8 @@ service variable.
 
 Set `PORTUNUS_ADVERTISED_ENDPOINT` after creating the TCP Proxy. Railway shows
 the generated proxy domain and proxy port in the TCP Proxy settings. Use that
-exact `host:port` value; client bundles created before this variable is set
-will advertise the wrong endpoint and should be reissued.
+exact `host:port` value; enrollment commands created before this variable is
+set will advertise the wrong endpoint and should be recreated.
 
 ## First-run onboarding
 
@@ -74,8 +74,8 @@ incomplete.
 
 After creating a TCP Proxy for application port `7443`, set
 `PORTUNUS_ADVERTISED_ENDPOINT` to the proxy `host:port` and redeploy. Then
-provision clients from the Web UI. The generated bundle will tell
-`portunus-client` to dial the TCP Proxy endpoint.
+enroll clients from the Web UI. The enrollment command will make
+`portunus-client` dial the TCP Proxy endpoint.
 
 ## Notes
 

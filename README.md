@@ -56,9 +56,6 @@ cargo build --release -p portunus-server -p portunus-client
 ## Basic flow
 
 ```sh
-# Host A — start the server (state.db + TLS material auto-generated)
-./target/release/portunus-server --data-dir ./srv serve
-
 # Operator (Host A) — bootstrap the superadmin operator account (v0.5.0+).
 # Prints the bearer token EXACTLY ONCE — capture it now.
 ./target/release/portunus-server --data-dir ./srv bootstrap-superadmin --name ops
@@ -67,12 +64,17 @@ cargo build --release -p portunus-server -p portunus-client
 # Every operator subcommand below reads PORTUNUS_OPERATOR_TOKEN from env.
 export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
 
-# Operator — provision a forwarding client and copy the bundle
+# Operator — create a one-time enrollment command for the edge host.
 ./target/release/portunus-server --data-dir ./srv \
-  provision-client edge-01 --out ./edge-01.bundle.json
+  enroll-client edge-01 --ttl-secs 600
+# → portunus-client enroll 'portunus://host:7443/enroll?...'
 
-# Host B — start the client against the issued bundle
-./target/release/portunus-client --bundle ./edge-01.bundle.json
+# Host A — start the server (state.db + TLS material auto-generated)
+./target/release/portunus-server --data-dir ./srv serve
+
+# Host B — redeem the enrollment URI, then start from the written bundle
+./target/release/portunus-client enroll 'portunus://host:7443/enroll?...'
+./target/release/portunus-client
 
 # Operator — push a rule (8080 on edge-01 → example.com:80)
 ./target/release/portunus-server push-rule edge-01 8080 example.com:80

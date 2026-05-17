@@ -104,13 +104,11 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 4. 通过 SSH tunnel 或本机浏览器打开 http://127.0.0.1:7080/，
 #    粘贴 setup token，创建第一个 superadmin 密码。
 
-# 5. 在 Web UI Credentials 页面创建 API Token，然后用 CLI 配发首个 Client。
-export PORTUNUS_OPERATOR_TOKEN=<paste-token>
-portunus-server provision-client edge-01 \
-  --out /tmp/edge-01.bundle.json
+# 5. 在 Web UI Clients 页面创建首个 Client，或用 CLI 打印一次性接入命令。
+portunus-server enroll-client edge-01
 
-# 6. 把 bundle 拷到边缘主机（scp / rsync），落到那台机器的
-#    /etc/portunus/client.bundle.json，权限 0600。
+# 6. 在边缘主机执行输出的 `portunus-client enroll 'portunus://...'`。
+#    它会写入 /etc/portunus/client.bundle.json。
 
 # 7. 在边缘主机上启用 client unit
 sudo systemctl enable --now portunus-client

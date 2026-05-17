@@ -122,11 +122,12 @@ onboarding, create one from the Web UI Credentials page and pass it as
 ```sh
 docker compose run --rm \
   -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
-  operator provision-client edge-01 --out /tmp/edge-01.bundle.json
+  operator enroll-client edge-01
 ```
 
-Use the same pattern for commands such as `provision-client`, `push-rule`, and
-`revoke-client`.
+Run the printed `portunus-client enroll 'portunus://...'` command on the edge
+host. Use the same operator container pattern for commands such as `push-rule`
+and `revoke-client`.
 
 Local break-glass commands (`reset-password`, `onboarding-token`) open the
 SQLite store directly, so stop `server` first. `onboarding-token` is mainly an

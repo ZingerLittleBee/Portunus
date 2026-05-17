@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Client installation** — direct credential-bundle provisioning is replaced
+  by short-lived `portunus-client enroll 'portunus://...'` commands. Old
+  pre-enrollment client bundles and the removed `/v1/clients` provisioning /
+  `/v1/clients/{name}/reissue` operator endpoints are intentionally not
+  compatible with this flow.
+
 ## [1.4.1] — 2026-05-16
 
 Release-engineering fix: the v1.4.0 tag never produced Linux binaries

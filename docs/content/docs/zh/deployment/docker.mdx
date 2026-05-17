@@ -118,10 +118,11 @@ docker compose run --rm \
 ```sh
 docker compose run --rm \
   -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
-  operator provision-client edge-01 --out /tmp/edge-01.bundle.json
+  operator enroll-client edge-01
 ```
 
-`provision-client`、`push-rule`、`revoke-client` 等命令也使用同样模式。
+在边缘主机执行输出的 `portunus-client enroll 'portunus://...'`。`push-rule`、
+`revoke-client` 等 operator 命令也使用同样容器模式。
 
 本地 break-glass 命令（`reset-password`、`onboarding-token`）会直接打开
 SQLite store，因此要先停止 `server`。`onboarding-token` 主要用于离线维护；后续

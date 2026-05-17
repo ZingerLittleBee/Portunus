@@ -105,14 +105,12 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 4. Open http://127.0.0.1:7080/ over SSH tunnel or local browser,
 #    paste the setup token, and create the first superadmin password.
 
-# 5. Create an API token from the Web UI Credentials page, then provision
-#    the first client with the CLI.
-export PORTUNUS_OPERATOR_TOKEN=<paste-token>
-portunus-server provision-client edge-01 \
-  --out /tmp/edge-01.bundle.json
+# 5. Create the first client from the Web UI Clients page, or print a
+#    one-time enrollment command with the CLI.
+portunus-server enroll-client edge-01
 
-# 6. Move the bundle to the edge host (scp / rsync), drop into
-#    /etc/portunus/client.bundle.json there, mode 0600.
+# 6. Run the printed `portunus-client enroll 'portunus://...'` command
+#    on the edge host. It writes /etc/portunus/client.bundle.json.
 
 # 7. Enable the client unit on the edge host
 sudo systemctl enable --now portunus-client

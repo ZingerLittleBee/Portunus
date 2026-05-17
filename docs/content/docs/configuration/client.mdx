@@ -4,8 +4,9 @@ description: How portunus-client picks up its bundle, and what env vars influenc
 icon: Cog
 ---
 
-`portunus-client` is configured almost entirely from the **bundle** that
-the server emits via `provision-client`. There is no `client.toml`.
+`portunus-client` is configured by redeeming a short-lived enrollment URI.
+There is no `client.toml`. The server prints a one-time command, and the
+client exchanges it for a local bundle that contains the bearer token.
 
 ## The bundle
 
@@ -19,14 +20,18 @@ the server emits via `provision-client`. There is no `client.toml`.
 }
 ```
 
-Generated on the server:
+Initialize a new edge host:
 
 ```sh
-portunus-server provision-client edge-01 --out ./edge-01.bundle.json
+# Server/operator side
+portunus-server enroll-client edge-01 --ttl-secs 600
+
+# Edge host: paste the printed command
+portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...'
 ```
 
-File mode is `0600`. Transfer it to the edge host over a trusted
-channel (`scp`, `rsync`, secrets manager, etc.).
+`portunus-client enroll` writes the bundle with mode `0600` to the normal
+client bundle location unless `--out` is supplied.
 
 <Callout type="warn">
   Edit `server_endpoint` if the address Host B reaches the server on
