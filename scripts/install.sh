@@ -17,7 +17,7 @@ fi
 SELF_SCRIPT=""
 case "${BASH_SOURCE[0]:-}" in
   "" | bash | sh | -bash | -sh) ;;
-  *) [ -r "${BASH_SOURCE[0]}" ] && SELF_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")" ;;
+  *) [ -r "${BASH_SOURCE[0]}" ] && SELF_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")" || true ;;
 esac
 
 # ─── Constants ────────────────────────────────────────────────────────
