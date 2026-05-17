@@ -42,8 +42,8 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 This detects your OS/arch, downloads the matching release binary, verifies its
 SHA-256 against the published checksums, and installs `portunus-server` to
-`/usr/local/bin`. See [Client Configuration](/en/docs/configuration/client#install-the-binary)
-for flags (`--version`, `--bin-dir`, `--systemd`).
+`/usr/local/bin`. See [install.sh flags](/en/docs/configuration/client#install-the-binary)
+— the flag table (`--version`, `--bin-dir`, `--systemd`) applies to both roles.
 
 Docker Compose is the recommended path for production.
 
@@ -154,10 +154,11 @@ The fastest path is the one-line installer:
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
+For production, running the client as a container is recommended — see Docker below.
+
 ### Enroll and start
 
-Ask an operator for an enrollment command (Web UI **Clients** page, or
-`portunus-server enroll-client <name>`), then on the edge host:
+Ask an operator for an enrollment command — from the Web UI **Clients** page; or `portunus-server enroll-client <name>` on a host-binary server; or, for a Docker-deployed server, `docker compose run --rm operator enroll-client <name>` (see [Operator commands](/en/docs/deployment/docker#operator-commands)). Then on the edge host:
 
 ```sh
 portunus-client enroll 'portunus://...' --out ./client.bundle.json
@@ -265,8 +266,8 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 This creates the service user and directories and installs the hardened unit
 (Linux only). For a source-checkout install, use
-`cd deploy/systemd && sudo ./install.sh` instead (the binaries must already be
-on `PATH`).
+`cd deploy/systemd && sudo ./install.sh server client` instead (the binaries must already be
+in `/usr/local/bin`).
 
 See [Deploying with systemd](/en/docs/deployment/systemd) for the full unit
 breakdown and hardening notes.
