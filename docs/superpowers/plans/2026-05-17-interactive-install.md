@@ -140,7 +140,9 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 CLEANUP_DIRS=()
 _cleanup() { local d; for d in "${CLEANUP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; return 0; }
 trap _cleanup EXIT
-mktemp_tracked() { local d; d="$(mktemp -d)"; CLEANUP_DIRS+=("$d"); printf '%s' "$d"; }
+# Register from the caller's own shell — a helper used via $(...) would
+# push to CLEANUP_DIRS in a subshell and the entry would be lost.
+track_tmp() { CLEANUP_DIRS+=("$1"); }
 
 # ─── Platform ─────────────────────────────────────────────────────────
 detect_platform() {
@@ -647,7 +649,7 @@ install_binary() {
   local asset checksums tmp src expected actual
   asset="portunus-${artifact_version}-${target}.tar.gz"
   checksums="portunus-${artifact_version}-checksums.txt"
-  tmp="$(mktemp_tracked)"
+  tmp="$(mktemp -d)"; track_tmp "$tmp"
   echo "→ downloading ${asset} (${tag})"
   curl -fsSL "$(rel "$asset")" -o "$tmp/$asset" || die "download failed: $asset"
   curl -fsSL "$(rel "$checksums")" -o "$tmp/$checksums" || die "download failed: $checksums"
@@ -670,7 +672,7 @@ install_systemd_unit() {
   if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
     echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
-  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp_tracked)"
+  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
   curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
   if [ "$ROLE" = "client" ]; then
     id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
