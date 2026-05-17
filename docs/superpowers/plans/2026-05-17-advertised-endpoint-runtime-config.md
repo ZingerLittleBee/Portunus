@@ -1035,6 +1035,10 @@ pub struct ResolveInputs<'a> {
 pub fn resolve_advertised_endpoint(
     inputs: &ResolveInputs<'_>,
 ) -> Result<ResolvedAdvertisedEndpoint, ResolveEndpointError> {
+    debug_assert!(
+        inputs.override_value.as_deref() != Some(""),
+        "override_value must be None-filtered for empty by the caller"
+    );
     // Tier 1 — explicit SQLite override.
     if let Some(v) = inputs.override_value.as_deref() {
         return finalize_explicit(v, ConfigTier::Override, EndpointSource::Override, inputs.san);
@@ -1044,10 +1048,10 @@ pub fn resolve_advertised_endpoint(
         return finalize_explicit(v, ConfigTier::Seed, EndpointSource::Seed, inputs.san);
     }
     // Tier 3 — implicit auto-derive from request Host.
-    if let Some(raw) = inputs.req_host {
-        if let Some(candidate) = host_from_header(raw, inputs.control_port) {
-            let (host, _) = validate_authority(&candidate)
-                .expect("host_from_header already grammar-validated");
+    if let Some(raw) = inputs.req_host
+        && let Some(candidate) = host_from_header(raw, inputs.control_port)
+    {
+        if let Ok((host, _)) = validate_authority(&candidate) {
             if inputs.san.covers(host) {
                 return Ok(ResolvedAdvertisedEndpoint {
                     endpoint: candidate,
@@ -1060,6 +1064,8 @@ pub fn resolve_advertised_endpoint(
                 "request-Host derived endpoint not SAN-covered; falling through"
             );
         }
+        // validate_authority failing here: treat as uncovered, fall through
+        // to tier 4. Implicit tiers never panic.
     }
     // Tier 4 — implicit loopback fallback.
     let loopback = format!("127.0.0.1:{}", inputs.control_port);
@@ -1205,6 +1211,8 @@ mod tests {
     }
 }
 ```
+
+> Note: tier-3 uses graceful fallthrough (no panic); extra precedence/unusable-host tests + debug_assert added per code review 2026-05-17.
 
 - [ ] **Step 2: Run it**
 

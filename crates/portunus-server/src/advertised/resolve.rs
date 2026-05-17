@@ -30,6 +30,10 @@ pub struct ResolveInputs<'a> {
 pub fn resolve_advertised_endpoint(
     inputs: &ResolveInputs<'_>,
 ) -> Result<ResolvedAdvertisedEndpoint, ResolveEndpointError> {
+    debug_assert!(
+        inputs.override_value.as_deref() != Some(""),
+        "override_value must be None-filtered for empty by the caller"
+    );
     // Tier 1 — explicit SQLite override.
     if let Some(v) = inputs.override_value.as_deref() {
         return finalize_explicit(
@@ -44,22 +48,8 @@ pub fn resolve_advertised_endpoint(
         return finalize_explicit(v, ConfigTier::Seed, EndpointSource::Seed, inputs.san);
     }
     // Tier 3 — implicit auto-derive from request Host.
-    if let Some(raw) = inputs.req_host
-        && let Some(candidate) = host_from_header(raw, inputs.control_port)
-    {
-        let (host, _) =
-            validate_authority(&candidate).expect("host_from_header already grammar-validated");
-        if inputs.san.covers(host) {
-            return Ok(ResolvedAdvertisedEndpoint {
-                endpoint: candidate,
-                source: EndpointSource::Derived,
-            });
-        }
-        tracing::warn!(
-            event = "advertised.derive_uncovered",
-            host = %host,
-            "request-Host derived endpoint not SAN-covered; falling through"
-        );
+    if let Some(resolved) = try_derive_from_host(inputs) {
+        return Ok(resolved);
     }
     // Tier 4 — implicit loopback fallback.
     let loopback = format!("127.0.0.1:{}", inputs.control_port);
@@ -76,6 +66,33 @@ pub fn resolve_advertised_endpoint(
         "no SAN-covered advertised endpoint candidate available"
     );
     Err(ResolveEndpointError::NoSanCoveredCandidate)
+}
+
+/// Tier 3 — implicit auto-derive from the request `Host` header.
+///
+/// Returns `Some` only when a SAN-covered candidate is produced. Any
+/// failure (no header, unusable header, grammar-invalid derived
+/// candidate, or uncovered host) yields `None` so the caller falls
+/// through to tier 4. Implicit tiers never panic.
+fn try_derive_from_host(inputs: &ResolveInputs<'_>) -> Option<ResolvedAdvertisedEndpoint> {
+    let raw = inputs.req_host?;
+    let candidate = host_from_header(raw, inputs.control_port)?;
+    // `host_from_header` already grammar-validates, but re-validate
+    // defensively: a drift in that invariant must not panic on a
+    // request-handler path — treat it as uncovered (return None).
+    let (host, _) = validate_authority(&candidate).ok()?;
+    if inputs.san.covers(host) {
+        return Some(ResolvedAdvertisedEndpoint {
+            endpoint: candidate,
+            source: EndpointSource::Derived,
+        });
+    }
+    tracing::warn!(
+        event = "advertised.derive_uncovered",
+        host = %host,
+        "request-Host derived endpoint not SAN-covered; falling through"
+    );
+    None
 }
 
 fn finalize_explicit(
@@ -197,6 +214,33 @@ mod tests {
     fn no_host_no_config_uses_loopback() {
         let s = san();
         let r = resolve_advertised_endpoint(&base(&s)).unwrap();
+        assert_eq!(r.endpoint, "127.0.0.1:7443");
+        assert_eq!(r.source, EndpointSource::Loopback);
+    }
+
+    #[test]
+    fn tier1_malformed_takes_precedence_over_malformed_seed() {
+        let s = san();
+        let mut i = base(&s);
+        i.override_value = Some("https://bad:7443".into());
+        i.seed = Some("also-bad".into());
+        assert!(matches!(
+            resolve_advertised_endpoint(&i),
+            Err(ResolveEndpointError::ConfiguredEndpointInvalid {
+                tier: ConfigTier::Override,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tier3_unusable_host_header_falls_through_to_loopback() {
+        let s = san();
+        let mut i = base(&s);
+        // host_from_header rejects IPv6 literals → tier 3 skipped.
+        i.req_host = Some("[::1]:443");
+        let r = resolve_advertised_endpoint(&i).unwrap();
+        assert_eq!(r.endpoint, "127.0.0.1:7443");
         assert_eq!(r.source, EndpointSource::Loopback);
     }
 }
