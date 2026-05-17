@@ -108,6 +108,12 @@ async fn create_enrollment_returns_one_time_client_command_without_issuing_token
     assert!(command.contains("pin=sha256:"));
     assert!(command.contains("code="));
     assert!(command.contains("cert="));
+    let uri = body["uri"].as_str().expect("uri");
+    assert!(uri.starts_with("portunus://control.example.com:7443/enroll?"));
+    assert!(uri.contains("pin=sha256:"));
+    assert!(uri.contains("code="));
+    assert!(uri.contains("cert="));
+    assert_eq!(command, format!("portunus-client enroll '{uri}'"));
     assert!(tokens.list().expect("list tokens").is_empty());
 }
 
@@ -186,6 +192,9 @@ async fn existing_client_enrollment_does_not_rotate_until_redeemed() {
     assert!(
         command.starts_with("portunus-client enroll 'portunus://control.example.com:7443/enroll?")
     );
+    let uri = body["uri"].as_str().expect("uri");
+    assert!(uri.starts_with("portunus://control.example.com:7443/enroll?"));
+    assert_eq!(command, format!("portunus-client enroll '{uri}'"));
     assert_eq!(
         tokens
             .verify(&old_token)

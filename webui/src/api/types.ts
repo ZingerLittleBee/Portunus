@@ -316,6 +316,7 @@ export interface ClientEnrollmentResponse {
   client_name: string;
   expires_at: string;
   command: string;
+  uri: string;
 }
 
 export interface UpdateClientBody {

@@ -460,6 +460,7 @@ pub struct EnrollmentCommand {
     pub client_name: ClientName,
     pub expires_at: chrono::DateTime<Utc>,
     pub command: String,
+    pub uri: String,
 }
 
 /// Create a short-lived one-time enrollment URI for `portunus-client enroll`.
@@ -527,7 +528,8 @@ fn create_enrollment_command(
         expires_at: now + ttl,
         now,
     })?;
-    let command = enrollment_command(state, &created.code);
+    let uri = enrollment_uri(state, &created.code);
+    let command = format!("portunus-client enroll '{uri}'");
     info!(
         event,
         client_name = %created.client_name,
@@ -537,18 +539,18 @@ fn create_enrollment_command(
         client_name: name,
         expires_at: created.expires_at,
         command,
+        uri,
     })
 }
 
-fn enrollment_command(state: &AppState, code: &str) -> String {
+fn enrollment_uri(state: &AppState, code: &str) -> String {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
     let cert = URL_SAFE_NO_PAD.encode(state.server_cert_pem.as_bytes());
-    let uri = format!(
+    format!(
         "portunus://{}/enroll?pin=sha256:{}&code={}&cert={}",
         state.server_endpoint, state.server_cert_sha256, code, cert
-    );
-    format!("portunus-client enroll '{uri}'")
+    )
 }
 
 /// `revoke <name>`. Idempotent.

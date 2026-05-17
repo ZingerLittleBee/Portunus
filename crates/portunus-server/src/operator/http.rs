@@ -167,6 +167,7 @@ struct EnrollmentResponse {
     client_name: String,
     expires_at: String,
     command: String,
+    uri: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +194,7 @@ async fn post_client_enrollments(
             client_name: enrollment.client_name.to_string(),
             expires_at: enrollment.expires_at.to_rfc3339(),
             command: enrollment.command,
+            uri: enrollment.uri,
         }),
     ))
 }
@@ -212,6 +214,7 @@ async fn post_client_reenrollment(
             client_name: enrollment.client_name.to_string(),
             expires_at: enrollment.expires_at.to_rfc3339(),
             command: enrollment.command,
+            uri: enrollment.uri,
         }),
     ))
 }
