@@ -110,7 +110,10 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         schema_version = store.schema_version().unwrap_or(0),
     );
 
-    let desired_san = opts.advertised_endpoint.as_deref().and_then(advertised_host);
+    let desired_san = opts
+        .advertised_endpoint
+        .as_deref()
+        .and_then(advertised_host);
     let tls = ServerTlsMaterial::load_or_generate(
         &cfg.tls_cert_path,
         &cfg.tls_key_path,
