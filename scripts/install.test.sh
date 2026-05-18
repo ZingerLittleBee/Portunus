@@ -151,6 +151,13 @@ printf '%s\n' "$so" | grep -q 'compose dir:' || fail "server docker default miss
 ro="$(printf '1\n2\n\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
 printf '%s\n' "$ro" | grep -Eq 'deploy: +binary \+ systemd' || fail "client Enter must default to binary (recommended)"
 
+# --- --reset-lang clears the cached language preference ---
+fakehome="$(mktemp -d)"
+mkdir -p "$fakehome/.config/portunus"; printf 'zh' > "$fakehome/.config/portunus/installer-lang"
+HOME="$fakehome" XDG_CONFIG_HOME="$fakehome/.config" bash "$script" --reset-lang >/dev/null 2>&1 || fail "--reset-lang exit"
+[ ! -e "$fakehome/.config/portunus/installer-lang" ] || fail "--reset-lang did not remove the cache"
+rm -rf "$fakehome"
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"

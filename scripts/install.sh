@@ -82,7 +82,7 @@ MSG_EN=(
   [menu_select]="Select [0-7]: "
   [lang_prompt]="Select language\n  [1] English\n  [2] 中文"
   [ask_role]="Install which role?\n  [1] server\n  [2] client"
-  [ask_deploy_server]="Deploy form? (Enter = recommended)\n  [1] binary + systemd\n  [2] docker compose  (recommended)"
+  [ask_deploy_server]="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + systemd"
   [ask_deploy_client]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
   [ask_version]="Version (blank = latest): "
   [ask_bindir]="Install dir [%s]: "
@@ -135,7 +135,7 @@ MSG_ZH=(
   [menu_select]="选择 [0-7]: "
   [lang_prompt]="选择语言\n  [1] English\n  [2] 中文"
   [ask_role]="安装哪个角色?\n  [1] server\n  [2] client"
-  [ask_deploy_server]="部署方式? (回车=推荐)\n  [1] 二进制 + systemd\n  [2] docker compose  (推荐)"
+  [ask_deploy_server]="部署方式? (回车=推荐)\n  [1] docker compose  (推荐)\n  [2] 二进制 + systemd"
   [ask_deploy_client]="部署方式? (回车=推荐)\n  [1] 二进制 + systemd  (推荐)\n  [2] docker compose"
   [ask_version]="版本 (留空=最新): "
   [ask_bindir]="安装目录 [%s]: "
@@ -466,11 +466,12 @@ parse_args() {
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift; resolve_lang; if [ "${1:-en}" = zh ]; then for k in "${!MSG_ZH[@]}"; do echo "$k"; done; else for k in "${!MSG_EN[@]}"; do echo "$k"; done; fi; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--systemd] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
       --detect-ip) detect_public_ip; printf '%s %s\n' "$DETECTED_IP" "$DETECTED_PROV"; exit 0 ;;
+      --reset-lang) rm -f "$LANG_CACHE" 2>/dev/null || true; echo "language preference reset ($LANG_CACHE); next interactive run will ask again"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
@@ -586,7 +587,7 @@ wizard_install() {
   # client ⇒ binary. Enter (empty) accepts the recommended one.
   if [ "$ROLE" = server ]; then
     a="$(ask ask_deploy_server)"
-    case "$a" in 1|binary) DEPLOY=binary; WANT_SYSTEMD=yes ;; *) DEPLOY=docker ;; esac
+    case "$a" in 2|binary) DEPLOY=binary; WANT_SYSTEMD=yes ;; *) DEPLOY=docker ;; esac
   else
     a="$(ask ask_deploy_client)"
     case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
