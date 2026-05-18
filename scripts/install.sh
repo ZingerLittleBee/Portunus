@@ -407,6 +407,7 @@ render_dropin() {
   [ -n "$ADVERTISED" ]     && echo "Environment=PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}"
   [ -n "$DATA_DIR" ]       && echo "Environment=PORTUNUS_DATA_DIR=${DATA_DIR}"
   [ -n "$OP_HTTP_LISTEN" ] && echo "Environment=PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}"
+  return 0   # never let an empty trailing test fail the `| sudo tee` pipe (pipefail+set -e)
 }
 write_server_dropin() {
   local d="/etc/systemd/system/portunus-server.service.d" f
@@ -445,17 +446,24 @@ write_compose_env() {
 }
 
 write_compose_file() {
-  local dir="$1" f="$1/compose.yml"
+  local dir="$1" f="$1/compose.yml" port; port="$(op_http_port)"
+  mkdir -p "$dir"
   [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
+  # The server's --operator-http-listen has no env binding and defaults
+  # to container-internal 127.0.0.1, which Docker's published port (and
+  # host Caddy) cannot reach. Override the image CMD to bind 0.0.0.0
+  # inside the container (mirrors deploy/docker/docker-compose.yml); the
+  # host only publishes 127.0.0.1:<port> so it stays loopback-exposed.
   cat > "$f" <<YAML
 services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-${ROLE}:${artifact_version:-latest}
     container_name: portunus-${ROLE}
     env_file: [ .env ]
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:${port}"]
     ports:
       - "7443:7443"
-      - "127.0.0.1:7080:7080"
+      - "127.0.0.1:${port}:${port}"
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped
@@ -975,6 +983,7 @@ lifecycle_uninstall() {
   if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" no || return 0; fi
   if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
   else
+    command -v systemctl >/dev/null 2>&1 && sudo systemctl disable --now "portunus-$r" 2>/dev/null || true
     sudo rm -f "/usr/local/bin/portunus-$r" "/etc/systemd/system/portunus-$r.service"
     sudo rm -f "/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
     sudo systemctl daemon-reload 2>/dev/null || true
