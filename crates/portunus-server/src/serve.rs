@@ -54,6 +54,21 @@ pub struct ServeOptions {
     pub operator_http_listen: Option<SocketAddr>,
 }
 
+/// Host portion of an advertised `host:port` (or bare host). Mirrors the
+/// client's `extract_host` exactly so the cert SAN host and the client's
+/// TLS verification host can never diverge.
+fn advertised_host(ep: &str) -> Option<String> {
+    let ep = ep.trim();
+    if ep.is_empty() {
+        return None;
+    }
+    Some(
+        ep.rsplit_once(':')
+            .map_or_else(|| ep.to_string(), |(h, _)| h.to_string()),
+    )
+    .filter(|h| !h.is_empty())
+}
+
 // Wires every subsystem (TLS, gRPC, operator HTTP, metrics, shutdown). Splitting
 // would scatter the dependency graph across helpers without making it easier to
 // reason about, so we accept the line count.
@@ -95,7 +110,15 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         schema_version = store.schema_version().unwrap_or(0),
     );
 
-    let tls = ServerTlsMaterial::load_or_generate(&cfg.tls_cert_path, &cfg.tls_key_path)?;
+    let desired_san = opts
+        .advertised_endpoint
+        .as_deref()
+        .and_then(advertised_host);
+    let tls = ServerTlsMaterial::load_or_generate(
+        &cfg.tls_cert_path,
+        &cfg.tls_key_path,
+        desired_san.as_deref(),
+    )?;
     // 008-sqlite-storage T052 — both token and operator stores now live
     // inside the SQLite database. The `cfg.token_store_path` and
     // `cfg.operator_store_path` are no longer touched by the runtime;
@@ -456,6 +479,21 @@ mod tests {
     /// non-loopback binds. The runtime assertion in `run()` enforces this; the
     /// test mirrors the bind logic so a regression in the default config is
     /// caught immediately.
+    #[test]
+    fn advertised_host_extracts() {
+        assert_eq!(
+            advertised_host("d.example.com:7443").as_deref(),
+            Some("d.example.com")
+        );
+        assert_eq!(
+            advertised_host("203.0.113.7:7443").as_deref(),
+            Some("203.0.113.7")
+        );
+        assert_eq!(advertised_host("bare.host").as_deref(), Some("bare.host"));
+        assert_eq!(advertised_host(""), None);
+        assert_eq!(advertised_host("   "), None);
+    }
+
     #[tokio::test]
     async fn metrics_listener_binds_loopback_only() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

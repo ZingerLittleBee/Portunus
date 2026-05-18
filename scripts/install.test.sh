@@ -85,6 +85,121 @@ bash "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 out="$(printf '0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
 echo "$out" | grep -qi 'Portunus Manager' || fail "menu title not shown"
 
+# --- drop-in is an ExecStart= override carrying the flags (env is inert) ---
+dr="$(bash "$script" server --systemd --advertised-endpoint h:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --render-dropin)" || fail "render-dropin exit"
+echo "$dr" | grep -qx 'ExecStart=' || fail "dropin missing ExecStart= clear line"
+echo "$dr" | grep -qx 'ExecStart=/usr/local/bin/portunus-server --data-dir /srv/p serve --operator-http-listen 0.0.0.0:7080 --advertised-endpoint h:7443' || fail "dropin ExecStart override"
+if echo "$dr" | grep -q 'Environment=PORTUNUS_ADVERTISED_ENDPOINT='; then fail "inert Environment line still emitted"; fi
+
+# --- Fix 2: explicit --compose-dir never falls back to a system meta ---
+cdtmp="$(mktemp -d)"            # empty: no .install-meta here
+if bash "$script" --compose-dir "$cdtmp" --resolve-meta >/dev/null 2>&1; then
+  fail "Fix 2: empty --compose-dir must NOT resolve a fallback meta"
+fi
+printf 'role=server\ndeploy=docker\n' > "$cdtmp/.install-meta"
+[ "$(bash "$script" --compose-dir "$cdtmp" --resolve-meta)" = "$cdtmp/.install-meta" ] || fail "Fix 2: scoped meta not resolved"
+rm -rf "$cdtmp"
+
+# --- Fix 4: next-step i18n keys exist in both languages ---
+bash "$script" --lang en --print-i18n next_systemd | grep -qi 'systemctl' || fail "en next_systemd"
+bash "$script" --lang zh --print-i18n next_docker | grep -q 'docker compose' || fail "zh next_docker"
+
+# --- P2: light host:port validation ---
+bash "$script" --valid-endpoint "host.example:7443" || fail "valid endpoint rejected"
+bash "$script" --valid-endpoint "" || fail "blank endpoint must be allowed (auto)"
+if bash "$script" --valid-endpoint "no-port" 2>/dev/null; then fail "missing port accepted"; fi
+if bash "$script" --valid-endpoint "bad host:7443" 2>/dev/null; then fail "space in host accepted"; fi
+if bash "$script" --valid-endpoint "h:99999x" 2>/dev/null; then fail "non-numeric port accepted"; fi
+
+# --- P1/P2: new interactive i18n keys present in both languages ---
+bash "$script" --lang en --print-i18n ask_config_key | grep -qi 'advertised-endpoint' || fail "en ask_config_key"
+bash "$script" --lang zh --print-i18n ask_service_action | grep -q '启动' || fail "zh ask_service_action"
+bash "$script" --lang en --print-i18n menu_invalid bogus | grep -qi 'invalid' || fail "en menu_invalid"
+
+# --- P1#2: a die() inside a menu action must NOT kill the whole session ---
+# No install present here ⇒ Uninstall (2) hits die(); the loop must survive
+# and still process the following Exit (0).
+mo="$(printf '2\n0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+[ "$(printf '%s\n' "$mo" | grep -c 'Portunus Manager')" -ge 2 ] || fail "menu died after a failing action (P1#2)"
+
+# --- P2#4: invalid menu choice gives explicit feedback ---
+io="$(printf '99\n0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$io" | grep -qi 'invalid option' || fail "no invalid-option feedback"
+
+# --- wizard: IP detection seam, offline path never hits network ---
+di="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" --detect-ip)" || fail "--detect-ip exit"
+echo "$di" | grep -Eq '^[0-9a-fA-F.:]+ prov_(nic|loopback)$' || fail "skip-probe must yield NIC/loopback ($di)"
+
+# --- minimal wizard: server+binary asks only role/deploy/endpoint ---
+wo="$(printf '1\n1\n-\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$wo" | grep -q 'About to install:' || fail "no summary block"
+printf '%s\n' "$wo" | grep -q 'data dir:.*\/var\/lib\/portunus' || fail "summary missing data-dir default"
+printf '%s\n' "$wo" | grep -q 'operator http:.*127\.0\.0\.1:7080' || fail "summary missing op-http default"
+printf '%s\n' "$wo" | grep -qi 'loopback' || fail "'-' input should mark loopback"
+if printf '%s\n' "$wo" | grep -q 'Version (blank = latest)'; then fail "wizard still asks version"; fi
+if printf '%s\n' "$wo" | grep -q 'Server data dir'; then fail "wizard still asks data-dir"; fi
+
+# client: only role+deploy, no endpoint/summary advertised line
+co="$(printf '1\n2\n1\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$co" | grep -q 'About to install:' || fail "client no summary"
+if printf '%s\n' "$co" | grep -q 'advertised endpoint:'; then fail "client must not show advertised line"; fi
+
+# --- recommended deploy default differs by role (Enter accepts) ---
+so="$(printf '1\n\n\n-\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$so" | grep -Eq 'deploy: +docker' || fail "server Enter must default to docker (recommended)"
+printf '%s\n' "$so" | grep -q 'compose dir:' || fail "server docker default missing compose dir line"
+ro="$(printf '1\n2\n\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$ro" | grep -Eq 'deploy: +binary \+ systemd' || fail "client Enter must default to binary (recommended)"
+
+# --- --reset-lang clears the cached language preference ---
+fakehome="$(mktemp -d)"
+mkdir -p "$fakehome/.config/portunus"; printf 'zh' > "$fakehome/.config/portunus/installer-lang"
+HOME="$fakehome" XDG_CONFIG_HOME="$fakehome/.config" bash "$script" --reset-lang >/dev/null 2>&1 || fail "--reset-lang exit"
+[ ! -e "$fakehome/.config/portunus/installer-lang" ] || fail "--reset-lang did not remove the cache"
+rm -rf "$fakehome"
+
+# --- Caddy: FQDN validation ---
+bash "$script" --valid-fqdn serverbee-test.900040.xyz || fail "valid fqdn rejected"
+if bash "$script" --valid-fqdn no_dot 2>/dev/null; then fail "fqdn without dot accepted"; fi
+if bash "$script" --valid-fqdn "bad host.com" 2>/dev/null; then fail "fqdn with space accepted"; fi
+if bash "$script" --valid-fqdn "-lead.com" 2>/dev/null; then fail "fqdn leading dash accepted"; fi
+if bash "$script" --valid-fqdn "" 2>/dev/null; then fail "empty fqdn accepted"; fi
+
+# --- Caddy: managed block render ---
+cb="$(bash "$script" --render-caddy serverbee-test.900040.xyz 7080)" || fail "render-caddy exit"
+printf '%s\n' "$cb" | grep -qx '# >>> portunus >>>' || fail "missing start marker"
+printf '%s\n' "$cb" | grep -qx '# <<< portunus <<<' || fail "missing end marker"
+printf '%s\n' "$cb" | grep -qx 'serverbee-test.900040.xyz {' || fail "missing site line"
+printf '%s\n' "$cb" | grep -q 'reverse_proxy 127.0.0.1:7080' || fail "missing reverse_proxy"
+
+# --- Caddy: server dry-run plan includes role; client+--domain errors ---
+od="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain serverbee-test.900040.xyz --skip-dns-check --dry-run 2>&1)" || fail "server --domain dry-run exit"
+printf '%s\n' "$od" | grep -q '^role:[[:space:]]*server$' || fail "domain dry-run role"
+if PORTUNUS_SKIP_IP_PROBE=1 bash "$script" client --domain x.example.com --dry-run >/dev/null 2>&1; then fail "client --domain must error"; fi
+
+# --- Caddy: domain verb dry-run writes nothing, exits 0 ---
+PORTUNUS_SKIP_IP_PROBE=1 bash "$script" domain serverbee-test.900040.xyz --skip-dns-check --dry-run >/dev/null 2>&1 || fail "domain verb dry-run"
+
+# --- Caddy: EN/ZH i18n parity for the new keys ---
+diff <(bash "$script" --print-i18n-keys en | sort) <(bash "$script" --print-i18n-keys zh | sort) >/dev/null || fail "EN/ZH i18n key parity broken"
+
+# --- advertised precedence: domain derives, explicit wins ---
+ea1="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain d.example.com --effective-advertised 2>/dev/null)"
+[ "$ea1" = "d.example.com:7443" ] || fail "domain should derive advertised d.example.com:7443 (got '$ea1')"
+ea2="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain d.example.com --advertised-endpoint x.host:7443 --effective-advertised 2>/dev/null)"
+[ "$ea2" = "x.host:7443" ] || fail "explicit advertised must win (got '$ea2')"
+ea3="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --effective-advertised 2>/dev/null)"
+[ -z "$ea3" ] || fail "no domain/explicit => empty effective advertised (got '$ea3')"
+
+# --- dry-run plan shows the derived advertised ---
+dp="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain d.example.com --skip-dns-check --dry-run 2>&1)"
+echo "$dp" | grep -q 'advertised:[[:space:]]*d.example.com:7443' || fail "dry-run plan missing derived advertised"
+
+# --- render-dropin minimal (no flags) carries no advertised flag ---
+dm="$(bash "$script" server --render-dropin)" || fail "render-dropin minimal exit"
+echo "$dm" | grep -qx 'ExecStart=/usr/local/bin/portunus-server --data-dir /var/lib/portunus serve' || fail "minimal ExecStart unexpected"
+if echo "$dm" | grep -q -- '--advertised-endpoint'; then fail "minimal drop-in must not advertise"; fi
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"

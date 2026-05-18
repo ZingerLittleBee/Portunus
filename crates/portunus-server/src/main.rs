@@ -803,7 +803,7 @@ fn build_offline_state(
         1u8
     })?;
     let paths = cli::default_paths(data_dir);
-    let tls = ServerTlsMaterial::load_or_generate(&paths.cert, &paths.key).map_err(|e| {
+    let tls = ServerTlsMaterial::load_or_generate(&paths.cert, &paths.key, None).map_err(|e| {
         eprintln!("tls: {e}");
         1u8
     })?;
