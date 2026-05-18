@@ -544,6 +544,7 @@ main() {
   [ -n "$VERB" ] || VERB="install"
   detect_platform
   resolve_version_static
+  [ -n "$DOMAIN" ] && [ "$ROLE" = client ] && die "--domain is server-only"
   if [ "$DRY_RUN" = "yes" ]; then
     case "$VERB" in
       install) [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0 ;;
@@ -621,6 +622,7 @@ print_install_summary() {
     else
       t sum_advertised "$(t prov_loopback)"; echo
     fi
+    [ -n "$DOMAIN" ] && { t sum_domain "$DOMAIN"; echo; }
   fi
 }
 
@@ -783,6 +785,12 @@ wizard_install() {
       if valid_host_port "$a"; then ADVERTISED="$a"; adv_prov="prov_user"; break; fi
       t bad_endpoint "$a"; echo
     done
+    while :; do
+      DOMAIN="$(ask ask_domain)"
+      [ -z "$DOMAIN" ] && break
+      valid_fqdn "$DOMAIN" && break
+      t bad_domain "$DOMAIN"; echo
+    done
   fi
   detect_platform; resolve_version_static
   print_install_summary "$adv_prov"
@@ -885,9 +893,13 @@ dispatch_verb() {
         [ "$ROLE" = "server" ] && [ "$WANT_SYSTEMD" = yes ] && write_server_dropin
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
       fi
+      if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then
+        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" "domain=$DOMAIN"
+        setup_caddy_domain
+      fi
       echo; print_next_steps
       ;;
-    uninstall|upgrade|status|service|config|env) lifecycle_"$VERB" ;;
+    uninstall|upgrade|status|service|config|env|domain) lifecycle_"$VERB" ;;
     *) die "verb '${VERB}' not yet implemented" ;;
   esac
 }
@@ -966,6 +978,12 @@ lifecycle_uninstall() {
     sudo rm -f "/usr/local/bin/portunus-$r" "/etc/systemd/system/portunus-$r.service"
     sudo rm -f "/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
     sudo systemctl daemon-reload 2>/dev/null || true
+  fi
+  if [ -f "$CADDYFILE" ] && grep -q '^# >>> portunus >>>$' "$CADDYFILE" 2>/dev/null; then
+    sudo cp "$CADDYFILE" "${CADDYFILE}.portunus.$(date +%Y%m%d%H%M%S).bak"
+    sudo sed -i '/^# >>> portunus >>>$/,/^# <<< portunus <<<$/d' "$CADDYFILE"
+    command -v systemctl >/dev/null 2>&1 && sudo systemctl reload caddy 2>/dev/null || true
+    echo "→ removed Caddy block from $CADDYFILE"
   fi
   if [ "$PURGE" = yes ]; then
     local dd; dd="$(dirname "$mf")"
