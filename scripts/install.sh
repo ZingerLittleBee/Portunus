@@ -407,11 +407,15 @@ install_systemd_unit() {
 # Mirrors the `Environment=` lines `config set` writes so install-time
 # --data-dir / --operator-http-listen persist identically (parity).
 render_dropin() {
-  echo "[Service]"
-  [ -n "$ADVERTISED" ]     && echo "Environment=PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}"
-  [ -n "$DATA_DIR" ]       && echo "Environment=PORTUNUS_DATA_DIR=${DATA_DIR}"
-  [ -n "$OP_HTTP_LISTEN" ] && echo "Environment=PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}"
-  return 0   # never let an empty trailing test fail the `| sudo tee` pipe (pipefail+set -e)
+  # The server has no env binding for these; an inert Environment= line
+  # is ignored. Emit a real ExecStart= override (cleared then re-set —
+  # the standard systemd drop-in idiom) so the flags actually take.
+  local dd="${DATA_DIR:-/var/lib/portunus}" args
+  args="--data-dir ${dd} serve"
+  [ -n "$OP_HTTP_LISTEN" ] && args="${args} --operator-http-listen ${OP_HTTP_LISTEN}"
+  [ -n "$ADVERTISED" ]     && args="${args} --advertised-endpoint ${ADVERTISED}"
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/bin/portunus-server %s\n' "$args"
+  return 0
 }
 write_server_dropin() {
   local d="/etc/systemd/system/portunus-server.service.d" f
@@ -458,13 +462,15 @@ write_compose_file() {
   # host Caddy) cannot reach. Override the image CMD to bind 0.0.0.0
   # inside the container (mirrors deploy/docker/docker-compose.yml); the
   # host only publishes 127.0.0.1:<port> so it stays loopback-exposed.
+  local advcmd=""
+  [ -n "$ADVERTISED" ] && advcmd=", \"--advertised-endpoint\", \"${ADVERTISED}\""
   cat > "$f" <<YAML
 services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-${ROLE}:${artifact_version:-latest}
     container_name: portunus-${ROLE}
     env_file: [ .env ]
-    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:${port}"]
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:${port}"${advcmd}]
     ports:
       - "7443:7443"
       - "127.0.0.1:${port}:${port}"
