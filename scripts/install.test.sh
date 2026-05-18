@@ -85,11 +85,11 @@ bash "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 out="$(printf '0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
 echo "$out" | grep -qi 'Portunus Manager' || fail "menu title not shown"
 
-# --- Fix 1: install-time drop-in persists data-dir + operator-http-listen ---
+# --- drop-in is an ExecStart= override carrying the flags (env is inert) ---
 dr="$(bash "$script" server --systemd --advertised-endpoint h:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --render-dropin)" || fail "render-dropin exit"
-echo "$dr" | grep -qx 'Environment=PORTUNUS_ADVERTISED_ENDPOINT=h:7443' || fail "dropin advertised"
-echo "$dr" | grep -qx 'Environment=PORTUNUS_DATA_DIR=/srv/p' || fail "dropin data-dir (Fix 1)"
-echo "$dr" | grep -qx 'Environment=PORTUNUS_OPERATOR_HTTP_LISTEN=0.0.0.0:7080' || fail "dropin op-http (Fix 1)"
+echo "$dr" | grep -qx 'ExecStart=' || fail "dropin missing ExecStart= clear line"
+echo "$dr" | grep -qx 'ExecStart=/usr/local/bin/portunus-server --data-dir /srv/p serve --operator-http-listen 0.0.0.0:7080 --advertised-endpoint h:7443' || fail "dropin ExecStart override"
+if echo "$dr" | grep -q 'Environment=PORTUNUS_ADVERTISED_ENDPOINT='; then fail "inert Environment line still emitted"; fi
 
 # --- Fix 2: explicit --compose-dir never falls back to a system meta ---
 cdtmp="$(mktemp -d)"            # empty: no .install-meta here
@@ -182,6 +182,23 @@ PORTUNUS_SKIP_IP_PROBE=1 bash "$script" domain serverbee-test.900040.xyz --skip-
 
 # --- Caddy: EN/ZH i18n parity for the new keys ---
 diff <(bash "$script" --print-i18n-keys en | sort) <(bash "$script" --print-i18n-keys zh | sort) >/dev/null || fail "EN/ZH i18n key parity broken"
+
+# --- advertised precedence: domain derives, explicit wins ---
+ea1="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain d.example.com --effective-advertised 2>/dev/null)"
+[ "$ea1" = "d.example.com:7443" ] || fail "domain should derive advertised d.example.com:7443 (got '$ea1')"
+ea2="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain d.example.com --advertised-endpoint x.host:7443 --effective-advertised 2>/dev/null)"
+[ "$ea2" = "x.host:7443" ] || fail "explicit advertised must win (got '$ea2')"
+ea3="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --effective-advertised 2>/dev/null)"
+[ -z "$ea3" ] || fail "no domain/explicit => empty effective advertised (got '$ea3')"
+
+# --- dry-run plan shows the derived advertised ---
+dp="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain d.example.com --skip-dns-check --dry-run 2>&1)"
+echo "$dp" | grep -q 'advertised:[[:space:]]*d.example.com:7443' || fail "dry-run plan missing derived advertised"
+
+# --- render-dropin minimal (no flags) carries no advertised flag ---
+dm="$(bash "$script" server --render-dropin)" || fail "render-dropin minimal exit"
+echo "$dm" | grep -qx 'ExecStart=/usr/local/bin/portunus-server --data-dir /var/lib/portunus serve' || fail "minimal ExecStart unexpected"
+if echo "$dm" | grep -q -- '--advertised-endpoint'; then fail "minimal drop-in must not advertise"; fi
 
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
