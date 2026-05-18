@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-auth"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "base64",
  "bitflags",
@@ -1903,7 +1903,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-client"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-core"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "blake3",
  "serde",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-e2e"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "assert_cmd",
  "libc",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-forwarder"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "async-trait",
  "criterion",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-proto"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "portunus-core",
  "prost",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-server"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "argon2",
  "assert_cmd",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "portunus-standalone"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "assert_cmd",
  "blake3",

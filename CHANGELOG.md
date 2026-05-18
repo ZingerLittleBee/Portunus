@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-05-18
+
+### Added
+
+- **Runtime-configurable advertised endpoint** — tiered
+  fail-closed resolver (override → seed → request-Host →
+  loopback) with cert-SAN validation (webpki parity).
+  Resolve-once at enrollment creation, replay at redeem.
+  Operator API `GET`/`PUT /v1/settings/advertised-endpoint`
+  (superadmin) + Web UI settings card. Migration V010.
+- **SAN-aware gRPC cert** auto-aligned to the advertised host.
+- **Caddy HTTPS** for server install — globals/flags/i18n,
+  wired into install / wizard / summary / uninstall / domain
+  verb.
+- **Interactive install lifecycle manager** — guided wizard
+  (role/deploy/endpoint), domain-first flow deriving the
+  advertised endpoint, public-IP detection, pre-confirm
+  summary, scoped config/env, purge guard, Docker-compose
+  deploy form.
+
+### Changed
+
+- Server state replaces `server_endpoint` with
+  seed/control-port/cert-SAN/settings composition.
+
+### Fixed
+
+- gRPC redeem 1-vCPU deadlock; settings read hoisted out of
+  the redeem tx.
+- Store-error redaction parity across gRPC and HTTP.
+- Legacy NULL enrollment rows resolve fail-closed (no consume
+  on failure, retryable).
+- Numerous `install.sh` robustness fixes (set -e/-u safety,
+  tmpdir cleanup, tty read, shellcheck gate, compose-dir
+  scoping).
+- Locale-prefixed docs links (advertised-endpoint prerender).
+
 ## [1.4.2] — 2026-05-17
 
 ### Changed
