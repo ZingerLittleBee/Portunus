@@ -483,8 +483,9 @@ main() {
 MENU_FORCE_STDIN="no"
 ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
   local p; p="$(t "$@")"; local a
-  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$p" a || a=""
-  else read -r -p "$p" a < /dev/tty 2>/dev/null || a=""; fi
+  printf '%s\n' "$p" >&2          # question on its own line; answer below
+  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "> " a || a=""
+  else read -r -p "> " a < /dev/tty 2>/dev/null || a=""; fi
   printf '%s' "$a"
 }
 
@@ -587,8 +588,9 @@ run_menu() {
     echo "$(t menu_status)"; echo "$(t menu_service)"; echo "$(t menu_config)"
     echo "$(t menu_env)"; echo "$(t menu_exit)"
     local c
-    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$(t menu_select)" c || return 0
-    else read -r -p "$(t menu_select)" c < /dev/tty || return 0; fi
+    printf '%s\n' "$(t menu_select)" >&2     # prompt on its own line; answer below
+    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "> " c || return 0
+    else read -r -p "> " c < /dev/tty || return 0; fi
     case "$c" in 0|q|Q) return 0 ;; esac
     # Subshell isolation: a die()/exit inside any lifecycle path ends
     # only this action, never the whole interactive session.
@@ -740,8 +742,9 @@ lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operato
 # in the same command (uninstall→purge, set→restart) raced it.
 read_tty() {
   REPLY_TTY=""
-  if [ -t 0 ]; then read -r -p "$1" REPLY_TTY
-  elif [ -r /dev/tty ]; then read -r -p "$1" REPLY_TTY </dev/tty
+  printf '%s\n' "$1" >&2           # question on its own line; answer below
+  if [ -t 0 ]; then read -r -p "> " REPLY_TTY
+  elif [ -r /dev/tty ]; then read -r -p "> " REPLY_TTY </dev/tty
   else return 1; fi
 }
 # confirm <prompt> [default]   default = yes (Enter ⇒ proceed) | no (Enter ⇒ abort)
