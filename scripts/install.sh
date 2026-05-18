@@ -53,6 +53,10 @@ arch=""
 target=""
 DETECTED_IP=""        # last detect_public_ip() result
 DETECTED_PROV=""      # provenance i18n key: prov_detected|prov_nic|prov_loopback
+DOMAIN=""             # optional HTTPS domain for host Caddy
+ACME_EMAIL=""         # optional Let's Encrypt account email
+SKIP_DNS_CHECK="no"   # --skip-dns-check
+CADDYFILE="/etc/caddy/Caddyfile"
 
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
@@ -124,6 +128,19 @@ MSG_EN=(
   [val_latest]="latest (resolved at run time)"
   [val_binary]="binary + systemd"
   [val_docker]="docker compose"
+  [ask_domain]="HTTPS domain for the web UI (blank = skip Caddy/HTTPS): "
+  [sum_domain]="  https domain:         %s"
+  [bad_domain]="invalid domain '%s' — expected an FQDN like portunus.example.com"
+  [dns_check]="Checking %s resolves to this server (%s)…"
+  [dns_ok]="DNS OK: %s → %s"
+  [dns_mismatch]="DNS for %s does not point here. A record(s): %s ; this server: %s"
+  [dns_help]="Add this DNS record, then press Enter to re-check (Ctrl-C to abort):\n  %s  A  %s"
+  [caddy_installing]="Installing Caddy…"
+  [caddy_done]="Caddy configured for %s"
+  [caddy_verify]="Verifying https://%s/ (Let's Encrypt issuance can take ~30s)…"
+  [caddy_verify_warn]="Could not verify https://%s/ yet. Check: journalctl -u caddy -e ; DNS propagation."
+  [https_ready]="HTTPS ready: https://%s/"
+  [https_public_note]="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token."
 )
 MSG_ZH=(
   [menu_title]="Portunus 管理器"
@@ -180,6 +197,19 @@ MSG_ZH=(
   [val_latest]="最新版（运行时解析）"
   [val_binary]="二进制 + systemd"
   [val_docker]="docker compose"
+  [ask_domain]="Web UI 的 HTTPS 域名（留空则跳过 Caddy/HTTPS）: "
+  [sum_domain]="  HTTPS 域名：%s"
+  [bad_domain]="无效的域名：'%s'（需为完整域名，如 portunus.example.com）"
+  [dns_check]="正在检查 %s 是否解析到本机（%s）…"
+  [dns_ok]="DNS 校验通过：%s → %s"
+  [dns_mismatch]="%s 的解析未指向本机。A 记录：%s ；本机公网 IP：%s"
+  [dns_help]="请添加以下 DNS 记录，然后按回车重新校验（Ctrl-C 取消）：\n  %s  A  %s"
+  [caddy_installing]="正在安装 Caddy…"
+  [caddy_done]="Caddy 已为 %s 配置完成"
+  [caddy_verify]="正在验证 https://%s/（Let's Encrypt 签发约需 30 秒）…"
+  [caddy_verify_warn]="暂时无法验证 https://%s/。请检查：journalctl -u caddy -e；以及 DNS 是否已生效。"
+  [https_ready]="HTTPS 已就绪：https://%s/"
+  [https_public_note]="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。"
 )
 
 resolve_lang() {
@@ -455,7 +485,7 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
       client|server) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
-      install|uninstall|upgrade|status|service|config|env) VERB="$1" ;;
+      install|uninstall|upgrade|status|service|config|env|domain) VERB="$1" ;;
       start|stop|restart) SERVICE_ACTION="$1" ;;
       get|set) CONFIG_OP="$1" ;;
       --version) shift; [ $# -gt 0 ] || die "--version needs a value"; VERSION="$1" ;;
@@ -463,6 +493,9 @@ parse_args() {
       --compose-dir) shift; [ $# -gt 0 ] || die "--compose-dir needs a value"; COMPOSE_DIR="$1" ;;
       --deploy) shift; case "${1:-}" in binary|docker) DEPLOY="$1" ;; *) die "--deploy must be binary|docker" ;; esac ;;
       --advertised-endpoint) shift; [ $# -gt 0 ] || die "--advertised-endpoint needs a value"; ADVERTISED="$1" ;;
+      --domain) shift; [ $# -gt 0 ] || die "--domain needs a value"; DOMAIN="$1" ;;
+      --acme-email) shift; [ $# -gt 0 ] || die "--acme-email needs a value"; ACME_EMAIL="$1" ;;
+      --skip-dns-check) SKIP_DNS_CHECK="yes" ;;
       --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
       --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
       --lang) shift; [ $# -gt 0 ] || die "--lang needs a value"; LANG_CODE="$1" ;;
@@ -472,17 +505,22 @@ parse_args() {
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift; resolve_lang; if [ "${1:-en}" = zh ]; then for k in "${!MSG_ZH[@]}"; do echo "$k"; done; else for k in "${!MSG_EN[@]}"; do echo "$k"; done; fi; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--systemd] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--systemd] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
       --detect-ip) detect_public_ip; printf '%s %s\n' "$DETECTED_IP" "$DETECTED_PROV"; exit 0 ;;
       --reset-lang) rm -f "$LANG_CACHE" 2>/dev/null || true; echo "language preference reset ($LANG_CACHE); next interactive run will ask again"; exit 0 ;;
+      --valid-fqdn) shift; valid_fqdn "${1:-}" && exit 0 || exit 1 ;;
+      --render-caddy) shift; DOMAIN="${1:-}"; render_caddy_block "${2:-7080}"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
       --menu-stdin) MENU_FORCE_STDIN="yes" ;;  # defer to main so later --compose-dir et al. still parse
-      *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
+      *) if [ "$VERB" = domain ] && [ -z "$DOMAIN" ]; then DOMAIN="$1";
+         elif [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1";
+         elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1";
+         else die "unknown argument: $1"; fi ;;
     esac
     shift
   done
@@ -583,6 +621,143 @@ print_install_summary() {
     else
       t sum_advertised "$(t prov_loopback)"; echo
     fi
+  fi
+}
+
+# ─── Caddy / HTTPS ────────────────────────────────────────────────────
+valid_fqdn() {
+  case "$1" in
+    ""|*[!a-zA-Z0-9.-]*) return 1 ;;
+    .*|-*|*.|*-|*..*) return 1 ;;
+  esac
+  case "$1" in *.*) return 0 ;; *) return 1 ;; esac
+}
+
+op_http_port() {  # echo the loopback port Caddy must proxy to
+  local p="${OP_HTTP_LISTEN##*:}"
+  case "$p" in ''|*[!0-9]*) echo 7080 ;; *) echo "$p" ;; esac
+}
+
+dns_a_records() {
+  if command -v getent >/dev/null 2>&1; then
+    getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u
+  elif command -v dig >/dev/null 2>&1; then
+    dig +short A "$1" 2>/dev/null | sed '/^$/d'
+  fi
+}
+
+dns_points_here() {  # $1 domain ; uses detect_public_ip
+  local d="$1" a ip
+  detect_public_ip; ip="$DETECTED_IP"
+  t dns_check "$d" "$ip"; echo
+  while :; do
+    a="$(dns_a_records "$d" | tr '\n' ' ')"
+    if printf '%s' "$a" | grep -qw "$ip"; then
+      t dns_ok "$d" "$ip"; echo; return 0
+    fi
+    t dns_mismatch "$d" "${a:-none}" "$ip"; echo
+    if [ "$ASSUME_YES" = yes ] || ! { [ -t 0 ] || [ -r /dev/tty ]; }; then
+      die "DNS for $d must point to $ip (or pass --skip-dns-check)"
+    fi
+    t dns_help "$d" "$ip"; echo
+    read_tty "" || die "DNS for $d must point to $ip"
+  done
+}
+
+render_caddy_block() {  # $1 op-http port ; prints managed block
+  local port="$1"
+  echo "# >>> portunus >>>"
+  [ -n "$ACME_EMAIL" ] && echo "{ email ${ACME_EMAIL} }"
+  echo "${DOMAIN} {"
+  echo "    reverse_proxy 127.0.0.1:${port}"
+  echo "}"
+  echo "# <<< portunus <<<"
+}
+
+ensure_caddy() {
+  command -v caddy >/dev/null 2>&1 && return 0
+  echo "$(t caddy_installing)"
+  local id="" like=""
+  [ -r /etc/os-release ] && . /etc/os-release && id="${ID:-}" && like="${ID_LIKE:-}"
+  case "$id $like" in
+    *debian*|*ubuntu*)
+      sudo apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1 || true
+      curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+      curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+      sudo chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
+      sudo apt-get update -qq >/dev/null 2>&1 || true
+      sudo apt-get install -y -qq caddy >/dev/null 2>&1 || die "caddy install failed (apt)" ;;
+    *fedora*|*rhel*|*centos*)
+      if command -v dnf >/dev/null 2>&1; then sudo dnf copr enable -y @caddy/caddy >/dev/null 2>&1 && sudo dnf install -y -q caddy >/dev/null 2>&1 || die "caddy install failed (dnf)"
+      else sudo yum copr enable -y @caddy/caddy >/dev/null 2>&1 && sudo yum install -y -q caddy >/dev/null 2>&1 || die "caddy install failed (yum)"; fi ;;
+    *) die "cannot auto-install Caddy on this distro; install it and add:\n  ${DOMAIN} {\n      reverse_proxy 127.0.0.1:$(op_http_port)\n  }" ;;
+  esac
+}
+
+write_caddy_block() {
+  local port; port="$(op_http_port)"
+  sudo install -d -m 0755 "$(dirname "$CADDYFILE")"
+  if [ -f "$CADDYFILE" ]; then
+    sudo cp "$CADDYFILE" "${CADDYFILE}.portunus.$(date +%Y%m%d%H%M%S).bak"
+    sudo sed -i '/^# >>> portunus >>>$/,/^# <<< portunus <<<$/d' "$CADDYFILE"
+  fi
+  render_caddy_block "$port" | sudo tee -a "$CADDYFILE" >/dev/null
+}
+
+caddy_reload() {
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl enable caddy >/dev/null 2>&1 || true
+    sudo systemctl restart caddy
+  else
+    caddy reload --config "$CADDYFILE" 2>/dev/null || echo "start Caddy manually: caddy run --config $CADDYFILE"
+  fi
+}
+
+verify_https() {
+  local d="$1"
+  t caddy_verify "$d"; echo
+  for _ in $(seq 1 12); do
+    if curl -fsS --max-time 5 -o /dev/null "https://${d}/" 2>/dev/null; then
+      t https_ready "$d"; echo; return 0
+    fi
+    sleep 5
+  done
+  t caddy_verify_warn "$d"; echo; return 0
+}
+
+setup_caddy_domain() {
+  [ "$ROLE" = server ] || die "domain/HTTPS is server-only"
+  valid_fqdn "$DOMAIN" || die "$(t bad_domain "$DOMAIN")"
+  if [ "$DRY_RUN" = yes ]; then
+    echo "domain:           $DOMAIN"
+    echo "reverse_proxy:    127.0.0.1:$(op_http_port)"
+    echo "caddyfile:        $CADDYFILE"
+    echo "dns_precheck:     $([ "$SKIP_DNS_CHECK" = yes ] && echo skipped || echo enabled)"
+    return 0
+  fi
+  [ "$SKIP_DNS_CHECK" = yes ] || dns_points_here "$DOMAIN"
+  ensure_caddy
+  write_caddy_block
+  caddy_reload
+  t caddy_done "$DOMAIN"; echo
+  verify_https "$DOMAIN"
+  t https_public_note; echo
+}
+
+lifecycle_domain() {
+  local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  ROLE="$(meta_read "$mf" role || echo server)"
+  [ "$ROLE" = server ] || die "domain/HTTPS is server-only"
+  [ -n "$DOMAIN" ] || die "usage: install.sh domain <fqdn>"
+  OP_HTTP_LISTEN="$(meta_read "$mf" op_http_listen 2>/dev/null || echo '')"
+  setup_caddy_domain
+  if [ "$DRY_RUN" != yes ]; then
+    DEPLOY="$(meta_read "$mf" deploy || echo binary)"
+    meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" \
+      "version=$(meta_read "$mf" version || echo '?')" \
+      "lang=${LANG_CODE:-en}" \
+      "advertised_endpoint_set=$(meta_read "$mf" advertised_endpoint_set || echo no)" \
+      "domain=$DOMAIN"
   fi
 }
 
