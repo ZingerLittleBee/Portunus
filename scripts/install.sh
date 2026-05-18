@@ -25,6 +25,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 DOCS_FEATURE_URL="https://github.com/${REPO}/blob/main/docs/content/docs/features/advertised-endpoint.mdx"
+LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -98,6 +99,13 @@ MSG_EN=(
   [restart_now]="Apply now (restart service)? [y/N]: "
   [upgrade_current]="Already at %s; nothing to upgrade."
   [unknown_config_key]="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)"
+  [ask_config_key]="Config key [1] advertised-endpoint [2] data-dir [3] operator-http-listen [4] version-pin: "
+  [ask_config_value]="New value for %s: "
+  [ask_service_action]="Service action [1] start [2] stop [3] restart: "
+  [menu_invalid]="invalid option: %s"
+  [press_enter]="Press Enter to continue…"
+  [bad_endpoint]="invalid host:port '%s' — expected like host.example:7443 (blank = auto)"
+  [op_cancelled]="cancelled."
 )
 MSG_ZH=(
   [menu_title]="Portunus 管理器"
@@ -130,11 +138,22 @@ MSG_ZH=(
   [restart_now]="现在生效 (重启服务)? [y/N]: "
   [upgrade_current]="已是 %s; 无需升级。"
   [unknown_config_key]="未知配置键: %s (允许: advertised-endpoint data-dir operator-http-listen version-pin)"
+  [ask_config_key]="配置键 [1] advertised-endpoint [2] data-dir [3] operator-http-listen [4] version-pin: "
+  [ask_config_value]="%s 的新值: "
+  [ask_service_action]="服务操作 [1] 启动 [2] 停止 [3] 重启: "
+  [menu_invalid]="无效选项: %s"
+  [press_enter]="按回车继续…"
+  [bad_endpoint]="无效 host:port '%s' — 形如 host.example:7443 (留空=自动)"
+  [op_cancelled]="已取消。"
 )
 
 resolve_lang() {
   if [ -z "$LANG_CODE" ]; then
     case "${LC_ALL:-${LANG:-}}" in zh*|*zh_*) LANG_CODE="zh" ;; *) LANG_CODE="" ;; esac
+  fi
+  # Reuse a prior interactive choice so the menu doesn't re-ask each run.
+  if [ -z "$LANG_CODE" ] && [ -r "$LANG_CACHE" ]; then
+    case "$(cat "$LANG_CACHE" 2>/dev/null)" in zh) LANG_CODE=zh ;; en) LANG_CODE=en ;; esac
   fi
   case "$LANG_CODE" in zh|en) ;; *) LANG_CODE="" ;; esac
 }
@@ -423,8 +442,9 @@ parse_args() {
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
+      --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
-      --menu-stdin) MENU_FORCE_STDIN="yes"; resolve_lang; run_menu; exit $? ;;
+      --menu-stdin) MENU_FORCE_STDIN="yes" ;;  # defer to main so later --compose-dir et al. still parse
       *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
     esac
     shift
@@ -432,6 +452,7 @@ parse_args() {
 }
 
 is_interactive() {
+  [ "${MENU_FORCE_STDIN:-no}" = yes ] && return 0   # scripted-menu seam forces the menu
   if [ -t 0 ]; then return 0; fi
   if [ -r /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then exec 3<&-; return 0; fi
   return 1
@@ -471,6 +492,8 @@ first_run_lang() {
   [ -n "$LANG_CODE" ] && return 0
   local a; a="$(ask lang_prompt)"
   case "$a" in 2) LANG_CODE=zh ;; *) LANG_CODE=en ;; esac
+  mkdir -p "$(dirname "$LANG_CACHE")" 2>/dev/null \
+    && printf '%s' "$LANG_CODE" > "$LANG_CACHE" 2>/dev/null || true
 }
 
 wizard_install() {
@@ -480,7 +503,11 @@ wizard_install() {
   VERSION="$(ask ask_version)"
   if [ "$DEPLOY" = binary ]; then BIN_DIR="$(ask ask_bindir "$DEFAULT_BIN_DIR")"; [ -z "$BIN_DIR" ] && BIN_DIR="$DEFAULT_BIN_DIR"; fi
   if [ "$ROLE" = server ]; then
-    ADVERTISED="$(ask ask_advertised "$DOCS_FEATURE_URL")"
+    while :; do
+      ADVERTISED="$(ask ask_advertised "$DOCS_FEATURE_URL")"
+      valid_host_port "$ADVERTISED" && break
+      t bad_endpoint "$ADVERTISED"; echo
+    done
     DATA_DIR="$(ask ask_datadir)"
     OP_HTTP_LISTEN="$(ask ask_ophttp)"
   fi
@@ -490,14 +517,69 @@ wizard_install() {
   VERB=install; dispatch_verb
 }
 
+# An explicit CLI --compose-dir scopes the whole menu session; it must
+# survive the per-iteration reset (wizard-collected fields do not).
+MENU_COMPOSE_DIR=""
 reset_menu_state() {
-  ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"; COMPOSE_DIR=""
+  ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"
+  COMPOSE_DIR="$MENU_COMPOSE_DIR"
   WANT_SYSTEMD="no"; ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
   SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
 }
 
+pause() {
+  [ "$MENU_FORCE_STDIN" = yes ] && return 0   # scripted seam: never block
+  read_tty "$(t press_enter)" || true
+}
+
+menu_service() {
+  local a
+  a="$(ask ask_service_action)"
+  case "$a" in
+    1|start)   SERVICE_ACTION="start" ;;
+    2|stop)    SERVICE_ACTION="stop" ;;
+    3|restart) SERVICE_ACTION="restart" ;;
+    *) t menu_invalid "$a"; echo; return 0 ;;
+  esac
+  VERB="service"; lifecycle_service
+}
+
+menu_config() {
+  local a k v
+  a="$(ask ask_config_key)"
+  case "$a" in
+    1|advertised-endpoint)  k="advertised-endpoint" ;;
+    2|data-dir)             k="data-dir" ;;
+    3|operator-http-listen) k="operator-http-listen" ;;
+    4|version-pin)          k="version-pin" ;;
+    *) t unknown_config_key "$a"; echo; return 0 ;;
+  esac
+  v="$(ask ask_config_value "$k")"
+  [ -n "$v" ] || { echo "$(t op_cancelled)"; return 0; }
+  if [ "$k" = "advertised-endpoint" ] && ! valid_host_port "$v"; then
+    t bad_endpoint "$v"; echo; return 0
+  fi
+  CONFIG_OP="set"; CONFIG_KEY="$k"; CONFIG_VALUE="$v"; VERB="config"; lifecycle_config
+}
+
+# Returns 2 to request menu exit; any other status keeps the loop alive.
+menu_handle() {
+  case "$1" in
+    1) wizard_install ;;
+    2) VERB="uninstall"; lifecycle_uninstall ;;
+    3) VERB="upgrade";   lifecycle_upgrade ;;
+    4) VERB="status";    lifecycle_status ;;
+    5) menu_service ;;
+    6) menu_config ;;
+    7) VERB="env";       lifecycle_env ;;
+    0|q|Q) return 2 ;;
+    *) t menu_invalid "$1"; echo; return 0 ;;
+  esac
+}
+
 run_menu() {
   first_run_lang
+  MENU_COMPOSE_DIR="${COMPOSE_DIR:-}"
   while :; do
     reset_menu_state
     echo; echo "$(t menu_title)"
@@ -507,17 +589,13 @@ run_menu() {
     local c
     if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "$(t menu_select)" c || return 0
     else read -r -p "$(t menu_select)" c < /dev/tty || return 0; fi
-    case "$c" in
-      1) wizard_install || true ;;
-      2) VERB=uninstall; lifecycle_uninstall || true ;;
-      3) VERB=upgrade; lifecycle_upgrade || true ;;
-      4) VERB=status; lifecycle_status || true ;;
-      5) SERVICE_ACTION="$(ask menu_select)"; VERB=service; lifecycle_service || true ;;
-      6) CONFIG_OP="set"; CONFIG_KEY="$(ask ask_advertised "$DOCS_FEATURE_URL")"; lifecycle_config || true ;;
-      7) VERB="env"; lifecycle_env || true ;;
-      0|q|Q) return 0 ;;
-      *) ;;
-    esac
+    case "$c" in 0|q|Q) return 0 ;; esac
+    # Subshell isolation: a die()/exit inside any lifecycle path ends
+    # only this action, never the whole interactive session.
+    local rc=0
+    ( menu_handle "$c" ) || rc=$?
+    [ "$rc" -eq 2 ] && return 0
+    pause
   done
 }
 dispatch_verb() {
@@ -588,7 +666,7 @@ lifecycle_service() {
   local d r mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
   d="$(meta_read "$mf" deploy || echo binary)"; r="$(meta_read "$mf" role || echo server)"
   if [ "$d" = docker ]; then
-    ( cd "$(dirname "$mf")" && case "$SERVICE_ACTION" in start) $(compose_cmd) up -d ;; stop) $(compose_cmd) down ;; restart) $(compose_cmd) restart ;; esac )
+    ( cd "$(dirname "$mf")" && case "$SERVICE_ACTION" in start) $(compose_cmd) up -d ;; stop) $(compose_cmd) stop ;; restart) $(compose_cmd) restart ;; esac )
   else sudo systemctl "$SERVICE_ACTION" "portunus-$r"; fi
 }
 
@@ -608,7 +686,7 @@ lifecycle_service_restart_quiet() { systemctl restart "portunus-${ROLE}" 2>/dev/
 lifecycle_uninstall() {
   local mf r d; mf="$(current_meta_file)" || die "$(t no_install_found)"
   r="$(meta_read "$mf" role || echo server)"; d="$(meta_read "$mf" deploy || echo binary)"
-  if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" || return 0; fi
+  if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" no || return 0; fi
   if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
   else
     sudo rm -f "/usr/local/bin/portunus-$r" "/etc/systemd/system/portunus-$r.service"
@@ -652,7 +730,7 @@ lifecycle_config() {
     sudo systemctl daemon-reload 2>/dev/null || true
   fi
   echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
-  if confirm "$(t restart_now)"; then SERVICE_ACTION=restart; lifecycle_service; fi
+  if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
 }
 
 lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
@@ -666,11 +744,31 @@ read_tty() {
   elif [ -r /dev/tty ]; then read -r -p "$1" REPLY_TTY </dev/tty
   else return 1; fi
 }
+# confirm <prompt> [default]   default = yes (Enter ⇒ proceed) | no (Enter ⇒ abort)
+# The prompt text's [Y/n] vs [y/N] MUST match the default passed here.
 confirm() {
-  local prompt="$1"
+  local prompt="$1" def="${2:-yes}"
   [ "$ASSUME_YES" = yes ] && return 0
   read_tty "$prompt" || return 1
-  case "$REPLY_TTY" in y|Y|yes|YES|"") return 0 ;; *) return 1 ;; esac
+  case "$REPLY_TTY" in
+    y|Y|yes|YES) return 0 ;;
+    n|N|no|NO)   return 1 ;;
+    "")          [ "$def" = yes ] && return 0 || return 1 ;;
+    *)           return 1 ;;
+  esac
+}
+
+# Light host:port sanity (authoritative SAN/grammar check is the server's).
+valid_host_port() {
+  case "$1" in
+    "") return 0 ;;  # blank ⇒ auto (tier-3/4 at runtime)
+    *[!A-Za-z0-9.:_-]*) return 1 ;;
+  esac
+  case "$1" in
+    *:[0-9]|*:[0-9][0-9]|*:[0-9][0-9][0-9]|*:[0-9][0-9][0-9][0-9]|*:[0-9][0-9][0-9][0-9][0-9])
+      [ -n "${1%:*}" ] && return 0 ;;
+  esac
+  return 1
 }
 
 main "$@"

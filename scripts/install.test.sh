@@ -104,6 +104,28 @@ rm -rf "$cdtmp"
 bash "$script" --lang en --print-i18n next_systemd | grep -qi 'systemctl' || fail "en next_systemd"
 bash "$script" --lang zh --print-i18n next_docker | grep -q 'docker compose' || fail "zh next_docker"
 
+# --- P2: light host:port validation ---
+bash "$script" --valid-endpoint "host.example:7443" || fail "valid endpoint rejected"
+bash "$script" --valid-endpoint "" || fail "blank endpoint must be allowed (auto)"
+if bash "$script" --valid-endpoint "no-port" 2>/dev/null; then fail "missing port accepted"; fi
+if bash "$script" --valid-endpoint "bad host:7443" 2>/dev/null; then fail "space in host accepted"; fi
+if bash "$script" --valid-endpoint "h:99999x" 2>/dev/null; then fail "non-numeric port accepted"; fi
+
+# --- P1/P2: new interactive i18n keys present in both languages ---
+bash "$script" --lang en --print-i18n ask_config_key | grep -qi 'advertised-endpoint' || fail "en ask_config_key"
+bash "$script" --lang zh --print-i18n ask_service_action | grep -q '启动' || fail "zh ask_service_action"
+bash "$script" --lang en --print-i18n menu_invalid bogus | grep -qi 'invalid' || fail "en menu_invalid"
+
+# --- P1#2: a die() inside a menu action must NOT kill the whole session ---
+# No install present here ⇒ Uninstall (2) hits die(); the loop must survive
+# and still process the following Exit (0).
+mo="$(printf '2\n0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+[ "$(printf '%s\n' "$mo" | grep -c 'Portunus Manager')" -ge 2 ] || fail "menu died after a failing action (P1#2)"
+
+# --- P2#4: invalid menu choice gives explicit feedback ---
+io="$(printf '99\n0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$io" | grep -qi 'invalid option' || fail "no invalid-option feedback"
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"
