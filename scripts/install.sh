@@ -57,6 +57,8 @@ DOMAIN=""             # optional HTTPS domain for host Caddy
 ACME_EMAIL=""         # optional Let's Encrypt account email
 SKIP_DNS_CHECK="no"   # --skip-dns-check
 CADDYFILE="/etc/caddy/Caddyfile"
+ADVERTISED_FROM_DOMAIN="no"  # set yes when ADVERTISED was derived from DOMAIN
+PRINT_EFF="no"               # --effective-advertised seam
 
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
@@ -141,6 +143,7 @@ MSG_EN=(
   [caddy_verify_warn]="Could not verify https://%s/ yet. Check: journalctl -u caddy -e ; DNS propagation."
   [https_ready]="HTTPS ready: https://%s/"
   [https_public_note]="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token."
+  [adv_from_domain]="  advertised endpoint:  %s  (from domain)"
 )
 MSG_ZH=(
   [menu_title]="Portunus 管理器"
@@ -210,6 +213,7 @@ MSG_ZH=(
   [caddy_verify_warn]="暂时无法验证 https://%s/。请检查：journalctl -u caddy -e；以及 DNS 是否已生效。"
   [https_ready]="HTTPS 已就绪：https://%s/"
   [https_public_note]="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。"
+  [adv_from_domain]="  对外通告地址：%s（由域名推导）"
 )
 
 resolve_lang() {
@@ -522,6 +526,7 @@ parse_args() {
       --valid-fqdn) shift; valid_fqdn "${1:-}" && exit 0 || exit 1 ;;
       --render-caddy) shift; DOMAIN="${1:-}"; render_caddy_block "${2:-7080}"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
+      --effective-advertised) PRINT_EFF=yes ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
       --menu-stdin) MENU_FORCE_STDIN="yes" ;;  # defer to main so later --compose-dir et al. still parse
@@ -553,6 +558,8 @@ main() {
   detect_platform
   resolve_version_static
   [ -n "$DOMAIN" ] && [ "$ROLE" = client ] && die "--domain is server-only"
+  apply_advertised_default
+  if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
     case "$VERB" in
       install) [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0 ;;
@@ -625,7 +632,9 @@ print_install_summary() {
   if [ "$ROLE" = server ]; then
     t sum_datadir "${DATA_DIR:-/var/lib/portunus}"; echo
     t sum_ophttp "${OP_HTTP_LISTEN:-127.0.0.1:7080}"; echo
-    if [ -n "$ADVERTISED" ]; then
+    if [ "$ADVERTISED_FROM_DOMAIN" = yes ]; then
+      t adv_from_domain "$ADVERTISED"; echo
+    elif [ -n "$ADVERTISED" ]; then
       t sum_advertised "$ADVERTISED $([ -n "$adv_prov" ] && t "$adv_prov")"; echo
     else
       t sum_advertised "$(t prov_loopback)"; echo
@@ -769,6 +778,17 @@ lifecycle_domain() {
       "advertised_endpoint_set=$(meta_read "$mf" advertised_endpoint_set || echo no)" \
       "domain=$DOMAIN"
   fi
+}
+
+# Explicit --advertised-endpoint wins; otherwise a server --domain
+# derives advertised = <domain>:7443. Idempotent; safe to call twice.
+apply_advertised_default() {
+  [ "$ROLE" = server ] || return 0
+  [ -n "$DOMAIN" ] || return 0
+  [ -z "$ADVERTISED" ] || return 0
+  ADVERTISED="${DOMAIN}:7443"
+  ADVERTISED_FROM_DOMAIN=yes
+  return 0
 }
 
 wizard_install() {
