@@ -804,21 +804,25 @@ wizard_install() {
     case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
   fi
   if [ "$ROLE" = server ]; then
-    detect_public_ip
-    adv_prov="$DETECTED_PROV"
-    while :; do
-      a="$(ask ask_advertised_pub "${DETECTED_IP}:7443")"
-      if [ -z "$a" ]; then ADVERTISED="${DETECTED_IP}:7443"; break; fi
-      if [ "$a" = "-" ]; then ADVERTISED=""; adv_prov="prov_loopback"; break; fi
-      if valid_host_port "$a"; then ADVERTISED="$a"; adv_prov="prov_user"; break; fi
-      t bad_endpoint "$a"; echo
-    done
     while :; do
       DOMAIN="$(ask ask_domain)"
       [ -z "$DOMAIN" ] && break
       valid_fqdn "$DOMAIN" && break
       t bad_domain "$DOMAIN"; echo
     done
+    if [ -n "$DOMAIN" ]; then
+      ADVERTISED="${DOMAIN}:7443"; ADVERTISED_FROM_DOMAIN=yes
+    else
+      detect_public_ip
+      adv_prov="$DETECTED_PROV"
+      while :; do
+        a="$(ask ask_advertised_pub "${DETECTED_IP}:7443")"
+        if [ -z "$a" ]; then ADVERTISED="${DETECTED_IP}:7443"; break; fi
+        if [ "$a" = "-" ]; then ADVERTISED=""; adv_prov="prov_loopback"; break; fi
+        if valid_host_port "$a"; then ADVERTISED="$a"; adv_prov="prov_user"; break; fi
+        t bad_endpoint "$a"; echo
+      done
+    fi
   fi
   detect_platform; resolve_version_static
   print_install_summary "$adv_prov"
