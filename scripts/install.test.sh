@@ -85,6 +85,25 @@ bash "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 out="$(printf '0\n' | PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
 echo "$out" | grep -qi 'Portunus Manager' || fail "menu title not shown"
 
+# --- Fix 1: install-time drop-in persists data-dir + operator-http-listen ---
+dr="$(bash "$script" server --systemd --advertised-endpoint h:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --render-dropin)" || fail "render-dropin exit"
+echo "$dr" | grep -qx 'Environment=PORTUNUS_ADVERTISED_ENDPOINT=h:7443' || fail "dropin advertised"
+echo "$dr" | grep -qx 'Environment=PORTUNUS_DATA_DIR=/srv/p' || fail "dropin data-dir (Fix 1)"
+echo "$dr" | grep -qx 'Environment=PORTUNUS_OPERATOR_HTTP_LISTEN=0.0.0.0:7080' || fail "dropin op-http (Fix 1)"
+
+# --- Fix 2: explicit --compose-dir never falls back to a system meta ---
+cdtmp="$(mktemp -d)"            # empty: no .install-meta here
+if bash "$script" --compose-dir "$cdtmp" --resolve-meta >/dev/null 2>&1; then
+  fail "Fix 2: empty --compose-dir must NOT resolve a fallback meta"
+fi
+printf 'role=server\ndeploy=docker\n' > "$cdtmp/.install-meta"
+[ "$(bash "$script" --compose-dir "$cdtmp" --resolve-meta)" = "$cdtmp/.install-meta" ] || fail "Fix 2: scoped meta not resolved"
+rm -rf "$cdtmp"
+
+# --- Fix 4: next-step i18n keys exist in both languages ---
+bash "$script" --lang en --print-i18n next_systemd | grep -qi 'systemctl' || fail "en next_systemd"
+bash "$script" --lang zh --print-i18n next_docker | grep -q 'docker compose' || fail "zh next_docker"
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"

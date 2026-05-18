@@ -92,6 +92,9 @@ MSG_EN=(
   [need_role]="role required: client or server"
   [no_install_found]="No Portunus install detected (no .install-meta and no probe match)."
   [done_next]="Done. Next steps:"
+  [next_systemd]="  start:   sudo systemctl enable --now portunus-%s"
+  [next_docker]="  manage:  (cd %s && docker compose ps)"
+  [next_status]="  status:  install.sh status"
   [restart_now]="Apply now (restart service)? [y/N]: "
   [upgrade_current]="Already at %s; nothing to upgrade."
   [unknown_config_key]="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)"
@@ -121,6 +124,9 @@ MSG_ZH=(
   [need_role]="必须指定角色: client 或 server"
   [no_install_found]="未检测到 Portunus 安装 (无 .install-meta 且探测未命中)。"
   [done_next]="完成。后续步骤:"
+  [next_systemd]="  启动:   sudo systemctl enable --now portunus-%s"
+  [next_docker]="  管理:   (cd %s && docker compose ps)"
+  [next_status]="  状态:   install.sh status"
   [restart_now]="现在生效 (重启服务)? [y/N]: "
   [upgrade_current]="已是 %s; 无需升级。"
   [unknown_config_key]="未知配置键: %s (允许: advertised-endpoint data-dir operator-http-listen version-pin)"
@@ -309,16 +315,33 @@ install_systemd_unit() {
 }
 
 # ─── Server config (drop-in / .env) ───────────────────────────────────
+# Pure: emit the drop-in body for the currently-set scoped values.
+# Mirrors the `Environment=` lines `config set` writes so install-time
+# --data-dir / --operator-http-listen persist identically (parity).
+render_dropin() {
+  echo "[Service]"
+  [ -n "$ADVERTISED" ]     && echo "Environment=PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}"
+  [ -n "$DATA_DIR" ]       && echo "Environment=PORTUNUS_DATA_DIR=${DATA_DIR}"
+  [ -n "$OP_HTTP_LISTEN" ] && echo "Environment=PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}"
+}
 write_server_dropin() {
   local d="/etc/systemd/system/portunus-server.service.d" f
   f="$d/10-portunus.conf"
   sudo install -d -m 0755 "$d"
-  {
-    echo "[Service]"
-    [ -n "$ADVERTISED" ] && echo "Environment=PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}"
-  } | sudo tee "$f" >/dev/null
+  render_dropin | sudo tee "$f" >/dev/null
   sudo systemctl daemon-reload || true
   echo "→ wrote $f"
+}
+
+# Actionable post-install hints (the installer never auto-starts).
+print_next_steps() {
+  echo "$(t done_next)"
+  if [ "${DEPLOY:-binary}" = "docker" ]; then
+    t next_docker "${COMPOSE_DIR:-$PWD}"; echo
+  else
+    t next_systemd "$ROLE"; echo
+  fi
+  t next_status; echo
 }
 
 # ─── Docker ───────────────────────────────────────────────────────────
@@ -365,6 +388,11 @@ install_docker() {
   [ -n "$tag" ] || resolve_latest_tag
   write_compose_file "$dir"
   write_compose_env "$dir"
+  # Record the deploy BEFORE pull/up: a port conflict that fails
+  # `up -d` must not leave compose files on disk with no .install-meta.
+  meta_write "$dir/.install-meta" "role=$ROLE" "deploy=docker" \
+    "version=${artifact_version:-$resolved_version}" "lang=${LANG_CODE:-en}" \
+    "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
   ( cd "$dir" && $dc pull && $dc up -d )
 }
 
@@ -394,6 +422,8 @@ parse_args() {
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
+      --render-dropin) render_dropin; exit 0 ;;
+      --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
       --menu-stdin) MENU_FORCE_STDIN="yes"; resolve_lang; run_menu; exit $? ;;
       *) if [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1"; elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1"; else die "unknown argument: $1"; fi ;;
     esac
@@ -495,13 +525,15 @@ dispatch_verb() {
     install)
       [ -n "$ROLE" ] || die "$(t need_role)"
       [ -z "$DEPLOY" ] && DEPLOY="binary"
-      if [ "$DEPLOY" = "docker" ]; then install_docker; else
+      if [ "$DEPLOY" = "docker" ]; then
+        install_docker          # writes its own .install-meta pre-up
+      else
         install_binary
         [ "$WANT_SYSTEMD" = yes ] && install_systemd_unit
         [ "$ROLE" = "server" ] && [ "$WANT_SYSTEMD" = yes ] && write_server_dropin
+        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
       fi
-      meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
-      echo; echo "$(t done_next)"
+      echo; print_next_steps
       ;;
     uninstall|upgrade|status|service|config|env) lifecycle_"$VERB" ;;
     *) die "verb '${VERB}' not yet implemented" ;;
@@ -516,11 +548,18 @@ validate_config_key() {
 }
 
 current_meta_file() {
-  # User-targeted locations first: an explicit --compose-dir, then the
-  # cwd (where a Docker user runs lifecycle ops), then system paths.
-  # Otherwise a stale binary meta would shadow a Docker deployment.
+  # An explicit --compose-dir is a hard scope: resolve ONLY its meta and
+  # never fall back to a system binary path. Otherwise a destructive
+  # `uninstall --purge --compose-dir X` could silently target
+  # /var/lib/portunus when X has no meta.
   local f
-  for f in ${COMPOSE_DIR:+"$COMPOSE_DIR/.install-meta"} "$PWD/.install-meta" "/var/lib/portunus/.install-meta" "/etc/portunus/.install-meta"; do
+  if [ -n "${COMPOSE_DIR:-}" ]; then
+    f="$COMPOSE_DIR/.install-meta"
+    [ -r "$f" ] && { echo "$f"; return 0; }
+    return 1
+  fi
+  # No explicit compose-dir: cwd (Docker user's pwd) then system paths.
+  for f in "$PWD/.install-meta" "/var/lib/portunus/.install-meta" "/etc/portunus/.install-meta"; do
     [ -r "$f" ] && { echo "$f"; return 0; }
   done
   return 1
