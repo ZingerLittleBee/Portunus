@@ -553,6 +553,33 @@ detect_public_ip() {
   DETECTED_IP="127.0.0.1"; DETECTED_PROV="prov_loopback"; return 0
 }
 
+# Print every effective install value before the final confirm.
+print_install_summary() {
+  local adv_prov="$1"   # i18n key for advertised provenance, or ""
+  echo "$(t summary_title)"
+  t sum_role "$ROLE"; echo
+  if [ "$DEPLOY" = docker ]; then
+    t sum_deploy "docker"; echo
+  else
+    t sum_deploy "binary + systemd"; echo
+  fi
+  t sum_version "${VERSION:-latest (resolved at run time)}"; echo
+  if [ "$DEPLOY" = docker ]; then
+    t sum_compose "${COMPOSE_DIR:-$PWD}"; echo
+  else
+    t sum_bindir "${BIN_DIR:-$DEFAULT_BIN_DIR}"; echo
+  fi
+  if [ "$ROLE" = server ]; then
+    t sum_datadir "${DATA_DIR:-/var/lib/portunus}"; echo
+    t sum_ophttp "${OP_HTTP_LISTEN:-127.0.0.1:7080}"; echo
+    if [ -n "$ADVERTISED" ]; then
+      t sum_advertised "$ADVERTISED $([ -n "$adv_prov" ] && t "$adv_prov")"; echo
+    else
+      t sum_advertised "$(t prov_loopback)"; echo
+    fi
+  fi
+}
+
 wizard_install() {
   local a
   a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
