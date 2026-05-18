@@ -775,9 +775,23 @@ lifecycle_domain() {
   [ "$ROLE" = server ] || die "domain/HTTPS is server-only"
   [ -n "$DOMAIN" ] || die "usage: install.sh domain <fqdn>"
   OP_HTTP_LISTEN="$(meta_read "$mf" op_http_listen 2>/dev/null || echo '')"
+  DEPLOY="$(meta_read "$mf" deploy || echo binary)"
   setup_caddy_domain
+  apply_advertised_default
+  if [ "$DRY_RUN" != yes ] && [ -n "$ADVERTISED" ]; then
+    if [ "$DEPLOY" = docker ]; then
+      COMPOSE_DIR="$(dirname "$mf")"
+      [ -f "$COMPOSE_DIR/compose.yml" ] && sudo cp "$COMPOSE_DIR/compose.yml" "$COMPOSE_DIR/compose.yml.portunus.$(date +%Y%m%d%H%M%S).bak" && rm -f "$COMPOSE_DIR/compose.yml"
+      write_compose_file "$COMPOSE_DIR"; write_compose_env "$COMPOSE_DIR"
+      ( cd "$COMPOSE_DIR" && $(compose_cmd) up -d ) || true
+    else
+      write_server_dropin
+      command -v systemctl >/dev/null 2>&1 && sudo systemctl restart "portunus-$ROLE" 2>/dev/null || true
+    fi
+    echo "→ advertised endpoint set to ${ADVERTISED}; the server re-aligns its gRPC cert SAN on restart."
+    echo "→ existing client bundles must be re-issued: portunus-server enroll-client <name>"
+  fi
   if [ "$DRY_RUN" != yes ]; then
-    DEPLOY="$(meta_read "$mf" deploy || echo binary)"
     meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" \
       "version=$(meta_read "$mf" version || echo '?')" \
       "lang=${LANG_CODE:-en}" \
