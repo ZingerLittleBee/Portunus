@@ -106,6 +106,20 @@ MSG_EN=(
   [press_enter]="Press Enter to continue…"
   [bad_endpoint]="invalid host:port '%s' — expected like host.example:7443 (blank = auto)"
   [op_cancelled]="cancelled."
+  [ask_advertised_pub]="Public advertised endpoint [%s] (Enter=accept, '-' = none/loopback): "
+  [summary_title]="About to install:"
+  [sum_role]="  role:                 %s"
+  [sum_deploy]="  deploy:               %s"
+  [sum_version]="  version:              %s"
+  [sum_bindir]="  bin dir:              %s"
+  [sum_datadir]="  data dir:             %s"
+  [sum_ophttp]="  operator http:        %s"
+  [sum_compose]="  compose dir:          %s"
+  [sum_advertised]="  advertised endpoint:  %s"
+  [prov_detected]="(detected public IP)"
+  [prov_nic]="(local NIC)"
+  [prov_loopback]="(loopback — local only)"
+  [prov_user]="(you entered)"
 )
 MSG_ZH=(
   [menu_title]="Portunus 管理器"
@@ -145,6 +159,20 @@ MSG_ZH=(
   [press_enter]="按回车继续…"
   [bad_endpoint]="无效 host:port '%s' — 形如 host.example:7443 (留空=自动)"
   [op_cancelled]="已取消。"
+  [ask_advertised_pub]="公网通告地址 [%s] (回车=接受, '-' = 不设/回环): "
+  [summary_title]="即将安装:"
+  [sum_role]="  角色:                 %s"
+  [sum_deploy]="  部署:                 %s"
+  [sum_version]="  版本:                 %s"
+  [sum_bindir]="  bin 目录:             %s"
+  [sum_datadir]="  data 目录:            %s"
+  [sum_ophttp]="  operator http:        %s"
+  [sum_compose]="  compose 目录:         %s"
+  [sum_advertised]="  通告地址:             %s"
+  [prov_detected]="(探测到的公网 IP)"
+  [prov_nic]="(本地网卡)"
+  [prov_loopback]="(回环 — 仅本机)"
+  [prov_user]="(手动输入)"
 )
 
 resolve_lang() {
@@ -441,6 +469,7 @@ parse_args() {
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
+      --detect-ip) detect_public_ip; printf '%s %s\n' "$DETECTED_IP" "$DETECTED_PROV"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
