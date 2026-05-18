@@ -368,6 +368,73 @@ bytes. Under a mid-flow RST, in-flight bytes are dropped on both
 paths; the counters agree on the delivered total. This is not a
 regression introduced by the fast path.
 
+## Advertised endpoint
+
+See [Advertised Endpoint](/docs/features/advertised-endpoint) for the
+full model. The endpoint is resolved fail-closed and validated against
+the server certificate SAN.
+
+### `endpoint_invalid` (HTTP 422)
+
+`PUT /v1/settings/advertised-endpoint` (or the Web UI Save) rejected
+the value: it is not a bare `host:port` (it had a scheme, path, IPv6
+literal, whitespace, …).
+
+**Fix**: submit a bare `host:port`, e.g. `proxy.example.com:34567`. No
+`https://`, no trailing path.
+
+### `endpoint_not_in_cert_san` (HTTP 422)
+
+The host is well-formed but **not covered by the server certificate
+SAN**. The override is intentionally *not* persisted — the server
+fails closed rather than advertise a host it cannot prove over TLS.
+Same root cause when GET returns `effective: null` with a SAN
+`diagnostic`, or startup logs an uncovered seed.
+
+**Fix** (operator action):
+
+1. Confirm the client-facing `host:port` (the public address clients
+   dial — e.g. the Railway TCP-proxy domain).
+2. Inspect the deployed cert SAN:
+
+   ```sh
+   openssl x509 -in server.crt -noout -text \
+     | grep -A1 "Subject Alternative Name"
+   ```
+
+3. If the host *is* present (mind: wildcards match only the single
+   left-most label; an IP literal needs an IP SAN, not a DNS SAN), the
+   input used the wrong label — correct and retry.
+4. If absent, reissue/obtain a certificate whose SAN includes that
+   host (a DNS SAN, a single-label `*.` wildcard covering it, or an IP
+   SAN for IP literals), redeploy `server.crt` + `server.key`, restart.
+5. Re-apply the override (`PUT` / Web UI) or fix the seed
+   (`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`) — it now
+   returns `200`.
+6. Recreate enrollments created while the endpoint was wrong (they
+   froze the old value). Legacy `NULL`-endpoint enrollments need no
+   recreation — their redeem succeeds once the config is fixed.
+
+### Client bundle points at `127.0.0.1` / loopback
+
+No override and no seed were set, so resolution fell through to the
+tier-4 loopback (`127.0.0.1:<control_port>`), which a remote client
+cannot reach.
+
+**Fix**: set an explicit override (Web UI / `PUT`) or seed
+(`PORTUNUS_ADVERTISED_ENDPOINT`) to a SAN-covered public `host:port`,
+then recreate the affected enrollments.
+
+### Legacy enrollment redeem fails with `failed_precondition`
+
+A pre-upgrade enrollment (NULL stored endpoint) resolved fail-closed
+at redeem and the current configuration is invalid/uncovered. The
+enrollment is **not** consumed and the client token is **not** rotated.
+
+**Fix**: correct the advertised-endpoint configuration (see
+`endpoint_not_in_cert_san` above); the client can then redeem the
+same code again — it is idempotent until it succeeds.
+
 ## Where to file bugs
 
 GitHub issues: https://github.com/ZingerLittleBee/Portunus/issues

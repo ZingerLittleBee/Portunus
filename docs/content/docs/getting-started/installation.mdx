@@ -94,6 +94,15 @@ state live in the `portunus-data` volume.
 The Web UI is available on the server host at `http://127.0.0.1:7080/`. The
 client control-plane listener remains on `0.0.0.0:7443`.
 
+**Deploying behind a proxy / on a cloud host?** The enrollment URI must
+embed the **public** `host:port` an edge client can dial. If you do not
+configure it, an enrollment created without a browser request (e.g. the
+Docker operator `enroll-client`) falls back to `127.0.0.1:7443`, which a
+remote client cannot reach. Set the advertised endpoint via
+`PORTUNUS_ADVERTISED_ENDPOINT=host:port` (or the Web UI **Settings →
+Client connect address**), and ensure the server certificate SAN covers
+that host — see [Advertised Endpoint](/en/docs/features/advertised-endpoint).
+
 ### Compose file reference
 
 ```yaml

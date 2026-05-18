@@ -232,6 +232,11 @@ pub enum OperatorError {
     /// Maps to HTTP 400 / exit 3.
     #[error("{code}: {message}")]
     RateLimitValidation { code: &'static str, message: String },
+
+    /// Advertised-endpoint resolution failed (malformed/uncovered config
+    /// or no SAN-covered candidate). 010-advertised-endpoint.
+    #[error("advertised_endpoint: {0}")]
+    AdvertisedEndpoint(#[from] crate::advertised::ResolveEndpointError),
 }
 
 fn format_port_in_use(offending_port: Option<u16>) -> String {
@@ -276,7 +281,10 @@ impl OperatorError {
             // 011-rate-limiting-qos: rate-limit capability + validation
             // gates share exit 3 with the surrounding family.
             | Self::RateLimitUnsupportedByClient { .. }
-            | Self::RateLimitValidation { .. } => 3,
+            | Self::RateLimitValidation { .. }
+            // 010-advertised-endpoint: resolution failure is a
+            // validation-family error (HTTP 422 / exit 3).
+            | Self::AdvertisedEndpoint(_) => 3,
             Self::ClientNotConnected(_) => 4,
             // 009-tls-sni-routing: SNI conflicts share exit 5 with
             // PortInUse (the closest analogue: rule shape rejected
@@ -370,6 +378,9 @@ impl OperatorError {
             Self::ProxyProtocolUnsupportedByClient { .. } => "proxy_protocol_unsupported_by_client",
             // 011-rate-limiting-qos (operator-api.md §1.x):
             Self::RateLimitUnsupportedByClient { .. } => "rate_limit_unsupported_by_client",
+            // 010-advertised-endpoint: delegate to the resolver's
+            // operator-api-stable code mapping.
+            Self::AdvertisedEndpoint(e) => e.http_code(),
         }
     }
 }
@@ -469,6 +480,7 @@ pub fn enroll_client(
     raw_name: &str,
     client_address: Option<&str>,
     ttl_secs: u64,
+    req_host: Option<&str>,
 ) -> Result<EnrollmentCommand, OperatorError> {
     let name = ClientName::from_str(raw_name)?;
     if ttl_secs == 0 {
@@ -484,6 +496,7 @@ pub fn enroll_client(
         },
         ttl_secs,
         "audit.client_enrollment_created",
+        req_host,
     )
 }
 
@@ -493,6 +506,7 @@ pub fn enroll_existing_client(
     state: &AppState,
     raw_name: &str,
     ttl_secs: u64,
+    req_host: Option<&str>,
 ) -> Result<EnrollmentCommand, OperatorError> {
     let name = ClientName::from_str(raw_name)?;
     if ttl_secs == 0 {
@@ -505,6 +519,7 @@ pub fn enroll_existing_client(
         EnrollmentTarget::Existing,
         ttl_secs,
         "audit.client_reenrollment_created",
+        req_host,
     )
 }
 
@@ -514,6 +529,7 @@ fn create_enrollment_command(
     target: EnrollmentTarget,
     ttl_secs: u64,
     event: &'static str,
+    req_host: Option<&str>,
 ) -> Result<EnrollmentCommand, OperatorError> {
     let now = Utc::now();
     let ttl = chrono::Duration::from_std(Duration::from_secs(ttl_secs)).map_err(|e| {
@@ -521,14 +537,28 @@ fn create_enrollment_command(
             message: format!("invalid enrollment ttl: {e}"),
         }
     })?;
+    let override_value = state
+        .settings
+        .get_advertised_endpoint()
+        .map_err(OperatorError::from)?;
+    let resolved = crate::advertised::resolve_advertised_endpoint(
+        &crate::advertised::resolve::ResolveInputs {
+            override_value,
+            seed: state.advertised_seed.clone(),
+            req_host,
+            control_port: state.control_port,
+            san: &state.cert_san,
+        },
+    )?;
     let enrollments = ClientEnrollmentStore::new(Arc::clone(&state.store));
     let created = enrollments.create(CreateEnrollment {
         client_name: name.clone(),
         target,
         expires_at: now + ttl,
         now,
+        advertised_endpoint: resolved.endpoint.clone(),
     })?;
-    let uri = enrollment_uri(state, &created.code);
+    let uri = enrollment_uri(state, &resolved.endpoint, &created.code);
     let command = format!("portunus-client enroll '{uri}'");
     info!(
         event,
@@ -543,13 +573,13 @@ fn create_enrollment_command(
     })
 }
 
-fn enrollment_uri(state: &AppState, code: &str) -> String {
+fn enrollment_uri(state: &AppState, endpoint: &str, code: &str) -> String {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
     let cert = URL_SAFE_NO_PAD.encode(state.server_cert_pem.as_bytes());
     format!(
         "portunus://{}/enroll?pin=sha256:{}&code={}&cert={}",
-        state.server_endpoint, state.server_cert_sha256, code, cert
+        endpoint, state.server_cert_sha256, code, cert
     )
 }
 

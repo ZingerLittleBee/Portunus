@@ -399,7 +399,13 @@
   "settings": {
     "title": "Settings",
     "themeHeading": "Theme",
-    "languageHeading": "Language"
+    "languageHeading": "Language",
+    "advertisedHeading": "Client connect address",
+    "advertisedDescription": "host:port the client uses to reach the gRPC control plane. Leave empty to auto-derive from this page's host. On Railway/reverse-proxied setups set the TCP-proxy host:port and ensure the server certificate covers that host.",
+    "advertisedEffective": "Effective: {{effective}} ({{source}})",
+    "advertisedSave": "Save",
+    "advertisedClear": "Clear (auto)",
+    "advertisedDiagnostic": "Not resolvable: {{diagnostic}}"
   },
   "notFound": {
     "title": "Page not found",

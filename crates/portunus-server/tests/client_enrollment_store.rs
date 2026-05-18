@@ -41,11 +41,14 @@ fn created_code_redeems_once_and_issues_client_token() {
             },
             expires_at: now + Duration::minutes(10),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
 
     let issued = enrollments
-        .redeem(&created.code, now + Duration::seconds(1))
+        .redeem(&created.code, now + Duration::seconds(1), || {
+            panic!("resolver must not run for persisted-endpoint rows")
+        })
         .expect("redeem enrollment");
 
     assert_eq!(issued.client_name.as_str(), "edge-01");
@@ -59,7 +62,9 @@ fn created_code_redeems_once_and_issues_client_token() {
     );
     assert!(matches!(
         enrollments
-            .redeem(&created.code, now + Duration::seconds(2))
+            .redeem(&created.code, now + Duration::seconds(2), || panic!(
+                "resolver must not run for persisted-endpoint rows"
+            ))
             .unwrap_err(),
         RedeemEnrollmentError::AlreadyUsed
     ));
@@ -77,11 +82,14 @@ fn expired_code_does_not_issue_client_token() {
             },
             expires_at: now + Duration::seconds(1),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
 
     let err = enrollments
-        .redeem(&created.code, now + Duration::seconds(2))
+        .redeem(&created.code, now + Duration::seconds(2), || {
+            panic!("resolver must not run for persisted-endpoint rows")
+        })
         .unwrap_err();
 
     assert!(matches!(err, RedeemEnrollmentError::Expired));
@@ -101,6 +109,7 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
             },
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create older enrollment");
     let newer = enrollments
@@ -111,16 +120,21 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
             },
             expires_at: now + Duration::minutes(5),
             now: now + Duration::seconds(1),
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create newer enrollment");
 
     assert!(matches!(
-        enrollments.redeem(&older.code, now + Duration::seconds(2)),
+        enrollments.redeem(&older.code, now + Duration::seconds(2), || panic!(
+            "resolver must not run for persisted-endpoint rows"
+        )),
         Err(RedeemEnrollmentError::AlreadyUsed)
     ));
 
     let issued = enrollments
-        .redeem(&newer.code, now + Duration::seconds(2))
+        .redeem(&newer.code, now + Duration::seconds(2), || {
+            panic!("resolver must not run for persisted-endpoint rows")
+        })
         .expect("newer code redeems");
     assert_eq!(
         tokens
@@ -146,11 +160,16 @@ fn existing_client_code_redeems_by_rotating_token_in_place() {
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
     assert_eq!(created.client_address.as_deref(), Some("edge.example.com"));
 
-    let issued = enrollments.redeem(&created.code, now).expect("redeem");
+    let issued = enrollments
+        .redeem(&created.code, now, || {
+            panic!("resolver must not run for persisted-endpoint rows")
+        })
+        .expect("redeem");
 
     assert_eq!(issued.client_name, name);
     assert!(issued.rotated_existing);
@@ -185,6 +204,7 @@ fn new_client_enrollment_rejects_existing_client_inside_store_transaction() {
             },
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect_err("new enrollment must reject existing client");
 
@@ -206,6 +226,7 @@ fn existing_client_enrollment_requires_existing_client_inside_store_transaction(
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect_err("re-enrollment must require existing client");
 
@@ -246,6 +267,7 @@ fn creating_enrollment_prunes_old_consumed_and_expired_rows() {
             },
             expires_at: now + Duration::minutes(5),
             now,
+            advertised_endpoint: "public.example:7443".to_string(),
         })
         .expect("create enrollment");
 

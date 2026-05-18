@@ -136,6 +136,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/traffic/global",
             get(crate::operator::quota_http::get_global_traffic),
         )
+        // 014-advertised-endpoint: operator GET/PUT for the runtime
+        // advertised-endpoint override. Superadmin-only.
+        .route(
+            "/v1/settings/advertised-endpoint",
+            get(get_advertised_endpoint).put(put_advertised_endpoint),
+        )
         // 005-multi-user-rbac T023: every /v1/* request goes through the
         // auth middleware FIRST. Mounted via `route_layer` so it applies
         // to all routes registered above.
@@ -178,15 +184,20 @@ struct UpdateClientBody {
 async fn post_client_enrollments(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<EnrollmentBody>,
 ) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
     crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let req_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
     let enrollment = cli::enroll_client(
         &state,
         &body.name,
         Some(&body.address),
         body.ttl_secs.unwrap_or(600),
+        req_host,
     )?;
     Ok((
         StatusCode::CREATED,
@@ -202,12 +213,17 @@ async fn post_client_enrollments(
 async fn post_client_reenrollment(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
+    headers: axum::http::HeaderMap,
     Path(name): Path<String>,
     Json(body): Json<ReEnrollmentBody>,
 ) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
     crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
-    let enrollment = cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600))?;
+    let req_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
+    let enrollment =
+        cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600), req_host)?;
     Ok((
         StatusCode::CREATED,
         Json(EnrollmentResponse {
@@ -1385,6 +1401,99 @@ async fn get_rule_stats(
     Ok(Json(body))
 }
 
+// ---------------------------------------------------------------------------
+// Advertised-endpoint settings (014-advertised-endpoint)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct AdvertisedEndpointBody {
+    /// `null`/empty clears the override.
+    advertised_endpoint: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AdvertisedEndpointView {
+    r#override: Option<String>,
+    effective: Option<String>,
+    source: Option<crate::advertised::EndpointSource>,
+    diagnostic: Option<String>,
+}
+
+async fn get_advertised_endpoint(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+) -> Result<Json<AdvertisedEndpointView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let override_value = state
+        .settings
+        .get_advertised_endpoint()
+        .map_err(map_store_err)?;
+    let view =
+        match crate::advertised::resolve_advertised_endpoint(&crate::advertised::ResolveInputs {
+            override_value: override_value.clone(),
+            seed: state.advertised_seed.clone(),
+            req_host: None,
+            control_port: state.control_port,
+            san: &state.cert_san,
+        }) {
+            Ok(r) => AdvertisedEndpointView {
+                r#override: override_value,
+                effective: Some(r.endpoint),
+                source: Some(r.source),
+                diagnostic: None,
+            },
+            Err(e) => AdvertisedEndpointView {
+                r#override: override_value,
+                effective: None,
+                source: None,
+                diagnostic: Some(e.to_string()),
+            },
+        };
+    Ok(Json(view))
+}
+
+async fn put_advertised_endpoint(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+    Json(body): Json<AdvertisedEndpointBody>,
+) -> Result<Json<AdvertisedEndpointView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
+    let value = body.advertised_endpoint.filter(|s| !s.is_empty());
+    if let Some(v) = &value {
+        let (host, _) = crate::advertised::grammar::validate_authority(v).map_err(|reason| {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "endpoint_invalid", reason)
+        })?;
+        if !state.cert_san.covers(host) {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "endpoint_not_in_cert_san",
+                format!(
+                    "host {host} is not covered by the server certificate SAN; \
+                     reissue/redeploy the cert to cover it"
+                ),
+            ));
+        }
+    }
+    state
+        .settings
+        .set_advertised_endpoint(value)
+        .map_err(map_store_err)?;
+    get_advertised_endpoint(State(state), Extension(identity)).await
+}
+
+fn map_store_err(e: crate::store::StoreError) -> ApiError {
+    tracing::warn!(event = "operator.store_error", error = %e);
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "store_error",
+        "store_error",
+    )
+}
+
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Serialize)]
 struct ApiErrorBody {
     error: ApiErrorInner,
@@ -1476,7 +1585,11 @@ impl From<OperatorError> for ApiError {
             // is the same semantic class as the surrounding gates —
             // client connected but its version cannot honour the new
             // field. 422 mirrors v0.9 / v0.10.
-            | OperatorError::RateLimitUnsupportedByClient { .. } => {
+            | OperatorError::RateLimitUnsupportedByClient { .. }
+            // 010-advertised-endpoint: malformed/uncovered config or no
+            // SAN-covered candidate — operator-config-level failure that
+            // cannot be satisfied as-is. 422 mirrors the capability gates.
+            | OperatorError::AdvertisedEndpoint(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
@@ -1488,10 +1601,17 @@ impl From<OperatorError> for ApiError {
             OperatorError::Rbac(rb) => crate::operator::auth_layer::rbac_status(rb),
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
+        let message = match &e {
+            OperatorError::Store(inner) => {
+                tracing::warn!(event = "operator.store_error", error = %inner);
+                "store_error".to_string()
+            }
+            _ => e.to_string(),
+        };
         Self {
             status,
             code: e.code().to_string(),
-            message: e.to_string(),
+            message,
         }
     }
 }
@@ -1557,5 +1677,83 @@ mod tests {
         // OutOfBounds — port 0 is not a real listening port.
         let err = build_range(0, Some(10)).unwrap_err();
         assert!(err.contains("out_of_bounds"), "got: {err}");
+    }
+
+    // ---- M1 security-hygiene: store-error redaction in HTTP responses ----
+    //
+    // `StoreError::Internal { message }` Display is `"internal: {message}"`.
+    // Both `map_store_err` (Site B) and `ApiError::from(OperatorError::Store(…))`
+    // (Site A) must NOT propagate that raw text into the response body.
+
+    const SENTINEL: &str = "SENSITIVE_SQL_abc123";
+
+    #[test]
+    fn map_store_err_redacts_internal_message() {
+        let store_err = crate::store::StoreError::Internal {
+            message: SENTINEL.into(),
+        };
+        let api_err = map_store_err(store_err);
+        assert_eq!(
+            api_err.status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "status must remain INTERNAL_SERVER_ERROR"
+        );
+        assert_eq!(api_err.code, "store_error", "code must be store_error");
+        assert_eq!(
+            api_err.message, "store_error",
+            "message must be generic, not raw store detail"
+        );
+        assert!(
+            !api_err.message.contains(SENTINEL),
+            "sentinel must not appear in message; got: {:?}",
+            api_err.message
+        );
+    }
+
+    #[test]
+    fn operator_error_store_from_redacts_message() {
+        let store_err = crate::store::StoreError::Internal {
+            message: SENTINEL.into(),
+        };
+        let api_err = ApiError::from(OperatorError::Store(store_err));
+        assert_eq!(
+            api_err.status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "status must remain INTERNAL_SERVER_ERROR"
+        );
+        assert_eq!(api_err.code, "store_error", "code must be store_error");
+        assert_eq!(
+            api_err.message, "store_error",
+            "message must be generic, not raw store detail"
+        );
+        assert!(
+            !api_err.message.contains(SENTINEL),
+            "sentinel must not appear in message; got: {:?}",
+            api_err.message
+        );
+    }
+
+    // Positive control: a non-Store OperatorError variant keeps its informative message.
+    // `ResolveEndpointError::NoSanCoveredCandidate` is the cheapest zero-field variant.
+    #[test]
+    fn operator_error_non_store_message_preserved() {
+        let err = OperatorError::AdvertisedEndpoint(
+            crate::advertised::ResolveEndpointError::NoSanCoveredCandidate,
+        );
+        let api_err = ApiError::from(err);
+        assert_eq!(
+            api_err.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "AdvertisedEndpoint → 422"
+        );
+        // The message must be informative (non-empty, not the generic "store_error").
+        assert_ne!(
+            api_err.message, "store_error",
+            "non-Store variant must keep its own message"
+        );
+        assert!(
+            !api_err.message.is_empty(),
+            "non-Store variant must have an informative message"
+        );
     }
 }

@@ -59,14 +59,15 @@ impl ClientEnrollmentStore {
             .map_err(map_rusqlite)?;
             tx.execute(
                 "INSERT INTO client_enrollments \
-                 (client_name, client_address, code_hash, issued_at, expires_at, consumed_at) \
-                 VALUES (?, ?, ?, ?, ?, NULL)",
+                 (client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
+                 VALUES (?, ?, ?, ?, ?, NULL, ?)",
                 rusqlite::params![
                     input.client_name.as_str(),
                     client_address.as_deref(),
                     code_hash,
                     issued_at,
-                    expires_at
+                    expires_at,
+                    input.advertised_endpoint
                 ],
             )
             .map_err(map_rusqlite)?;
@@ -84,6 +85,7 @@ impl ClientEnrollmentStore {
         &self,
         code: &str,
         now: DateTime<Utc>,
+        resolve_legacy: impl FnOnce() -> Result<String, RedeemEnrollmentError>,
     ) -> Result<IssuedClientCredential, RedeemEnrollmentError> {
         if code.is_empty() || code.len() > 256 {
             return Err(RedeemEnrollmentError::InvalidCode);
@@ -96,7 +98,7 @@ impl ClientEnrollmentStore {
         self.store.with_write_tx(|tx| {
             let mut stmt = tx
                 .prepare(
-                    "SELECT id, client_name, client_address, code_hash, expires_at, consumed_at \
+                    "SELECT id, client_name, client_address, code_hash, expires_at, consumed_at, advertised_endpoint \
                          FROM client_enrollments",
                 )
                 .map_err(map_rusqlite)?;
@@ -109,6 +111,7 @@ impl ClientEnrollmentStore {
                         code_hash: row.get(3)?,
                         expires_at: row.get(4)?,
                         consumed_at: row.get(5)?,
+                        advertised_endpoint: row.get(6)?,
                     })
                 })
                 .map_err(map_rusqlite)?;
@@ -143,6 +146,22 @@ impl ClientEnrollmentStore {
                         detail: format!("client_enrollments invalid client_name: {e}"),
                     })));
                 }
+            };
+
+            // Resolve the effective advertised endpoint BEFORE any
+            // consume / token-mint write. For a legacy pre-V010 NULL
+            // row this calls the fail-closed resolver; on failure we
+            // early-return here so the `UPDATE consumed_at` and the
+            // `client_tokens` insert/rotate below never run — the
+            // transaction commits with zero mutations and the
+            // enrollment stays redeemable (idempotent / retryable
+            // once the operator fixes the advertised-endpoint config).
+            let effective_endpoint = match row.advertised_endpoint.clone() {
+                Some(ep) => ep,
+                None => match resolve_legacy() {
+                    Ok(ep) => ep,
+                    Err(e) => return Ok(Err(e)),
+                },
             };
 
             let existing_client: bool = tx
@@ -195,6 +214,7 @@ impl ClientEnrollmentStore {
                 client_name,
                 token: client_token,
                 rotated_existing: existing_client,
+                advertised_endpoint: Some(effective_endpoint),
             }))
         })?
     }
@@ -206,6 +226,7 @@ pub struct CreateEnrollment {
     pub target: EnrollmentTarget,
     pub expires_at: DateTime<Utc>,
     pub now: DateTime<Utc>,
+    pub advertised_endpoint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +248,7 @@ pub struct IssuedClientCredential {
     pub client_name: ClientName,
     pub token: String,
     pub rotated_existing: bool,
+    pub advertised_endpoint: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -247,6 +269,12 @@ pub enum RedeemEnrollmentError {
     Expired,
     #[error("already_used")]
     AlreadyUsed,
+    /// Legacy pre-V010 NULL-endpoint row could not be resolved
+    /// fail-closed at redeem time. Surfaced BEFORE any consume / token
+    /// write so the enrollment stays redeemable once the operator fixes
+    /// the advertised-endpoint config (idempotent / retryable).
+    #[error("advertised_endpoint: {0}")]
+    AdvertisedEndpoint(String),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -258,6 +286,7 @@ struct EnrollmentRow {
     code_hash: String,
     expires_at: String,
     consumed_at: Option<String>,
+    advertised_endpoint: Option<String>,
 }
 
 enum ExistingClient {
@@ -306,4 +335,239 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>, RedeemEnrollmentError> {
                 detail: format!("bad RFC3339 ts: {e}"),
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use tempfile::tempdir;
+
+    fn test_store() -> Arc<Store> {
+        let dir = tempdir().unwrap();
+        Arc::new(Store::open(dir.path()).unwrap())
+    }
+
+    fn consumed_at_of(store: &Store, code: &str) -> Option<String> {
+        let hash = fingerprint::hex(&token::hash_token(code));
+        store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT consumed_at FROM client_enrollments WHERE code_hash = ?",
+                    rusqlite::params![hash],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap()
+    }
+
+    fn token_hash_of(store: &Store, client_name: &str) -> Option<String> {
+        store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT token_hash FROM client_tokens WHERE client_name = ?",
+                    rusqlite::params![client_name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_rusqlite)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn create_persists_and_redeem_returns_advertised_endpoint() {
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+        let now = Utc::now();
+        let created = es
+            .create(CreateEnrollment {
+                client_name: ClientName::from_str("edge-1").unwrap(),
+                target: EnrollmentTarget::New {
+                    client_address: None,
+                },
+                expires_at: now + chrono::Duration::seconds(300),
+                now,
+                advertised_endpoint: "public.example:7443".to_string(),
+            })
+            .unwrap();
+        // Persisted-endpoint rows must NEVER invoke the legacy resolver.
+        let issued = es
+            .redeem(&created.code, Utc::now(), || {
+                panic!("resolver must not run for persisted-endpoint rows")
+            })
+            .unwrap();
+        assert_eq!(
+            issued.advertised_endpoint.as_deref(),
+            Some("public.example:7443")
+        );
+    }
+
+    /// Insert a pre-V010-style row (NULL `advertised_endpoint`) plus a
+    /// pre-existing `client_tokens` row, so a redeem of this legacy code
+    /// would *rotate* the existing token. Returns the legacy code.
+    fn seed_legacy_existing_client(store: &Store, name: &str, code: &str) -> String {
+        let now = Utc::now();
+        let prior_token = "prior-token-for-existing-client";
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO client_tokens \
+                     (client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, NULL, NULL)",
+                    rusqlite::params![
+                        name,
+                        fingerprint::hex(&token::hash_token(prior_token)),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .unwrap();
+                tx.execute(
+                    "INSERT INTO client_enrollments \
+                     (client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
+                     VALUES (?, NULL, ?, ?, ?, NULL, NULL)",
+                    rusqlite::params![
+                        name,
+                        fingerprint::hex(&token::hash_token(code)),
+                        now.to_rfc3339(),
+                        (now + chrono::Duration::seconds(300)).to_rfc3339(),
+                    ],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        fingerprint::hex(&token::hash_token(prior_token))
+    }
+
+    #[test]
+    fn legacy_failed_resolution_leaves_enrollment_unconsumed_and_token_unrotated() {
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+        let code = "legacycode000000000000000000000000000000000000000000000000000000";
+        let prior_hash = seed_legacy_existing_client(&store, "legacy-1", code);
+
+        // Fail-closed resolver: the redeem must surface the error and
+        // roll back — no consume, no token rotation.
+        let err = es
+            .redeem(code, Utc::now(), || {
+                Err(RedeemEnrollmentError::AdvertisedEndpoint(
+                    "advertised_endpoint_unresolved".to_string(),
+                ))
+            })
+            .unwrap_err();
+        assert!(matches!(err, RedeemEnrollmentError::AdvertisedEndpoint(_)));
+
+        // Enrollment still redeemable: consumed_at IS NULL.
+        assert_eq!(
+            consumed_at_of(&store, code),
+            None,
+            "failed legacy resolution must NOT consume the enrollment"
+        );
+        // Existing client's token must be byte-identical (not rotated).
+        assert_eq!(
+            token_hash_of(&store, "legacy-1").as_deref(),
+            Some(prior_hash.as_str()),
+            "failed legacy resolution must NOT rotate the client token"
+        );
+
+        // Now a SUCCEEDING resolver redeems normally and consumes.
+        let issued = es
+            .redeem(code, Utc::now(), || Ok("public.example:7443".to_string()))
+            .unwrap();
+        assert_eq!(
+            issued.advertised_endpoint.as_deref(),
+            Some("public.example:7443")
+        );
+        assert!(
+            consumed_at_of(&store, code).is_some(),
+            "successful redeem must consume the enrollment"
+        );
+        assert_ne!(
+            token_hash_of(&store, "legacy-1").as_deref(),
+            Some(prior_hash.as_str()),
+            "successful redeem must rotate the existing client token"
+        );
+    }
+
+    /// Verifies the hoisted-settings-read + pure-resolver path (the C1
+    /// fix in `grpc/enrollment.rs`) composes correctly through a real
+    /// redeem of a legacy NULL-`advertised_endpoint` row. This test
+    /// constructs the `resolve_legacy` closure exactly as the fixed
+    /// `enroll` handler does (real `SqliteSettingsStore.get_advertised_endpoint()`
+    /// called before `redeem`, result moved into a closure that calls the
+    /// pure resolver) and exercises it against a real `ClientEnrollmentStore`
+    /// with a seeded legacy NULL-`advertised_endpoint` row. Confirms:
+    /// - the hoisted settings read composes correctly with the closure;
+    /// - the pure resolver (`resolve_advertised_endpoint`) resolves the
+    ///   override to the expected endpoint string;
+    /// - `redeem` succeeds, returns `advertised_endpoint == Some("public.example:7443")`,
+    ///   and the enrollment is consumed.
+    ///
+    /// Note: this does NOT reproduce the C1 1-vCPU nested-pool-checkout
+    /// deadlock — at the default test-host pool size (> 1) this would
+    /// pass even against the original buggy nested-checkout code. The
+    /// deadlock is prevented structurally: the closure no longer performs
+    /// any pool access (the settings read is hoisted ahead of the redeem
+    /// transaction). This test guards that composition, not the deadlock.
+    #[test]
+    fn legacy_null_row_redeems_via_hoisted_settings_read_and_pure_resolver() {
+        use crate::advertised::CertSanSet;
+        use crate::store::settings_store::SqliteSettingsStore;
+
+        const FIXTURE_PEM: &str = include_str!("../advertised/testdata/san_fixture.pem");
+        const OVERRIDE_EP: &str = "public.example:7443";
+        const CODE: &str = "legacyc1code0000000000000000000000000000000000000000000000000000";
+
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+
+        // Persist the operator override so the settings read returns Some.
+        let settings = SqliteSettingsStore::new(Arc::clone(&store));
+        settings
+            .set_advertised_endpoint(Some(OVERRIDE_EP.to_string()))
+            .expect("set override");
+
+        // Seed a legacy NULL-advertised_endpoint enrollment row.
+        seed_legacy_existing_client(&store, "legacy-c1", CODE);
+
+        // Build the resolve closure EXACTLY as the fixed enroll() handler:
+        // hoist the settings DB read before redeem, move the Result into
+        // the closure, run the pure resolver inside.
+        let cert_san = std::sync::Arc::new(CertSanSet::from_pem(FIXTURE_PEM).unwrap());
+        let advertised_seed: Option<String> = None;
+        let control_port: u16 = 7443;
+
+        let pre_override = settings.get_advertised_endpoint(); // ← hoisted (no DB inside redeem tx)
+        let resolve_legacy = move || -> Result<String, RedeemEnrollmentError> {
+            let override_value = pre_override.map_err(RedeemEnrollmentError::Store)?;
+            crate::advertised::resolve_advertised_endpoint(
+                &crate::advertised::resolve::ResolveInputs {
+                    override_value,
+                    seed: advertised_seed,
+                    req_host: None,
+                    control_port,
+                    san: &cert_san,
+                },
+            )
+            .map(|r| r.endpoint)
+            .map_err(|e| RedeemEnrollmentError::AdvertisedEndpoint(e.http_code().to_string()))
+        };
+
+        let issued = es
+            .redeem(CODE, Utc::now(), resolve_legacy)
+            .expect("redeem must succeed for legacy NULL row with valid settings");
+
+        assert_eq!(
+            issued.advertised_endpoint.as_deref(),
+            Some(OVERRIDE_EP),
+            "resolved endpoint must match the settings override"
+        );
+        assert!(
+            consumed_at_of(&store, CODE).is_some(),
+            "enrollment must be consumed after successful redeem"
+        );
+    }
 }

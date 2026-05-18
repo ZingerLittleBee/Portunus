@@ -12,6 +12,7 @@
     "rate-limiting",
     "rbac",
     "web-ui",
+    "advertised-endpoint",
     "sqlite-storage"
   ]
 }

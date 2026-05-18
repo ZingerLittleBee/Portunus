@@ -28,6 +28,7 @@ tonic-prost = { workspace = true }
 prost = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
+x509-parser = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
 rpassword = { workspace = true }

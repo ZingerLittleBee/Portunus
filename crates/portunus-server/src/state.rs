@@ -24,8 +24,14 @@ pub struct AppState {
     pub tokens: Arc<SqliteTokenStore>,
     pub clients: ConnectedClients,
     pub rules: ServerRuleStore,
-    /// `host:port` advertised in newly-issued credential bundles.
-    pub server_endpoint: String,
+    /// Tier-2 seed: CLI `--advertised-endpoint` / `PORTUNUS_ADVERTISED_ENDPOINT`.
+    pub advertised_seed: Option<String>,
+    /// Server's resolved control-plane port (tiers 3 & 4).
+    pub control_port: u16,
+    /// Parsed leaf-cert SAN set (coverage gate for the resolver).
+    pub cert_san: std::sync::Arc<crate::advertised::CertSanSet>,
+    /// Operator advertised-endpoint override accessor.
+    pub settings: std::sync::Arc<crate::store::settings_store::SqliteSettingsStore>,
     /// Lowercase 64-char hex SHA-256 of the server leaf cert DER.
     pub server_cert_sha256: String,
     /// PEM-encoded server leaf certificate (carried in bundles so the
@@ -121,12 +127,15 @@ impl AppState {
         tokens: Arc<SqliteTokenStore>,
         operator_store: Arc<SqliteOperatorStore>,
         clients: ConnectedClients,
-        server_endpoint: impl Into<String>,
+        advertised_seed: Option<String>,
+        control_port: u16,
         server_cert_sha256: impl Into<String>,
         server_cert_pem: impl Into<String>,
         range_rule_max_ports: u32,
         store: Arc<Store>,
     ) -> Result<Self, prometheus::Error> {
+        let server_cert_pem: String = server_cert_pem.into();
+        let server_cert_pem_ref: &str = &server_cert_pem;
         let operator_auth: Arc<dyn OperatorAuthenticator> = operator_store.clone();
         let audit = Arc::new(AuditRing::new());
         let metrics = Arc::new(Metrics::new()?);
@@ -180,13 +189,28 @@ impl AppState {
         // T009: stitch the audit ring's drop counter into Prometheus so
         // an oversaturated buffer becomes visible without grepping logs.
         audit.bind_drops_metric(metrics.audit_buffer_drops_total.clone());
+        let cert_san = match crate::advertised::CertSanSet::from_pem(server_cert_pem_ref) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    event = "advertised.cert_san_parse_failed",
+                    error = %e,
+                );
+                crate::advertised::CertSanSet::default()
+            }
+        };
         Ok(Self {
             tokens,
             clients,
             rules: ServerRuleStore::new(),
-            server_endpoint: server_endpoint.into(),
+            advertised_seed,
+            control_port,
+            cert_san: std::sync::Arc::new(cert_san),
+            settings: std::sync::Arc::new(crate::store::settings_store::SqliteSettingsStore::new(
+                std::sync::Arc::clone(&store),
+            )),
             server_cert_sha256: server_cert_sha256.into(),
-            server_cert_pem: server_cert_pem.into(),
+            server_cert_pem,
             metrics,
             stats_cache: RuleStatsCache::new(),
             per_port_stats: PerPortStatsCache::new(),

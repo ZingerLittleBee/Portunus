@@ -33,6 +33,7 @@ pub mod error;
 pub mod operator_store;
 pub mod owner_cap_store;
 pub mod rule_store;
+pub mod settings_store;
 pub mod token_store;
 
 use std::fs::OpenOptions;

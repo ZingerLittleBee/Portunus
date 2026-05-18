@@ -399,7 +399,13 @@
   "settings": {
     "title": "设置",
     "themeHeading": "主题",
-    "languageHeading": "语言"
+    "languageHeading": "语言",
+    "advertisedHeading": "客户端连接地址",
+    "advertisedDescription": "客户端用于连接 gRPC 控制面的 host:port。留空则按本页域名自动推导。Railway/反向代理场景请填 TCP 代理的 host:port，并确保服务器证书 SAN 覆盖该 host。",
+    "advertisedEffective": "当前生效: {{effective}}（{{source}}）",
+    "advertisedSave": "保存",
+    "advertisedClear": "清除（自动）",
+    "advertisedDiagnostic": "无法解析: {{diagnostic}}"
   },
   "notFound": {
     "title": "页面不存在",
