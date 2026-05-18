@@ -52,6 +52,8 @@ resolved_version=""
 os=""
 arch=""
 target=""
+DETECTED_IP=""        # last detect_public_ip() result
+DETECTED_PROV=""      # provenance i18n key: prov_detected|prov_nic|prov_loopback
 
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
@@ -524,6 +526,31 @@ first_run_lang() {
   case "$a" in 2) LANG_CODE=zh ;; *) LANG_CODE=en ;; esac
   mkdir -p "$(dirname "$LANG_CACHE")" 2>/dev/null \
     && printf '%s' "$LANG_CODE" > "$LANG_CACHE" 2>/dev/null || true
+}
+
+# Seed the advertised-endpoint default. Public probe → local NIC →
+# loopback. Sets DETECTED_IP + DETECTED_PROV (an i18n key). Never fatal.
+# PORTUNUS_SKIP_IP_PROBE=1 skips the external probe (offline/test/CI).
+valid_ip() { case "$1" in ""|*[!0-9a-fA-F.:]*) return 1 ;; *[.:]*) return 0 ;; *) return 1 ;; esac; }
+detect_public_ip() {
+  [ -n "$DETECTED_IP" ] && return 0
+  local ip=""
+  if [ "${PORTUNUS_SKIP_IP_PROBE:-0}" != 1 ] && command -v curl >/dev/null 2>&1; then
+    local u
+    for u in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+      ip="$(curl -fsS --max-time 3 "$u" 2>/dev/null | tr -d '[:space:]' || true)"
+      if valid_ip "$ip"; then DETECTED_IP="$ip"; DETECTED_PROV="prov_detected"; return 0; fi
+    done
+  fi
+  ip=""
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1 || true)"
+  fi
+  if [ -z "$ip" ] && command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | head -1 || true)"
+  fi
+  if valid_ip "$ip"; then DETECTED_IP="$ip"; DETECTED_PROV="prov_nic"; return 0; fi
+  DETECTED_IP="127.0.0.1"; DETECTED_PROV="prov_loopback"; return 0
 }
 
 wizard_install() {
