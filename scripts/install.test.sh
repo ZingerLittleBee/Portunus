@@ -130,6 +130,20 @@ printf '%s\n' "$io" | grep -qi 'invalid option' || fail "no invalid-option feedb
 di="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" --detect-ip)" || fail "--detect-ip exit"
 echo "$di" | grep -Eq '^[0-9a-fA-F.:]+ prov_(nic|loopback)$' || fail "skip-probe must yield NIC/loopback ($di)"
 
+# --- minimal wizard: server+binary asks only role/deploy/endpoint ---
+wo="$(printf '1\n1\n-\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$wo" | grep -q 'About to install:' || fail "no summary block"
+printf '%s\n' "$wo" | grep -q 'data dir:.*\/var\/lib\/portunus' || fail "summary missing data-dir default"
+printf '%s\n' "$wo" | grep -q 'operator http:.*127\.0\.0\.1:7080' || fail "summary missing op-http default"
+printf '%s\n' "$wo" | grep -qi 'loopback' || fail "'-' input should mark loopback"
+if printf '%s\n' "$wo" | grep -q 'Version (blank = latest)'; then fail "wizard still asks version"; fi
+if printf '%s\n' "$wo" | grep -q 'Server data dir'; then fail "wizard still asks data-dir"; fi
+
+# client: only role+deploy, no endpoint/summary advertised line
+co="$(printf '1\n2\n1\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en bash "$script" --menu-stdin 2>&1)" || true
+printf '%s\n' "$co" | grep -q 'About to install:' || fail "client no summary"
+if printf '%s\n' "$co" | grep -q 'advertised endpoint:'; then fail "client must not show advertised line"; fi
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"

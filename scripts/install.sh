@@ -24,7 +24,6 @@ esac
 REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
-DOCS_FEATURE_URL="https://github.com/${REPO}/blob/main/docs/content/docs/features/advertised-endpoint.mdx"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
 
 # ─── Globals ──────────────────────────────────────────────────────────
@@ -86,7 +85,6 @@ MSG_EN=(
   [ask_deploy]="Deploy form? [1] binary+systemd [2] docker compose: "
   [ask_version]="Version (blank = latest): "
   [ask_bindir]="Install dir [%s]: "
-  [ask_advertised]="Advertised endpoint host:port (blank = auto; cert SAN must cover it; see %s): "
   [ask_datadir]="Server data dir (blank = default): "
   [ask_ophttp]="Operator HTTP listen (blank = default): "
   [confirm_proceed]="Proceed? [Y/n]: "
@@ -139,7 +137,6 @@ MSG_ZH=(
   [ask_deploy]="部署方式? [1] 二进制+systemd [2] docker compose: "
   [ask_version]="版本 (留空=最新): "
   [ask_bindir]="安装目录 [%s]: "
-  [ask_advertised]="通告地址 host:port (留空=自动; 证书 SAN 须覆盖该 host; 参见 %s): "
   [ask_datadir]="服务端 data 目录 (留空=默认): "
   [ask_ophttp]="Operator HTTP 监听 (留空=默认): "
   [confirm_proceed]="继续? [Y/n]: "
@@ -581,23 +578,23 @@ print_install_summary() {
 }
 
 wizard_install() {
-  local a
+  local a adv_prov=""
   a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
   a="$(ask ask_deploy)"; case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
-  VERSION="$(ask ask_version)"
-  if [ "$DEPLOY" = binary ]; then BIN_DIR="$(ask ask_bindir "$DEFAULT_BIN_DIR")"; [ -z "$BIN_DIR" ] && BIN_DIR="$DEFAULT_BIN_DIR"; fi
   if [ "$ROLE" = server ]; then
+    detect_public_ip
+    adv_prov="$DETECTED_PROV"
     while :; do
-      ADVERTISED="$(ask ask_advertised "$DOCS_FEATURE_URL")"
-      valid_host_port "$ADVERTISED" && break
-      t bad_endpoint "$ADVERTISED"; echo
+      a="$(ask ask_advertised_pub "${DETECTED_IP}:7443")"
+      if [ -z "$a" ]; then ADVERTISED="${DETECTED_IP}:7443"; break; fi
+      if [ "$a" = "-" ]; then ADVERTISED=""; adv_prov="prov_loopback"; break; fi
+      if valid_host_port "$a"; then ADVERTISED="$a"; adv_prov="prov_user"; break; fi
+      t bad_endpoint "$a"; echo
     done
-    DATA_DIR="$(ask ask_datadir)"
-    OP_HTTP_LISTEN="$(ask ask_ophttp)"
   fi
   detect_platform; resolve_version_static
-  print_plan
-  confirm "$(t confirm_proceed)" || { echo "aborted"; return 1; }
+  print_install_summary "$adv_prov"
+  confirm "$(t confirm_proceed)" || { echo "$(t op_cancelled)"; return 1; }
   VERB=install; dispatch_verb
 }
 
