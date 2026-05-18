@@ -80,9 +80,10 @@ MSG_EN=(
   [menu_env]="  [7] Env"
   [menu_exit]="  [0] Exit"
   [menu_select]="Select [0-7]: "
-  [lang_prompt]="Select language [1] English [2] 中文: "
-  [ask_role]="Install which role? [1] server [2] client: "
-  [ask_deploy]="Deploy form? [1] binary+systemd [2] docker compose: "
+  [lang_prompt]="Select language\n  [1] English\n  [2] 中文"
+  [ask_role]="Install which role?\n  [1] server\n  [2] client"
+  [ask_deploy_server]="Deploy form? (Enter = recommended)\n  [1] binary + systemd\n  [2] docker compose  (recommended)"
+  [ask_deploy_client]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
   [ask_version]="Version (blank = latest): "
   [ask_bindir]="Install dir [%s]: "
   [ask_datadir]="Server data dir (blank = default): "
@@ -99,9 +100,9 @@ MSG_EN=(
   [restart_now]="Apply now (restart service)? [y/N]: "
   [upgrade_current]="Already at %s; nothing to upgrade."
   [unknown_config_key]="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)"
-  [ask_config_key]="Config key [1] advertised-endpoint [2] data-dir [3] operator-http-listen [4] version-pin: "
+  [ask_config_key]="Config key\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin"
   [ask_config_value]="New value for %s: "
-  [ask_service_action]="Service action [1] start [2] stop [3] restart: "
+  [ask_service_action]="Service action\n  [1] start\n  [2] stop\n  [3] restart"
   [menu_invalid]="invalid option: %s"
   [press_enter]="Press Enter to continue…"
   [bad_endpoint]="invalid host:port '%s' — expected like host.example:7443 (blank = auto)"
@@ -132,9 +133,10 @@ MSG_ZH=(
   [menu_env]="  [7] 环境变量 Env"
   [menu_exit]="  [0] 退出    Exit"
   [menu_select]="选择 [0-7]: "
-  [lang_prompt]="选择语言 [1] English [2] 中文: "
-  [ask_role]="安装哪个角色? [1] server [2] client: "
-  [ask_deploy]="部署方式? [1] 二进制+systemd [2] docker compose: "
+  [lang_prompt]="选择语言\n  [1] English\n  [2] 中文"
+  [ask_role]="安装哪个角色?\n  [1] server\n  [2] client"
+  [ask_deploy_server]="部署方式? (回车=推荐)\n  [1] 二进制 + systemd\n  [2] docker compose  (推荐)"
+  [ask_deploy_client]="部署方式? (回车=推荐)\n  [1] 二进制 + systemd  (推荐)\n  [2] docker compose"
   [ask_version]="版本 (留空=最新): "
   [ask_bindir]="安装目录 [%s]: "
   [ask_datadir]="服务端 data 目录 (留空=默认): "
@@ -151,9 +153,9 @@ MSG_ZH=(
   [restart_now]="现在生效 (重启服务)? [y/N]: "
   [upgrade_current]="已是 %s; 无需升级。"
   [unknown_config_key]="未知配置键: %s (允许: advertised-endpoint data-dir operator-http-listen version-pin)"
-  [ask_config_key]="配置键 [1] advertised-endpoint [2] data-dir [3] operator-http-listen [4] version-pin: "
+  [ask_config_key]="配置键\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin"
   [ask_config_value]="%s 的新值: "
-  [ask_service_action]="服务操作 [1] 启动 [2] 停止 [3] 重启: "
+  [ask_service_action]="服务操作\n  [1] 启动\n  [2] 停止\n  [3] 重启"
   [menu_invalid]="无效选项: %s"
   [press_enter]="按回车继续…"
   [bad_endpoint]="无效 host:port '%s' — 形如 host.example:7443 (留空=自动)"
@@ -580,7 +582,15 @@ print_install_summary() {
 wizard_install() {
   local a adv_prov=""
   a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
-  a="$(ask ask_deploy)"; case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
+  # Recommended deploy form differs by role: server ⇒ docker compose,
+  # client ⇒ binary. Enter (empty) accepts the recommended one.
+  if [ "$ROLE" = server ]; then
+    a="$(ask ask_deploy_server)"
+    case "$a" in 1|binary) DEPLOY=binary; WANT_SYSTEMD=yes ;; *) DEPLOY=docker ;; esac
+  else
+    a="$(ask ask_deploy_client)"
+    case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
+  fi
   if [ "$ROLE" = server ]; then
     detect_public_ip
     adv_prov="$DETECTED_PROV"
