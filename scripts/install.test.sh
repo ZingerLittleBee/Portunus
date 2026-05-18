@@ -158,6 +158,31 @@ HOME="$fakehome" XDG_CONFIG_HOME="$fakehome/.config" bash "$script" --reset-lang
 [ ! -e "$fakehome/.config/portunus/installer-lang" ] || fail "--reset-lang did not remove the cache"
 rm -rf "$fakehome"
 
+# --- Caddy: FQDN validation ---
+bash "$script" --valid-fqdn serverbee-test.900040.xyz || fail "valid fqdn rejected"
+if bash "$script" --valid-fqdn no_dot 2>/dev/null; then fail "fqdn without dot accepted"; fi
+if bash "$script" --valid-fqdn "bad host.com" 2>/dev/null; then fail "fqdn with space accepted"; fi
+if bash "$script" --valid-fqdn "-lead.com" 2>/dev/null; then fail "fqdn leading dash accepted"; fi
+if bash "$script" --valid-fqdn "" 2>/dev/null; then fail "empty fqdn accepted"; fi
+
+# --- Caddy: managed block render ---
+cb="$(bash "$script" --render-caddy serverbee-test.900040.xyz 7080)" || fail "render-caddy exit"
+printf '%s\n' "$cb" | grep -qx '# >>> portunus >>>' || fail "missing start marker"
+printf '%s\n' "$cb" | grep -qx '# <<< portunus <<<' || fail "missing end marker"
+printf '%s\n' "$cb" | grep -qx 'serverbee-test.900040.xyz {' || fail "missing site line"
+printf '%s\n' "$cb" | grep -q 'reverse_proxy 127.0.0.1:7080' || fail "missing reverse_proxy"
+
+# --- Caddy: server dry-run plan includes role; client+--domain errors ---
+od="$(PORTUNUS_SKIP_IP_PROBE=1 bash "$script" server --domain serverbee-test.900040.xyz --skip-dns-check --dry-run 2>&1)" || fail "server --domain dry-run exit"
+printf '%s\n' "$od" | grep -q '^role:[[:space:]]*server$' || fail "domain dry-run role"
+if PORTUNUS_SKIP_IP_PROBE=1 bash "$script" client --domain x.example.com --dry-run >/dev/null 2>&1; then fail "client --domain must error"; fi
+
+# --- Caddy: domain verb dry-run writes nothing, exits 0 ---
+PORTUNUS_SKIP_IP_PROBE=1 bash "$script" domain serverbee-test.900040.xyz --skip-dns-check --dry-run >/dev/null 2>&1 || fail "domain verb dry-run"
+
+# --- Caddy: EN/ZH i18n parity for the new keys ---
+diff <(bash "$script" --print-i18n-keys en | sort) <(bash "$script" --print-i18n-keys zh | sort) >/dev/null || fail "EN/ZH i18n key parity broken"
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"
