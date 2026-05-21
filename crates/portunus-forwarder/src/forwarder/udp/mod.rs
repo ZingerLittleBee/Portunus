@@ -28,6 +28,7 @@
 pub mod demux;
 pub mod error;
 pub mod flow;
+pub mod listener;
 pub mod reaper;
 pub mod registry;
 pub mod table;
