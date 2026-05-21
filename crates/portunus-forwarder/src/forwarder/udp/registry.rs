@@ -262,12 +262,12 @@ mod tests {
     async fn reserve_then_commit_makes_flow_live() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
             panic!("expected reservation")
         };
         assert_eq!(reg.len(), 1, "Pending counts toward occupancy");
         let f = flow_for(k.src).await;
-        reg.commit(res, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f)).await;
         assert_eq!(reg.len(), 1);
         let got = reg.get(k).await.expect("should be live");
         assert!(Arc::ptr_eq(&got, &f));
@@ -333,11 +333,11 @@ mod tests {
     async fn remove_live_returns_arc_and_decrements_len() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
             panic!()
         };
         let f = flow_for(k.src).await;
-        reg.commit(res, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f)).await;
         let removed = reg.remove(k).await.expect("live entry");
         assert!(Arc::ptr_eq(&removed, &f));
         assert_eq!(reg.len(), 0);
@@ -363,7 +363,7 @@ mod tests {
     async fn commit_after_drain_restores_occupancy() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
             panic!("expected reservation")
         };
         // Drain while we hold the reservation; this removes the Pending
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(reg.len(), 0);
         // Now commit — slot is missing, occupancy should be restored.
         let f = flow_for(k.src).await;
-        reg.commit(res, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f)).await;
         assert_eq!(reg.len(), 1);
         let live = reg.get(k).await.expect("commit should re-insert");
         assert!(Arc::ptr_eq(&live, &f));
@@ -382,11 +382,11 @@ mod tests {
     async fn drain_empties_registry_and_cancels_flows() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
             panic!()
         };
         let f = flow_for(k.src).await;
-        reg.commit(res, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f)).await;
         assert!(!f.cancel.is_cancelled());
         reg.drain().await;
         assert_eq!(reg.len(), 0);

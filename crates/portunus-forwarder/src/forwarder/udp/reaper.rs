@@ -83,7 +83,7 @@ mod tests {
         let reg = UdpFlowRegistry::new(4);
         let src: SocketAddr = "127.0.0.1:50000".parse().unwrap();
         let key = FlowKey::new(8000, src);
-        let res = match reg.try_get_or_reserve(key).await {
+        let reservation = match reg.try_get_or_reserve(key).await {
             TryGetOrReserve::Reserved(r) => r,
             TryGetOrReserve::Existing(_) => panic!("expected Reserved, got Existing"),
             TryGetOrReserve::CapExhausted => panic!("expected Reserved, got CapExhausted"),
@@ -97,7 +97,7 @@ mod tests {
                 .expect("instant - 60s must not underflow on a running test"),
         )
         .await;
-        reg.commit(res, Arc::clone(&flow)).await;
+        reg.commit(reservation, Arc::clone(&flow)).await;
 
         let cancel = CancellationToken::new();
         let reg_ref = Arc::clone(&reg);

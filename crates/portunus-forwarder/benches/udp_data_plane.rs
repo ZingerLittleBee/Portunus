@@ -217,7 +217,7 @@ fn read_vmrss_kb() -> Option<u64> {
     let raw = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in raw.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.trim().split_whitespace().next()?.parse().ok()?;
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
             return Some(kb);
         }
     }
