@@ -24,6 +24,7 @@ use crate::forwarder::stats::RuleStats;
 use crate::forwarder::udp::error::{UdpAction, classify_udp_error};
 use crate::forwarder::udp::flow::UdpFlow;
 use crate::forwarder::udp::registry::{FlowKey, UdpFlowRegistry};
+use portunus_core::RuleId;
 
 /// Demux drains at most this many datagrams per Ready before re-arming
 /// the readable future, to keep one chatty flow from starving others
@@ -49,6 +50,7 @@ pub enum DemuxCommand {
 /// `Arc`-shared so the demux task and the per-listener cold path can
 /// see the same registry / listener sockets / stats counters.
 pub struct DemuxConfig {
+    pub rule_id: RuleId,
     pub registry: Arc<UdpFlowRegistry>,
     pub listener_sockets: Arc<HashMap<u16, Arc<UdpSocket>>>,
     pub stats: Arc<RuleStats>,
@@ -91,6 +93,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
         // Listener gone — shouldn't happen during normal operation.
         warn!(
             event = "rule.udp_demux_missing_listener",
+            rule_id = %cfg.rule_id,
             listen_port = key.listen_port,
         );
         return;
@@ -108,6 +111,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         trace!(
                             event = "rule.udp_reply_wouldblock",
+                            rule_id = %cfg.rule_id,
                             listen_port = key.listen_port,
                         );
                         // Drop reply; flow continues. No stats / last_seen
@@ -116,6 +120,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                     Err(e) => {
                         warn!(
                             event = "rule.udp_reply_send_failed",
+                            rule_id = %cfg.rule_id,
                             listen_port = key.listen_port,
                             error = %e,
                         );
@@ -128,6 +133,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                 UdpAction::Evict => {
                     info!(
                         event = "rule.udp_flow_evicted_icmp",
+                        rule_id = %cfg.rule_id,
                         listen_port = key.listen_port,
                         error = %e,
                     );
@@ -136,7 +142,11 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                     return;
                 }
                 UdpAction::MessageTooLarge => {
-                    debug!(event = "rule.udp_emsgsize", listen_port = key.listen_port,);
+                    debug!(
+                        event = "rule.udp_emsgsize",
+                        rule_id = %cfg.rule_id,
+                        listen_port = key.listen_port,
+                    );
                     return;
                 }
                 UdpAction::Transient => {
@@ -207,6 +217,7 @@ mod tests {
         let registry = UdpFlowRegistry::new(4);
         let stats = single_port_stats(listener_addr.port());
         let cfg = DemuxConfig {
+            rule_id: RuleId(1),
             registry: Arc::clone(&registry),
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
@@ -261,6 +272,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let h = tokio::spawn(run_demux(
             DemuxConfig {
+                rule_id: RuleId(1),
                 registry,
                 listener_sockets: Arc::new(listener_map),
                 stats,
@@ -323,6 +335,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let h = tokio::spawn(run_demux(
             DemuxConfig {
+                rule_id: RuleId(1),
                 registry,
                 listener_sockets: Arc::new(listener_map),
                 stats,

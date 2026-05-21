@@ -29,7 +29,19 @@ pub async fn run_reaper(
     rule_id: RuleId,
     cancel: CancellationToken,
 ) {
-    let mut ticker = interval(idle_window / 4);
+    if idle_window.is_zero() {
+        // Test/operator escape hatch: disable the reaper entirely.
+        // Matches v0.4 semantics from `table.rs` `spawn_reaper`
+        // (lines 209-230) — also avoids `tokio::time::interval`
+        // panicking on `Duration::ZERO`.
+        cancel.cancelled().await;
+        return;
+    }
+    // Floor the sweep period at 25 ms so very short windows don't
+    // create a tick storm (and never feed `Duration::ZERO` into
+    // `interval`). Matches v0.4 `spawn_reaper` contract.
+    let period = std::cmp::max(idle_window / 4, Duration::from_millis(25));
+    let mut ticker = interval(period);
     ticker.tick().await; // skip the immediate tick
     loop {
         tokio::select! {
@@ -104,6 +116,23 @@ mod tests {
         assert_eq!(reg.len(), 0, "reaper must evict the idle flow");
         assert!(flow.cancel.is_cancelled(), "flow.cancel must fire");
 
+        cancel.cancel();
+        h.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn zero_idle_window_disables_reaper_without_panic() {
+        let reg = UdpFlowRegistry::new(1);
+        let cancel = CancellationToken::new();
+        let h = tokio::spawn(run_reaper(
+            Arc::clone(&reg),
+            Duration::ZERO,
+            RuleId(1),
+            cancel.clone(),
+        ));
+        // Give it a moment to ensure it doesn't panic on interval creation.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!h.is_finished(), "reaper should still be awaiting cancel");
         cancel.cancel();
         h.await.unwrap();
     }
