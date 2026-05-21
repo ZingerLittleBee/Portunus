@@ -1972,6 +1972,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "hickory-resolver",
+ "libc",
  "nix",
  "portunus-auth",
  "portunus-core",
