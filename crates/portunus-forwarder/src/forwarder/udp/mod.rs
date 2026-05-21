@@ -26,6 +26,7 @@
 //! `UdpFlowTable` cap keeps that bounded.
 
 pub mod flow;
+pub mod registry;
 pub mod table;
 
 use std::net::SocketAddr;
