@@ -285,6 +285,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_reserve_same_key_second_caller_sees_cap_exhausted() {
+        // Listener loop is logically single-threaded per port, but the
+        // registry API must remain sound under concurrent calls.
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let reg1 = Arc::clone(&reg);
+        let reg2 = Arc::clone(&reg);
+        let h1 = tokio::spawn(async move { reg1.try_get_or_reserve(k).await });
+        // Wait for h1 to take the Pending slot, then race h2.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let h2 = tokio::spawn(async move { reg2.try_get_or_reserve(k).await });
+        let r1 = h1.await.unwrap();
+        let r2 = h2.await.unwrap();
+        match (r1, r2) {
+            (TryGetOrReserve::Reserved(_), TryGetOrReserve::CapExhausted) => {}
+            _ => panic!("expected first Reserved, second CapExhausted"),
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_live_returns_arc_and_decrements_len() {
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+            panic!()
+        };
+        let f = flow_for(k.src).await;
+        reg.commit(res, Arc::clone(&f)).await;
+        let removed = reg.remove(k).await.expect("live entry");
+        assert!(Arc::ptr_eq(&removed, &f));
+        assert_eq!(reg.len(), 0);
+        assert!(reg.get(k).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn snapshot_live_excludes_pending() {
+        let reg = UdpFlowRegistry::new(4);
+        let _res_pending = reg.try_get_or_reserve(key(8000, 1, 1)).await;
+        let TryGetOrReserve::Reserved(res_live) =
+            reg.try_get_or_reserve(key(8001, 2, 1)).await
+        else {
+            panic!()
+        };
+        let f = flow_for(key(8001, 2, 1).src).await;
+        reg.commit(res_live, Arc::clone(&f)).await;
+        let snap = reg.snapshot_live().await;
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].0.listen_port, 8001);
+    }
+
+    #[tokio::test]
     async fn drain_empties_registry_and_cancels_flows() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
