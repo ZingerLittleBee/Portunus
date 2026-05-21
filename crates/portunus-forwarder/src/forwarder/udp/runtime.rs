@@ -53,6 +53,10 @@ enum Role {
     Listener(u16),
     Demux,
     Reaper,
+    /// 014 Phase 9 / FR-014: per-rule stats pump that ticks once a
+    /// second and writes `registry.len()` into `stats.active_flows`.
+    /// Replaces v0.4 last-writer-wins behaviour.
+    StatsPump,
 }
 
 impl Role {
@@ -61,6 +65,7 @@ impl Role {
             Self::Listener(p) => format!("Listener({p})"),
             Self::Demux => "Demux".to_string(),
             Self::Reaper => "Reaper".to_string(),
+            Self::StatsPump => "StatsPump".to_string(),
         }
     }
 }
@@ -164,6 +169,7 @@ impl UdpRuleRuntime {
         // (3) child cancel tokens (siblings of `rule_cancel`).
         let listener_token = rule_cancel.child_token();
         let reaper_token = rule_cancel.child_token();
+        let stats_pump_token = rule_cancel.child_token();
 
         // (4) FR-016: emit `rule.udp_runtime_started` once per rule
         // activation. `range_size` is a `u32` to be safe against the
@@ -205,6 +211,31 @@ impl UdpRuleRuntime {
         joinset.spawn(async move {
             run_reaper(reg_for_reaper, idle_window, rule_id, reaper_token_for_task).await;
             (Role::Reaper, Ok(()))
+        });
+
+        // 014 Phase 9 / FR-014: stats pump — single per-rule task that
+        // writes `registry.len()` into `stats.active_flows` once per
+        // second. Replaces the v0.4 last-writer-wins behaviour where
+        // each listener's `flow_table.len()` overwrote a shared gauge.
+        let reg_for_pump = Arc::clone(&registry);
+        let stats_for_pump = Arc::clone(&cfg.stats);
+        let pump_cancel = stats_pump_token.clone();
+        joinset.spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            // Skip the immediate first tick — the gauge starts at 0,
+            // a fresh write of 0 would be a no-op anyway.
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    biased;
+                    () = pump_cancel.cancelled() => break,
+                    _ = ticker.tick() => {
+                        let n = u32::try_from(reg_for_pump.len()).unwrap_or(u32::MAX);
+                        stats_for_pump.set_active_flows(n);
+                    }
+                }
+            }
+            (Role::StatsPump, Ok(()))
         });
 
         // listener tasks — one per listen port.
@@ -258,11 +289,13 @@ impl UdpRuleRuntime {
             joinset,
             state: State::Running,
             registry: Arc::clone(&registry),
+            stats: Arc::clone(&cfg.stats),
             shutdown_rx,
             completion_tx,
             rule_cancel: rule_cancel.clone(),
             listener_token,
             reaper_token,
+            stats_pump_token,
             demux_tx_for_shutdown: supervisor_demux_tx,
             failed_callback,
             markers: RoleMarkers::default(),
@@ -270,6 +303,7 @@ impl UdpRuleRuntime {
             listener_pending: listener_count,
             demux_pending: true,
             reaper_pending: true,
+            stats_pump_pending: true,
         };
         let supervisor_handle = tokio::spawn(supervisor.run());
 
@@ -335,10 +369,15 @@ fn port_map(
 /// can classify a `join_next` result as expected vs unexpected during
 /// drain (FR-011).
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)] // one flag per role's drain step; a state-machine here would obscure the FR-011 ordering
 struct RoleMarkers {
     listener_cancelled: bool,
     reaper_cancelled: bool,
     demux_shutdown_sent: bool,
+    /// 014 Phase 9: stats-pump cancellation token has been fired. We
+    /// stop the pump FIRST (before listener cancel) so it never fights
+    /// with the concurrent registry drain that happens later.
+    stats_pump_cancelled: bool,
 }
 
 impl RoleMarkers {
@@ -347,6 +386,7 @@ impl RoleMarkers {
             Role::Listener(_) => self.listener_cancelled,
             Role::Reaper => self.reaper_cancelled,
             Role::Demux => self.demux_shutdown_sent,
+            Role::StatsPump => self.stats_pump_cancelled,
         }
     }
 }
@@ -361,11 +401,13 @@ struct Supervisor {
     joinset: JoinSet<(Role, Result<(), tokio::task::JoinError>)>,
     state: State,
     registry: Arc<UdpFlowRegistry>,
+    stats: Arc<RuleStats>,
     shutdown_rx: mpsc::Receiver<()>,
     completion_tx: tokio::sync::watch::Sender<Option<ShutdownOutcome>>,
     rule_cancel: CancellationToken,
     listener_token: CancellationToken,
     reaper_token: CancellationToken,
+    stats_pump_token: CancellationToken,
     demux_tx_for_shutdown: mpsc::Sender<DemuxCommand>,
     failed_callback: Arc<dyn Fn(String) + Send + Sync>,
     markers: RoleMarkers,
@@ -376,6 +418,7 @@ struct Supervisor {
     listener_pending: usize,
     demux_pending: bool,
     reaper_pending: bool,
+    stats_pump_pending: bool,
 }
 
 impl Supervisor {
@@ -418,6 +461,14 @@ impl Supervisor {
 
         // ─── Phase B: Ordered drain (FR-011) ─────────────────────
 
+        // (pre-a) 014 Phase 9: stop the stats pump FIRST so it can't
+        // fight with the concurrent registry mutations from steps
+        // (a)/(b)/(c). After this drain we explicitly write
+        // active_flows = 0 in step (c).
+        self.stats_pump_token.cancel();
+        self.markers.stats_pump_cancelled = true;
+        self.drain_stats_pump().await;
+
         // (a) Cancel listener token; drain every Listener(_) entry.
         self.listener_token.cancel();
         self.markers.listener_cancelled = true;
@@ -428,8 +479,10 @@ impl Supervisor {
         self.markers.reaper_cancelled = true;
         self.drain_reaper().await;
 
-        // (c) Cancel + remove any remaining live flows.
+        // (c) Cancel + remove any remaining live flows. After the
+        // drain, the final visible gauge value is 0.
         self.registry.drain().await;
+        self.stats.set_active_flows(0);
 
         // (d) Send the EXPLICIT shutdown command. Channel-close MUST
         // NOT be relied on (FR-011: explicit signal contract).
@@ -499,6 +552,16 @@ impl Supervisor {
         }
     }
 
+    async fn drain_stats_pump(&mut self) {
+        while self.stats_pump_pending {
+            let Some(res) = self.joinset.join_next().await else {
+                break;
+            };
+            self.classify_drain_result(&res);
+            self.decrement_pending(&res);
+        }
+    }
+
     /// Adjust the per-role pending counter based on a `join_next`
     /// result. JoinErrors (panic surfaced as outer `Err`) can't be
     /// tagged; in that rare case we conservatively decrement nothing
@@ -515,6 +578,7 @@ impl Supervisor {
                 }
                 Role::Demux => self.demux_pending = false,
                 Role::Reaper => self.reaper_pending = false,
+                Role::StatsPump => self.stats_pump_pending = false,
             }
         }
     }
@@ -582,6 +646,7 @@ mod tests {
         rule_cancel: CancellationToken,
         listener_token: CancellationToken,
         reaper_token: CancellationToken,
+        stats_pump_token: CancellationToken,
     }
 
     /// Build a Supervisor harness for direct testing of the state
@@ -593,8 +658,10 @@ mod tests {
         let rule_cancel = CancellationToken::new();
         let listener_token = rule_cancel.child_token();
         let reaper_token = rule_cancel.child_token();
+        let stats_pump_token = rule_cancel.child_token();
         let (demux_tx, demux_rx) = mpsc::channel::<DemuxCommand>(8);
         let registry = UdpFlowRegistry::new(16);
+        let stats = RuleStats::new();
         let failed_callback: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |_reason| {
             failed_calls.fetch_add(1, Ordering::SeqCst);
         });
@@ -602,11 +669,13 @@ mod tests {
             joinset: JoinSet::new(),
             state: State::Running,
             registry,
+            stats,
             shutdown_rx,
             completion_tx,
             rule_cancel: rule_cancel.clone(),
             listener_token: listener_token.clone(),
             reaper_token: reaper_token.clone(),
+            stats_pump_token: stats_pump_token.clone(),
             demux_tx_for_shutdown: demux_tx.clone(),
             failed_callback,
             markers: RoleMarkers::default(),
@@ -614,6 +683,7 @@ mod tests {
             listener_pending: listener_count,
             demux_pending: true,
             reaper_pending: true,
+            stats_pump_pending: true,
         };
         TestHarness {
             sup: supervisor,
@@ -624,6 +694,7 @@ mod tests {
             rule_cancel,
             listener_token,
             reaper_token,
+            stats_pump_token,
         }
     }
 
@@ -663,12 +734,14 @@ mod tests {
             rule_cancel: _,
             listener_token: lis,
             reaper_token: reap,
+            stats_pump_token: pump,
         } = build_test_supervisor(2, Arc::clone(&failed_calls));
 
-        // Two well-behaved listeners + reaper + demux.
+        // Two well-behaved listeners + reaper + stats pump + demux.
         spawn_well_behaved(&mut sup, Role::Listener(7001), lis.clone());
         spawn_well_behaved(&mut sup, Role::Listener(7002), lis);
         spawn_well_behaved(&mut sup, Role::Reaper, reap);
+        spawn_well_behaved(&mut sup, Role::StatsPump, pump);
         spawn_well_behaved_demux(&mut sup, demux_rx);
 
         let sup_handle = tokio::spawn(sup.run());
@@ -706,6 +779,7 @@ mod tests {
             rule_cancel: rule,
             listener_token: lis,
             reaper_token: reap,
+            stats_pump_token: pump,
         } = build_test_supervisor(2, Arc::clone(&failed_calls));
 
         // Listener A panics-equivalent: returns prematurely without
@@ -719,8 +793,9 @@ mod tests {
         });
         // Listener B is well-behaved — exits on listener_token.
         spawn_well_behaved(&mut sup, Role::Listener(7002), lis);
-        // Reaper + demux are well-behaved.
+        // Reaper + stats pump + demux are well-behaved.
         spawn_well_behaved(&mut sup, Role::Reaper, reap);
+        spawn_well_behaved(&mut sup, Role::StatsPump, pump);
         spawn_well_behaved_demux(&mut sup, demux_rx);
 
         let sup_handle = tokio::spawn(sup.run());
@@ -767,10 +842,12 @@ mod tests {
             rule_cancel: _,
             listener_token: lis,
             reaper_token: reap,
+            stats_pump_token: pump,
         } = build_test_supervisor(1, Arc::clone(&failed_calls));
 
         spawn_well_behaved(&mut sup, Role::Listener(7001), lis);
         spawn_well_behaved(&mut sup, Role::Reaper, reap);
+        spawn_well_behaved(&mut sup, Role::StatsPump, pump);
         spawn_well_behaved_demux(&mut sup, demux_rx);
 
         let sup_handle = tokio::spawn(sup.run());
