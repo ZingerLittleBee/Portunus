@@ -1010,3 +1010,241 @@ fn test_udp_us3_metric_cardinality() {
          portunus_rule_udp_datagrams_in_total (got {count}); /metrics:\n{body}"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────
+//  014-udp-centralized-demux Phase 11: rule-level e2e smokes
+// ──────────────────────────────────────────────────────────────────────
+
+/// 014 Phase 11.2 (SC-002): per-rule cap is the rule-wide ceiling
+/// across all listen ports of a range rule.
+///
+/// Pushes a UDP range rule with `listen_ports = N..=N+3` and
+/// `udp_max_flows_per_rule = 3` (set via the server toml), then sends
+/// from 4 distinct client source sockets, each addressing a DIFFERENT
+/// listen port. The rule-wide registry cap of 3 binds — 3 sources
+/// echo back, 1 source is dropped on the cap.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "udp e2e smoke is flaky on macOS")]
+#[allow(clippy::too_many_lines)]
+fn test_udp_smoke_per_rule_cap() {
+    let server = common::spawn_server_with_toml(Some("udp_max_flows_per_rule = 3"), &[]);
+    let (_grpc, http, metrics_addr) = server
+        .wait_listening_full(Duration::from_secs(5))
+        .expect("server listening");
+
+    let bundle = common::provision_client_http(&http, "edge-01");
+    let _client = common::spawn_client(&bundle, &[]);
+
+    let connected = common::wait_for(Duration::from_secs(5), || {
+        let arr = common::list_clients_http(&http);
+        arr.as_array()?
+            .iter()
+            .find(|v| {
+                v.get("client_name").and_then(|n| n.as_str()) == Some("edge-01")
+                    && v.get("connected").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .cloned()
+    });
+    assert!(connected.is_some(), "edge-01 must connect within 5s");
+
+    // Stand up 4 contiguous UDP echo targets.
+    let target_start = pick_consecutive_free_udp(4);
+    for p in target_start..target_start + 4 {
+        spawn_udp_echo_on(p);
+    }
+    let listen_start = pick_consecutive_free_udp(4);
+    let (status, body) = common::push_rule_http_range_with_protocol(
+        &http,
+        "edge-01",
+        listen_start,
+        listen_start + 3,
+        "127.0.0.1",
+        target_start,
+        target_start + 3,
+        "udp",
+        Some(3),
+    );
+    assert!(status.is_success(), "push: {status} body={body}");
+    let rule_id = body
+        .get("rule_id")
+        .and_then(serde_json::Value::as_u64)
+        .expect("rule_id present");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    // 4 distinct client source sockets, each addressing a different
+    // listen port. The rule cap of 3 should bind across the entire
+    // listen range (SC-002).
+    let mut users: Vec<UdpSocket> = Vec::with_capacity(4);
+    for i in 0..4u8 {
+        let user = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind user");
+        user.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let payload = [0xDEu8, 0xAD, i, 0];
+        user.send_to(&payload, (Ipv4Addr::LOCALHOST, listen_start + u16::from(i)))
+            .expect("send");
+        users.push(user);
+    }
+
+    let mut received = 0usize;
+    for u in &users {
+        let mut buf = [0u8; 8];
+        if u.recv_from(&mut buf).is_ok() {
+            received += 1;
+        }
+    }
+    assert_eq!(
+        received, 3,
+        "SC-002: exactly 3 of 4 sources must round-trip — the 4th \
+         is dropped on the rule-wide cap"
+    );
+
+    // The per-rule overflow counter MUST advance for the dropped
+    // source. Wait for the StatsReport tick.
+    let saw = common::wait_for(Duration::from_secs(8), || {
+        let body = common::fetch_metrics_text(&metrics_addr);
+        let pat = format!(
+            "portunus_rule_flows_dropped_overflow_total{{client=\"edge-01\",owner=\"_legacy\",rule=\"{rule_id}\"}}"
+        );
+        body.lines().find_map(|l| {
+            if !l.starts_with(&pat) {
+                return None;
+            }
+            let n: u64 = l.split_whitespace().last()?.parse().ok()?;
+            (n >= 1).then_some(n)
+        })
+    });
+    assert!(
+        saw.is_some(),
+        "SC-002: flows_dropped_overflow_total MUST advance for the \
+         over-cap source within 8s"
+    );
+}
+
+/// 014 Phase 11.3 (SC-005): the data plane recovers cleanly when an
+/// upstream target restarts. The first burst opens a flow; the target
+/// is torn down; a fresh burst (after a brief delay) rebuilds the flow
+/// and round-trips again.
+///
+/// Linux-only because ICMP-driven eviction semantics for UDP differ on
+/// macOS — the connected-socket reply path doesn't deterministically
+/// surface ECONNREFUSED on every kernel.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "ICMP evict semantics differ on macOS"
+)]
+fn test_udp_smoke_icmp_evict() {
+    let server = common::spawn_server(&[]);
+    let (_grpc, http, _metrics_addr) = server
+        .wait_listening_full(Duration::from_secs(5))
+        .expect("server listening");
+
+    let bundle = common::provision_client_http(&http, "edge-01");
+    let _client = common::spawn_client(&bundle, &[]);
+
+    let connected = common::wait_for(Duration::from_secs(5), || {
+        let arr = common::list_clients_http(&http);
+        arr.as_array()?
+            .iter()
+            .find(|v| {
+                v.get("client_name").and_then(|n| n.as_str()) == Some("edge-01")
+                    && v.get("connected").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .cloned()
+    });
+    assert!(connected.is_some(), "edge-01 must connect within 5s");
+
+    // Bind a target on a known port; the echo lives until we drop
+    // `echo_handle`. After the first burst we drop it and the kernel
+    // releases the port; subsequent datagrams from the proxy reach a
+    // dead port (ECONNREFUSED on Linux's connected-socket path,
+    // surfaces via ICMP).
+    let echo_sock = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind echo");
+    let echo_port = echo_sock.local_addr().unwrap().port();
+    let stop_echo = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop_echo.clone();
+    let echo_handle = std::thread::spawn(move || {
+        echo_sock
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .ok();
+        let mut buf = [0u8; 4096];
+        while !stop_clone.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((n, peer)) = echo_sock.recv_from(&mut buf) {
+                let _ = echo_sock.send_to(&buf[..n], peer);
+            }
+        }
+    });
+
+    let (udp_listen, status, body) =
+        push_udp_rule_retrying_port_conflicts(&http, "edge-01", echo_port);
+    assert!(
+        status.is_success(),
+        "UDP push must succeed; got {status} body={body}"
+    );
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    // First burst: prove the rule round-trips.
+    let user = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind user");
+    user.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set timeout");
+    user.send_to(b"phase-1", (Ipv4Addr::LOCALHOST, udp_listen))
+        .expect("send phase-1");
+    let mut buf = [0u8; 64];
+    let (n, _) = user.recv_from(&mut buf).expect("phase-1 recv");
+    assert_eq!(&buf[..n], b"phase-1");
+
+    // Tear down the echo.
+    stop_echo.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = echo_handle.join();
+
+    // Send a datagram into the now-dead target. On Linux the client's
+    // connected upstream socket eventually surfaces ECONNREFUSED via
+    // ICMP; the listener's `classify_udp_error` evicts the flow.
+    // We don't assert the timeout — UDP is lossy and the ICMP timing
+    // varies — we just give the kernel ~200 ms to deliver the ICMP.
+    let _ = user.send_to(b"phase-2", (Ipv4Addr::LOCALHOST, udp_listen));
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Re-bind the echo on the same port (kernel released it on drop).
+    // Port may briefly remain in TIME_WAIT on some kernels; one retry
+    // hand-off after 500 ms is sufficient on Linux.
+    let echo_sock2 = if let Ok(s) = UdpSocket::bind((Ipv4Addr::LOCALHOST, echo_port)) {
+        s
+    } else {
+        std::thread::sleep(Duration::from_millis(500));
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, echo_port)).expect("rebind echo")
+    };
+    std::thread::spawn(move || {
+        echo_sock2
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
+        let mut buf = [0u8; 4096];
+        loop {
+            let Ok((n, peer)) = echo_sock2.recv_from(&mut buf) else {
+                continue;
+            };
+            let _ = echo_sock2.send_to(&buf[..n], peer);
+        }
+    });
+
+    // Send a fresh burst. After ICMP evicts the stale flow, the next
+    // first-packet rebuilds it with a fresh upstream socket and the
+    // round-trip works. Retry within a 3s budget.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut got_phase3 = false;
+    while std::time::Instant::now() < deadline {
+        user.set_read_timeout(Some(Duration::from_millis(200))).ok();
+        let _ = user.send_to(b"phase-3", (Ipv4Addr::LOCALHOST, udp_listen));
+        if user.recv_from(&mut buf).is_ok() {
+            got_phase3 = true;
+            break;
+        }
+    }
+    assert!(
+        got_phase3,
+        "SC-005: data plane must recover after target restart \
+         (ICMP evicts stale flow, retry rebuilds it)"
+    );
+}

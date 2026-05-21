@@ -1970,7 +1970,9 @@ version = "1.4.3"
 dependencies = [
  "async-trait",
  "criterion",
+ "futures-util",
  "hickory-resolver",
+ "libc",
  "nix",
  "portunus-auth",
  "portunus-core",
