@@ -43,9 +43,18 @@ boundary correction + memory/scheduler footprint reduction"
   datagrams**, then re-arm the readable future. Prevents a hot flow from
   starving the rest of the rule.
 - Q: What metrics / wire surfaces change? → A: Wire and Prometheus surfaces
-  are unchanged. Four new `tracing` events are added (`udp_upstream_connect_failed`,
-  `udp_addflow_dropped`, `udp_flow_evicted_icmp`, `udp_reply_wouldblock`).
+  are unchanged. Six new `tracing` events are added (see FR-016).
   `active_flows` gauge meaning is corrected (see FR-014).
+- Q: How is multi-A fallback handled across the connect()-based design?
+  → A: **Resolver ordering only, with connect-time fallback.** The cold
+  path consumes `Vec<SocketAddr>` in resolver-supplied order and walks
+  the list at bind+`connect()`. The first address whose synchronous
+  `connect()` succeeds is selected and committed. v0.4's first-packet
+  *send-level* fallback (retry next address on `send_to` error) is
+  removed: once the flow is committed, the target is locked for the
+  flow's lifetime. ICMP-driven eviction (FR-006) plus next-packet
+  rebuild gives the same coarse-grained failover behaviour without the
+  commit/AddFlow-ordering hazards of mid-cold-path retries.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -69,10 +78,13 @@ disappear.
 
 **Independent Test**: On a Linux host, push a single UDP rule. Drive 1 000
 concurrent client source addresses through it (each sending one datagram
-every 30 s, well within the idle window). Measure RSS of `portunus-client`
-before and after the flows establish. New design: ΔRSS ≪ 100 MiB. v1.4.x
-baseline: ΔRSS ≈ 64 MiB (1 000 × 64 KiB). The improvement is not visible
-at 1 000 flows but is the same factor at 100 000.
+every 30 s, well within the idle window). Measure heap delta attributable
+to receive buffers in `portunus-client` before and after the flows
+establish. v1.4.x baseline: Δ ≈ 1 000 × 64 KiB ≈ 64 MiB (per-flow
+reply-pump task-state buffers). New design: Δ is a small constant (one
+64 KiB demux buffer plus per-flow metadata bounded by SC-001b). The
+factor is the same at 10 000 and 100 000 flows; the proportional savings
+grow with flow count.
 
 **Acceptance Scenarios**:
 
@@ -128,8 +140,8 @@ table). New design accepts 3 and drops the 4th, bumping
 1. **Given** a range UDP rule with `udp_max_flows_per_rule = 3` spanning 4
    listen ports, **When** 4 distinct client sources each send a first
    datagram to a different listen port, **Then** exactly 3 flows are
-   created, the 4th datagram is silently dropped (FR-009-UDP), and
-   `flows_dropped_overflow_total{rule}` advances by 1.
+   created, the 4th datagram is silently dropped (per FR-004 step 3),
+   and `flows_dropped_overflow_total{rule}` advances by 1.
 
 2. **Given** the same rule under any traffic pattern, **When** an operator
    reads the `active_flows` gauge / `rule-stats` HTTP field, **Then** the
@@ -225,21 +237,43 @@ kernel and never observed at the original client.
 - **FR-003** `UdpFlowRegistry` MUST enforce `udp_max_flows_per_rule` as a
   single rule-wide cap. A range rule of M ports MUST NOT permit
   `cap × M` flows.
-- **FR-004** First-packet path order MUST be: `(1) registry.get(key) →
-  hit/miss`; on miss `(2) quota.is_exhausted? → drop`; `(3)
-  registry.try_reserve(key) → cap exceeded? drop + dropped_overflow++`;
-  `(4) rate_limit.acquire_first_packet → reject? drop`; `(5)
-  resolver.resolve_target`; `(6) UdpSocket::bind family-matching +
-  connect(target)`; `(7) registry.commit(reservation, flow)`; `(8)
-  demux_tx.try_send(AddFlow); on full → remove + cancel + drop payload`;
-  `(9) upstream.try_send(payload); on failure → remove + cancel + drop`.
-  Steps 2 and 3 MUST precede step 4: cap-exceeded MUST NOT consume a
-  rate-limit token.
+- **FR-004** First-packet path order MUST be:
+  - **(1)** `registry.get(key) → hit/miss`. On hit, the listener uses
+    the existing `Arc<UdpFlow>` for the fast path (`upstream.try_send`
+    classified per FR-006 / FR-007; `last_seen` updated per FR-013).
+    On miss, continue to step 2.
+  - **(2)** `quota.is_exhausted? → silent drop`.
+  - **(3)** `registry.try_reserve(key) → cap exceeded? silent drop +
+    dropped_overflow++`. Steps 2-3 MUST precede step 4: cap-exceeded
+    MUST NOT consume a rate-limit token.
+  - **(4)** `rate_limit.acquire_first_packet → reject? silent drop`.
+  - **(5)** `resolver.resolve_target → Vec<SocketAddr>` (or DNS failure
+    → silent drop + dns_failures++).
+  - **(6)** For each `addr` in resolver order: bind a family-matching
+    `UdpSocket` (IPv4 → `0.0.0.0:0`, IPv6 → `[::]:0`), call
+    `socket.connect(addr)`. On synchronous success: this address is
+    selected, proceed to (7). On synchronous failure: try next addr.
+    If no addr connects: silent drop + `dns_failures++` (treated as an
+    unresolvable target — distinct from a name-lookup failure but
+    counted under the same gauge for operator simplicity).
+  - **(7)** `registry.commit(reservation, Arc::new(UdpFlow{socket,
+    target=addr, ...}))`.
+  - **(8)** `demux_tx.try_send(AddFlow(key, flow))`. On channel full:
+    `registry.remove(key)` + `flow.cancel.cancel()` + drop payload +
+    `rule.udp_addflow_dropped`. Stop processing this datagram.
+  - **(9)** `upstream.try_send(payload)`, **classified per FR-006 /
+    FR-007**. Terminal/ICMP errors evict the just-committed flow;
+    WouldBlock and EMSGSIZE drop only the first datagram but keep
+    the flow registered (the next inbound datagram from the same
+    source will hit the fast path and retry).
 - **FR-005** Upstream sockets MUST be `connect()`ed to the chosen target
   after `bind(0)`. The local bind address family MUST match the target
   family (IPv4 target → `0.0.0.0:0`, IPv6 target → `[::]:0`). Once
-  connected, multi-A fallback within the same flow MUST NOT switch
-  targets. Multi-A fallback at first-packet selection is preserved.
+  committed, multi-A fallback within the same flow MUST NOT switch
+  targets. Multi-A behaviour at flow creation is described in FR-004
+  step 6: it walks resolver-ordered addresses at the `connect()` seam,
+  not at the `try_send` seam. v0.4's first-packet send-level fallback
+  is removed.
 - **FR-006** A flow MUST be evicted (registry remove + cancel) when its
   upstream socket reports `ECONNREFUSED`, `EHOSTUNREACH`, or
   `ENETUNREACH` on either `try_send` or `try_recv`, irrespective of idle
@@ -258,14 +292,46 @@ kernel and never observed at the original client.
   and evict flows whose `last_seen` exceeds `idle_window`. Eviction is
   `registry.remove + flow.cancel.cancel()`. The reaper MUST run once per
   rule, not once per listener.
-- **FR-011** A supervisor task MUST hold a `JoinSet` over (listeners,
-  demux, reaper). On any unexpected task exit or panic, the supervisor
-  MUST fire `rule_cancel` and emit `RuleStatusEvent::Failed` to the
-  control plane.
-- **FR-012** Shutdown sequence MUST be: `(1) rule_cancel.cancel()`; `(2)
-  await listener handles`; `(3) await reaper handle`; `(4) registry.drain
-  → remove + cancel each remaining flow`; `(5) drop demux_tx or send
-  Shutdown`; `(6) await demux handle`. Shutdown MUST be idempotent.
+- **FR-011** A supervisor task MUST own a `JoinSet<TaskExit>` holding
+  the listener / demux / reaper join handles tagged by role. The
+  supervisor MUST hold a state machine `enum State { Running,
+  ShuttingDown }` (start: `Running`). The supervisor is the sole
+  driver of orderly shutdown — `UdpRuleRuntime::shutdown()` MUST NOT
+  await task handles directly. Instead, `shutdown()` signals the
+  supervisor via a oneshot/mpsc channel and awaits a completion
+  oneshot.
+  - In `State::Running`: any `JoinSet::join_next` result MUST be
+    treated as an unexpected exit (cancel or panic). The supervisor
+    MUST transition to `ShuttingDown`, fire `rule_cancel`, emit
+    `RuleStatusEvent::Failed` to the control plane via callback,
+    then run the ordered drain below.
+  - On receiving the shutdown signal in `State::Running`: transition
+    to `ShuttingDown` (do NOT emit `Failed`), then run the ordered
+    drain.
+  - **Ordered drain** (executed only by supervisor): (a) cancel the
+    listener child token, await listener handles via `join_next` tag
+    matching; (b) cancel the reaper child token, await reaper handle
+    via `join_next`; (c) call `registry.drain()` to remove and cancel
+    any remaining flows; (d) send `DemuxCommand::Shutdown` (or drop
+    the supervisor-held `demux_tx`); (e) await the demux handle.
+  - Per-task `CancellationToken`s (listener_token, reaper_token,
+    demux_shutdown) MUST be child tokens of `rule_cancel` so that an
+    unexpected exit triggering `rule_cancel.cancel()` still cascades
+    to siblings, while orderly shutdown can cancel each role
+    independently.
+  - Shutdown idempotency: the shutdown channel is bounded(1); a
+    second `shutdown()` call observes the supervisor already in
+    `ShuttingDown` and immediately awaits the same completion
+    oneshot.
+- **FR-012** `UdpRuleRuntime::shutdown()` is the sole public shutdown
+  entry point. It MUST signal the supervisor via the bounded(1)
+  shutdown channel and await the supervisor's completion oneshot.
+  It MUST NOT directly await any task handle (those belong to the
+  supervisor). A second concurrent or sequential `shutdown()` call
+  MUST be safe: the second caller observes the channel already used
+  or the completion already resolved and returns immediately
+  without error. The supervisor itself decides task drain ordering
+  per FR-011.
 - **FR-013** `last_seen` MUST be updated only on successful send (either
   direction). It MUST NOT be updated on `recv_from` before send.
 - **FR-014** The `active_flows` gauge / `rule-stats` field MUST reflect
@@ -275,14 +341,33 @@ kernel and never observed at the original client.
 - **FR-015** Wire protocol, operator HTTP API schema, Prometheus row set,
   and Web UI surfaces MUST NOT change. The configuration field
   `udp_max_flows_per_rule` keeps its name; only its scope is corrected.
-- **FR-016** New `tracing` events MUST be added:
-  `rule.udp_upstream_connect_failed` (warn),
-  `rule.udp_addflow_dropped` (warn),
-  `rule.udp_flow_evicted_icmp` (info, once per evict),
-  `rule.udp_reply_wouldblock` (trace),
-  `rule.udp_emsgsize` (debug),
-  `rule.udp_runtime_started` (info, once per rule with `listen_port_start,
-  listen_port_end, range_size, rule_cap, cap_scope="per_rule"`).
+- **FR-016** Tracing events:
+  - **New events (6)**:
+    - `rule.udp_upstream_connect_failed` (warn) — synchronous
+      `connect()` failure during cold path; advances `dns_failures`
+      counter when all resolver-returned addresses fail.
+    - `rule.udp_addflow_dropped` (warn) — demux channel saturated;
+      flow rolled back.
+    - `rule.udp_flow_evicted_icmp` (info) — ICMP-driven eviction;
+      emitted exactly once per affected flow (not per datagram).
+    - `rule.udp_reply_wouldblock` (trace) — `listener.try_send_to`
+      WouldBlock; reply dropped. TRACE level avoids log DoS under
+      sustained back-pressure.
+    - `rule.udp_emsgsize` (debug) — datagram exceeded path MTU.
+    - `rule.udp_runtime_started` (info) — once per rule activation.
+      Fields: `listen_port_start, listen_port_end, range_size,
+      rule_cap, cap_scope="per_rule"`. MUST NOT dump the full
+      `listen_ports` vector even for non-contiguous future rule
+      shapes (today all UDP rules are contiguous ranges; if that
+      changes, log a count and a hash).
+  - **Preserved events** (kept from v0.4, MAY change emit site as
+    long as semantics are equivalent): `rule.udp_flow_opened`,
+    `rule.udp_flow_closed_idle`, `rule.udp_dns_failed`,
+    `rule.udp_first_packet_rejected`, `rule.udp_reply_send_failed`,
+    `rule.udp_bind_failed`, `rule.udp_upstream_bind_failed`.
+    `rule.udp_send_to_fallback` and `rule.udp_send_to_exhausted` are
+    **removed** along with v0.4's send-level multi-A fallback
+    (per FR-005).
 - **FR-017** Per-`(rule, listen_port)` `datagrams_in_total` and
   `datagrams_out_total` MUST continue to be reported with the same
   granularity as v1.4.x. Inbound is counted in the listener loop; outbound
@@ -290,10 +375,14 @@ kernel and never observed at the original client.
 
 ### Key Entities
 
-- **`UdpRuleRuntime`**: per-rule top-level handle. Owns the registry,
-  listener socket map, demux command sender, cancel token, and join
-  handles. Constructed by `control.rs::handle_server_message` on PUSH,
-  destructed on REMOVE.
+- **`UdpRuleRuntime`**: per-rule top-level handle. Owns the registry
+  (`Arc`), listener socket map (`Arc<HashMap<u16, Arc<UdpSocket>>>`),
+  one `demux_tx` clone (for caller-side awareness of the channel),
+  the root `rule_cancel` token, the shutdown signal channel, and a
+  single `supervisor_handle: JoinHandle`. Task-specific join handles
+  (listener / demux / reaper) belong to the supervisor (FR-011), not
+  to the runtime. Constructed by `control.rs::handle_server_message`
+  on PUSH; destructed on REMOVE via `shutdown()` (FR-012).
 - **`UdpFlowRegistry`**: per-rule shared flow table.
   `inner: Mutex<HashMap<FlowKey, Slot>>` where `Slot ::= Pending |
   Live(Arc<UdpFlow>)`. Exposes `try_reserve` / `commit` / `remove` /
@@ -322,12 +411,22 @@ kernel and never observed at the original client.
 
 ### Measurable Outcomes
 
-- **SC-001 (memory)**: At 1 000 concurrent flows on a single rule, RSS
-  attributable to UDP receive buffers MUST be bounded by `≤ 16 × 64 KiB +
-  registry overhead per flow (≤ 1 KiB)`. v1.4-baseline buffers alone are
-  ~64 MiB at this scale. Measurement target: `cargo bench -p
-  portunus-forwarder --bench udp_data_plane` with new high-flow-count
-  scenario.
+- **SC-001a (receive-buffer memory: O(rules))**: At any flow count on a
+  single rule, RSS attributable to UDP **receive buffers** MUST be a
+  small constant independent of flow count: at most **64 KiB per
+  rule** (the single demux-task buffer, allocated once at task
+  start). v1.4-baseline receive buffers scale linearly: 1 000 flows
+  → ~64 MiB; 10 000 flows → ~640 MiB. Measurement target: `cargo
+  bench -p portunus-forwarder --bench udp_data_plane` with new
+  `udp_high_flow_count` scenario reporting heap delta via
+  jemalloc/RSS sampling.
+- **SC-001b (per-flow metadata: O(flows), bounded constant per flow)**:
+  Per-flow steady-state memory (registry entry, `UdpFlow` struct,
+  upstream `UdpSocket` fd plus tokio reactor entry) MUST be ≤ 1 KiB
+  per flow excluding kernel socket receive buffer. fd count and
+  kernel-side `struct sock` are unchanged from v1.4 and not measured
+  by this SC. (Future `recvmmsg` batching may reduce this further;
+  out of scope.)
 - **SC-002 (per-rule cap)**: A range UDP rule of N listen ports with
   `udp_max_flows_per_rule = K` MUST admit exactly K concurrent flows
   across all ports, not `N × K`. Validated by integration test
@@ -369,10 +468,16 @@ kernel and never observed at the original client.
   out in `## Out of Scope` and in the release notes.
 - The existing `udp_flow_idle_secs` semantics are unchanged. Reaper
   granularity (`idle_window / 4`) is unchanged.
-- No new external dependencies. `tokio` (already in workspace) provides
-  `UdpSocket::try_send`, `try_send_to`, `try_recv`, `readable`,
-  `connect`. The `FuturesUnordered` primitive lives in `futures-util`,
-  already in the workspace.
+- **One workspace dependency addition**: `futures-util` (already a
+  transitive dependency via `tonic` / `tokio-stream`, but not currently
+  a direct dependency of `portunus-forwarder`). The `FuturesUnordered`
+  primitive is load-bearing for the demux task and worth the explicit
+  dep. `portunus-server` already depends on `futures = "0.3"`; adding
+  `futures-util` to the forwarder crate is a one-line `Cargo.toml`
+  change. No new transitive dependencies result.
+- `tokio` (already in workspace) provides `UdpSocket::try_send`,
+  `try_send_to`, `try_recv`, `readable`, `connect`. No tokio version
+  bump required.
 
 ## Out of Scope
 
