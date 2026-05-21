@@ -97,6 +97,19 @@ pub struct UdpFlow {
     /// after every successful `send_to` and short-circuit further
     /// datagrams on the exhausted side.
     pub quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
+
+    /// 014-udp-centralized-demux: v0.11 active-connection guards
+    /// (owner + rule scope). Held for the flow's lifetime so the
+    /// rate limiter's `concurrent_connections` cap correctly
+    /// reflects live UDP flows. When the registry releases the
+    /// `Arc<UdpFlow>` (idle eviction / explicit remove), this Vec
+    /// drops and `ActiveGuard::Drop` decrements
+    /// `active_connections`. The Mutex is touched once at flow
+    /// construction (via `attach_admit_guards`) — admission lookups
+    /// never read it on the hot path. `Vec` rather than two
+    /// `Option`s so the helper can return 0, 1, or 2 guards without
+    /// shape-matching on which layer was capped.
+    pub admit_guards: Mutex<Vec<crate::forwarder::rate_limit::scope::ActiveGuard>>,
 }
 
 impl UdpFlow {
@@ -128,6 +141,7 @@ impl UdpFlow {
             target_idx: None,
             health_states: None,
             quota: None,
+            admit_guards: Mutex::new(Vec::new()),
         })
     }
 
@@ -162,6 +176,7 @@ impl UdpFlow {
             target_idx: Some(target_idx),
             health_states: Some(health_states),
             quota: None,
+            admit_guards: Mutex::new(Vec::new()),
         })
     }
 
@@ -183,6 +198,27 @@ impl UdpFlow {
             slot.quota = Some(quota);
         }
         self
+    }
+
+    /// 014-udp-centralized-demux: install the v0.11 layered admission
+    /// guards into a freshly-built flow. Stores 0, 1, or 2
+    /// `ActiveGuard`s depending on which scopes (owner / rule) were
+    /// capped. The guards ride the flow's `Arc` lifetime — when the
+    /// registry releases the last strong ref (idle reaper, explicit
+    /// `remove`, AddFlow rollback), the Vec drops and each guard's
+    /// `Drop` decrements `active_connections`. This is the v0.11
+    /// `concurrent_connections` enforcement seam for UDP under the
+    /// centralized-demux design (v0.4 used a per-flow guard task
+    /// via `spawn_admit_guard` — replaced here by attaching to the
+    /// flow itself, eliminating the extra task per flow).
+    pub async fn attach_admit_guards(
+        &self,
+        guards: Vec<crate::forwarder::rate_limit::scope::ActiveGuard>,
+    ) {
+        if guards.is_empty() {
+            return;
+        }
+        *self.admit_guards.lock().await = guards;
     }
 
     /// 013-traffic-quotas E4: true iff the budget is not exhausted.

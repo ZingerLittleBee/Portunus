@@ -30,7 +30,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::forwarder::quota::QuotaHandle;
 use crate::forwarder::rate_limit::scope::{
-    LayeredAcquire, OwnerRateLimitHandle, RuleRateLimitHandle, try_acquire_layered,
+    ActiveGuard, LayeredAcquire, OwnerRateLimitHandle, RuleRateLimitHandle, try_acquire_layered,
 };
 use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
@@ -224,10 +224,13 @@ async fn handle_datagram<R: Resolve + 'static>(
     };
 
     // (4) Layered owner+rule rate-limit gate. Owner first per FR-013.
-    //     Reject → silent drop, RAII releases the reservation.
-    if !acquire_first_packet(cfg, src) {
-        return;
-    }
+    //     Reject → silent drop, RAII releases the reservation. On
+    //     admit, the returned guards ride the `UdpFlow` Arc for the
+    //     flow's lifetime (v0.11 `concurrent_connections` cap).
+    let admit_guards = match acquire_first_packet(cfg, src) {
+        AdmitOutcome::Allowed { guards } => guards,
+        AdmitOutcome::Rejected => return,
+    };
 
     // (5) Resolve target. Single SocketAddr for IP targets;
     //     multi-A ordered list for DNS targets.
@@ -313,13 +316,17 @@ async fn handle_datagram<R: Resolve + 'static>(
         return;
     };
 
-    // (7) Build the flow, attach quota, commit reservation. The Arc is
-    //     unique at this point so `attach_quota` (which uses
-    //     `Arc::get_mut`) installs the handle reliably.
+    // (7) Build the flow, attach quota, attach v0.11 admit guards,
+    //     commit reservation. The Arc is unique through `attach_quota`
+    //     (which uses `Arc::get_mut`). `attach_admit_guards` locks the
+    //     internal Mutex, so it tolerates additional clones — but we
+    //     install it pre-commit so the guards are bound to the flow
+    //     before any other task can observe it.
     let mut flow = UdpFlow::new(src, Arc::clone(&upstream_socket), vec![chosen_target]);
     if let Some(q) = cfg.quota.as_ref() {
         flow = flow.attach_quota(Arc::clone(q));
     }
+    flow.attach_admit_guards(admit_guards).await;
     cfg.registry.commit(reservation, Arc::clone(&flow)).await;
 
     // (8) Hand the flow to the demux. Channel full = back-pressured
@@ -403,20 +410,50 @@ async fn handle_datagram<R: Resolve + 'static>(
     let _ = listener_socket;
 }
 
+/// Outcome of [`acquire_first_packet`]. On `Allowed`, the caller MUST
+/// attach the returned guards to the freshly-built `UdpFlow` (via
+/// `UdpFlow::attach_admit_guards`) so the v0.11
+/// `concurrent_connections` cap remains enforced over the flow's
+/// lifetime. Dropping the guards here (the original v014 Batch 3
+/// regression) would let `udp_max_flows_per_rule` silently override
+/// a tighter `concurrent_connections` cap.
+enum AdmitOutcome {
+    Allowed { guards: Vec<ActiveGuard> },
+    Rejected,
+}
+
 /// FR-013 layered owner+rule rate-limit gate for the first packet of a
-/// NEW UDP flow. Returns `true` on admission. On reject, bumps the
-/// scope's reject counter and emits `rule.udp_first_packet_rejected`.
+/// NEW UDP flow. Returns `Allowed { guards }` on admission, where
+/// `guards` contains 0, 1, or 2 `ActiveGuard`s (one per capped scope).
+/// The caller is responsible for moving the guards onto the new
+/// `UdpFlow` so they ride the registry's Arc lifetime — this is the
+/// v0.11 `concurrent_connections` enforcement seam under the
+/// centralized-demux design (v0.4 used a per-flow task via
+/// `spawn_admit_guard`; folding the guards into the flow itself avoids
+/// that per-flow task without losing the lifetime tie).
 ///
-/// The returned guards are *intentionally* dropped at the end of this
-/// helper — under the centralized-demux design, the active-flow
-/// gauge is driven by registry occupancy (FR-014), not by long-lived
-/// `ActiveGuard`s tied to each flow. v0.4's `spawn_admit_guard`
-/// indirection is therefore gone; the gate is purely admission, and
-/// `set_active_flows` is published from the registry snapshot in
-/// Phase 9.
-fn acquire_first_packet<R: Resolve + 'static>(cfg: &ListenerConfig<R>, src: SocketAddr) -> bool {
+/// On reject, bumps the scope's reject counter and emits
+/// `rule.udp_first_packet_rejected`. No guard is leaked: the layered
+/// gate releases the owner slot internally when the rule layer
+/// rejects.
+fn acquire_first_packet<R: Resolve + 'static>(
+    cfg: &ListenerConfig<R>,
+    src: SocketAddr,
+) -> AdmitOutcome {
     match try_acquire_layered(cfg.owner_rate_limit.as_ref(), cfg.rate_limit.as_ref(), true) {
-        LayeredAcquire::Granted { .. } => true,
+        LayeredAcquire::Granted {
+            owner_guard,
+            rule_guard,
+        } => {
+            let mut guards = Vec::with_capacity(2);
+            if let Some(g) = owner_guard {
+                guards.push(g);
+            }
+            if let Some(g) = rule_guard {
+                guards.push(g);
+            }
+            AdmitOutcome::Allowed { guards }
+        }
         LayeredAcquire::OwnerRejected(reason) => {
             if let Some(s) = cfg.owner_rate_limit_stats.as_deref() {
                 s.record_reject(reason);
@@ -429,7 +466,7 @@ fn acquire_first_packet<R: Resolve + 'static>(cfg: &ListenerConfig<R>, src: Sock
                 scope = "owner",
                 reason = ?reason,
             );
-            false
+            AdmitOutcome::Rejected
         }
         LayeredAcquire::RuleRejected(reason) => {
             if let Some(s) = cfg.rate_limit_stats.as_deref() {
@@ -443,7 +480,7 @@ fn acquire_first_packet<R: Resolve + 'static>(cfg: &ListenerConfig<R>, src: Sock
                 scope = "rule",
                 reason = ?reason,
             );
-            false
+            AdmitOutcome::Rejected
         }
     }
 }
@@ -451,10 +488,11 @@ fn acquire_first_packet<R: Resolve + 'static>(cfg: &ListenerConfig<R>, src: Sock
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarder::rate_limit::scope::{RateLimitScopeManager, RuleRateLimitHandle};
     use crate::forwarder::stats::RuleStats;
     use crate::resolver::{LiveResolver, ResolveAnswer, ResolverConfig, ResolverError};
     use async_trait::async_trait;
-    use portunus_core::{Hostname, PortRange};
+    use portunus_core::{Hostname, PortRange, RateLimit};
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
@@ -578,5 +616,139 @@ mod tests {
         // And `get` returns None for the key — defensive double-check.
         let key = FlowKey::new(listen_addr.port(), src);
         assert!(registry.get(key).await.is_none());
+    }
+
+    /// Regression: in v014 Batch 3 the new `acquire_first_packet`
+    /// helper dropped the layered `ActiveGuard`s at the helper
+    /// boundary, silently defeating the v0.11
+    /// `concurrent_connections` cap for UDP (the registry's
+    /// `udp_max_flows_per_rule` would be the only ceiling). The fix
+    /// folds the guards into the `UdpFlow` Arc so they live for the
+    /// flow's lifetime.
+    ///
+    /// This test drives `handle_datagram` directly with a per-rule
+    /// limiter capped at 2 concurrent connections. The 3rd distinct
+    /// source must be rejected at the rate-limit gate (no flow
+    /// committed). After explicitly removing one flow from the
+    /// registry, a 4th source must be admitted (the guard's `Drop`
+    /// decremented `active_connections`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_connections_cap_bounds_udp_flows() {
+        let (listener_sock, listen_addr) = bind_loopback().await;
+        // Real bound target so `connect()` in the cold path succeeds.
+        let (_target_sock, target_addr) = bind_loopback().await;
+
+        // Per-rule limiter with concurrent_connections = 2.
+        let rule_id = RuleId(7);
+        let scope = Arc::new(RateLimitScopeManager::new());
+        scope.install(
+            rule_id,
+            Some(&RateLimit {
+                concurrent_connections: Some(2),
+                ..Default::default()
+            }),
+        );
+        let rate_limit = Arc::new(RuleRateLimitHandle::new(rule_id, Arc::clone(&scope)));
+
+        // Large registry cap so the *only* binding constraint is the
+        // concurrent_connections gate — that's what we're validating.
+        let registry = UdpFlowRegistry::new(64);
+        // Channel deep enough that AddFlow always succeeds; keep the
+        // receiver alive so `try_send` never returns Closed. We drain
+        // it manually later so AddFlow-borne `Arc<UdpFlow>` clones drop
+        // alongside the registry entry.
+        let (demux_tx, mut demux_rx) = mpsc::channel::<DemuxCommand>(64);
+
+        let cfg = ListenerConfig {
+            rule_id,
+            listen_port: listen_addr.port(),
+            target: Target::Ip(target_addr.ip()),
+            target_port: target_addr.port(),
+            prefer_ipv6: false,
+            idle_window: Duration::from_secs(30),
+            registry: Arc::clone(&registry),
+            demux_tx,
+            stats: rule_stats_for(listen_addr.port()),
+            resolver: make_resolver(),
+            rate_limit: Some(Arc::clone(&rate_limit)),
+            rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
+            quota: None,
+            cancel: CancellationToken::new(),
+        };
+
+        let src1: SocketAddr = "127.0.0.1:60001".parse().unwrap();
+        let src2: SocketAddr = "127.0.0.1:60002".parse().unwrap();
+        let src3: SocketAddr = "127.0.0.1:60003".parse().unwrap();
+        let src4: SocketAddr = "127.0.0.1:60004".parse().unwrap();
+
+        handle_datagram(&cfg, &listener_sock, b"d1", src1).await;
+        handle_datagram(&cfg, &listener_sock, b"d2", src2).await;
+        // Third should reject at the rate-limit gate; no flow commits.
+        handle_datagram(&cfg, &listener_sock, b"d3", src3).await;
+        // `Reservation::Drop` defers slot removal to a spawned task
+        // (it can't await inline). Give that task time to run before
+        // we inspect the registry. Two short sleeps + yields
+        // suffice — the cleanup is a single mutex-lock + remove.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            registry.len(),
+            2,
+            "concurrent_connections=2 must bound live flows; got {}",
+            registry.len()
+        );
+        assert_eq!(
+            rate_limit.active_connections(),
+            2,
+            "active_connections must reflect 2 live guards",
+        );
+        let k3 = FlowKey::new(listen_addr.port(), src3);
+        assert!(
+            registry.get(k3).await.is_none(),
+            "rejected flow must NOT appear in registry",
+        );
+
+        // Drain pending AddFlow envelopes BEFORE removing the flow.
+        // In production the demux task consumes these instantly; the
+        // test must do the same so the only Arc<UdpFlow> ref count
+        // for src1 left in play is the registry's.
+        while let Ok(cmd) = demux_rx.try_recv() {
+            drop(cmd);
+        }
+
+        // Drop one flow → the guard inside `UdpFlow.admit_guards`
+        // drops with the Arc, decrementing `active_connections`.
+        let k1 = FlowKey::new(listen_addr.port(), src1);
+        let removed = registry
+            .remove(k1)
+            .await
+            .expect("flow should exist before remove");
+        drop(removed);
+
+        // Small yield to let any deferred Drop side effects settle.
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            rate_limit.active_connections(),
+            1,
+            "dropping a flow must release one ActiveGuard",
+        );
+
+        // 4th source must now be admitted.
+        handle_datagram(&cfg, &listener_sock, b"d4", src4).await;
+
+        let k4 = FlowKey::new(listen_addr.port(), src4);
+        assert!(
+            registry.get(k4).await.is_some(),
+            "4th source must be admitted after a slot frees up",
+        );
+        assert_eq!(
+            rate_limit.active_connections(),
+            2,
+            "active_connections must be back at the 2-cap ceiling",
+        );
     }
 }
