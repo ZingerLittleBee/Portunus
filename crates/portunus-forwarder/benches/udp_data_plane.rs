@@ -217,12 +217,7 @@ fn read_vmrss_kb() -> Option<u64> {
     let raw = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in raw.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest
-                .trim()
-                .split_whitespace()
-                .next()?
-                .parse()
-                .ok()?;
+            let kb: u64 = rest.trim().split_whitespace().next()?.parse().ok()?;
             return Some(kb);
         }
     }
@@ -319,7 +314,10 @@ async fn run_high_flow_scenario(n_flows: usize) -> u64 {
             let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
                 .expect("bind client source");
-            client.connect(listen_addr).await.expect("connect to listen port");
+            client
+                .connect(listen_addr)
+                .await
+                .expect("connect to listen port");
             // Single datagram + echo. Some macOS kernels return WouldBlock
             // on the first try_send inside the listener (FR-006) — re-send
             // once on timeout so the flow survives.
@@ -382,9 +380,7 @@ fn bench_high_flow_count(c: &mut Criterion) {
                     // operators can scrape it from the bench output;
                     // criterion's "time" measurement remains the
                     // primary regression signal.
-                    eprintln!(
-                        "udp_high_flow_count n={n_flows} rss_delta_kb={rss_delta_kb}"
-                    );
+                    eprintln!("udp_high_flow_count n={n_flows} rss_delta_kb={rss_delta_kb}");
                 }
                 total
             })
