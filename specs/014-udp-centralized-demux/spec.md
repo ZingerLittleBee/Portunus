@@ -328,8 +328,17 @@ kernel and never observed at the original client.
     `join_next`; (b) cancel the reaper child token; await `Reaper`
     tag via `join_next`; (c) call `registry.drain()` to remove and
     cancel any remaining flows; (d) send `DemuxCommand::Shutdown`
-    (or drop the supervisor-held `demux_tx`); (e) await `Demux` tag
-    via `join_next`. Loop terminates when the JoinSet is empty.
+    on the supervisor-held `demux_tx`; (e) await `Demux` tag via
+    `join_next`. Loop terminates when the JoinSet is empty.
+    `DemuxCommand::Shutdown` is the **single, explicit** shutdown
+    signal demux watches for. Channel-close (dropping the last
+    sender) MUST NOT be relied on as a shutdown trigger, even
+    though listeners drop their `demux_tx` clones in step (a) and
+    the supervisor holds the only remaining clone. Relying on
+    sender lifetime to drive shutdown is fragile: a future code
+    change that adds another `demux_tx` owner (cache, retry queue,
+    diagnostic surface) would silently break shutdown. The
+    explicit command makes the contract checkable.
   - **Unexpected sibling exit during drain**: during any
     `ShuttingDown*` state, every `JoinSet::join_next` result MUST be
     classified against a per-role `cancelled_at` marker the
@@ -432,12 +441,16 @@ kernel and never observed at the original client.
 
 - **`UdpRuleRuntime`**: per-rule top-level handle. Owns the registry
   (`Arc`), listener socket map (`Arc<HashMap<u16, Arc<UdpSocket>>>`),
-  one `demux_tx` clone (for caller-side awareness of the channel),
-  the root `rule_cancel` token, the shutdown signal channel, and a
-  single `supervisor_handle: JoinHandle`. Task-specific join handles
-  (listener / demux / reaper) belong to the supervisor (FR-011), not
-  to the runtime. Constructed by `control.rs::handle_server_message`
-  on PUSH; destructed on REMOVE via `shutdown()` (FR-012).
+  the root `rule_cancel` token, the shutdown-signal sender
+  (`mpsc::Sender<()>` or equivalent to the supervisor's bounded(1)
+  inbox), and a single `supervisor_handle: JoinHandle`. The runtime
+  does NOT hold a `demux_tx` clone: listener tasks hold clones for
+  `AddFlow`, the supervisor holds the single clone used to send
+  `DemuxCommand::Shutdown` during ordered drain (FR-011). Task-
+  specific join handles (listener / demux / reaper) belong to the
+  supervisor, not the runtime. Constructed by
+  `control.rs::handle_server_message` on PUSH; destructed on REMOVE
+  via `shutdown()` (FR-012).
 - **`UdpFlowRegistry`**: per-rule shared flow table.
   `inner: Mutex<HashMap<FlowKey, Slot>>` where `Slot ::= Pending |
   Live(Arc<UdpFlow>)`. Exposes `try_reserve` / `commit` / `remove` /
