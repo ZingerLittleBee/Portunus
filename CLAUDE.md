@@ -166,9 +166,11 @@ Key invariants:
   v1.4.3 baseline captured before this branch.
 - **Constitution Principle III**: integration tests use real
   loopback sockets (`udp_range_rule_cap_is_per_rule`,
-  `udp_smoke_icmp_evict`); `cargo test --workspace` is green
-  (modulo the known macOS-only `udp_smoke` flake that pre-dates
-  this branch).
+  `udp_smoke_icmp_evict`); `cargo test --workspace` is green on
+  both macOS and Linux. The pre-014 "macOS-only `udp_smoke` flake"
+  was actually a fresh-socket `try_send` → `WouldBlock` race that
+  silently dropped the first packet of every flow; the cold-path
+  step 9 now uses `send().await` so the first datagram is durable.
 
 For technical context, project structure, dependency choices, and the
 Constitution Check, read the current plan:

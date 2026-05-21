@@ -44,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `O(1) × 64 KiB`. A 1000-flow workload now uses ~64 KiB of
   receive buffer instead of ~64 MiB (factor scales with flow count).
 
+### Fixed
+
+- UDP cold path first-packet send no longer silently drops the very
+  first datagram of a flow. Previously the cold path issued
+  `try_send` immediately after `bind` + `connect` on a Tokio
+  `UdpSocket`; the reactor had not yet observed writability and
+  returned a spurious `WouldBlock`, so the first datagram was
+  logged-and-dropped while the flow itself was committed. UDP
+  applications that send a single request per flow (DNS, some QUIC
+  paths) saw 100 % first-packet loss on Linux loopback under this
+  shape. The cold path now uses `send().await` for the first packet,
+  which parks once on the writability future and then commits the
+  datagram. Subsequent fast-path packets continue to use
+  `try_send` with drop-on-WouldBlock semantics. This also resolves
+  the pre-014 "macOS-only `udp_smoke` e2e flake".
+
 ### Removed
 
 - v0.4's first-packet send-level multi-A fallback. Multi-A is now

@@ -24,10 +24,11 @@ Base: `main` @ v1.4.3.
 
 | Suite | Result |
 |---|---|
+| `cargo test --workspace` | green |
 | `cargo test -p portunus-forwarder` UDP suite | 42 / 42 pass |
+| `cargo test -p portunus-e2e --test udp_smoke` | 8 / 8 pass |
 | `cargo bench udp_data_plane -- udp_high_flow_count` (SC-001a) | pass (see below) |
 | `cargo bench udp_data_plane -- 'udp_data_plane.single_flow'` (SC-004 sanity) | pass — no regression vs inline reference |
-| `cargo test -p portunus-e2e --test udp_smoke` | **pre-existing failure** — reproduces on `main` |
 
 ## SC-001a memory benchmark (Linux VPS)
 
@@ -82,29 +83,33 @@ comparable.
   pre-existing e2e harness failure documented below; it is `ignore`d on
   non-Linux already.
 
-## Pre-existing e2e harness failure
+## First-packet drop bug (fixed)
 
-All 8 `portunus-e2e::tests::udp_smoke::*` tests fail on the Linux VPS with
-`recv reply: Os { code: 11, kind: WouldBlock }` at the `user.recv_from`
-call (3 s read timeout). **Reproduced on `main` (commit `3dc74e1`,
-v1.4.3)** with identical symptoms.
+During VPS verification the e2e `udp_smoke` suite surfaced a real data-plane
+bug. Trace logs showed `rule.udp_first_packet_send_dropped` with
+`action=WouldBlock` on every fresh flow — the cold path's
+`upstream_socket.try_send(payload)` returned `EAGAIN` even though the
+socket had just been `bind`+`connect`-ed and the kernel send buffer was
+empty.
 
-Diagnostic notes:
-* The 42 UDP unit + rule-level integration tests on the same VPS all pass,
-  including `udp_rule_round_trip_byte_equal` which exercises the real
-  `UdpRuleRuntime` end-to-end with real sockets. The forwarding path is
-  verified.
-* The failure mode is in the e2e bootstrap (server gRPC → client →
-  listener bind → first user datagram), not in the data plane.
-* Most likely the 200 ms `std::thread::sleep` after rule push is
-  insufficient on this VPS for the gRPC `PUSH RULE` to propagate to the
-  client and have it call `bind()` + register with the reactor, so the
-  first datagram is sent to a port nobody is listening on. (Linux
-  `recvfrom` on a UDP socket that never received anything blocks until
-  the read timeout, which is what `WouldBlock` represents here when the
-  socket is non-blocking.)
-* Out of scope for this branch — the e2e harness is shared infrastructure
-  and the failure predates 014. Filed as follow-up.
+Root cause: Tokio's `UdpSocket::try_send` consults the reactor's
+registered I/O readiness. On a freshly created socket the reactor has not
+yet observed writability (no prior poll), so `try_send` returns
+`WouldBlock` until the reactor's first wake. The cold path classified
+this as a transient error and dropped the datagram while keeping the
+flow. End-user apps that send one datagram per flow (DNS, some QUIC
+shapes) saw 100 % first-packet loss.
+
+Fix (`crates/portunus-forwarder/src/forwarder/udp/listener.rs:357`):
+cold-path step 9 now uses `send(payload).await` instead of `try_send`.
+The future parks once on writability, the reactor immediately reports
+the socket as writable, and the syscall issues. Cold path stays fast
+(one extra await on a guaranteed-ready future). Hot-path subsequent
+sends keep `try_send` with drop-on-`WouldBlock` semantics (FR-007).
+
+Side benefit: the pre-014 "macOS-only `udp_smoke` flake" referenced
+in `CLAUDE.md` was the same bug. After the fix the e2e suite is green
+on both macOS and Linux.
 
 ## Operational notes (carried from `CHANGELOG.md`)
 
