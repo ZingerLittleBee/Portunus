@@ -214,8 +214,88 @@ impl Drop for Reservation {
 }
 
 #[cfg(test)]
-#[allow(unused_imports)]
 mod tests {
     use super::*;
-    // tests added in Task 2.2-2.5
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn key(port: u16, ip_last_octet: u8, src_port: u16) -> FlowKey {
+        FlowKey::new(
+            port,
+            SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, ip_last_octet)),
+                src_port,
+            ),
+        )
+    }
+
+    async fn flow_for(src: SocketAddr) -> Arc<UdpFlow> {
+        UdpFlow::for_test(src).await
+    }
+
+    #[tokio::test]
+    async fn reserve_then_commit_makes_flow_live() {
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+            panic!("expected reservation")
+        };
+        assert_eq!(reg.len(), 1, "Pending counts toward occupancy");
+        let f = flow_for(k.src).await;
+        reg.commit(res, Arc::clone(&f)).await;
+        assert_eq!(reg.len(), 1);
+        let got = reg.get(k).await.expect("should be live");
+        assert!(Arc::ptr_eq(&got, &f));
+    }
+
+    #[tokio::test]
+    async fn cap_exhaustion_returns_cap_exhausted_and_bumps_counter() {
+        let reg = UdpFlowRegistry::new(2);
+        let TryGetOrReserve::Reserved(r1) = reg.try_get_or_reserve(key(8000, 1, 1)).await else {
+            panic!()
+        };
+        let TryGetOrReserve::Reserved(r2) = reg.try_get_or_reserve(key(8000, 2, 1)).await else {
+            panic!()
+        };
+        let r3 = reg.try_get_or_reserve(key(8000, 3, 1)).await;
+        assert!(matches!(r3, TryGetOrReserve::CapExhausted));
+        assert_eq!(reg.dropped_overflow(), 1);
+        drop(r1);
+        drop(r2);
+    }
+
+    #[tokio::test]
+    async fn drop_uncommitted_reservation_releases_slot() {
+        let reg = UdpFlowRegistry::new(1);
+        {
+            let TryGetOrReserve::Reserved(r) = reg.try_get_or_reserve(key(8000, 1, 1)).await
+            else {
+                panic!()
+            };
+            assert_eq!(reg.len(), 1);
+            drop(r); // RAII releases.
+        }
+        // Reservation::drop spawns an async task; yield a few times.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if reg.is_empty() {
+                return;
+            }
+        }
+        panic!("Reservation drop did not release slot");
+    }
+
+    #[tokio::test]
+    async fn drain_empties_registry_and_cancels_flows() {
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+            panic!()
+        };
+        let f = flow_for(k.src).await;
+        reg.commit(res, Arc::clone(&f)).await;
+        assert!(!f.cancel.is_cancelled());
+        reg.drain().await;
+        assert_eq!(reg.len(), 0);
+        assert!(f.cancel.is_cancelled());
+    }
 }

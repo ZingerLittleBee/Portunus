@@ -286,6 +286,30 @@ impl UdpFlow {
     pub async fn last_seen_at(&self) -> Instant {
         *self.last_seen.lock().await
     }
+
+    /// 014-udp-centralized-demux: lightweight constructor for unit
+    /// tests that only need a valid `UdpFlow` shape (e.g. registry
+    /// tests). Binds `0.0.0.0:0` and seeds an empty upstream list
+    /// placeholder of `src` so invariants hold without actually
+    /// dialing anything.
+    #[cfg(test)]
+    #[must_use]
+    pub async fn for_test(src: SocketAddr) -> Arc<Self> {
+        let sock = Arc::new(
+            UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+                .await
+                .expect("for_test bind"),
+        );
+        Self::new(src, sock, vec![src])
+    }
+
+    /// 014-udp-centralized-demux test helper: forcibly rewind
+    /// `last_seen` to a specific instant so reaper-style unit tests
+    /// can drive idle eviction deterministically.
+    #[cfg(test)]
+    pub async fn force_last_seen(&self, t: Instant) {
+        *self.last_seen.lock().await = t;
+    }
 }
 
 /// 004-udp-forward T044: resolver-aware flow constructor.
