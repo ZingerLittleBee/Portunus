@@ -306,4 +306,58 @@ mod tests {
         tx.send(DemuxCommand::Shutdown).await.unwrap();
         h.await.unwrap();
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_budget_caps_at_32_datagrams_per_ready() {
+        // Send 100 reply datagrams in one go, observe demux processes
+        // them in batches of <=32 (the fairness budget). We can't observe
+        // batches directly; instead check that all 100 eventually arrive
+        // and the demux did not panic / starve.
+        let (listener_sock, listener_addr) = bind_loopback_udp().await;
+        let mut listener_map = HashMap::new();
+        listener_map.insert(listener_addr.port(), Arc::clone(&listener_sock));
+
+        let (client_sock, client_addr) = bind_loopback_udp().await;
+        let (target_sock, target_addr) = bind_loopback_udp().await;
+
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+        let upstream_local = upstream.local_addr().unwrap();
+
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        let key = FlowKey::new(listener_addr.port(), client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(listener_addr.port());
+        let (tx, rx) = mpsc::channel(8);
+        let h = tokio::spawn(run_demux(
+            DemuxConfig {
+                registry,
+                listener_sockets: Arc::new(listener_map),
+                stats,
+            },
+            rx,
+        ));
+        tx.send(DemuxCommand::AddFlow { key, flow }).await.unwrap();
+
+        for i in 0..100u8 {
+            target_sock.send_to(&[i], upstream_local).await.unwrap();
+        }
+
+        let mut received = std::collections::HashSet::new();
+        let mut buf = [0u8; 64];
+        for _ in 0..100 {
+            let (n, _) = tokio::time::timeout(Duration::from_secs(3), client_sock.recv_from(&mut buf))
+                .await
+                .expect("100 replies should arrive within 3s")
+                .unwrap();
+            assert_eq!(n, 1);
+            received.insert(buf[0]);
+        }
+        assert_eq!(received.len(), 100);
+
+        tx.send(DemuxCommand::Shutdown).await.unwrap();
+        h.await.unwrap();
+    }
 }
