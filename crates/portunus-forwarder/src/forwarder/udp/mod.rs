@@ -37,7 +37,7 @@ pub mod table;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use portunus_core::{RuleId, Target};
+use portunus_core::RuleId;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -49,7 +49,7 @@ use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
 use crate::forwarder::udp::flow::UdpFlow;
 use crate::forwarder::udp::table::{OverflowDropped, UdpFlowTable};
-use crate::resolver::{ConnectError, LiveResolver, Resolve};
+use crate::resolver::{LiveResolver, Resolve};
 
 /// IP-layer UDP payload ceiling (FR-013). One static heap buffer per
 /// recv loop sized to this value means `recv_from` cannot truncate any
@@ -450,278 +450,14 @@ fn spawn_admit_guard(cancel: CancellationToken, guard: ActiveGuard) {
     });
 }
 
-/// Run a per-port UDP listener on `listen_port`. The listener binds,
-/// loops `recv_from` on the listen socket, dispatches each datagram
-/// through a per-source flow, and tears down on `cancel`.
-///
-/// US1: IP-target rules. US2 (T044/T046): DNS-target rules go through
-/// `resolver.resolve_target` on first datagram of a new flow; the
-/// resolver is shared with the TCP path so cache + single-flight +
-/// `dns_failures` semantics are unified.
-///
-/// `flow_cap` is the per-rule cap on simultaneous live flows
-/// (`udp_max_flows_per_rule` from `Welcome`, default 1024).
-#[allow(clippy::too_many_arguments)]
-pub async fn run_listener<R: Resolve + 'static>(
-    rule_id: RuleId,
-    listen_port: u16,
-    target: Target,
-    target_port: u16,
-    prefer_ipv6: bool,
-    flow_cap: usize,
-    idle_window: std::time::Duration,
-    stats: Arc<RuleStats>,
-    resolver: Arc<LiveResolver<R>>,
-    cancel: CancellationToken,
-    rate_limit: Option<Arc<RuleRateLimitHandle>>,
-    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
-    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
-) {
-    let listen_addr: SocketAddr = ([0, 0, 0, 0], listen_port).into();
-    let listener = match UdpSocket::bind(listen_addr).await {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            warn!(
-                event = "rule.udp_bind_failed",
-                rule_id = %rule_id,
-                listen_port = listen_port,
-                error = %e,
-            );
-            return;
-        }
-    };
-    let flow_table = Arc::new(UdpFlowTable::new(flow_cap));
-    // 004-udp-forward T060/T062: the reaper task tears stale flows down
-    // every `idle_window / 4`. `idle_window == 0` (test escape hatch)
-    // disables the reaper; production callers always pass a positive
-    // window from the Welcome-derived runtime config.
-    flow_table.spawn_reaper(idle_window, rule_id, cancel.clone());
-
-    let mut buf = vec![0u8; UDP_BUFFER_BYTES];
-    loop {
-        tokio::select! {
-            () = cancel.cancelled() => {
-                break;
-            }
-            recv = listener.recv_from(&mut buf) => match recv {
-                Ok((n, source)) => {
-                    handle_inbound(
-                        rule_id,
-                        listen_port,
-                        &buf[..n],
-                        source,
-                        &target,
-                        target_port,
-                        prefer_ipv6,
-                        Arc::clone(&listener),
-                        Arc::clone(&flow_table),
-                        Arc::clone(&stats),
-                        Arc::clone(&resolver),
-                        rate_limit.clone(),
-                        rate_limit_stats.clone(),
-                        owner_rate_limit.clone(),
-                        owner_rate_limit_stats.clone(),
-                        quota.clone(),
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    warn!(
-                        event = "rule.udp_recv_error",
-                        rule_id = %rule_id,
-                        listen_port = listen_port,
-                        error = %e,
-                    );
-                }
-            }
-        }
-    }
-
-    // Snapshot live flow count one more time before draining so the
-    // last `active_flows` gauge value isn't a stale high-water mark.
-    let final_len = flow_table.len().await;
-    if let Ok(n) = u32::try_from(final_len) {
-        stats.set_active_flows(n);
-    }
-    flow_table.drain().await;
-    info!(
-        event = "rule.udp_listener_drained",
-        rule_id = %rule_id,
-        listen_port = listen_port,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_inbound<R: Resolve>(
-    rule_id: RuleId,
-    listen_port: u16,
-    payload: &[u8],
-    source: SocketAddr,
-    target: &Target,
-    target_port: u16,
-    prefer_ipv6: bool,
-    listener: Arc<UdpSocket>,
-    flow_table: Arc<UdpFlowTable>,
-    stats: Arc<RuleStats>,
-    resolver: Arc<LiveResolver<R>>,
-    rate_limit: Option<Arc<RuleRateLimitHandle>>,
-    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
-    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
-    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
-) {
-    // Fast path: existing flow. Skips both resolver and upstream-bind
-    // in the common case of a long-lived sender. The resolver's cache
-    // already coalesces repeated lookups for the same hostname, but a
-    // table hit avoids even that cheap path.
-    let phase_flow = if let Some(f) = flow_table.get(source).await {
-        f
-    } else {
-        // 013-traffic-quotas E4: drop datagrams that would open a NEW
-        // flow under an exhausted budget. Existing-flow datagrams hit
-        // the `quota_allows` check inside `relay_existing_flow`.
-        if let Some(q) = quota.as_ref()
-            && q.is_exhausted()
-        {
-            return;
-        }
-        // T021/T030: layered owner+rule rate-limit gate before any
-        // resolver / NAT bind work. Reject = silent drop (FR-009 UDP
-        // path); FR-013 ordering — owner first.
-        let Some((owner_admit_guard, admit_guard)) = acquire_first_packet(
-            rule_id,
-            listen_port,
-            source,
-            rate_limit.as_ref(),
-            rate_limit_stats.as_deref(),
-            owner_rate_limit.as_ref(),
-            owner_rate_limit_stats.as_deref(),
-        ) else {
-            return;
-        };
-        // US2 (T044): resolve through the shared `LiveResolver`. For
-        // `Target::Ip` this short-circuits to a single SocketAddr
-        // without touching DNS; for `Target::Dns` it consults the
-        // cache (single-flight on miss) and applies family
-        // ordering per `prefer_ipv6`.
-        let upstream_addrs = match resolver
-            .resolve_target(rule_id, target, target_port, prefer_ipv6)
-            .await
-        {
-            Ok((addrs, _src)) => addrs,
-            Err(ConnectError::Resolution(err)) => {
-                // FR-008: resolver-side failure → bump per-rule
-                // counter and drop the datagram. The rule stays
-                // Active (FR-012) — a future datagram may succeed
-                // when the resolver recovers.
-                stats.inc_dns_failure();
-                warn!(
-                    event = "rule.udp_dns_failed",
-                    rule_id = %rule_id,
-                    listen_port = listen_port,
-                    source = %source,
-                    error = %err,
-                );
-                return;
-            }
-            Err(other) => {
-                // resolve_target only emits Resolution errors; this
-                // branch is defensive against future variants.
-                warn!(
-                    event = "rule.udp_resolve_unexpected_error",
-                    rule_id = %rule_id,
-                    listen_port = listen_port,
-                    source = %source,
-                    error = %other,
-                );
-                return;
-            }
-        };
-        if upstream_addrs.is_empty() {
-            stats.inc_dns_failure();
-            return;
-        }
-        match build_or_lookup_flow(
-            Arc::clone(&flow_table),
-            source,
-            upstream_addrs,
-            rule_id,
-            listen_port,
-            Arc::clone(&listener),
-            Arc::clone(&stats),
-            None, // legacy single-target rule — preserve v0.6.0 hot path
-            admit_guard,
-            owner_admit_guard,
-            quota.clone(),
-        )
-        .await
-        {
-            Some(f) => f,
-            None => return, // overflow already logged + counted
-        }
-    };
-
-    // 013-traffic-quotas E4: an existing flow could have been built
-    // before exhaustion but the budget might have drained mid-flow;
-    // short-circuit before the send_to. Mirrors `relay_existing_flow`.
-    if !phase_flow.quota_allows() {
-        return;
-    }
-    // Forward inbound datagram through the flow's upstream socket. On
-    // send_to error, US2 (T045) walks remaining multi-A candidates
-    // before giving up — only the LAST candidate's failure bumps
-    // `dns_failures` and drops the datagram (FR-006/FR-012).
-    let n = u64::try_from(payload.len()).unwrap_or(u64::MAX);
-    loop {
-        let upstream = phase_flow.current_upstream();
-        match phase_flow.upstream_socket.send_to(payload, upstream).await {
-            Ok(_) => {
-                stats.inc_datagram_in(listen_port, n);
-                phase_flow.bump_inbound(n).await;
-                // 013-traffic-quotas E4: consume after the bytes
-                // landed upstream.
-                let _ = phase_flow.quota_consume_after_send(n);
-                // Opportunistic gauge update — the exact value is
-                // re-read on the StatsReport tick anyway.
-                if let Ok(live) = u32::try_from(flow_table.len().await) {
-                    stats.set_active_flows(live);
-                }
-                return;
-            }
-            Err(e) => {
-                if let Some(next) = phase_flow.advance_upstream() {
-                    warn!(
-                        event = "rule.udp_send_to_fallback",
-                        rule_id = %rule_id,
-                        listen_port = listen_port,
-                        source = %source,
-                        failed_upstream = %upstream,
-                        next_upstream = %next,
-                        error = %e,
-                    );
-                    // Loop: retry on next address.
-                } else {
-                    // Multi-A list exhausted (or single-address rule).
-                    // Drop the datagram and surface the failure via
-                    // `dns_failures` so operators see "nothing reaches
-                    // the upstream" without grepping logs.
-                    stats.inc_dns_failure();
-                    warn!(
-                        event = "rule.udp_send_to_exhausted",
-                        rule_id = %rule_id,
-                        listen_port = listen_port,
-                        source = %source,
-                        failed_upstream = %upstream,
-                        error = %e,
-                    );
-                    return;
-                }
-            }
-        }
-    }
-}
+// 014-udp-centralized-demux Phase 8: the single-target `run_listener`
+// and `handle_inbound` are replaced by `runtime::UdpRuleRuntime` +
+// `listener::run_listener`. The multi-target path
+// (`run_listener_multi_target`) below keeps using the v0.4 helpers
+// (`build_or_lookup_flow`, `relay_existing_flow`, `acquire_first_packet`,
+// `spawn_admit_guard`, `spawn_reply_pump`) and the per-listener
+// `UdpFlowTable`. Multi-target migration to the centralized demux is a
+// v0.4 follow-up.
 
 /// Bind an upstream socket and insert a fresh flow atomically. On
 /// overflow the freshly-bound socket is dropped (kernel cleans up).
@@ -931,7 +667,15 @@ fn spawn_reply_pump(
     });
 }
 
-#[cfg(test)]
+// 014-udp-centralized-demux Phase 8: the single-target test block
+// below targeted `run_listener`/`handle_inbound`, which were deleted
+// in this batch. Phase 10 (014) will replace these with rule-level
+// integration tests against `UdpRuleRuntime`. Kept here as comments
+// so the assertions are easy to port over.
+// Phase 10 (014) will replace these with rule-level integration tests
+// against `UdpRuleRuntime`. Gate is `cfg(any())` so the block never
+// compiles but stays in the tree for reference + porting.
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::resolver::{ResolveAnswer, ResolverConfig, ResolverError};

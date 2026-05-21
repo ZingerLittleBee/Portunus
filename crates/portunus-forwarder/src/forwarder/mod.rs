@@ -567,53 +567,74 @@ async fn run_udp<R: Resolve + 'static>(
 ) {
     // 007-multi-target-failover (T024): multi-target UDP rules go
     // through the multi-target listener which selects a target on
-    // each NEW flow's first inbound packet (FR-012).
+    // each NEW flow's first inbound packet (FR-012). The 014
+    // centralized demux refactor is single-target only — multi-target
+    // UDP is tracked as a v0.4 follow-up.
     if !rule.targets.is_empty() {
         failover_path::run_udp(rule, resolver, status_tx, cancel, stats).await;
         return;
     }
+
     let listen_start = rule.listen_range.start();
     let listen_end = rule.listen_range.end();
     let range_size = rule.listen_range.len();
-
-    // Probe-bind every port in the range so a partial-success surfaces
-    // atomically as `Failed{port_in_use:<port>}` BEFORE we report
-    // `Activated`. We drop the probes immediately so the listener tasks
-    // can re-bind cleanly; a hostile concurrent grab between drop and
-    // re-bind would surface as `udp_bind_failed` in the listener log
-    // and the rule would effectively no-op (operator sees missing
-    // datagrams). v0.5 work can move bind into this function and pass
-    // the bound socket into `run_listener` to close that race.
-    let mut probes = Vec::with_capacity(range_size as usize);
-    for port in listen_start..=listen_end {
-        match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
-            Ok(p) => probes.push(p),
-            Err(e) => {
-                let reason = if range_size == 1 {
-                    "port_in_use".to_string()
-                } else {
-                    format!("port_in_use:{port}")
-                };
-                warn!(
-                    event = "rule.failed",
-                    rule_id = %rule.rule_id,
-                    listen_port = port,
-                    reason = %reason,
-                    error = %e,
-                );
-                let _ = status_tx
-                    .send(RuleStatusEvent::Failed {
-                        rule_id: rule.rule_id,
-                        reason,
-                    })
-                    .await;
-                return;
-            }
-        }
-    }
-    drop(probes);
-
     let target_first = rule.target_range.start();
+
+    let cap = resolve_udp_cap(rule.udp_max_flows);
+    let idle_window = resolve_udp_idle_window(rule.udp_flow_idle_secs);
+
+    // 014: surface supervisor-detected failures (unexpected child task
+    // exit) back to the control loop. The bounded(1) channel + try_send
+    // makes the callback non-blocking — first failure wins, subsequent
+    // failures are dropped (idempotent: one Failed event per rule).
+    let (failed_tx, mut failed_rx) = mpsc::channel::<String>(1);
+    let failed_callback: Box<dyn Fn(String) + Send + Sync> = Box::new(move |reason| {
+        let _ = failed_tx.try_send(reason);
+    });
+
+    let cfg = udp::runtime::UdpRuntimeConfig {
+        rule_id: rule.rule_id,
+        listen_ports: listen_start..=listen_end,
+        target: rule.target.clone(),
+        target_ports: target_first..=rule.target_range.end(),
+        prefer_ipv6: rule.prefer_ipv6,
+        rule_cap: cap,
+        idle_window,
+        stats: Arc::clone(&stats),
+        resolver: Arc::clone(&resolver),
+        rate_limit: rule.rate_limit.clone(),
+        rate_limit_stats: rule.rate_limit_stats.clone(),
+        owner_rate_limit: rule.owner_rate_limit.clone(),
+        owner_rate_limit_stats: rule.owner_rate_limit_stats.clone(),
+        quota: rule.quota.clone(),
+        failed_callback,
+    };
+
+    let mut runtime = match udp::runtime::UdpRuleRuntime::start(cfg, cancel.clone()).await {
+        Ok(r) => r,
+        Err(udp::runtime::UdpRuntimeStartError::BindFailed { port, error }) => {
+            let reason = if range_size == 1 {
+                "port_in_use".to_string()
+            } else {
+                format!("port_in_use:{port}")
+            };
+            warn!(
+                event = "rule.failed",
+                rule_id = %rule.rule_id,
+                listen_port = port,
+                reason = %reason,
+                error = %error,
+            );
+            let _ = status_tx
+                .send(RuleStatusEvent::Failed {
+                    rule_id: rule.rule_id,
+                    reason,
+                })
+                .await;
+            return;
+        }
+    };
+
     info!(
         event = "rule.activated",
         rule_id = %rule.rule_id,
@@ -630,72 +651,42 @@ async fn run_udp<R: Resolve + 'static>(
         .await
         .is_err()
     {
+        // Receiver gone — best-effort tear down the runtime and return.
+        let _ = runtime.shutdown().await;
         return;
     }
 
-    let cap = resolve_udp_cap(rule.udp_max_flows);
-    let idle_window = resolve_udp_idle_window(rule.udp_flow_idle_secs);
+    // 014/FR-011: wait for either operator-initiated cancel OR a
+    // supervisor-surfaced failure. Either branch drives the same
+    // ordered shutdown path.
+    let failed_reason: Option<String> = tokio::select! {
+        () = cancel.cancelled() => None,
+        reason = failed_rx.recv() => reason,
+    };
 
-    // Spawn one listener per port. They share `cancel` so a single
-    // remove/shutdown drains every flow across the range; they share
-    // `stats` so the aggregate roll-up + per-port slot population
-    // happens transparently via `RuleStats::inc_datagram_*(port, n)`.
-    let mut tasks: JoinSet<()> = JoinSet::new();
-    for listen_port in listen_start..=listen_end {
-        let Some(target_port) =
-            PortRange::target_for(listen_port, rule.listen_range, rule.target_range)
-        else {
-            warn!(
-                event = "rule.target_mapping_missing",
-                rule_id = %rule.rule_id,
-                listen_port = listen_port,
-            );
-            continue;
-        };
-        let rule_id = rule.rule_id;
-        let target = rule.target.clone();
-        let prefer_ipv6 = rule.prefer_ipv6;
-        let task_stats = Arc::clone(&stats);
-        let task_resolver = Arc::clone(&resolver);
-        let task_cancel = cancel.clone();
-        let task_rate_limit = rule.rate_limit.clone();
-        let task_rate_limit_stats = rule.rate_limit_stats.clone();
-        let task_owner_rate_limit = rule.owner_rate_limit.clone();
-        let task_owner_rate_limit_stats = rule.owner_rate_limit_stats.clone();
-        let task_quota = rule.quota.clone();
-        tasks.spawn(async move {
-            udp::run_listener(
-                rule_id,
-                listen_port,
-                target,
-                target_port,
-                prefer_ipv6,
-                cap,
-                idle_window,
-                task_stats,
-                task_resolver,
-                task_cancel,
-                task_rate_limit,
-                task_rate_limit_stats,
-                task_owner_rate_limit,
-                task_owner_rate_limit_stats,
-                task_quota,
-            )
-            .await;
-        });
-    }
-
-    while tasks.join_next().await.is_some() {}
+    let _ = runtime.shutdown().await;
 
     info!(
-        event = "rule.removed",
+        event = "rule.deactivated",
         rule_id = %rule.rule_id,
+        protocol = "udp",
+        reason = %failed_reason.clone().unwrap_or_else(|| "cancelled".to_string()),
     );
-    let _ = status_tx
-        .send(RuleStatusEvent::Removed {
-            rule_id: rule.rule_id,
-        })
-        .await;
+
+    if let Some(reason) = failed_reason {
+        let _ = status_tx
+            .send(RuleStatusEvent::Failed {
+                rule_id: rule.rule_id,
+                reason,
+            })
+            .await;
+    } else {
+        let _ = status_tx
+            .send(RuleStatusEvent::Removed {
+                rule_id: rule.rule_id,
+            })
+            .await;
+    }
 }
 
 pub(super) async fn drain(
