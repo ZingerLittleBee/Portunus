@@ -23,6 +23,7 @@ tracing      = { workspace = true }
 thiserror    = { workspace = true }
 rand         = { workspace = true }
 serde        = { workspace = true }
+futures-util = "0.3"
 
 # Async DNS resolver (system-resolv.conf, no DoT/DoH per v0.3.0 OOS).
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }
