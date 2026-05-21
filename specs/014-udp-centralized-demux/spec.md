@@ -43,7 +43,7 @@ boundary correction + memory/scheduler footprint reduction"
   datagrams**, then re-arm the readable future. Prevents a hot flow from
   starving the rest of the rule.
 - Q: What metrics / wire surfaces change? → A: Wire and Prometheus surfaces
-  are unchanged. Six new `tracing` events are added (see FR-016).
+  are unchanged. Seven new `tracing` events are added (see FR-016).
   `active_flows` gauge meaning is corrected (see FR-014).
 - Q: How is multi-A fallback handled across the connect()-based design?
   → A: **Resolver ordering only, with connect-time fallback.** The cold
@@ -217,10 +217,16 @@ kernel and never observed at the original client.
   upstream socket and own target selection. v1.4.x already does this per
   port-listener, but the cap and gauge treat them inconsistently. After
   this feature the keying is canonical and the cap covers all of them.
-- **Listener task panic / demux task panic / reaper task panic**: the
-  supervisor task on `JoinSet` observes the unexpected exit, fires
-  `rule_cancel`, and reports `RuleStatusEvent::Failed` to control plane.
-  Server-side re-PUSH semantics handle the restart.
+- **Listener task panic / demux task panic / reaper task panic**:
+  - During `Running` state: supervisor observes the unexpected exit
+    via `JoinSet`, fires `rule_cancel`, emits `RuleStatusEvent::Failed`
+    once, and transitions to `ShuttingDownAfterFailure`. Server-side
+    re-PUSH semantics handle the restart.
+  - During `ShuttingDown*` state (either intentional or after-failure):
+    subsequent unexpected exits are logged via
+    `rule.udp_shutdown_unexpected_exit` (warn). `Failed` is NOT
+    re-emitted; REMOVE-driven shutdown never emits `Failed`. See
+    FR-011 for full classification rules.
 
 ## Requirements *(mandatory)*
 
@@ -293,36 +299,80 @@ kernel and never observed at the original client.
   `registry.remove + flow.cancel.cancel()`. The reaper MUST run once per
   rule, not once per listener.
 - **FR-011** A supervisor task MUST own a `JoinSet<TaskExit>` holding
-  the listener / demux / reaper join handles tagged by role. The
-  supervisor MUST hold a state machine `enum State { Running,
-  ShuttingDown }` (start: `Running`). The supervisor is the sole
-  driver of orderly shutdown — `UdpRuleRuntime::shutdown()` MUST NOT
-  await task handles directly. Instead, `shutdown()` signals the
-  supervisor via a oneshot/mpsc channel and awaits a completion
-  oneshot.
-  - In `State::Running`: any `JoinSet::join_next` result MUST be
+  the listener / demux / reaper join handles, each tagged by role
+  (`Listener(port)`, `Demux`, `Reaper`). The supervisor MUST hold a
+  state machine:
+  ```
+  enum State {
+      Running,
+      ShuttingDownIntentional,   // entered via shutdown signal (REMOVE)
+      ShuttingDownAfterFailure,  // entered via unexpected exit in Running
+  }
+  ```
+  Start: `Running`. The supervisor is the sole driver of orderly
+  shutdown — `UdpRuleRuntime::shutdown()` MUST NOT await task handles
+  directly. Instead, `shutdown()` signals the supervisor via a
+  bounded(1) channel and awaits a completion oneshot.
+
+  - **In `State::Running`**: any `JoinSet::join_next` result MUST be
     treated as an unexpected exit (cancel or panic). The supervisor
-    MUST transition to `ShuttingDown`, fire `rule_cancel`, emit
-    `RuleStatusEvent::Failed` to the control plane via callback,
-    then run the ordered drain below.
-  - On receiving the shutdown signal in `State::Running`: transition
-    to `ShuttingDown` (do NOT emit `Failed`), then run the ordered
-    drain.
+    MUST transition to `ShuttingDownAfterFailure`, fire `rule_cancel`,
+    emit `RuleStatusEvent::Failed` to the control plane via callback
+    (**exactly once per supervisor lifetime**), then run the ordered
+    drain below.
+  - **On receiving the shutdown signal in `State::Running`**:
+    transition to `ShuttingDownIntentional`. Do NOT emit `Failed`.
+    Run the ordered drain.
   - **Ordered drain** (executed only by supervisor): (a) cancel the
-    listener child token, await listener handles via `join_next` tag
-    matching; (b) cancel the reaper child token, await reaper handle
-    via `join_next`; (c) call `registry.drain()` to remove and cancel
-    any remaining flows; (d) send `DemuxCommand::Shutdown` (or drop
-    the supervisor-held `demux_tx`); (e) await the demux handle.
+    listener child token; await all `Listener(port)` tags via
+    `join_next`; (b) cancel the reaper child token; await `Reaper`
+    tag via `join_next`; (c) call `registry.drain()` to remove and
+    cancel any remaining flows; (d) send `DemuxCommand::Shutdown`
+    (or drop the supervisor-held `demux_tx`); (e) await `Demux` tag
+    via `join_next`. Loop terminates when the JoinSet is empty.
+  - **Unexpected sibling exit during drain**: during any
+    `ShuttingDown*` state, every `JoinSet::join_next` result MUST be
+    classified against a per-role `cancelled_at` marker the
+    supervisor maintains:
+    - "expected" = the task's role has already been explicitly
+      cancelled or signalled by the current drain step (e.g.
+      `Listener(port)` exit after the listener child token was
+      cancelled).
+    - "unexpected" = the task exited (cancel or panic) before its
+      role's cancellation step was executed (e.g. `Demux` exit
+      during step (a) while listeners are still draining).
+    Every unexpected exit during drain MUST emit
+    `rule.udp_shutdown_unexpected_exit` (warn) with role + JoinError
+    details. Unexpected exits MUST NOT cause the supervisor to
+    abandon the drain; it continues classifying remaining
+    `join_next` results until the JoinSet is empty.
+  - **`Failed` emission policy across states**:
+    - `ShuttingDownAfterFailure` (auto-transition from Running):
+      `Failed` was already emitted on the first unexpected exit;
+      subsequent unexpected exits during drain are logged via the
+      tracing event above but MUST NOT re-emit `Failed`.
+    - `ShuttingDownIntentional` (REMOVE-triggered): `Failed` MUST
+      NOT be emitted regardless of subsequent unexpected exits.
+      Operator-initiated REMOVE supersedes — server-side re-PUSH
+      semantics do not apply to a rule being removed. Unexpected
+      exits during a REMOVE drain are observable only via tracing.
   - Per-task `CancellationToken`s (listener_token, reaper_token,
     demux_shutdown) MUST be child tokens of `rule_cancel` so that an
     unexpected exit triggering `rule_cancel.cancel()` still cascades
     to siblings, while orderly shutdown can cancel each role
     independently.
+  - **Shutdown completion semantics**: the supervisor resolves the
+    shutdown completion oneshot AFTER the JoinSet is empty, with a
+    result that distinguishes (`Ok` = no unexpected exits during
+    drain; `Err(UnexpectedExitsDuringDrain { roles, count })` =
+    one or more unexpected exits were logged). Callers in
+    `control.rs` MAY treat `Err` as informational; they MUST NOT
+    re-issue PUSH on it.
   - Shutdown idempotency: the shutdown channel is bounded(1); a
     second `shutdown()` call observes the supervisor already in
-    `ShuttingDown` and immediately awaits the same completion
-    oneshot.
+    a `ShuttingDown*` state and immediately awaits the same
+    completion oneshot (which is shared via `tokio::sync::watch`
+    or fan-out from the supervisor side).
 - **FR-012** `UdpRuleRuntime::shutdown()` is the sole public shutdown
   entry point. It MUST signal the supervisor via the bounded(1)
   shutdown channel and await the supervisor's completion oneshot.
@@ -342,7 +392,7 @@ kernel and never observed at the original client.
   and Web UI surfaces MUST NOT change. The configuration field
   `udp_max_flows_per_rule` keeps its name; only its scope is corrected.
 - **FR-016** Tracing events:
-  - **New events (6)**:
+  - **New events (7)**:
     - `rule.udp_upstream_connect_failed` (warn) — synchronous
       `connect()` failure during cold path; advances `dns_failures`
       counter when all resolver-returned addresses fail.
@@ -360,6 +410,11 @@ kernel and never observed at the original client.
       `listen_ports` vector even for non-contiguous future rule
       shapes (today all UDP rules are contiguous ranges; if that
       changes, log a count and a hash).
+    - `rule.udp_shutdown_unexpected_exit` (warn) — per FR-011, a
+      child task exited (cancel or panic) during the supervisor's
+      orderly drain before its role's cancellation step. Fields:
+      `role`, `join_error`. Emitted once per unexpected exit; does
+      not re-emit `Failed`.
   - **Preserved events** (kept from v0.4, MAY change emit site as
     long as semantics are equivalent): `rule.udp_flow_opened`,
     `rule.udp_flow_closed_idle`, `rule.udp_dns_failed`,
