@@ -39,10 +39,7 @@ pub enum DemuxCommand {
     /// ownership of the cloned `Arc<UdpFlow>` for the lifetime of the
     /// flow; the cold path drops its own clone once the registry is
     /// committed.
-    AddFlow {
-        key: FlowKey,
-        flow: Arc<UdpFlow>,
-    },
+    AddFlow { key: FlowKey, flow: Arc<UdpFlow> },
     /// Tear the demux down cleanly. All pending `ReadWait`s are dropped
     /// implicitly when the function returns.
     Shutdown,
@@ -89,12 +86,7 @@ pub async fn run_demux(cfg: DemuxConfig, mut rx: mpsc::Receiver<DemuxCommand>) {
     }
 }
 
-async fn drain_one_flow(
-    cfg: &DemuxConfig,
-    key: FlowKey,
-    flow: &Arc<UdpFlow>,
-    buf: &mut [u8],
-) {
+async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, buf: &mut [u8]) {
     let Some(listener) = cfg.listener_sockets.get(&key.listen_port).cloned() else {
         // Listener gone — shouldn't happen during normal operation.
         warn!(
@@ -144,10 +136,7 @@ async fn drain_one_flow(
                     return;
                 }
                 UdpAction::MessageTooLarge => {
-                    debug!(
-                        event = "rule.udp_emsgsize",
-                        listen_port = key.listen_port,
-                    );
+                    debug!(event = "rule.udp_emsgsize", listen_port = key.listen_port,);
                     return;
                 }
                 UdpAction::Transient => {
@@ -239,10 +228,11 @@ mod tests {
             .unwrap();
 
         let mut buf = [0u8; 64];
-        let (n, src) = tokio::time::timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
-            .await
-            .expect("client should receive forwarded reply within 2s")
-            .unwrap();
+        let (n, src) =
+            tokio::time::timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
+                .await
+                .expect("client should receive forwarded reply within 2s")
+                .unwrap();
         assert_eq!(&buf[..n], b"hello");
         assert_eq!(src, listener_addr);
 
@@ -348,10 +338,11 @@ mod tests {
         let mut received = std::collections::HashSet::new();
         let mut buf = [0u8; 64];
         for _ in 0..100 {
-            let (n, _) = tokio::time::timeout(Duration::from_secs(3), client_sock.recv_from(&mut buf))
-                .await
-                .expect("100 replies should arrive within 3s")
-                .unwrap();
+            let (n, _) =
+                tokio::time::timeout(Duration::from_secs(3), client_sock.recv_from(&mut buf))
+                    .await
+                    .expect("100 replies should arrive within 3s")
+                    .unwrap();
             assert_eq!(n, 1);
             received.insert(buf[0]);
         }

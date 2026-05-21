@@ -316,8 +316,12 @@ impl UdpFlow {
     /// upstream `UdpSocket`. Used by the demux fairness / round-trip
     /// tests so they can wire the upstream to a known peer before
     /// handing the flow to `run_demux`.
+    ///
+    /// Kept `async` to mirror the sibling `for_test` constructor so
+    /// call sites can swap helpers without rearranging `.await`s.
     #[cfg(test)]
     #[must_use]
+    #[allow(clippy::unused_async)]
     pub async fn for_test_with_socket(src: SocketAddr, sock: Arc<UdpSocket>) -> Arc<Self> {
         Self::new(src, sock, vec![src])
     }

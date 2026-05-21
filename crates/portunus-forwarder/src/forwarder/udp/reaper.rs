@@ -1,0 +1,110 @@
+//! Per-rule idle-flow reaper. Replaces v0.4's per-listener
+//! `spawn_reaper` with a single rule-scoped task that consults the
+//! shared `UdpFlowRegistry` instead of a per-listener `UdpFlowTable`.
+//!
+//! The reaper sweeps every `idle_window / 4`; for every live flow
+//! whose `last_seen` exceeds `idle_window` it calls
+//! `registry.remove` + `flow.cancel.cancel()` and emits a
+//! `rule.udp_flow_closed_idle` event. Spec: 014, FR-010.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
+
+use crate::forwarder::udp::registry::UdpFlowRegistry;
+use portunus_core::RuleId;
+
+/// Run the per-rule reaper. Exits cleanly when `cancel` fires.
+///
+/// The first `interval` tick fires immediately; we explicitly skip it
+/// so the very first eviction sweep happens one quarter-window after
+/// the reaper starts (matches v0.4 reaper semantics — newly-built
+/// flows always survive their first idle quarter).
+pub async fn run_reaper(
+    registry: Arc<UdpFlowRegistry>,
+    idle_window: Duration,
+    rule_id: RuleId,
+    cancel: CancellationToken,
+) {
+    let mut ticker = interval(idle_window / 4);
+    ticker.tick().await; // skip the immediate tick
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            _ = ticker.tick() => {
+                sweep_once(&registry, idle_window, rule_id).await;
+            }
+        }
+    }
+}
+
+async fn sweep_once(registry: &Arc<UdpFlowRegistry>, idle_window: Duration, rule_id: RuleId) {
+    let now = Instant::now();
+    let snap = registry.snapshot_live().await;
+    for (key, flow) in snap {
+        let last = flow.last_seen_at().await;
+        if now.saturating_duration_since(last) > idle_window && registry.remove(key).await.is_some()
+        {
+            flow.cancel.cancel();
+            info!(
+                event = "rule.udp_flow_closed_idle",
+                rule_id = %rule_id,
+                listen_port = key.listen_port,
+                source = %key.src,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::forwarder::udp::flow::UdpFlow;
+    use crate::forwarder::udp::registry::{FlowKey, TryGetOrReserve};
+    use std::net::SocketAddr;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_flows_are_evicted_after_window() {
+        let reg = UdpFlowRegistry::new(4);
+        let src: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let key = FlowKey::new(8000, src);
+        let res = match reg.try_get_or_reserve(key).await {
+            TryGetOrReserve::Reserved(r) => r,
+            TryGetOrReserve::Existing(_) => panic!("expected Reserved, got Existing"),
+            TryGetOrReserve::CapExhausted => panic!("expected Reserved, got CapExhausted"),
+        };
+        let flow = UdpFlow::for_test(src).await;
+        // Backdate last_seen far enough that it's idle against a 100ms
+        // window from the very first sweep.
+        flow.force_last_seen(
+            Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .expect("instant - 60s must not underflow on a running test"),
+        )
+        .await;
+        reg.commit(res, Arc::clone(&flow)).await;
+
+        let cancel = CancellationToken::new();
+        let reg_ref = Arc::clone(&reg);
+        let cancel_ref = cancel.clone();
+        let h = tokio::spawn(async move {
+            run_reaper(reg_ref, Duration::from_millis(100), RuleId(1), cancel_ref).await;
+        });
+
+        // Wait up to 1s for the reaper to evict.
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if reg.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(reg.len(), 0, "reaper must evict the idle flow");
+        assert!(flow.cancel.is_cancelled(), "flow.cancel must fire");
+
+        cancel.cancel();
+        h.await.unwrap();
+    }
+}
