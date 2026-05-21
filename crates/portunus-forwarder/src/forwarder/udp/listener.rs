@@ -348,13 +348,22 @@ async fn handle_datagram<R: Resolve + 'static>(
         return;
     }
 
-    // (9) First-packet send. Classify per FR-006/FR-007. On Evict the
-    //     flow is torn down without counting `datagram_in` — the
-    //     bytes never landed upstream. On WouldBlock / EMSGSIZE /
-    //     Transient we drop *this* datagram but keep the flow:
-    //     the demux's ReadWait is already armed, and the next packet
-    //     from the same source hits the fast path.
-    match upstream_socket.try_send(payload) {
+    // (9) First-packet send. We use `send().await` (not `try_send`)
+    //     here because a freshly bound+connected `tokio::net::UdpSocket`
+    //     can return spurious `WouldBlock` on the very first I/O — the
+    //     reactor has not yet observed writability. `send().await`
+    //     parks once on the writability future, then issues the
+    //     syscall. On Linux loopback the writability future is
+    //     immediate-ready, so the cold path stays fast; on a backed-up
+    //     kernel send buffer it queues briefly which is the desired
+    //     UDP behavior for the *first* packet (subsequent fast-path
+    //     packets keep `try_send` semantics and drop on WouldBlock).
+    //     Classify per FR-006/FR-007. On Evict the flow is torn down
+    //     without counting `datagram_in` — the bytes never landed
+    //     upstream. On EMSGSIZE / Transient we drop *this* datagram
+    //     but keep the flow: the demux's ReadWait is already armed,
+    //     and the next packet from the same source hits the fast path.
+    match upstream_socket.send(payload).await {
         Ok(_) => {
             flow.bump_inbound(n_u64).await;
             cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);

@@ -208,7 +208,10 @@ pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> 
         .args(extra_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("RUST_LOG", "info");
+        .env(
+            "RUST_LOG",
+            std::env::var("E2E_RUST_LOG").unwrap_or_else(|_| "info".into()),
+        );
     let mut child = cmd.spawn().expect("spawn portunus-server");
     let stderr = child.stderr.take().expect("server stderr piped");
     let stderr_lines = capture_stderr(stderr);
@@ -227,7 +230,10 @@ pub fn spawn_client(bundle_path: &Path, extra_args: &[&str]) -> ClientHandle {
         .args(extra_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("RUST_LOG", "info");
+        .env(
+            "RUST_LOG",
+            std::env::var("E2E_RUST_LOG").unwrap_or_else(|_| "info".into()),
+        );
     let mut child = cmd.spawn().expect("spawn portunus-client");
     let stderr = child.stderr.take().expect("client stderr piped");
     let stderr_lines = capture_stderr(stderr);
