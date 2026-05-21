@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## Unreleased — UDP runtime correction (014)
+
+### Behavior corrections
+
+- **UDP rule flow cap is now true per-rule (was per-port-listener).**
+  Previously, `udp_max_flows_per_rule` was applied independently to
+  each port of a range rule. A 100-port range rule with cap=1024
+  actually permitted up to 102 400 concurrent flows. The cap is now
+  correctly applied across the entire rule.
+
+  Migration:
+  - Single-port UDP rules: no change in effective capacity
+  - Range UDP rules: effective capacity drops by a factor of
+    `range_size`. Operators relying on the inflated capacity should
+    either (a) raise `udp_max_flows_per_rule` proportionally, or (b)
+    split the range into smaller rules. Note: `udp_max_flows_per_rule`
+    has an upper bound of 65535; if `cap × range_size` previously
+    exceeded that, the rule MUST be split.
+
+- **`portunus_rule_active_flows` now reports the true rule-wide live
+  UDP flow count.** Previously the gauge could under-report for range
+  rules because each port listener overwrote a shared `AtomicU32`
+  independently (last-writer-wins).
+
+- **UDP flows may be evicted early on ICMP errors.** Upstream sockets
+  are now `connect()`-ed to the chosen target, enabling Linux to
+  reflect ICMP `port unreachable`, `host unreachable`, and `network
+  unreachable` errors back to the client process. Affected flows are
+  evicted immediately (well before `idle_window`); the next datagram
+  rebuilds the flow, which may select a different multi-A target.
+
+### Performance
+
+- Per-rule UDP receive-buffer memory dropped from `O(flows) × 64 KiB`
+  to `O(1) × 64 KiB`. A 1000-flow workload now uses ~64 KiB of
+  receive buffer instead of ~64 MiB (factor scales with flow count).
+
+### Removed
+
+- v0.4's first-packet send-level multi-A fallback. Multi-A is now
+  performed at the `connect()` seam during flow creation; once a
+  flow is committed, its target is locked. Mid-flow fallback was
+  removed because the semantics on connected upstream sockets are
+  ambiguous and the existing ICMP-driven eviction provides
+  equivalent coarse-grained failover.
+- Tracing events `rule.udp_send_to_fallback` and
+  `rule.udp_send_to_exhausted` (consequence of the above).
+
+### Added tracing events
+
+`rule.udp_upstream_connect_failed`, `rule.udp_addflow_dropped`,
+`rule.udp_flow_evicted_icmp`, `rule.udp_reply_wouldblock`,
+`rule.udp_emsgsize`, `rule.udp_runtime_started`,
+`rule.udp_shutdown_unexpected_exit`. No new Prometheus metrics.
+
 ## [1.4.3] — 2026-05-18
 
 ### Added
