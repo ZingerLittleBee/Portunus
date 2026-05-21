@@ -31,6 +31,7 @@ pub mod flow;
 pub mod listener;
 pub mod reaper;
 pub mod registry;
+pub mod runtime;
 pub mod table;
 
 use std::net::SocketAddr;
