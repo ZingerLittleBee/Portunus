@@ -34,6 +34,12 @@ pub mod registry;
 pub mod runtime;
 pub mod table;
 
+// 014-udp-centralized-demux Phase 10: rule-level integration tests
+// against `UdpRuleRuntime`. Replaces the v0.4 single-target test block
+// below (kept under `cfg(any())` for porting reference).
+#[cfg(test)]
+mod integration_tests;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
