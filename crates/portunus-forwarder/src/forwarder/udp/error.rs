@@ -8,7 +8,7 @@ use std::io;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UdpAction {
     /// `WouldBlock`: drop datagram, keep flow.
-    Wouldblock,
+    WouldBlock,
     /// `EMSGSIZE`: drop datagram, keep flow (no PMTU bisection here).
     MessageTooLarge,
     /// Terminal/ICMP-class errors: evict flow.
@@ -21,7 +21,7 @@ pub enum UdpAction {
 pub fn classify_udp_error(e: &io::Error) -> UdpAction {
     use io::ErrorKind;
     match e.kind() {
-        ErrorKind::WouldBlock => UdpAction::Wouldblock,
+        ErrorKind::WouldBlock => UdpAction::WouldBlock,
         ErrorKind::ConnectionRefused
         | ErrorKind::ConnectionAborted
         | ErrorKind::ConnectionReset
@@ -56,9 +56,9 @@ mod tests {
     }
 
     #[test]
-    fn wouldblock_is_wouldblock() {
+    fn wouldblock_is_would_block() {
         let e = io::Error::new(io::ErrorKind::WouldBlock, "x");
-        assert_eq!(classify_udp_error(&e), UdpAction::Wouldblock);
+        assert_eq!(classify_udp_error(&e), UdpAction::WouldBlock);
     }
 
     #[test]

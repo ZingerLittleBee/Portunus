@@ -51,9 +51,10 @@ pub struct UdpFlowRegistry {
 /// entry and decrements occupancy. `commit` consumes the guard.
 pub struct Reservation {
     key: FlowKey,
-    // Held weak to avoid keeping registry alive past its owner, but
-    // Arc is fine here because the registry itself is `Arc`-shared
-    // across listener/demux/reaper.
+    // Held as `Arc` so the registry stays alive long enough for the Drop
+    // cleanup task. The registry itself is `Arc`-shared across listener /
+    // demux / reaper, so retaining one more strong ref here is cheap and
+    // removes any risk of an orphan reservation outliving its owner.
     registry: Arc<UdpFlowRegistry>,
     committed: bool,
 }
@@ -78,7 +79,14 @@ impl UdpFlowRegistry {
         self.dropped_overflow.load(Ordering::Relaxed)
     }
 
-    /// Snapshot of registry size. Used by FR-014 `active_flows` gauge.
+    /// Snapshot of registry size as observed via the `occupancy` atomic.
+    ///
+    /// This is the FR-014 `active_flows` data source. It reads the atomic
+    /// without acquiring `inner.lock()`, so under heavy concurrent commit /
+    /// remove / drain churn the value may briefly differ from
+    /// `inner.lock().await.len()` by ±a few entries. For the stats-pump
+    /// reporting use case this is acceptable — the gauge is sampled
+    /// periodically, not transactionally.
     pub fn len(&self) -> usize {
         self.occupancy.load(Ordering::Relaxed)
     }
@@ -133,9 +141,21 @@ impl UdpFlowRegistry {
     /// Consumes the `Reservation` guard.
     pub async fn commit(self: &Arc<Self>, mut reservation: Reservation, flow: Arc<UdpFlow>) {
         let mut guard = self.inner.lock().await;
-        // Replace Pending with Live. Use insert; if for some reason the
-        // slot is not Pending (e.g. concurrent drain), accept Live insert.
-        guard.insert(reservation.key, Slot::Live(flow));
+        match guard.insert(reservation.key, Slot::Live(flow)) {
+            Some(Slot::Pending) => {
+                // Normal path: Pending -> Live, occupancy unchanged.
+            }
+            None => {
+                // Drained between reserve and commit; restore occupancy.
+                self.occupancy.fetch_add(1, Ordering::Relaxed);
+            }
+            Some(Slot::Live(_old)) => {
+                // Should not happen: another path committed a Live slot
+                // for this key concurrently. Keep newest, count once.
+                // (occupancy unchanged — old +1 → still +1)
+                tracing::warn!(event = "rule.udp_registry_commit_overwrote_live");
+            }
+        }
         reservation.committed = true;
     }
 
@@ -202,13 +222,19 @@ impl Drop for Reservation {
             // outlives the spawned task because callers hold the Arc.
             let key = self.key;
             let registry = Arc::clone(&self.registry);
-            tokio::spawn(async move {
-                let mut guard = registry.inner.lock().await;
-                if let Some(Slot::Pending) = guard.get(&key) {
-                    guard.remove(&key);
-                    registry.occupancy.fetch_sub(1, Ordering::Relaxed);
-                }
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let mut guard = registry.inner.lock().await;
+                    if let Some(Slot::Pending) = guard.get(&key) {
+                        guard.remove(&key);
+                        registry.occupancy.fetch_sub(1, Ordering::Relaxed);
+                    }
+                });
+            } else {
+                // No runtime — log and accept the leaked Pending slot. Only
+                // happens during pathological shutdown ordering.
+                tracing::warn!(event = "rule.udp_registry_drop_outside_runtime");
+            }
         }
     }
 }
@@ -333,6 +359,25 @@ mod tests {
         let snap = reg.snapshot_live().await;
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].0.listen_port, 8001);
+    }
+
+    #[tokio::test]
+    async fn commit_after_drain_restores_occupancy() {
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(res) = reg.try_get_or_reserve(k).await else {
+            panic!("expected reservation")
+        };
+        // Drain while we hold the reservation; this removes the Pending
+        // slot and decrements occupancy to 0.
+        reg.drain().await;
+        assert_eq!(reg.len(), 0);
+        // Now commit — slot is missing, occupancy should be restored.
+        let f = flow_for(k.src).await;
+        reg.commit(res, Arc::clone(&f)).await;
+        assert_eq!(reg.len(), 1);
+        let live = reg.get(k).await.expect("commit should re-insert");
+        assert!(Arc::ptr_eq(&live, &f));
     }
 
     #[tokio::test]
