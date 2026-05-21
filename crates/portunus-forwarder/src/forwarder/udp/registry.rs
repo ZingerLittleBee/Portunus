@@ -293,8 +293,7 @@ mod tests {
     async fn drop_uncommitted_reservation_releases_slot() {
         let reg = UdpFlowRegistry::new(1);
         {
-            let TryGetOrReserve::Reserved(r) = reg.try_get_or_reserve(key(8000, 1, 1)).await
-            else {
+            let TryGetOrReserve::Reserved(r) = reg.try_get_or_reserve(key(8000, 1, 1)).await else {
                 panic!()
             };
             assert_eq!(reg.len(), 1);
@@ -349,8 +348,7 @@ mod tests {
     async fn snapshot_live_excludes_pending() {
         let reg = UdpFlowRegistry::new(4);
         let _res_pending = reg.try_get_or_reserve(key(8000, 1, 1)).await;
-        let TryGetOrReserve::Reserved(res_live) =
-            reg.try_get_or_reserve(key(8001, 2, 1)).await
+        let TryGetOrReserve::Reserved(res_live) = reg.try_get_or_reserve(key(8001, 2, 1)).await
         else {
             panic!()
         };
