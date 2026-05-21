@@ -179,5 +179,131 @@ fn read_wait(key: FlowKey, flow: Arc<UdpFlow>) -> ReadWaitFut {
 
 #[cfg(test)]
 mod tests {
-    // Tests in Task 4.2-4.3.
+    use super::*;
+    use crate::forwarder::stats::RuleStats;
+    use portunus_core::PortRange;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
+
+    async fn bind_loopback_udp() -> (Arc<UdpSocket>, SocketAddr) {
+        let s = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = s.local_addr().unwrap();
+        (Arc::new(s), addr)
+    }
+
+    fn single_port_stats(port: u16) -> Arc<RuleStats> {
+        RuleStats::for_range(PortRange::single(port))
+    }
+
+    /// End-to-end: stand up a listener socket, an upstream socket, an
+    /// UdpFlow that owns the upstream, then send a "reply" from the
+    /// upstream's peer and verify the demux forwards it via the listener
+    /// to the original client.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn add_flow_then_reply_reaches_client() {
+        let (listener_sock, listener_addr) = bind_loopback_udp().await;
+        let mut listener_map = HashMap::new();
+        listener_map.insert(listener_addr.port(), Arc::clone(&listener_sock));
+
+        let (client_sock, client_addr) = bind_loopback_udp().await;
+        let (target_sock, target_addr) = bind_loopback_udp().await;
+
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        let key = FlowKey::new(listener_addr.port(), client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(listener_addr.port());
+        let cfg = DemuxConfig {
+            registry: Arc::clone(&registry),
+            listener_sockets: Arc::new(listener_map),
+            stats: Arc::clone(&stats),
+        };
+        let (tx, rx) = mpsc::channel(8);
+        let h = tokio::spawn(run_demux(cfg, rx));
+
+        tx.send(DemuxCommand::AddFlow {
+            key,
+            flow: Arc::clone(&flow),
+        })
+        .await
+        .unwrap();
+
+        // Send "reply" from target to upstream's ephemeral address.
+        target_sock
+            .send_to(b"hello", upstream.local_addr().unwrap())
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 64];
+        let (n, src) = tokio::time::timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
+            .await
+            .expect("client should receive forwarded reply within 2s")
+            .unwrap();
+        assert_eq!(&buf[..n], b"hello");
+        assert_eq!(src, listener_addr);
+
+        tx.send(DemuxCommand::Shutdown).await.unwrap();
+        h.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_flow_drops_arc_without_re_arm() {
+        let (listener_sock, listener_addr) = bind_loopback_udp().await;
+        let mut listener_map = HashMap::new();
+        listener_map.insert(listener_addr.port(), Arc::clone(&listener_sock));
+
+        let (_target_sock, target_addr) = bind_loopback_udp().await;
+
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+
+        let client_addr: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        let key = FlowKey::new(listener_addr.port(), client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(listener_addr.port());
+        let (tx, rx) = mpsc::channel(8);
+        let h = tokio::spawn(run_demux(
+            DemuxConfig {
+                registry,
+                listener_sockets: Arc::new(listener_map),
+                stats,
+            },
+            rx,
+        ));
+
+        tx.send(DemuxCommand::AddFlow {
+            key,
+            flow: Arc::clone(&flow),
+        })
+        .await
+        .unwrap();
+        // Give demux a tick to push the ReadWait future.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Now cancel the flow. The ReadWait future's `cancelled` branch
+        // resolves, demux drops the Arc, and no re-arm happens.
+        flow.cancel.cancel();
+        // Strong-ref count goes 2 (test + demux) → 1 (test only) once
+        // demux drops its clone.
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if Arc::strong_count(&flow) == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            Arc::strong_count(&flow),
+            1,
+            "demux must drop its Arc after cancel"
+        );
+
+        tx.send(DemuxCommand::Shutdown).await.unwrap();
+        h.await.unwrap();
+    }
 }

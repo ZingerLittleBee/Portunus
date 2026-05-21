@@ -310,6 +310,17 @@ impl UdpFlow {
     pub async fn force_last_seen(&self, t: Instant) {
         *self.last_seen.lock().await = t;
     }
+
+    /// 014-udp-centralized-demux: lightweight constructor for demux
+    /// unit tests that need to provide a pre-built, already-connected
+    /// upstream `UdpSocket`. Used by the demux fairness / round-trip
+    /// tests so they can wire the upstream to a known peer before
+    /// handing the flow to `run_demux`.
+    #[cfg(test)]
+    #[must_use]
+    pub async fn for_test_with_socket(src: SocketAddr, sock: Arc<UdpSocket>) -> Arc<Self> {
+        Self::new(src, sock, vec![src])
+    }
 }
 
 /// 004-udp-forward T044: resolver-aware flow constructor.
