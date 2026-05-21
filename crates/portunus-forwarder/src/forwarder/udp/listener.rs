@@ -11,7 +11,11 @@
 //!   6. multi-A walk: bind+connect; first success wins;
 //!   7. build `UdpFlow`, attach quota, commit reservation;
 //!   8. hand the flow to the demux via `DemuxCommand::AddFlow`;
-//!   9. first-packet `try_send`, classified per FR-006/FR-007.
+//!   9. first-packet `send().await`, classified per FR-006/FR-007.
+//!      (Fresh tokio `UdpSocket` returns spurious `WouldBlock` from
+//!      `try_send` until the reactor observes writability; the cold
+//!      path awaits writability once so the first datagram is durable.
+//!      Subsequent fast-path sends keep `try_send` semantics.)
 //!
 //! Listener does NOT bind the socket — the runtime (Phase 7) probes
 //! all ports up-front and shares the resulting `Arc<UdpSocket>` with
@@ -197,11 +201,14 @@ async fn handle_datagram<R: Resolve + 'static>(
             // Rare: another listener committed for the same (port, src)
             // between our `get` above and `try_get_or_reserve` here.
             // Treat as if we'd seen the Live flow on the fast path —
-            // forward the current datagram through it.
+            // forward the current datagram through it. Use `send().await`
+            // (not `try_send`): the racing cold path may not yet have
+            // issued its own first send, so the socket can still be
+            // pre-reactor-writability — same race as cold-path step 9.
             if !flow.quota_allows() {
                 return;
             }
-            if flow.upstream_socket.try_send(payload).is_ok() {
+            if flow.upstream_socket.send(payload).await.is_ok() {
                 flow.bump_inbound(n_u64).await;
                 cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);
                 let _ = flow.quota_consume_after_send(n_u64);
@@ -348,21 +355,15 @@ async fn handle_datagram<R: Resolve + 'static>(
         return;
     }
 
-    // (9) First-packet send. We use `send().await` (not `try_send`)
-    //     here because a freshly bound+connected `tokio::net::UdpSocket`
-    //     can return spurious `WouldBlock` on the very first I/O — the
-    //     reactor has not yet observed writability. `send().await`
-    //     parks once on the writability future, then issues the
-    //     syscall. On Linux loopback the writability future is
-    //     immediate-ready, so the cold path stays fast; on a backed-up
-    //     kernel send buffer it queues briefly which is the desired
-    //     UDP behavior for the *first* packet (subsequent fast-path
-    //     packets keep `try_send` semantics and drop on WouldBlock).
-    //     Classify per FR-006/FR-007. On Evict the flow is torn down
-    //     without counting `datagram_in` — the bytes never landed
-    //     upstream. On EMSGSIZE / Transient we drop *this* datagram
-    //     but keep the flow: the demux's ReadWait is already armed,
-    //     and the next packet from the same source hits the fast path.
+    // (9) First-packet send. `send().await` (not `try_send`): a freshly
+    //     bind+connect-ed tokio `UdpSocket` has no reactor writability
+    //     event yet, so `try_send` returns spurious WouldBlock and the
+    //     first datagram of every flow is lost. `send().await` registers
+    //     interest and resolves on the next poll. Classify per
+    //     FR-006/FR-007: Evict tears the flow down without counting
+    //     `datagram_in`; EMSGSIZE / Transient drop this datagram but
+    //     keep the flow — demux ReadWait is armed, next packet hits the
+    //     fast path.
     match upstream_socket.send(payload).await {
         Ok(_) => {
             flow.bump_inbound(n_u64).await;
@@ -390,6 +391,10 @@ async fn handle_datagram<R: Resolve + 'static>(
                 let _ = cfg.registry.remove(key).await;
                 flow.cancel.cancel();
             }
+            // WouldBlock is unreachable after the `send().await` switch
+            // (tokio loops internally on writability), but kept in the
+            // pattern as defensive symmetry with the fast-path arms in
+            // case the classifier or socket type changes.
             action
             @ (UdpAction::WouldBlock | UdpAction::MessageTooLarge | UdpAction::Transient) => {
                 debug!(

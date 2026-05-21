@@ -15,17 +15,16 @@
 //! All tests use IP-literal targets so the resolver short-circuits and
 //! never invokes `Resolve::resolve` — see `PanickingResolver` below.
 //!
-//! ## Note on macOS UDP `try_send` flakiness
+//! ## Why these tests use [`send_with_retry`]
 //!
-//! The production listener's first-packet path uses `try_send` (a
-//! tokio-managed non-blocking syscall). On macOS this returns
-//! `WouldBlock` on a freshly-bound + connected UDP socket with high
-//! probability — the listener treats this as a transient drop per
-//! FR-006 and keeps the flow alive, so the next client packet on the
-//! fast path completes the round-trip. Tests therefore use the
-//! [`send_with_retry`] helper, which sends every ~100 ms until an echo
-//! arrives or the overall budget expires (mirrors how a real UDP
-//! client retries).
+//! The production listener's cold-path step 9 now uses `send().await`
+//! so the first datagram of every flow is durable (an earlier
+//! `try_send` shape had a fresh-socket reactor race that silently
+//! dropped first packets — see `CHANGELOG.md` "Fixed" entry). UDP is
+//! still best-effort, and the listener's *fast path* keeps `try_send`
+//! with drop-on-`WouldBlock` per FR-007, so the helper sends every
+//! ~100 ms until an echo arrives or the budget expires (mirrors how a
+//! real UDP client retries on packet loss).
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;

@@ -23,6 +23,17 @@ fn fresh_tempdir(label: &str) -> TempDir {
     TempDir::new().unwrap_or_else(|e| panic!("tempdir for {label}: {e}"))
 }
 
+/// Env var that overrides the `RUST_LOG` passed to spawned `portunus-*`
+/// binaries. Useful for VPS / CI triage without patching test code.
+/// Currently honored by [`spawn_server_with_toml`] and [`spawn_client`];
+/// other test files that call `cmd_for(...)` directly do not yet honor
+/// this — TODO if/when triage need broadens.
+const E2E_RUST_LOG_ENV: &str = "E2E_RUST_LOG";
+
+fn rust_log_env() -> String {
+    std::env::var(E2E_RUST_LOG_ENV).unwrap_or_else(|_| "info".into())
+}
+
 /// Locate a workspace binary built by `cargo test` without relying on
 /// `CARGO_BIN_EXE_*` env vars (which Cargo only injects for binaries that
 /// belong to the *current* package, not workspace siblings).
@@ -208,10 +219,7 @@ pub fn spawn_server_with_toml(extra_toml: Option<&str>, extra_args: &[&str]) -> 
         .args(extra_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env(
-            "RUST_LOG",
-            std::env::var("E2E_RUST_LOG").unwrap_or_else(|_| "info".into()),
-        );
+        .env("RUST_LOG", rust_log_env());
     let mut child = cmd.spawn().expect("spawn portunus-server");
     let stderr = child.stderr.take().expect("server stderr piped");
     let stderr_lines = capture_stderr(stderr);
@@ -230,10 +238,7 @@ pub fn spawn_client(bundle_path: &Path, extra_args: &[&str]) -> ClientHandle {
         .args(extra_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env(
-            "RUST_LOG",
-            std::env::var("E2E_RUST_LOG").unwrap_or_else(|_| "info".into()),
-        );
+        .env("RUST_LOG", rust_log_env());
     let mut child = cmd.spawn().expect("spawn portunus-client");
     let stderr = child.stderr.take().expect("client stderr piped");
     let stderr_lines = capture_stderr(stderr);

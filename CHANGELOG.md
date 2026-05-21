@@ -53,8 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned a spurious `WouldBlock`, so the first datagram was
   logged-and-dropped while the flow itself was committed. UDP
   applications that send a single request per flow (DNS, some QUIC
-  paths) saw 100 % first-packet loss on Linux loopback under this
-  shape. The cold path now uses `send().await` for the first packet,
+  paths) saw 100 % first-datagram loss per new flow on Linux loopback
+  under this shape. The cold path now uses `send().await` for the
+  first packet,
   which parks once on the writability future and then commits the
   datagram. Subsequent fast-path packets continue to use
   `try_send` with drop-on-WouldBlock semantics. This also resolves
