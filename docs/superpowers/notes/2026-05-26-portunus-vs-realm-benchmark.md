@@ -15,13 +15,27 @@
 |---|---|---|---|
 | TCP 1-stream throughput | **9.0 Gbps** | 9.0 Gbps | tie |
 | TCP 8-stream throughput | 14.3 Gbps | **14.8 Gbps** | tie (≤ 4 % diff) |
-| TCP 1-stream CPU | **44 %** | 60 % | portunus −27 % |
-| TCP 8-stream CPU | **67 %** | 92 % | portunus −28 % |
+| TCP 1-stream CPU | **44.5 %** | 60.7 % | portunus −27 % |
+| TCP 8-stream CPU | **65.4 %** | 95.9 % | portunus −32 % |
+| TCP 8-stream syscalls / 5 s | **27 K splice** | 86 K splice | portunus ~3× fewer |
 | UDP 1 Gbps throughput | 880 Mbps (66 % loss) | 870 Mbps (63 % loss) | tie |
-| UDP idle RSS | **5.7 MB** | 6.5 MB | portunus −12 % |
+| UDP 1 Gbps single-flow CPU | 58.2 % | **48.6 %** | realm −17 % |
+| Idle RSS | **5.7 MB** | 6.5 MB | portunus −12 % |
 | **UDP 1 000 concurrent flows ΔRSS** | **+0.6 MB** | **+75 MB** | **portunus ~12× lower** |
 
-**Bottom line.** Hot-path throughput is the same — both are Rust + tokio + `splice(2)`. The differences are in the corners: portunus is more CPU-efficient on TCP (–28 %) and dramatically more memory-efficient under high UDP flow counts (the v1.5 centralized demux pays off when you have hundreds of concurrent UDP sources hitting one rule). realm matches on raw throughput and remains a strong choice when concurrent UDP flow count is low.
+**Bottom line.** Hot-path throughput is the same — both are Rust + tokio
++ `splice(2)`. Where they differ is design trade-offs:
+
+- **TCP**: portunus uses a larger intermediate splice pipe (inferred from
+  3× fewer splice calls per second moving 2.4× more bytes each), saving
+  ~30 % CPU at the same throughput.
+- **UDP**: portunus's v1.5 centralized demux pays a ~20 % CPU tax on
+  low-flow workloads but saves **~12× memory** at 1 000 concurrent flows.
+  realm wins single-flow UDP CPU; portunus wins everywhere UDP flow
+  count grows.
+
+The numbers are reproducible and the directions match the projects'
+stated designs.
 
 ---
 
@@ -104,12 +118,53 @@ Retransmits on the forwarded path (≈ 2 600 in 15 s) come from loopback queue o
 
 ### TCP under-load CPU and RSS
 
+Measured with `pidstat -u -p PID 1 10` (delta-based, 10 s avg after a 3 s
+warm-up). Numbers match `top -bn1` cross-checks within 2 pp.
+
 | Configuration | portunus CPU% | portunus RSS | realm CPU% | realm RSS |
 |---|---:|---:|---:|---:|
-| 1 stream | **44.0** | 5.7 MB | 59.7 | 6.1 MB |
-| 8 streams | **67.1** | 5.8 MB | 92.5 | 6.4 MB |
+| 1 stream | **44.5** | 5.7 MB | 60.7 | 6.1 MB |
+| 8 streams | **65.4** | 5.8 MB | 95.9 | 6.4 MB |
 
-portunus consistently runs at ~28 % lower CPU for the same TCP work. RSS is 5–10 % smaller. The CPU gap is likely from a tighter splice loop (`portunus-forwarder`'s splice fast path in `crates/portunus-forwarder/src/forwarder/tcp.rs`).
+portunus consistently runs at ~30 % lower CPU for the same TCP throughput.
+Both spread evenly across 4 tokio workers (one per vCPU); the per-worker
+load is ~16 % for portunus vs ~23 % for realm at the 8-stream load.
+
+#### Why — `strace -c` evidence
+
+5 s `strace -c -f` window during the 8-stream load:
+
+| Syscall | portunus | realm |
+|---|---:|---:|
+| **splice calls** | **26 935** | **86 488** (×3.2) |
+| splice µs/call | 277 | 114 |
+| splice total CPU time | 7.47 s | 9.88 s (+32 %) |
+| epoll_wait calls | 964 | 334 |
+
+Both use `splice(2)` (neither falls back to read+write). The signal is
+splice **call count**: realm calls splice 3.2× more often, moving smaller
+chunks each time. Total kernel time in splice is 32 % higher for realm —
+which matches the observed CPU gap almost exactly.
+
+The likely root cause is the **intermediate pipe size**. The splice fast
+path uses an in-kernel pipe as a zero-copy buffer:
+
+```
+client_socket → splice → pipe → splice → upstream_socket
+```
+
+Linux's default pipe capacity is **64 KiB** (`/proc/sys/fs/pipe-max-size`
+caps it to typically 1 MiB). A larger pipe means each splice can move
+more bytes per syscall, cutting call count proportionally. portunus
+appears to enlarge the pipe (likely via `fcntl(F_SETPIPE_SZ, …)` —
+consistent with the 2.4× higher µs/call); realm uses the default. Both
+strategies are correct; the larger-pipe variant saves syscall overhead
+at the cost of a bit more transient memory per active connection.
+
+> Caveat: I did not verify the `F_SETPIPE_SZ` call in either source tree.
+> The hypothesis is consistent with the syscall counts, but a `strace
+> -e pipe2,fcntl` trace would confirm. Either way, the **observed**
+> difference is real and reproducible.
 
 ---
 
@@ -123,9 +178,35 @@ portunus consistently runs at ~28 % lower CPU for the same TCP work. RSS is 5–
 | 500 Mbps | 500 / 8.7 % | 500 / 42.0 % | 500 / 43.4 % |
 | 1 Gbps | 836 / 32 % | 880 / 66 % | 870 / 63 % |
 
-At 100 Mbps, all three are loss-free. At 500 Mbps both forwarders show ~40 % loss vs ~8 % direct — this is the cost of doubling the per-packet path (recv → send) on a single core, plus loopback UDP socket buffer overflow. portunus and realm are within 1.5 percentage points on every cell. UDP under-load CPU is also comparable (~50 %).
+At 100 Mbps, all three are loss-free. At 500 Mbps both forwarders show ~40 % loss vs ~8 % direct — this is the cost of doubling the per-packet path (recv → send) on a single core, plus loopback UDP socket buffer overflow. portunus and realm are within 1.5 percentage points on every cell.
 
 > **Loss is a loopback artefact.** At 1 Gbps even direct iperf3 loses 32 %. UDP loopback has no NIC pacing; one slow consumer causes packet drops in the kernel socket buffer. The interesting comparison is "do the forwarders add proportional overhead?" — they do, equally.
+
+### UDP under-load CPU
+
+| Configuration | portunus CPU% | realm CPU% |
+|---|---:|---:|
+| 1 Gbps single flow | 58.2 | **48.6** |
+
+**realm uses ~17 % less CPU than portunus on single-flow UDP** — the
+opposite direction of the TCP result. This is the v1.5 centralized demux
+trade-off:
+
+- **portunus** runs a single per-rule receive loop and does a hash lookup
+  on `(source_addr, listen_port)` per incoming packet to find the
+  upstream flow (see `crates/portunus-forwarder/src/forwarder/udp/runtime.rs`).
+  For a single flow this is pure overhead — the lookup pays for itself
+  only when many flows share the rule.
+- **realm** uses a per-flow connected upstream socket and a dedicated
+  receive task per flow. No hash lookup needed once the flow exists.
+  Cheaper per-packet at low flow counts; expensive in memory at high
+  flow counts (75 KB / flow — see §4).
+
+This is consistent with portunus v1.5's design goal: **trade ~20 % CPU
+at low flow counts for an order-of-magnitude memory win at high flow
+counts.** If your workload has < 10 concurrent UDP flows per rule,
+realm wins on CPU. If you have hundreds, portunus's memory savings far
+outweigh the small CPU tax.
 
 ---
 
