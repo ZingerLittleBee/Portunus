@@ -191,22 +191,65 @@ udp_flow_idle_secs = 120
 | TCP splice 快速路径（Linux） | 是 | 是（共享同一数据面代码） |
 | PROXY 协议输出 | 是 | 是 |
 
-## systemd 单元示例
+## 生产环境部署
 
-```ini
-[Unit]
-Description=Portunus standalone forwarder
-After=network.target
+四种部署方式的参考模板均位于
+[`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib)。
 
-[Service]
-ExecStart=/usr/local/bin/portunus-standalone --config /etc/portunus/standalone.toml
-Restart=on-failure
-StandardOutput=journal
-StandardError=journal
-User=portunus
-ProtectSystem=strict
-ReadWritePaths=/etc/portunus
+### Installer（二进制 + systemd，推荐）
 
-[Install]
-WantedBy=multi-user.target
+生命周期安装器（`scripts/install.sh`）把 `standalone` 当作与 `client`
+和 `server` 平级的 role：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
 ```
+
+安装器会下载 release tarball、将二进制装到 `/usr/local/bin/portunus-standalone`、
+创建 `portunus` 系统用户/组、把加固版 unit 文件写到
+`/etc/systemd/system/portunus-standalone.service`（源文件位于
+[`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)），
+并在 `/etc/portunus/standalone.toml` 放一份起步配置。编辑该文件后执行
+`systemctl start portunus-standalone` 即可启动。
+
+卸载：`bash install.sh uninstall standalone`（清理 unit 与二进制；加
+`--purge` 一并删除 `/etc/portunus`）。
+
+### Docker / docker-compose
+
+参考
+[`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
+是一个两阶段构建，运行时镜像基于 distroless。
+[`docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)
+默认使用 host 网络，端口范围转发因此无需逐端口 mapping：
+
+```sh
+cd crates/portunus-standalone/contrib
+docker compose up -d
+docker compose logs -f
+```
+
+目前未发布 GHCR 镜像 —— 请本地构建或推送到自有 registry。
+
+### Kubernetes
+
+[`contrib/k8s/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib/k8s)
+中的 manifest 运行一个单副本 `Deployment`，启用 `hostNetwork: true`
+（任意端口转发的硬性要求）：
+
+```sh
+kubectl apply -f crates/portunus-standalone/contrib/k8s/configmap.yaml
+kubectl apply -f crates/portunus-standalone/contrib/k8s/deployment.yaml
+```
+
+Deployment 与 DaemonSet 的取舍以及 PodSecurityPolicy 注意事项见
+[`contrib/k8s/README.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/k8s/README.md)。
+
+### 加固版 systemd unit
+
+[`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)
+设置了 `LimitNOFILE=65535`、以 `User=portunus` 运行、新增
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` 以便绑定特权端口，并启用
+`ProtectSystem=strict` / `PrivateTmp=true` / `NoNewPrivileges=true`。
+二进制不支持 SIGHUP 热加载 —— 修改 TOML 后请执行
+`systemctl restart portunus-standalone`。
