@@ -28,7 +28,7 @@ LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
-ROLE=""           # client|server
+ROLE=""           # client|server|standalone
 DEPLOY=""         # binary|docker
 VERSION=""        # user-supplied version (may have leading v)
 BIN_DIR="$DEFAULT_BIN_DIR"
@@ -162,7 +162,7 @@ MSG_ZH=(
   [ask_role]="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）"
   [ask_deploy_server]="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + systemd"
   [ask_deploy_client]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
-  [ask_deploy_standalone]="选择部署方式？（回车 = 推荐）\n  [1] binary + systemd  （推荐）\n  [2] docker compose"
+  [ask_deploy_standalone]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
   [ask_version]="版本号（留空则使用最新版）: "
   [ask_bindir]="程序安装目录 [%s]: "
   [ask_datadir]="服务端数据目录（留空则使用默认值）: "
@@ -883,7 +883,7 @@ apply_advertised_default() {
 
 wizard_install() {
   local a adv_prov=""
-  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
+  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; 3) ROLE=standalone ;; *) ROLE=server ;; esac
   # Recommended deploy form differs by role: server ⇒ docker compose,
   # client ⇒ binary. Enter (empty) accepts the recommended one.
   if [ "$ROLE" = server ]; then
