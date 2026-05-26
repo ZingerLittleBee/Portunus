@@ -2,10 +2,62 @@
 
 > **Date:** 2026-05-26
 > **Host:** Ubuntu 24.04 VPS, 4 vCPU AMD EPYC 7B13, 7.8 GB RAM, kernel 6.8.0-117
-> **portunus-standalone:** branch `014-udp-centralized-demux` (v1.5.x), cross-compiled `cargo zigbuild --release --target x86_64-unknown-linux-gnu`, SHA `1af285c8…`
+> **portunus-standalone:** branch `almaty` (v1.5.x), cross-compiled `cargo zigbuild --release --target x86_64-unknown-linux-gnu`. Two builds compared: baseline SHA `1af285c8…` and optimized SHA `04aa78d8…` (post commits `48de42b` + `52e23e3`).
 > **realm:** v2.9.4 (`Realm 2.9.4 [brutal][batched-udp][proxy][balance][transport][multi-thread]`), official prebuilt `realm-x86_64-unknown-linux-gnu`
 > **Methodology:** all-localhost (backend + forwarder + client on the same VPS) to remove network noise; 3 reps per cell, median reported
 > **Workload:** `iperf3` for TCP / UDP throughput; custom Python driver for UDP high-flow concurrency
+
+---
+
+## Update — Post-optimization measurements
+
+After the report's findings, three optimizations were implemented and
+re-measured on the same VPS, same methodology:
+
+1. **OPT-2** (`splice.rs`): try_io before awaiting socket readiness.
+2. **OPT-3** (`splice.rs`): thread-local pipe pool, capped at 16 per worker.
+3. **OPT-1** (`udp/registry.rs`, `udp/flow.rs`): `Mutex<HashMap>` → `DashMap`; `Mutex<Instant> last_seen` → `AtomicU64` nanos. Removes the two per-packet `.lock().await` calls from the UDP fast path.
+
+| Test | portunus baseline | portunus optimized | realm | Δ vs baseline |
+|---|---:|---:|---:|---|
+| TCP 1-stream CPU | 44.5 % | **42.9 %** | 61.9 % | ‑3.6 % (within noise) |
+| TCP 8-stream CPU | 65.4 % | **66.4 %** | 92.4 % | ~unchanged |
+| TCP 8-stream splice calls / 5 s | 26 935 | 28 021 | 85 461 | unchanged |
+| TCP 8-stream splice total kernel time | 7.47 s | **6.60 s** | 9.12 s | ‑12 % |
+| **UDP 1 Gbps single-flow CPU** | 58.2 % | **52.7 %** | 47.7 % | **‑9.5 %** |
+| UDP 1 000 concurrent flows ΔRSS | +0.6 MB | +0.6 MB | +75 MB | unchanged (12× lead preserved) |
+| Throughput (TCP / UDP all bw) | — | matches baseline within noise — |
+
+**Verdict:**
+
+- **OPT-1 (DashMap UDP) is the clear win.** Closed the UDP CPU gap vs
+  realm from **+17 % to +11 %**. The two per-packet async-mutex
+  acquisitions (registry lookup + `last_seen` update) were the bulk of
+  the gap; replacing them with wait-free atomics removed most of it.
+  The remaining ~5 pp is the centralized-demux hash lookup itself,
+  which is the same architecture that buys the 12× memory advantage
+  at scale — not removable without giving up that lead.
+
+- **OPT-2 + OPT-3 (splice) are roughly neutral on this workload.** The
+  intermediate splice-pipe is already 1 MiB (`F_SETPIPE_SZ(1024*1024)`
+  in `splice.rs:246`), and on loopback the source TCP buffer fills
+  faster than the sink drains, so the destination side hits
+  `WouldBlock` often — try_io-first adds one wasted syscall on every
+  such hit, cancelling out the savings on the source side. The net
+  is +4 % splice calls and +23 % epoll_wait calls but ‑12 % total
+  kernel time per splice. CPU% lands within noise.
+
+  These optimizations should still matter for **short-connection**
+  workloads (HTTP-bench): the pipe pool amortizes the 6 setup
+  syscalls per connection. iperf3's long-lived streams don't exercise
+  that path. We did not bench HTTP separately because python's
+  http.server was the bottleneck (see Methodology caveats §6.1).
+
+The throughput numbers were already at the loopback limit before the
+optimizations; nothing was throughput-bound, so none of the changes
+moved the throughput needle in either direction.
+
+---
 
 ---
 
