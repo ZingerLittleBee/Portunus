@@ -503,6 +503,29 @@ write_compose_env() {
 write_compose_file() {
   local dir="$1" f="$1/compose.yml" port; port="$(op_http_port)"
   mkdir -p "$dir"
+  if [ "$ROLE" = "standalone" ]; then
+    # No GHCR image is published for standalone — copy the reference
+    # compose file from contrib/ and the user builds locally.
+    local self_dir3=""
+    if [ -n "${SELF_SCRIPT:-}" ]; then
+      self_dir3="$(dirname "$SELF_SCRIPT")"
+    fi
+    if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/docker-compose.yml" ]; then
+      cp "$self_dir3/../crates/portunus-standalone/contrib/docker-compose.yml" "$dir/docker-compose.yml"
+    else
+      curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/docker-compose.yml" -o "$dir/docker-compose.yml" \
+        || die "failed to fetch contrib/docker-compose.yml"
+    fi
+    if [ ! -f "$dir/portunus.toml" ]; then
+      if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
+        cp "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" "$dir/portunus.toml"
+      else
+        curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o "$dir/portunus.toml" \
+          || die "failed to fetch contrib/portunus.example.toml"
+      fi
+    fi
+    return 0
+  fi
   [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
   # The server's --operator-http-listen has no env binding and defaults
   # to container-internal 127.0.0.1, which Docker's published port (and
