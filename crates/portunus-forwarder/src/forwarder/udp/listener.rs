@@ -203,41 +203,46 @@ async fn process_batch<R: Resolve + 'static>(
         // Try the fast path: existing Live flow. If we hit it, we may
         // be able to extend a pending run for the same flow.
         if let Some(flow) = cfg.registry.get(key) {
-            if !flow.cancel.is_cancelled() && flow.quota_allows() {
-                match &mut pending {
-                    Some(run) if Arc::ptr_eq(&run.flow.upstream_socket, &flow.upstream_socket) => {
-                        run.indices.push(i);
-                        run.sizes.push(n_u64);
-                        continue;
+            if flow.cancel.is_cancelled() {
+                // Flush previous run, then route this packet through
+                // the cold path so the next datagram for this source
+                // rebuilds the flow.
+                if let Some(run) = pending.take() {
+                    flush_run(cfg, bufs, run).await;
+                }
+                handle_datagram(cfg, listener_socket, payload, src).await;
+                continue;
+            }
+            // Eager-debit the quota BEFORE adding to the pending run.
+            // This closes the v1.5.0 hole where batch-build could let
+            // up to `batch_size - 1` over-budget packets through
+            // because `quota_allows()` only flipped after the late
+            // `quota_consume_after_send`. If the debit straddles the
+            // boundary, drop this packet (FR-013 silent drop) and
+            // every subsequent packet on this flow this batch — but
+            // do NOT skip cold-path handling for other flows in the
+            // batch.
+            if !flow.quota_try_consume(n_u64) {
+                continue;
+            }
+            match &mut pending {
+                Some(run) if Arc::ptr_eq(&run.flow.upstream_socket, &flow.upstream_socket) => {
+                    run.indices.push(i);
+                    run.sizes.push(n_u64);
+                    continue;
+                }
+                _ => {
+                    if let Some(run) = pending.take() {
+                        flush_run(cfg, bufs, run).await;
                     }
-                    _ => {
-                        // Different flow (or first packet) — flush
-                        // the previous run before starting a new one.
-                        if let Some(run) = pending.take() {
-                            flush_run(cfg, bufs, run).await;
-                        }
-                        pending = Some(PendingRun {
-                            flow,
-                            indices: vec![i],
-                            sizes: vec![n_u64],
-                        });
-                        continue;
-                    }
+                    pending = Some(PendingRun {
+                        flow,
+                        indices: vec![i],
+                        sizes: vec![n_u64],
+                    });
+                    continue;
                 }
             }
-            // Cancelled or quota-exhausted: flush any pending run,
-            // then drop this packet silently (quota) or fall through
-            // to cold path (cancelled).
-            if let Some(run) = pending.take() {
-                flush_run(cfg, bufs, run).await;
-            }
-            if flow.cancel.is_cancelled() {
-                // Fall through to cold path so the next datagram for
-                // this source rebuilds the flow.
-                handle_datagram(cfg, listener_socket, payload, src).await;
-            }
-            // quota_allows() == false → silent drop (FR-013).
-            continue;
         }
 
         // Cold path: flush any pending run, then dispatch the new
@@ -283,35 +288,95 @@ async fn flush_run<R: Resolve + 'static>(
 
     match send_batch_connected(&flow.upstream_socket, &payloads) {
         Ok(sent) => {
-            // Account for the prefix that the kernel accepted.
+            // Account for the prefix that the kernel accepted. Quota
+            // was eagerly debited in process_batch, so no consume
+            // call here — just stats + last_seen.
             for s in sizes.iter().take(sent) {
                 flow.bump_inbound(*s).await;
                 cfg.stats.inc_datagram_in(cfg.listen_port, *s);
-                let _ = flow.quota_consume_after_send(*s);
             }
             if sent < indices.len() {
-                trace!(
-                    event = "rule.udp_upstream_wouldblock",
-                    rule_id = %cfg.rule_id,
-                    listen_port = cfg.listen_port,
-                    dropped = indices.len() - sent,
-                );
+                // Refund the eagerly-debited quota for the unsent
+                // tail so per-batch over-debit stays at 0.
+                for s in sizes.iter().skip(sent) {
+                    flow.quota_restore(*s);
+                }
+                // Probe-after-partial: sendmmsg drops the tail with
+                // no errno, so we don't know whether the kernel
+                // bailed on SO_SNDBUF (WouldBlock) or on an ICMP
+                // error queue (Evict). Issue one synchronous
+                // try_send on the first unsent packet to recover the
+                // errno; classify it the same way the fast path
+                // does. This keeps v0.4 parity on ICMP-driven
+                // eviction (≈ one extra syscall per partial-send
+                // event, which is rare).
+                let probe_idx = indices[sent];
+                let (probe_payload, probe_src) = bufs.slot(probe_idx);
+                let probe_size = sizes[sent];
+                match flow.upstream_socket.try_send(probe_payload) {
+                    Ok(_) => {
+                        flow.bump_inbound(probe_size).await;
+                        cfg.stats.inc_datagram_in(cfg.listen_port, probe_size);
+                        // We refunded probe_size above; re-debit it.
+                        let _ = flow.quota_try_consume(probe_size);
+                        // Remaining tail (sent + 1 ..) stays dropped;
+                        // their quota refunds are correct.
+                    }
+                    Err(e) => match classify_udp_error(&e) {
+                        UdpAction::Evict => {
+                            info!(
+                                event = "rule.udp_flow_evicted_icmp",
+                                rule_id = %cfg.rule_id,
+                                listen_port = cfg.listen_port,
+                                source = %probe_src,
+                                error = %e,
+                            );
+                            let key = FlowKey::new(cfg.listen_port, probe_src);
+                            let _ = cfg.registry.remove(key);
+                            flow.cancel.cancel();
+                        }
+                        UdpAction::MessageTooLarge => {
+                            debug!(
+                                event = "rule.udp_emsgsize",
+                                rule_id = %cfg.rule_id,
+                                listen_port = cfg.listen_port,
+                                source = %probe_src,
+                            );
+                        }
+                        UdpAction::WouldBlock | UdpAction::Transient => {
+                            trace!(
+                                event = "rule.udp_upstream_wouldblock",
+                                rule_id = %cfg.rule_id,
+                                listen_port = cfg.listen_port,
+                                dropped = indices.len() - sent,
+                            );
+                        }
+                    },
+                }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            // No packets sent (sendmmsg returns -1 with EAGAIN only
-            // when zero progress was made). Fall back to the per-
-            // packet path so the existing single-packet WouldBlock
-            // semantics still apply.
+            // Zero packets accepted. Refund everything we
+            // eagerly-debited, then fall back to per-packet
+            // try_send (which re-debits via quota_consume_after_send
+            // on success). This preserves the single-packet
+            // WouldBlock semantics from v0.4.
+            for s in &sizes {
+                flow.quota_restore(*s);
+            }
             for (idx, n_u64) in indices.iter().zip(sizes.iter()) {
                 let (payload, _src) = bufs.slot(*idx);
                 send_single(cfg, &flow, payload, *n_u64).await;
             }
         }
         Err(e) => {
-            // Classify against the fast-path error map. ICMP-driven
-            // Evict tears the whole run down; EMSGSIZE / Transient
-            // drop the batch but keep the flow.
+            // Total failure with a non-WouldBlock errno (typically
+            // ICMP-class on the FIRST packet — sendmmsg short-
+            // circuits before sending anything). Refund the whole
+            // run, then classify.
+            for s in &sizes {
+                flow.quota_restore(*s);
+            }
             match classify_udp_error(&e) {
                 UdpAction::Evict => {
                     info!(
@@ -321,9 +386,6 @@ async fn flush_run<R: Resolve + 'static>(
                         source = %flow.source_addr,
                         error = %e,
                     );
-                    // Use the first slot's source as the registry key
-                    // (all packets in a run share the source by
-                    // construction).
                     let (_payload, src) = bufs.slot(indices[0]);
                     let key = FlowKey::new(cfg.listen_port, src);
                     let _ = cfg.registry.remove(key);

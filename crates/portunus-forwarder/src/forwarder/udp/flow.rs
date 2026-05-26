@@ -271,6 +271,39 @@ impl UdpFlow {
         )
     }
 
+    /// v1.5.1 batched-listener seam: try to debit `n` bytes BEFORE
+    /// the send (so the batched path can pre-budget a whole run and
+    /// drop tail packets immediately when the budget runs out
+    /// instead of overshooting by `(batch_size - 1) × MTU`).
+    /// Returns `true` if the debit was granted in full. The caller
+    /// MUST call [`quota_restore`] for each packet that ends up not
+    /// being sent (sendmmsg partial / WouldBlock fallback) so the
+    /// budget stays exact.
+    ///
+    /// Single-packet callers should keep using `quota_allows` +
+    /// `quota_consume_after_send`; the pre-debit pattern is strictly
+    /// for the eager-build / late-flush batched path.
+    #[must_use]
+    pub fn quota_try_consume(&self, n: u64) -> bool {
+        let Some(q) = self.quota.as_ref() else {
+            return true;
+        };
+        matches!(
+            q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
+            crate::forwarder::quota::ConsumeOutcome::Granted,
+        )
+    }
+
+    /// v1.5.1 batched-listener seam: refund `n` bytes previously
+    /// pre-debited by [`quota_try_consume`] when the corresponding
+    /// datagram turned out not to reach the upstream. No-op on
+    /// unmetered flows.
+    pub fn quota_restore(&self, n: u64) {
+        if let Some(q) = self.quota.as_ref() {
+            q.restore(i64::try_from(n).unwrap_or(i64::MAX));
+        }
+    }
+
     /// Currently-active upstream address. Reads `current_addr_idx`
     /// once and looks up the slot — safe to call from either the
     /// recv or send side without holding a lock.
