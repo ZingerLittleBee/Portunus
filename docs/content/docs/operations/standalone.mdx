@@ -126,8 +126,20 @@ sudo -u portunus /usr/local/bin/portunus-standalone --check \
 
 ### Option C: Container (Docker or Kubernetes)
 
-See [Production deployment](#production-deployment) below for
-`docker compose`, raw `docker run`, and Kubernetes manifests.
+Starting with v1.5.0 the GHCR image
+`ghcr.io/zingerlittlebee/portunus-standalone:<version>` is published
+on every release (multi-arch: `linux/amd64`, `linux/arm64`):
+
+```sh
+docker run -d --network host \
+  --name portunus-standalone \
+  -v /etc/portunus/standalone.toml:/etc/portunus/standalone.toml:ro \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+See [Production deployment](#production-deployment) below for the
+full `docker compose` reference, raw `docker run` caveats, and
+Kubernetes manifests.
 
 ## Config file lookup
 
@@ -441,8 +453,22 @@ Reference templates for all four deployment styles live in
 
 ### Docker / docker-compose
 
-The reference [`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
-is a two-stage build that produces a distroless runtime image.
+**Prebuilt image (recommended).** From v1.5.0 onwards every release
+publishes a multi-arch (`linux/amd64`, `linux/arm64`) image to GHCR:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-standalone:1.5.0
+# or :latest for the most recent release
+```
+
+Pin to a specific version in production — `:latest` tracks the most
+recent tagged release and may shift under your feet.
+
+**Local build.** The reference
+[`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
+is a two-stage build that produces a distroless runtime image from
+source — useful when you can't reach GHCR or want to vendor a
+custom build.
 [`docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)
 defaults to host networking so port ranges work without per-port
 mapping:
@@ -453,9 +479,6 @@ cp portunus.example.toml portunus.toml   # edit before starting
 docker compose up -d
 docker compose logs -f
 ```
-
-No GHCR image is published yet — build locally or push to your own
-registry.
 
 **Caveats**:
 

@@ -120,8 +120,18 @@ sudo -u portunus /usr/local/bin/portunus-standalone --check \
 
 ### 方式 C：容器（Docker 或 Kubernetes）
 
-见下方 [生产环境部署](#生产环境部署)，包括 `docker compose`、原生
-`docker run`、Kubernetes manifest。
+从 v1.5.0 起每次发版都会推送多架构（`linux/amd64`、`linux/arm64`）
+镜像到 GHCR：`ghcr.io/zingerlittlebee/portunus-standalone:<version>`。
+
+```sh
+docker run -d --network host \
+  --name portunus-standalone \
+  -v /etc/portunus/standalone.toml:/etc/portunus/standalone.toml:ro \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+完整的 `docker compose`、原生 `docker run` 注意事项以及 Kubernetes
+manifest 见下方 [生产环境部署](#生产环境部署)。
 
 ## 配置文件查找顺序
 
@@ -424,9 +434,21 @@ target       = "10.0.0.30:30000-30019"
 
 ### Docker / docker-compose
 
-参考
+**预构建镜像（推荐）**。从 v1.5.0 起每次发版都会推送多架构
+（`linux/amd64`、`linux/arm64`）镜像到 GHCR：
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-standalone:1.5.0
+# 或使用 :latest 跟最新 release
+```
+
+生产环境请固定具体版本号 —— `:latest` 会随新 release 漂移，可能导致
+非预期的行为变更。
+
+**本地构建**。参考
 [`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
-是一个两阶段构建，运行时镜像基于 distroless。
+是一个两阶段构建，运行时镜像基于 distroless ——
+适用于无法访问 GHCR 或需要 vendor 自定义构建的场景。
 [`docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)
 默认使用 host 网络，端口范围转发因此无需逐端口 mapping：
 
@@ -436,8 +458,6 @@ cp portunus.example.toml portunus.toml   # 启动前编辑
 docker compose up -d
 docker compose logs -f
 ```
-
-目前未发布 GHCR 镜像 —— 请本地构建或推送到自有 registry。
 
 **注意事项**：
 

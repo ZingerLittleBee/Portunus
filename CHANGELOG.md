@@ -82,8 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2 with a descriptive message.
 - `.github/workflows/release.yml` — Linux and macOS release tarballs
   now include the `portunus-standalone` binary alongside
-  `portunus-server` and `portunus-client`. No GHCR image is
-  published for standalone yet.
+  `portunus-server` and `portunus-client`. Multi-arch
+  (`linux/amd64`, `linux/arm64`) GHCR image
+  `ghcr.io/zingerlittlebee/portunus-standalone:{version,latest}` is
+  also published on every release via
+  `deploy/docker/Dockerfile.standalone` (distroless `nonroot`
+  runtime; rules read from `/etc/portunus/standalone.toml`).
 
 ### Fixed
 
