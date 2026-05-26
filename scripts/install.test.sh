@@ -200,6 +200,33 @@ dm="$(bash "$script" server --render-dropin)" || fail "render-dropin minimal exi
 echo "$dm" | grep -qx 'ExecStart=/usr/local/bin/portunus-server --data-dir /var/lib/portunus serve' || fail "minimal ExecStart unexpected"
 if echo "$dm" | grep -q -- '--advertised-endpoint'; then fail "minimal drop-in must not advertise"; fi
 
+# --- standalone role: dry-run plan accepted, artifact name correct ---
+out_sa="$(bash "$script" standalone --version 1.4.1 --dry-run)" || fail "standalone dry-run exit non-zero"
+echo "$out_sa" | grep -q '^role:[[:space:]]*standalone$' || fail "standalone: role line missing"
+echo "$out_sa" | grep -q 'portunus-standalone' || fail "standalone: portunus-standalone not in plan"
+
+# --- standalone role: explicit install verb ---
+bash "$script" install standalone --version 1.0.0 --dry-run >/dev/null 2>&1 || fail "standalone: install verb rejected"
+
+# --- standalone role: --help does not error with 'role required' ---
+out_sh="$(bash "$script" standalone --help 2>&1 || true)"
+case "$out_sh" in
+  *"role required"*) fail "standalone --help printed 'role required'" ;;
+esac
+
+# --- standalone role: bogus-role test still rejects unknown roles ---
+if bash "$script" bogus_standalone --dry-run >/dev/null 2>&1; then fail "bogus_standalone role accepted"; fi
+
+# --- standalone: config get/set is rejected (non-applicable role) ---
+sa_tmp="$(mktemp -d)"
+printf 'role=standalone\ndeploy=binary\nversion=1.0.0\nlang=en\n' > "$sa_tmp/.install-meta"
+sa_out="$(bash "$script" --compose-dir "$sa_tmp" config get advertised-endpoint 2>&1 || true)"
+echo "$sa_out" | grep -qi 'standalone' || fail "standalone config: rejection message missing 'standalone'"
+if bash "$script" --compose-dir "$sa_tmp" config get advertised-endpoint >/dev/null 2>&1; then
+  fail "standalone config get must exit non-zero"
+fi
+rm -rf "$sa_tmp"
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"
