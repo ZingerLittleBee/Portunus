@@ -506,7 +506,7 @@ install_docker() {
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      client|server) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
+      client|server|standalone) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
       install|uninstall|upgrade|status|service|config|env|domain) VERB="$1" ;;
       start|stop|restart) SERVICE_ACTION="$1" ;;
       get|set) CONFIG_OP="$1" ;;
@@ -567,7 +567,7 @@ main() {
   [ -n "$VERB" ] || VERB="install"
   detect_platform
   resolve_version_static
-  [ -n "$DOMAIN" ] && [ "$ROLE" = client ] && die "--domain is server-only"
+  [ -n "$DOMAIN" ] && [ "$ROLE" != server ] && die "--domain is server-only"
   apply_advertised_default
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
@@ -823,6 +823,9 @@ wizard_install() {
   if [ "$ROLE" = server ]; then
     a="$(ask ask_deploy_server)"
     case "$a" in 2|binary) DEPLOY=binary; WANT_SYSTEMD=yes ;; *) DEPLOY=docker ;; esac
+  elif [ "$ROLE" = standalone ]; then
+    a="$(ask ask_deploy_standalone)"
+    case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
   else
     a="$(ask ask_deploy_client)"
     case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
