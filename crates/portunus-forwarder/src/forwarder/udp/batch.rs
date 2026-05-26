@@ -104,12 +104,10 @@ pub(crate) fn recv_batch(socket: &UdpSocket, bufs: &mut BatchBufs) -> io::Result
         // on the stack. The kernel writes lengths into
         // `msg_hdr.msg_len`; we lift those into `bufs.lens`.
         let fd = socket.as_raw_fd();
-        let mut iovs: [libc::iovec; BATCH_SIZE] =
-            unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { MaybeUninit::zeroed().assume_init() };
         let mut addrs: [libc::sockaddr_storage; BATCH_SIZE] =
             unsafe { MaybeUninit::zeroed().assume_init() };
-        let mut hdrs: [libc::mmsghdr; BATCH_SIZE] =
-            unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut hdrs: [libc::mmsghdr; BATCH_SIZE] = unsafe { MaybeUninit::zeroed().assume_init() };
 
         let slot_size = UDP_BUFFER_BYTES;
         for i in 0..BATCH_SIZE {
@@ -174,10 +172,7 @@ pub(crate) fn recv_batch(_socket: &UdpSocket, _bufs: &mut BatchBufs) -> io::Resu
 /// the caller can retry the tail on the next wakeup. Errors after a
 /// partial success are reported as `Ok(n)` with the successful prefix.
 #[cfg(target_os = "linux")]
-pub(crate) fn send_batch_connected(
-    socket: &UdpSocket,
-    payloads: &[&[u8]],
-) -> io::Result<usize> {
+pub(crate) fn send_batch_connected(socket: &UdpSocket, payloads: &[&[u8]]) -> io::Result<usize> {
     use std::os::fd::AsRawFd;
 
     if payloads.is_empty() {
@@ -186,10 +181,8 @@ pub(crate) fn send_batch_connected(
     socket.try_io(Interest::WRITABLE, || {
         let fd = socket.as_raw_fd();
         let len = payloads.len().min(BATCH_SIZE);
-        let mut iovs: [libc::iovec; BATCH_SIZE] =
-            unsafe { MaybeUninit::zeroed().assume_init() };
-        let mut hdrs: [libc::mmsghdr; BATCH_SIZE] =
-            unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut hdrs: [libc::mmsghdr; BATCH_SIZE] = unsafe { MaybeUninit::zeroed().assume_init() };
 
         for i in 0..len {
             iovs[i] = libc::iovec {
@@ -217,10 +210,7 @@ pub(crate) fn send_batch_connected(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn send_batch_connected(
-    _socket: &UdpSocket,
-    _payloads: &[&[u8]],
-) -> io::Result<usize> {
+pub(crate) fn send_batch_connected(_socket: &UdpSocket, _payloads: &[&[u8]]) -> io::Result<usize> {
     Err(io::Error::from(io::ErrorKind::WouldBlock))
 }
 
@@ -235,9 +225,7 @@ fn sockaddr_to_socketaddr(
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
     let family = i32::from(storage.ss_family);
-    if family == libc::AF_INET
-        && (len as usize) >= std::mem::size_of::<libc::sockaddr_in>()
-    {
+    if family == libc::AF_INET && (len as usize) >= std::mem::size_of::<libc::sockaddr_in>() {
         // SAFETY: family + length checked; reinterpreting as
         // sockaddr_in is the standard POSIX pattern.
         let sin: &libc::sockaddr_in =
@@ -315,13 +303,10 @@ mod tests {
         let mut buf = [0u8; 16];
         let mut sizes = Vec::new();
         for _ in 0..3 {
-            let (n, _) = tokio::time::timeout(
-                Duration::from_secs(1),
-                server.recv_from(&mut buf),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let (n, _) = tokio::time::timeout(Duration::from_secs(1), server.recv_from(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
             sizes.push(n);
         }
         sizes.sort_unstable();

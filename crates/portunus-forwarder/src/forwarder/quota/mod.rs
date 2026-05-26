@@ -146,12 +146,9 @@ impl QuotaHandle {
         }
         let prev = self.remaining.fetch_add(n, Ordering::AcqRel);
         if prev.saturating_add(n) > 0 {
-            let _ = self.exhausted.compare_exchange(
-                true,
-                false,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            );
+            let _ =
+                self.exhausted
+                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
         }
     }
 }

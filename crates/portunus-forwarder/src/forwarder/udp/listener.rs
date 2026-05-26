@@ -278,7 +278,11 @@ async fn flush_run<R: Resolve + 'static>(
     bufs: &BatchBufs,
     run: PendingRun,
 ) {
-    let PendingRun { flow, indices, sizes } = run;
+    let PendingRun {
+        flow,
+        indices,
+        sizes,
+    } = run;
     debug_assert_eq!(indices.len(), sizes.len());
     debug_assert!(!indices.is_empty());
 
