@@ -157,7 +157,7 @@ jobs:
 
       - name: cargo build --release
         shell: bash
-        run: cargo build --release -p portunus-server -p portunus-client --target "${{ matrix.target }}"
+        run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Package binaries
         shell: bash
@@ -171,6 +171,7 @@ jobs:
           mkdir -p "${staging}"
           cp "target/${target}/release/portunus-server" "${staging}/"
           cp "target/${target}/release/portunus-client" "${staging}/"
+          cp "target/${target}/release/portunus-standalone" "${staging}/"
           cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
@@ -222,7 +223,7 @@ jobs:
 
       - name: cargo build --release
         shell: bash
-        run: cargo build --release -p portunus-server -p portunus-client --target "${{ matrix.target }}"
+        run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Package binaries
         shell: bash
@@ -236,6 +237,7 @@ jobs:
           mkdir -p "${staging}"
           cp "target/${target}/release/portunus-server" "${staging}/"
           cp "target/${target}/release/portunus-client" "${staging}/"
+          cp "target/${target}/release/portunus-standalone" "${staging}/"
           cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
