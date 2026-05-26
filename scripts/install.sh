@@ -87,9 +87,10 @@ MSG_EN=(
   [menu_exit]="  [0] Exit"
   [menu_select]="Select [0-7]: "
   [lang_prompt]="Select language\n  [1] English\n  [2] 中文"
-  [ask_role]="Install which role?\n  [1] server\n  [2] client"
+  [ask_role]="Install which role?\n  [1] server\n  [2] client\n  [3] standalone"
   [ask_deploy_server]="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + systemd"
   [ask_deploy_client]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
+  [ask_deploy_standalone]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
   [ask_version]="Version (blank = latest): "
   [ask_bindir]="Install dir [%s]: "
   [ask_datadir]="Server data dir (blank = default): "
@@ -97,7 +98,7 @@ MSG_EN=(
   [confirm_proceed]="Proceed? [Y/n]: "
   [confirm_uninstall]="Uninstall portunus-%s (%s)? [y/N]: "
   [confirm_purge_typed]="Type 'purge' to also delete data at %s: "
-  [need_role]="role required: client or server"
+  [need_role]="role required: client, server, or standalone"
   [no_install_found]="No Portunus install detected (no .install-meta and no probe match)."
   [done_next]="Done. Next steps:"
   [next_systemd]="  start:   sudo systemctl enable --now portunus-%s"
@@ -144,6 +145,7 @@ MSG_EN=(
   [https_ready]="HTTPS ready: https://%s/"
   [https_public_note]="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token."
   [adv_from_domain]="  advertised endpoint:  %s  (from domain)"
+  [config_na_standalone]="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly"
 )
 MSG_ZH=(
   [menu_title]="Portunus 管理器"
@@ -157,9 +159,10 @@ MSG_ZH=(
   [menu_exit]="  [0] 退出    Exit"
   [menu_select]="请选择 [0-7]: "
   [lang_prompt]="请选择语言\n  [1] English\n  [2] 中文"
-  [ask_role]="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）"
+  [ask_role]="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）"
   [ask_deploy_server]="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + systemd"
   [ask_deploy_client]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
+  [ask_deploy_standalone]="选择部署方式？（回车 = 推荐）\n  [1] binary + systemd  （推荐）\n  [2] docker compose"
   [ask_version]="版本号（留空则使用最新版）: "
   [ask_bindir]="程序安装目录 [%s]: "
   [ask_datadir]="服务端数据目录（留空则使用默认值）: "
@@ -167,7 +170,7 @@ MSG_ZH=(
   [confirm_proceed]="确认继续吗？[Y/n]: "
   [confirm_uninstall]="确定要卸载 portunus-%s（%s）吗？[y/N]: "
   [confirm_purge_typed]="如需连同数据一并删除 %s，请输入 'purge' 确认: "
-  [need_role]="请指定角色：client 或 server"
+  [need_role]="请指定角色：client、server 或 standalone"
   [no_install_found]="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。"
   [done_next]="安装完成，后续步骤："
   [next_systemd]="  启动服务：sudo systemctl enable --now portunus-%s"
@@ -214,6 +217,7 @@ MSG_ZH=(
   [https_ready]="HTTPS 已就绪：https://%s/"
   [https_public_note]="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。"
   [adv_from_domain]="  对外通告地址：%s（由域名推导）"
+  [config_na_standalone]="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml"
 )
 
 resolve_lang() {
