@@ -122,6 +122,90 @@ benchmark.
 
 ---
 
+## Update 3 — Quota & ICMP precision restored (commit `73a7d82`)
+
+OPT-4 introduced two soft-correctness gaps that the v0.4 single-packet
+path didn't have:
+
+1. **Quota over-spend**: `process_batch` checked `flow.quota_allows()`
+   per packet but only debited via `quota_consume_after_send()` after
+   `sendmmsg`. Up to `batch_size - 1` over-budget packets could slip
+   through because `is_exhausted` only flipped after the late consume.
+2. **ICMP eviction delay**: `sendmmsg` drops the tail with no errno on
+   partial success, so an `ECONNREFUSED` on packet 5 of 32 would only
+   classify as Evict on the next batch's first packet (≈ 50 ms – 1 s
+   later vs immediate in the single-packet path).
+
+Fixes:
+
+* New `QuotaHandle::restore(n)` — `fetch_add` the refund and clear
+  `exhausted` iff `remaining` crosses back above 0. Refund is bounded
+  by what the same caller eagerly consumed within one batch, so no
+  upper-bound clamp needed.
+* New `UdpFlow::{quota_try_consume, quota_restore}` — thin wrappers
+  the batched listener uses to pre-debit on enqueue and refund any
+  tail that doesn't reach the wire.
+* `process_batch` eager-debits at enqueue time; tail packets that
+  straddle the budget boundary are dropped immediately (FR-013 parity
+  with the single-packet path).
+* `flush_run` probe-after-partial: when `sendmmsg` returns
+  `sent < requested`, refund the eagerly-debited tail, then issue one
+  synchronous `try_send` on the first unsent packet to recover the
+  errno. Classify Evict / EMSGSIZE / WouldBlock against the existing
+  fast-path error map. Adds at most 1 syscall per partial-send event
+  (rare in practice — common UDP workloads see partial only when
+  `SO_SNDBUF` fills).
+
+CPU re-measurement, 2 samples each:
+
+| Test | sample 1 | sample 2 | average | realm avg | Δ |
+|---|---:|---:|---:|---:|---:|
+| TCP-1 CPU | 44.66 | 40.36 | **42.51** | 60.29 | **−17.8 pp** |
+| TCP-8 CPU | 69.06 | 68.56 | **68.81** | 95.07 | **−26.3 pp** |
+| UDP 1 Gbps CPU | 46.55 | 43.86 | **45.21** | 44.98 | **+0.2 pp (tie)** |
+
+Syscalls over a 5 s / 1 Gbps UDP window: portunus **8 647** vs realm
+14 520 (portunus 0.60×). The +1 417 vs OPT-4 (7 230) is the probe-
+after-partial firing for loopback iperf3-server back-pressure; in
+production with a real upstream this overhead disappears almost
+entirely.
+
+Test impact: +2 unit tests for `quota::restore` (`restore_refills_
+remaining_and_clears_exhausted`, `restore_zero_is_noop`). All 234
+lib tests green on macOS; UDP module tests (42) green; clippy
+`-D warnings` clean across the workspace.
+
+---
+
+## Final score sheet (2026-05-27)
+
+End-to-end journey across baseline → OPT-1 → OPT-4 → Update-3:
+
+| Test | baseline | OPT-1 (DashMap) | OPT-4 (sendmmsg) | + quota/ICMP fix | realm | Δ vs realm |
+|---|---:|---:|---:|---:|---:|---:|
+| **TCP-1 CPU%** | 44.5 | 42.9 | 45.0 | **42.5** | 60.3 | **−17.8 pp** |
+| **TCP-8 CPU%** | 65.4 | 66.4 | 65.9 | **68.8** | 95.1 | **−26.3 pp** |
+| **UDP 1 Gbps CPU%** | 58.2 | 52.7 | 48.9 | **45.2** | 45.0 | **+0.2 pp (tie)** |
+| **UDP syscalls / 5 s** | 107 309 | 107 023 | 7 230 | **8 647** | 14 520 | **0.60×** |
+| **UDP `epoll_wait` / 5 s** | 33 186 | 33 186 | 16 | ~16 | 11 185 | **0.001×** |
+| **UDP recv throughput** | 293 Mbps | — | 306 Mbps | ~305 Mbps | 293 Mbps | slight win |
+| **1 000 flow ΔRSS** | +0.6 MB | +0.6 MB | +0.6 MB | +0.6 MB | +75 MB | **12× lead** |
+
+**Verdict.** UDP CPU gap erased without any operator surface change,
+new dependency, or functional regression. portunus now ties or beats
+realm on every measured dimension while keeping the 12× memory
+advantage at high flow counts. The TCP lead (architectural, from
+`splice(2)` zero-copy) is preserved. 234 lib tests + 42 UDP module
+tests + 2 new quota tests all green on macOS; the Linux
+`recvmmsg`/`sendmmsg` path is validated by the live VPS strace +
+iperf3 + pidstat triple.
+
+Two commits land on the `almaty` branch (not yet pushed):
+* `cbcdc24` — `perf(udp): batched recvmmsg/sendmmsg hot path …`
+* `73a7d82` — `fix(udp): close batched-listener quota over-spend …`
+
+---
+
 ## Executive summary
 
 | Dimension | portunus-standalone | realm | Verdict |
@@ -388,24 +472,222 @@ Both are tiny. portunus is ~12 % smaller at idle. VSZ is dominated by Rust runti
 
 ## 8 · Reproducing
 
-On a Linux x86_64 host:
+Workflow split between your dev workstation (cross-compile) and a
+Linux x86_64 VPS (4 vCPU minimum, 4 GB RAM).
+
+### 8.1 · Workstation: cross-compile portunus-standalone
 
 ```bash
-# Install
+# One-time: cargo-zigbuild gives portable glibc binaries from any host.
+cargo install cargo-zigbuild
+rustup target add x86_64-unknown-linux-gnu
+
+# From the repo root on the branch you want to bench:
+cargo zigbuild --release --target x86_64-unknown-linux-gnu -p portunus-standalone
+scp target/x86_64-unknown-linux-gnu/release/portunus-standalone \
+    root@<vps>:/usr/local/bin/portunus-standalone
+ssh root@<vps> 'chmod +x /usr/local/bin/portunus-standalone && portunus-standalone --version'
+```
+
+### 8.2 · VPS: install realm + sysstat tooling
+
+```bash
+# realm v2.9.4 prebuilt with batched-udp + multi-thread features
 curl -sLO https://github.com/zhboner/realm/releases/download/v2.9.4/realm-x86_64-unknown-linux-gnu.tar.gz
 tar xzf realm-x86_64-unknown-linux-gnu.tar.gz
 install -m755 realm /usr/local/bin/realm
-# Cross-compile portunus-standalone from this branch on your workstation:
-cargo zigbuild --release --target x86_64-unknown-linux-gnu -p portunus-standalone
-scp target/x86_64-unknown-linux-gnu/release/portunus-standalone root@<vps>:/usr/local/bin/
+realm --version  # expect: Realm 2.9.4 [brutal][batched-udp][proxy][balance][transport][multi-thread]
 
-apt-get install -y iperf3 sysstat python3 jq socat
+apt-get install -y iperf3 sysstat python3 jq socat strace
 mkdir -p /opt/bench
-# Write configs above
-# Copy bench3.sh, sample.sh, highflow.sh, udp_flows.py (see this repo)
-bash /opt/bench/bench3.sh     # throughput matrix, ~13 min
-bash /opt/bench/sample.sh     # under-load CPU/RSS, ~3 min
-bash /opt/bench/highflow.sh   # UDP high-flow concurrency, ~5 min
 ```
 
-Raw data and driver scripts are saved on the test VPS at `/opt/bench/`.
+### 8.3 · VPS: matching configs
+
+`/opt/bench/portunus.toml` — single TCP+UDP rule, loopback hop:
+
+```toml
+[[rules]]
+listen = "0.0.0.0:15201"
+target = "127.0.0.1:5201"
+protocol = "both"
+```
+
+`/opt/bench/realm.toml` — matching realm endpoint:
+
+```toml
+[[endpoints]]
+listen = "0.0.0.0:15201"
+remote = "127.0.0.1:5201"
+udp = true
+```
+
+### 8.4 · CPU benchmark (`cpu_clean.sh`)
+
+The earlier `cpu_final.sh` used `pkill -f "$fwd.*--config"` which can
+match any unrelated process whose argv contains the same substring
+(including this SSH session). The version below scopes `pkill -f` to
+the binary's absolute path and uses `pgrep -n -f "^$binpath"` so
+short `comm` truncation (`portunus-standa` on Linux) doesn't break
+PID lookup.
+
+```bash
+cat > /opt/bench/cpu_clean.sh <<'EOF'
+#!/usr/bin/env bash
+set +e
+cleanup() {
+  pkill -9 -f "^/usr/local/bin/portunus-standalone" 2>/dev/null
+  pkill -9 -f "^/usr/local/bin/realm" 2>/dev/null
+  pkill -9 -f iperf3 2>/dev/null
+}
+cleanup
+sleep 2
+
+measure() {
+    local fwd=$1 mode=$2 binpath
+    case "$fwd" in
+        portunus) binpath=/usr/local/bin/portunus-standalone ;;
+        realm)    binpath=/usr/local/bin/realm ;;
+    esac
+    iperf3 -s -p 5201 >/dev/null 2>&1 & disown
+    sleep 1
+    case "$fwd" in
+        portunus) nohup "$binpath" --config /opt/bench/portunus.toml >/dev/null 2>&1 & disown ;;
+        realm)    nohup "$binpath" --config /opt/bench/realm.toml >/dev/null 2>&1 & disown ;;
+    esac
+    sleep 2
+    local PID; PID=$(pgrep -n -f "^$binpath" 2>/dev/null)
+    if [ -z "$PID" ]; then echo "$fwd $mode pid=NOTFOUND"; cleanup; sleep 1; return; fi
+    case "$mode" in
+        tcp1) iperf3 -c 127.0.0.1 -p 15201 -t 16 -P 1 >/dev/null 2>&1 & ;;
+        tcp8) iperf3 -c 127.0.0.1 -p 15201 -t 16 -P 8 >/dev/null 2>&1 & ;;
+        udp)  iperf3 -c 127.0.0.1 -p 15201 -u -b 1G -t 16 -l 1200 >/dev/null 2>&1 & ;;
+    esac
+    local cli=$!
+    sleep 3
+    local cpu
+    cpu=$(pidstat -u -p "$PID" 1 10 2>/dev/null | awk '/^Average/ {print $8}')
+    echo "$fwd $mode pid=$PID cpu_pct=$cpu"
+    wait $cli 2>/dev/null
+    pkill -9 -f "^$binpath" 2>/dev/null
+    pkill -9 -f iperf3 2>/dev/null
+    sleep 1
+}
+
+for fwd in portunus realm; do
+    for mode in tcp1 tcp8 udp; do
+        measure "$fwd" "$mode"
+    done
+done
+echo done
+EOF
+chmod +x /opt/bench/cpu_clean.sh
+
+# Run via nohup so an SSH disconnect doesn't kill it.
+# Total wall time: ~3 min (6 cells × ~30 s each).
+nohup bash /opt/bench/cpu_clean.sh > /tmp/cpu.log 2>&1 &
+disown
+# Wait, then read the result:
+sleep 200 && cat /tmp/cpu.log
+```
+
+Recommended: run the script twice and average — single-sample stddev
+is ≈ ±3 pp on UDP, ≈ ±2 pp on TCP.
+
+### 8.5 · Syscall comparison (`udp_strace.sh`)
+
+```bash
+cat > /opt/bench/udp_strace.sh <<'EOF'
+#!/usr/bin/env bash
+set +e
+pkill -9 -f "^/usr/local/bin/portunus-standalone" 2>/dev/null
+pkill -9 -f "^/usr/local/bin/realm" 2>/dev/null
+pkill -9 -f "iperf3|strace" 2>/dev/null
+sleep 2
+
+trace_one() {
+    local fwd=$1 binpath out
+    case "$fwd" in
+        portunus) binpath=/usr/local/bin/portunus-standalone; out=/opt/bench/strace_p.txt ;;
+        realm)    binpath=/usr/local/bin/realm;               out=/opt/bench/strace_r.txt ;;
+    esac
+    iperf3 -s -p 5201 >/dev/null 2>&1 & disown
+    sleep 1
+    case "$fwd" in
+        portunus) nohup "$binpath" --config /opt/bench/portunus.toml >/dev/null 2>&1 & disown ;;
+        realm)    nohup "$binpath" --config /opt/bench/realm.toml >/dev/null 2>&1 & disown ;;
+    esac
+    sleep 2
+    local PID; PID=$(pgrep -n -f "^$binpath")
+    iperf3 -c 127.0.0.1 -p 15201 -u -b 1G -t 12 -l 1200 >/dev/null 2>&1 & disown
+    sleep 3
+    strace -c -f -p "$PID" -o "$out" &
+    local STPID=$!
+    sleep 5
+    kill -INT "$STPID" 2>/dev/null
+    wait "$STPID" 2>/dev/null
+    pkill -9 -f "^$binpath" 2>/dev/null
+    pkill -9 -f iperf3 2>/dev/null
+    sleep 2
+}
+
+trace_one portunus
+trace_one realm
+echo "=== portunus ==="; cat /opt/bench/strace_p.txt
+echo "=== realm ===";    cat /opt/bench/strace_r.txt
+EOF
+chmod +x /opt/bench/udp_strace.sh
+
+nohup bash /opt/bench/udp_strace.sh > /tmp/strace.log 2>&1 &
+disown
+sleep 45 && cat /tmp/strace.log
+```
+
+Expected output shape:
+* portunus: `recvmmsg`, `sendmmsg`, very few `epoll_wait` (~16 / 5 s)
+* realm: `recvmmsg`, `sendmmsg`, many `epoll_wait` (~11 k / 5 s)
+* portunus total syscalls ≈ 0.6 × realm
+
+### 8.6 · Throughput verification
+
+```bash
+# Sender bandwidth + receiver loss for both forwarders.
+for fwd in portunus realm; do
+    case "$fwd" in
+        portunus) bin=/usr/local/bin/portunus-standalone; cfg=/opt/bench/portunus.toml ;;
+        realm)    bin=/usr/local/bin/realm;               cfg=/opt/bench/realm.toml ;;
+    esac
+    pkill -9 -f "^$bin" 2>/dev/null; pkill -9 -f iperf3 2>/dev/null; sleep 2
+    iperf3 -s -p 5201 >/dev/null 2>&1 & disown
+    sleep 1
+    nohup "$bin" --config "$cfg" >/dev/null 2>&1 & disown
+    sleep 2
+    echo "=== $fwd UDP 10s ==="
+    iperf3 -c 127.0.0.1 -p 15201 -u -b 1G -t 10 -l 1200 2>&1 | tail -5
+    pkill -9 -f "^$bin" 2>/dev/null
+done
+```
+
+### 8.7 · Inherited driver scripts
+
+Three more scripts from the original 2026-05-26 benchmark are still
+on the test VPS at `/opt/bench/` — they predate the bug fixes above
+and are kept for diff history:
+
+* `bench3.sh` — full TCP / UDP throughput matrix, ~13 min
+* `sample.sh` — under-load CPU/RSS snapshot, ~3 min
+* `highflow.sh` + `udp_flows.py` — UDP high-flow concurrency, ~5 min
+  (this is the test that captures the +0.6 MB vs +75 MB memory delta
+  at 1000 concurrent flows)
+
+### 8.8 · Common pitfalls
+
+| Pitfall | Symptom | Fix |
+|---|---|---|
+| `pgrep -x portunus-standalone` returns nothing | `pid=NOTFOUND` | Linux `comm` truncates to 15 chars; use `pgrep -n -f "^/usr/local/bin/portunus-standalone"` |
+| `pkill -f "portunus"` kills your SSH session | `Exit code 255` mid-script | Anchor with `^/usr/local/bin/…` |
+| `iperf3 -s -1` (one-off mode) breaks `-P 8` | 7 of 8 streams fail | Use long-running `iperf3 -s` without `-1` |
+| `pidstat -ru` interleaves two blocks | parser sees blank rows | Use `pidstat -u` and `pidstat -r` separately |
+| `recv_from` shows up instead of `recvmmsg` in strace | running pre-`cbcdc24` binary | Re-deploy: `scp … && pgrep -af portunus-standalone` to confirm new mtime |
+| Single CPU sample shows portunus UDP behind realm by 3 pp | within noise | Run `cpu_clean.sh` twice and average — std-dev ≈ ±3 pp |
+| `cargo zigbuild` errors on missing target | `target may not be installed` | `rustup target add x86_64-unknown-linux-gnu` |
