@@ -233,12 +233,29 @@ mapping:
 
 ```sh
 cd crates/portunus-standalone/contrib
+cp portunus.example.toml portunus.toml   # edit before starting
 docker compose up -d
 docker compose logs -f
 ```
 
 No GHCR image is published yet — build locally or push to your own
 registry.
+
+**Caveats**:
+
+- The runtime image is `gcr.io/distroless/cc-debian12:nonroot` (UID
+  65532). Any config file you bind-mount must be readable by that UID
+  (`chmod 0644` on the host, or use a numeric UID match).
+- When invoking `docker run` directly (instead of via compose), passing
+  `--check` overrides the image's `CMD`, dropping the default `--config`
+  argument. Provide both explicitly:
+  `docker run … portunus-standalone --config /etc/portunus/standalone.toml --check`.
+- **Snap-packaged Docker on Ubuntu** confines bind-mount sources to
+  `/home`, `/media`, `/mnt`, and a few other allowlisted paths.
+  Bind-mounts from `/root`, `/tmp`, or `/etc` will surface as
+  `No such file or directory` inside the container. Either move the
+  config file under `/home`, or install the non-snap
+  `docker-ce`/`docker.io` packages.
 
 ### Kubernetes
 

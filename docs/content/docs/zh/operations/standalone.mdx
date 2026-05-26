@@ -225,11 +225,25 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 ```sh
 cd crates/portunus-standalone/contrib
+cp portunus.example.toml portunus.toml   # 启动前编辑
 docker compose up -d
 docker compose logs -f
 ```
 
 目前未发布 GHCR 镜像 —— 请本地构建或推送到自有 registry。
+
+**注意事项**：
+
+- 运行时镜像为 `gcr.io/distroless/cc-debian12:nonroot`（UID 65532）。
+  bind-mount 进容器的配置文件需要该 UID 可读
+  （宿主上 `chmod 0644`，或显式映射 UID）。
+- 直接用 `docker run` 调用（而非 compose）时，传 `--check` 会覆盖镜像
+  默认 `CMD`，从而丢失默认的 `--config` 参数。两个都要显式传：
+  `docker run … portunus-standalone --config /etc/portunus/standalone.toml --check`。
+- **Ubuntu 上的 snap Docker** 把 bind-mount 来源限制在 `/home`、
+  `/media`、`/mnt` 等白名单路径下。来自 `/root`、`/tmp`、`/etc` 的
+  bind-mount 在容器内会表现为 `No such file or directory`。请把配置
+  文件放到 `/home` 下，或改用非 snap 的 `docker-ce` / `docker.io` 包。
 
 ### Kubernetes
 
