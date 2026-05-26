@@ -1,0 +1,47 @@
+# portunus-standalone — example configuration
+#
+# Replace the `target` values with your real upstream hosts/ports.
+# All fields here are documented in:
+#   docs/content/docs/operations/standalone.mdx
+#
+# To validate this file before starting the service:
+#   portunus-standalone --check --config /etc/portunus/standalone.toml
+
+[global]
+label              = "edge-1"
+log_level          = "info"
+log_format         = "json"
+shutdown_drain_secs = 30
+
+[defaults]
+udp_max_flows      = 1024
+udp_flow_idle_secs = 60
+prefer_ipv6        = false
+
+[[rule]]
+name        = "ssh-tunnel"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_flow_idle_secs = 120
