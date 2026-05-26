@@ -387,6 +387,29 @@ install_binary() {
   maybe_sudo "$BIN_DIR"
   echo "→ installing portunus-${ROLE} to ${BIN_DIR}"
   ${SUDO:-} install -m 0755 "$src" "${BIN_DIR}/portunus-${ROLE}"
+
+  if [ "$ROLE" = "standalone" ]; then
+    # Create the system user (idempotent) and seed the config dir.
+    if ! id -u portunus >/dev/null 2>&1; then
+      ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus \
+        || die "failed to create portunus user"
+    fi
+    ${SUDO:-} mkdir -p /etc/portunus
+    if [ ! -f /etc/portunus/standalone.toml ]; then
+      local self_dir2=""
+      if [ -n "${SELF_SCRIPT:-}" ]; then
+        self_dir2="$(dirname "$SELF_SCRIPT")"
+      fi
+      if [ -n "$self_dir2" ] && [ -r "$self_dir2/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
+        ${SUDO:-} cp "$self_dir2/../crates/portunus-standalone/contrib/portunus.example.toml" /etc/portunus/standalone.toml
+      else
+        ${SUDO:-} curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o /etc/portunus/standalone.toml \
+          || die "failed to fetch starter standalone.toml"
+      fi
+      ${SUDO:-} chown root:portunus /etc/portunus/standalone.toml
+      ${SUDO:-} chmod 0640 /etc/portunus/standalone.toml
+    fi
+  fi
 }
 
 # ─── Systemd ──────────────────────────────────────────────────────────
@@ -395,10 +418,30 @@ install_systemd_unit() {
     echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
   local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
-  curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
+  if [ "$ROLE" = "standalone" ]; then
+    # Use the hardened contrib unit verbatim; user edits live in
+    # /etc/portunus/standalone.toml, not in the unit file.
+    local self_dir=""
+    if [ -n "${SELF_SCRIPT:-}" ]; then
+      self_dir="$(dirname "$SELF_SCRIPT")"
+    fi
+    if [ -n "$self_dir" ] && [ -r "$self_dir/../crates/portunus-standalone/contrib/portunus-standalone.service" ]; then
+      cp "$self_dir/../crates/portunus-standalone/contrib/portunus-standalone.service" "$tmp/$unit"
+    else
+      # Network-resolved (curl|bash) invocation: fetch the unit from the repo.
+      curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus-standalone.service" -o "$tmp/$unit" \
+        || die "failed to fetch portunus-standalone.service"
+    fi
+  else
+    curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
+  fi
   if [ "$ROLE" = "client" ]; then
     id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
     sudo install -d -o root -g portunus-client -m 0750 /etc/portunus
+  elif [ "$ROLE" = "standalone" ]; then
+    # User and /etc/portunus already handled in install_binary(); only
+    # the systemd unit file remains here.
+    :
   else
     id portunus-server >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
     sudo install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
