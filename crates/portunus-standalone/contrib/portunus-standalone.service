@@ -7,9 +7,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/portunus-standalone --config /etc/portunus/standalone.toml
-# Current binary has no SIGHUP reload — SIGHUP triggers graceful shutdown.
-# Modifying the config requires `systemctl restart portunus-standalone`.
-ExecReload=/bin/kill -TERM $MAINPID
+# No config reload — modifying the TOML requires `systemctl restart portunus-standalone`.
+# Omitting ExecReload makes `systemctl reload` correctly report "not applicable".
 Restart=on-failure
 RestartSec=2
 StandardOutput=journal
