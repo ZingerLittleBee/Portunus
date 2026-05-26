@@ -128,7 +128,7 @@ async fn handle_datagram<R: Resolve + 'static>(
     let n_u64 = u64::try_from(n).unwrap_or(u64::MAX);
 
     // ---- Fast path (FR-004 step 1): existing Live flow ----
-    if let Some(flow) = cfg.registry.get(key).await {
+    if let Some(flow) = cfg.registry.get(key) {
         if flow.cancel.is_cancelled() {
             // Race vs reaper / demux Evict — fall through to cold path
             // so the next datagram from this source rebuilds the flow.
@@ -154,7 +154,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                             source = %src,
                             error = %e,
                         );
-                        let _ = cfg.registry.remove(key).await;
+                        let _ = cfg.registry.remove(key);
                         flow.cancel.cancel();
                     }
                     UdpAction::MessageTooLarge => {
@@ -196,7 +196,7 @@ async fn handle_datagram<R: Resolve + 'static>(
     //     accounted for by `try_get_or_reserve` itself (it bumps
     //     `dropped_overflow`). Reservation is RAII — early returns
     //     below release it via Drop.
-    let reservation = match cfg.registry.try_get_or_reserve(key).await {
+    let reservation = match cfg.registry.try_get_or_reserve(key) {
         TryGetOrReserve::Existing(flow) => {
             // Rare: another listener committed for the same (port, src)
             // between our `get` above and `try_get_or_reserve` here.
@@ -334,7 +334,7 @@ async fn handle_datagram<R: Resolve + 'static>(
         flow = flow.attach_quota(Arc::clone(q));
     }
     flow.attach_admit_guards(admit_guards).await;
-    cfg.registry.commit(reservation, Arc::clone(&flow)).await;
+    cfg.registry.commit(reservation, Arc::clone(&flow));
 
     // (8) Hand the flow to the demux. Channel full = back-pressured
     //     demux — rollback so we don't leave a Live slot the demux
@@ -350,7 +350,7 @@ async fn handle_datagram<R: Resolve + 'static>(
             source = %src,
             reason = ?send_err,
         );
-        let _ = cfg.registry.remove(key).await;
+        let _ = cfg.registry.remove(key);
         flow.cancel.cancel();
         return;
     }
@@ -388,7 +388,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                     error = %e,
                     phase = "first_packet",
                 );
-                let _ = cfg.registry.remove(key).await;
+                let _ = cfg.registry.remove(key);
                 flow.cancel.cancel();
             }
             // WouldBlock is unreachable after the `send().await` switch
@@ -629,7 +629,7 @@ mod tests {
         );
         // And `get` returns None for the key — defensive double-check.
         let key = FlowKey::new(listen_addr.port(), src);
-        assert!(registry.get(key).await.is_none());
+        assert!(registry.get(key).is_none());
     }
 
     /// Regression: in v014 Batch 3 the new `acquire_first_packet`
@@ -721,7 +721,7 @@ mod tests {
         );
         let k3 = FlowKey::new(listen_addr.port(), src3);
         assert!(
-            registry.get(k3).await.is_none(),
+            registry.get(k3).is_none(),
             "rejected flow must NOT appear in registry",
         );
 
@@ -738,7 +738,6 @@ mod tests {
         let k1 = FlowKey::new(listen_addr.port(), src1);
         let removed = registry
             .remove(k1)
-            .await
             .expect("flow should exist before remove");
         drop(removed);
 
@@ -756,7 +755,7 @@ mod tests {
 
         let k4 = FlowKey::new(listen_addr.port(), src4);
         assert!(
-            registry.get(k4).await.is_some(),
+            registry.get(k4).is_some(),
             "4th source must be admitted after a slot frees up",
         );
         assert_eq!(

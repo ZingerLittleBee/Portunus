@@ -166,7 +166,7 @@ impl UdpFlowTable {
         let now = Instant::now();
         let mut stale: Vec<(SocketAddr, Duration)> = Vec::new();
         for (addr, flow) in &snapshot {
-            let last = flow.last_seen_at().await;
+            let last = flow.last_seen_at();
             let age = now.checked_duration_since(last).unwrap_or_default();
             if age >= idle_window {
                 stale.push((*addr, age));

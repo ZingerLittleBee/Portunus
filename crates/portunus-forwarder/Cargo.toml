@@ -25,6 +25,7 @@ rand         = { workspace = true }
 serde        = { workspace = true }
 futures-util = "0.3"
 libc         = "0.2"
+dashmap      = { workspace = true }
 
 # Async DNS resolver (system-resolv.conf, no DoT/DoH per v0.3.0 OOS).
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }

@@ -137,7 +137,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                         listen_port = key.listen_port,
                         error = %e,
                     );
-                    let _ = cfg.registry.remove(key).await;
+                    let _ = cfg.registry.remove(key);
                     flow.cancel.cancel();
                     return;
                 }

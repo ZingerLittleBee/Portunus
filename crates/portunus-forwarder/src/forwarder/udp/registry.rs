@@ -2,13 +2,19 @@
 //! per-listener and silently inflated `udp_max_flows_per_rule` by
 //! `range_size`. Spec: 014-udp-centralized-demux, FR-002 / FR-003 /
 //! FR-014.
+//!
+//! Storage is a `DashMap` (sharded lockless reads + per-shard write
+//! locks) rather than `Mutex<HashMap>` — the hot-path `get(key)` is
+//! called once per UDP datagram and the original `tokio::sync::Mutex`
+//! forced a scheduler dispatch on every packet even though the lock
+//! was uncontended in steady state.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use tokio::sync::Mutex;
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 
 use crate::forwarder::udp::flow::UdpFlow;
 
@@ -36,14 +42,15 @@ enum Slot {
 }
 
 pub struct UdpFlowRegistry {
-    inner: Mutex<HashMap<FlowKey, Slot>>,
+    inner: DashMap<FlowKey, Slot>,
     /// Rule-wide cap. Note: counts BOTH Pending and Live entries.
     cap: usize,
     /// Cumulative count of new-flow first-datagrams refused due to
     /// cap exhaustion (FR-003).
     dropped_overflow: AtomicU64,
-    /// Total slot count (Pending + Live). Used by `try_reserve`'s cap
-    /// check without holding the inner lock.
+    /// Total slot count (Pending + Live). Updated alongside `inner`
+    /// mutations; the strict cap enforcement uses `fetch_add` + roll-back
+    /// to avoid over-shoot under concurrent inserts across shards.
     occupancy: AtomicUsize,
 }
 
@@ -51,10 +58,9 @@ pub struct UdpFlowRegistry {
 /// entry and decrements occupancy. `commit` consumes the guard.
 pub struct Reservation {
     key: FlowKey,
-    // Held as `Arc` so the registry stays alive long enough for the Drop
-    // cleanup task. The registry itself is `Arc`-shared across listener /
-    // demux / reaper, so retaining one more strong ref here is cheap and
-    // removes any risk of an orphan reservation outliving its owner.
+    // Held as `Arc` so the registry stays alive long enough for Drop
+    // cleanup. The registry itself is `Arc`-shared across listener /
+    // demux / reaper, so retaining one more strong ref here is cheap.
     registry: Arc<UdpFlowRegistry>,
     committed: bool,
 }
@@ -63,7 +69,7 @@ impl UdpFlowRegistry {
     #[must_use]
     pub fn new(cap: usize) -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(HashMap::new()),
+            inner: DashMap::new(),
             cap,
             dropped_overflow: AtomicU64::new(0),
             occupancy: AtomicUsize::new(0),
@@ -81,26 +87,30 @@ impl UdpFlowRegistry {
 
     /// Snapshot of registry size as observed via the `occupancy` atomic.
     ///
-    /// This is the FR-014 `active_flows` data source. It reads the atomic
-    /// without acquiring `inner.lock()`, so under heavy concurrent commit /
-    /// remove / drain churn the value may briefly differ from
-    /// `inner.lock().await.len()` by ±a few entries. For the stats-pump
-    /// reporting use case this is acceptable — the gauge is sampled
-    /// periodically, not transactionally.
+    /// This is the FR-014 `active_flows` data source. The atomic is
+    /// updated alongside every insert/remove but is not transactionally
+    /// consistent with `inner.len()` — under heavy churn the two may
+    /// briefly differ. For the stats-pump reporting use case this is
+    /// acceptable.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.occupancy.load(Ordering::Relaxed)
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// O(1) fast-path: returns an existing Live flow if present.
-    pub async fn get(self: &Arc<Self>, key: FlowKey) -> Option<Arc<UdpFlow>> {
-        let guard = self.inner.lock().await;
-        match guard.get(&key) {
-            Some(Slot::Live(arc)) => Some(Arc::clone(arc)),
-            _ => None,
+    /// O(1) fast-path: returns an existing Live flow if present. Pure
+    /// sync (no scheduler dispatch); reads go through DashMap's
+    /// lockless reader path on the shard.
+    #[must_use]
+    pub fn get(self: &Arc<Self>, key: FlowKey) -> Option<Arc<UdpFlow>> {
+        let slot = self.inner.get(&key)?;
+        match slot.value() {
+            Slot::Live(arc) => Some(Arc::clone(arc)),
+            Slot::Pending => None,
         }
     }
 
@@ -110,65 +120,88 @@ impl UdpFlowRegistry {
     ///    was created.
     ///  - `TryGetOrReserve::CapExhausted` if cap is exhausted (caller MUST
     ///    silent-drop and bump `dropped_overflow`).
-    pub async fn try_get_or_reserve(self: &Arc<Self>, key: FlowKey) -> TryGetOrReserve {
-        let mut guard = self.inner.lock().await;
-        if let Some(slot) = guard.get(&key) {
-            if let Slot::Live(arc) = slot {
-                return TryGetOrReserve::Existing(Arc::clone(arc));
+    ///
+    /// Cap enforcement uses an `fetch_add` + roll-back pattern so the
+    /// rule-wide counter is never over-shot even when concurrent inserts
+    /// land on different DashMap shards.
+    pub fn try_get_or_reserve(self: &Arc<Self>, key: FlowKey) -> TryGetOrReserve {
+        // Fast path: existing Live slot.
+        if let Some(slot) = self.inner.get(&key) {
+            match slot.value() {
+                Slot::Live(arc) => return TryGetOrReserve::Existing(Arc::clone(arc)),
+                Slot::Pending => {
+                    // Another cold path is mid-flight for this key. Treat
+                    // as "no slot available" to avoid double-reserving.
+                    self.dropped_overflow.fetch_add(1, Ordering::Relaxed);
+                    return TryGetOrReserve::CapExhausted;
+                }
             }
-            // Pending: another listener for the same key is mid-cold-path.
-            // This is rare (same listener serializes; cross-listener uses
-            // a different listen_port, hence different key). Treat as
-            // "cap exhausted for this key" to avoid double-reserve.
+        }
+
+        // Reserve a cap slot first, then attempt to insert. If the cap is
+        // exceeded, roll back. If a racing inserter beat us to this key,
+        // also roll back.
+        let new_occ = self.occupancy.fetch_add(1, Ordering::Relaxed) + 1;
+        if new_occ > self.cap {
+            self.occupancy.fetch_sub(1, Ordering::Relaxed);
             self.dropped_overflow.fetch_add(1, Ordering::Relaxed);
             return TryGetOrReserve::CapExhausted;
         }
-        // Cap check: count Pending+Live.
-        if self.occupancy.load(Ordering::Relaxed) >= self.cap {
-            self.dropped_overflow.fetch_add(1, Ordering::Relaxed);
-            return TryGetOrReserve::CapExhausted;
+
+        match self.inner.entry(key) {
+            Entry::Vacant(vac) => {
+                vac.insert(Slot::Pending);
+                TryGetOrReserve::Reserved(Reservation {
+                    key,
+                    registry: Arc::clone(self),
+                    committed: false,
+                })
+            }
+            Entry::Occupied(occ) => {
+                // Lost the race: someone else inserted between our `get`
+                // and `entry`. Roll back the occupancy bump.
+                self.occupancy.fetch_sub(1, Ordering::Relaxed);
+                match occ.get() {
+                    Slot::Live(arc) => TryGetOrReserve::Existing(Arc::clone(arc)),
+                    Slot::Pending => {
+                        self.dropped_overflow.fetch_add(1, Ordering::Relaxed);
+                        TryGetOrReserve::CapExhausted
+                    }
+                }
+            }
         }
-        guard.insert(key, Slot::Pending);
-        self.occupancy.fetch_add(1, Ordering::Relaxed);
-        TryGetOrReserve::Reserved(Reservation {
-            key,
-            registry: Arc::clone(self),
-            committed: false,
-        })
     }
 
     /// Atomically convert a `Slot::Pending` to `Slot::Live`.
     /// Consumes the `Reservation` guard.
-    pub async fn commit(self: &Arc<Self>, mut reservation: Reservation, flow: Arc<UdpFlow>) {
-        let mut guard = self.inner.lock().await;
-        match guard.insert(reservation.key, Slot::Live(flow)) {
-            Some(Slot::Pending) => {
+    pub fn commit(self: &Arc<Self>, mut reservation: Reservation, flow: Arc<UdpFlow>) {
+        match self.inner.entry(reservation.key) {
+            Entry::Occupied(mut occ) => {
                 // Normal path: Pending -> Live, occupancy unchanged.
+                // (Live overwrites also keep occupancy stable.)
+                if matches!(occ.get(), Slot::Live(_)) {
+                    tracing::warn!(event = "rule.udp_registry_commit_overwrote_live");
+                }
+                occ.insert(Slot::Live(flow));
             }
-            None => {
+            Entry::Vacant(vac) => {
                 // Drained between reserve and commit; restore occupancy.
+                vac.insert(Slot::Live(flow));
                 self.occupancy.fetch_add(1, Ordering::Relaxed);
-            }
-            Some(Slot::Live(_old)) => {
-                // Should not happen: another path committed a Live slot
-                // for this key concurrently. Keep newest, count once.
-                // (occupancy unchanged — old +1 → still +1)
-                tracing::warn!(event = "rule.udp_registry_commit_overwrote_live");
             }
         }
         reservation.committed = true;
     }
 
-    /// Remove a flow by key. Returns the Arc if present and Live.
-    /// Decrements occupancy whether the slot was Pending or Live.
-    pub async fn remove(self: &Arc<Self>, key: FlowKey) -> Option<Arc<UdpFlow>> {
-        let mut guard = self.inner.lock().await;
-        match guard.remove(&key) {
-            Some(Slot::Live(arc)) => {
+    /// Remove a flow by key. Returns the `Arc<UdpFlow>` if present and
+    /// Live. Decrements occupancy whether the slot was Pending or Live.
+    pub fn remove(self: &Arc<Self>, key: FlowKey) -> Option<Arc<UdpFlow>> {
+        match self.inner.remove(&key) {
+            Some((_, Slot::Live(arc))) => {
                 self.occupancy.fetch_sub(1, Ordering::Relaxed);
                 Some(arc)
             }
-            Some(Slot::Pending) => {
+            Some((_, Slot::Pending)) => {
                 self.occupancy.fetch_sub(1, Ordering::Relaxed);
                 None
             }
@@ -178,23 +211,26 @@ impl UdpFlowRegistry {
 
     /// Drain: remove every entry and fire flow cancel tokens.
     /// Used in supervisor shutdown step (c).
-    pub async fn drain(self: &Arc<Self>) {
-        let mut guard = self.inner.lock().await;
-        for (_key, slot) in guard.drain() {
-            if let Slot::Live(arc) = slot {
-                arc.cancel.cancel();
+    pub fn drain(self: &Arc<Self>) {
+        // Collect keys first so we don't deadlock by mutating the map
+        // while iterating it.
+        let keys: Vec<FlowKey> = self.inner.iter().map(|e| *e.key()).collect();
+        for k in keys {
+            if let Some((_, slot)) = self.inner.remove(&k) {
+                if let Slot::Live(arc) = slot {
+                    arc.cancel.cancel();
+                }
+                self.occupancy.fetch_sub(1, Ordering::Relaxed);
             }
-            self.occupancy.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
     /// Snapshot live flows (Live only, skips Pending) for reaper sweep.
-    pub async fn snapshot_live(self: &Arc<Self>) -> Vec<(FlowKey, Arc<UdpFlow>)> {
-        let guard = self.inner.lock().await;
-        guard
+    pub fn snapshot_live(self: &Arc<Self>) -> Vec<(FlowKey, Arc<UdpFlow>)> {
+        self.inner
             .iter()
-            .filter_map(|(k, s)| match s {
-                Slot::Live(a) => Some((*k, Arc::clone(a))),
+            .filter_map(|entry| match entry.value() {
+                Slot::Live(a) => Some((*entry.key(), Arc::clone(a))),
                 Slot::Pending => None,
             })
             .collect()
@@ -217,23 +253,15 @@ impl Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.committed {
-            // Spawn a brief async task to remove the Pending slot. We
-            // can't await in Drop, so use tokio::spawn — the registry
-            // outlives the spawned task because callers hold the Arc.
-            let key = self.key;
-            let registry = Arc::clone(&self.registry);
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let mut guard = registry.inner.lock().await;
-                    if let Some(Slot::Pending) = guard.get(&key) {
-                        guard.remove(&key);
-                        registry.occupancy.fetch_sub(1, Ordering::Relaxed);
-                    }
-                });
-            } else {
-                // No runtime — log and accept the leaked Pending slot. Only
-                // happens during pathological shutdown ordering.
-                tracing::warn!(event = "rule.udp_registry_drop_outside_runtime");
+            // Sync remove via DashMap — no async runtime dependency.
+            // Only remove if the slot is still Pending (commit may have
+            // converted it to Live before this Drop runs in a race).
+            if let Some((_, Slot::Pending)) = self
+                .registry
+                .inner
+                .remove_if(&self.key, |_, s| matches!(s, Slot::Pending))
+            {
+                self.registry.occupancy.fetch_sub(1, Ordering::Relaxed);
             }
         }
     }
@@ -262,27 +290,27 @@ mod tests {
     async fn reserve_then_commit_makes_flow_live() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k) else {
             panic!("expected reservation")
         };
         assert_eq!(reg.len(), 1, "Pending counts toward occupancy");
         let f = flow_for(k.src).await;
-        reg.commit(reservation, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f));
         assert_eq!(reg.len(), 1);
-        let got = reg.get(k).await.expect("should be live");
+        let got = reg.get(k).expect("should be live");
         assert!(Arc::ptr_eq(&got, &f));
     }
 
     #[tokio::test]
     async fn cap_exhaustion_returns_cap_exhausted_and_bumps_counter() {
         let reg = UdpFlowRegistry::new(2);
-        let TryGetOrReserve::Reserved(r1) = reg.try_get_or_reserve(key(8000, 1, 1)).await else {
+        let TryGetOrReserve::Reserved(r1) = reg.try_get_or_reserve(key(8000, 1, 1)) else {
             panic!()
         };
-        let TryGetOrReserve::Reserved(r2) = reg.try_get_or_reserve(key(8000, 2, 1)).await else {
+        let TryGetOrReserve::Reserved(r2) = reg.try_get_or_reserve(key(8000, 2, 1)) else {
             panic!()
         };
-        let r3 = reg.try_get_or_reserve(key(8000, 3, 1)).await;
+        let r3 = reg.try_get_or_reserve(key(8000, 3, 1));
         assert!(matches!(r3, TryGetOrReserve::CapExhausted));
         assert_eq!(reg.dropped_overflow(), 1);
         drop(r1);
@@ -293,20 +321,14 @@ mod tests {
     async fn drop_uncommitted_reservation_releases_slot() {
         let reg = UdpFlowRegistry::new(1);
         {
-            let TryGetOrReserve::Reserved(r) = reg.try_get_or_reserve(key(8000, 1, 1)).await else {
+            let TryGetOrReserve::Reserved(r) = reg.try_get_or_reserve(key(8000, 1, 1)) else {
                 panic!()
             };
             assert_eq!(reg.len(), 1);
             drop(r); // RAII releases.
         }
-        // Reservation::drop spawns an async task; yield a few times.
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-            if reg.is_empty() {
-                return;
-            }
-        }
-        panic!("Reservation drop did not release slot");
+        // Sync Drop — should see effect immediately.
+        assert!(reg.is_empty(), "Reservation drop did not release slot");
     }
 
     #[tokio::test]
@@ -317,10 +339,10 @@ mod tests {
         let k = key(8000, 1, 50000);
         let reg1 = Arc::clone(&reg);
         let reg2 = Arc::clone(&reg);
-        let h1 = tokio::spawn(async move { reg1.try_get_or_reserve(k).await });
+        let h1 = tokio::spawn(async move { reg1.try_get_or_reserve(k) });
         // Wait for h1 to take the Pending slot, then race h2.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let h2 = tokio::spawn(async move { reg2.try_get_or_reserve(k).await });
+        let h2 = tokio::spawn(async move { reg2.try_get_or_reserve(k) });
         let r1 = h1.await.unwrap();
         let r2 = h2.await.unwrap();
         match (r1, r2) {
@@ -333,28 +355,27 @@ mod tests {
     async fn remove_live_returns_arc_and_decrements_len() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k) else {
             panic!()
         };
         let f = flow_for(k.src).await;
-        reg.commit(reservation, Arc::clone(&f)).await;
-        let removed = reg.remove(k).await.expect("live entry");
+        reg.commit(reservation, Arc::clone(&f));
+        let removed = reg.remove(k).expect("live entry");
         assert!(Arc::ptr_eq(&removed, &f));
         assert_eq!(reg.len(), 0);
-        assert!(reg.get(k).await.is_none());
+        assert!(reg.get(k).is_none());
     }
 
     #[tokio::test]
     async fn snapshot_live_excludes_pending() {
         let reg = UdpFlowRegistry::new(4);
-        let _res_pending = reg.try_get_or_reserve(key(8000, 1, 1)).await;
-        let TryGetOrReserve::Reserved(res_live) = reg.try_get_or_reserve(key(8001, 2, 1)).await
-        else {
+        let _res_pending = reg.try_get_or_reserve(key(8000, 1, 1));
+        let TryGetOrReserve::Reserved(res_live) = reg.try_get_or_reserve(key(8001, 2, 1)) else {
             panic!()
         };
         let f = flow_for(key(8001, 2, 1).src).await;
-        reg.commit(res_live, Arc::clone(&f)).await;
-        let snap = reg.snapshot_live().await;
+        reg.commit(res_live, Arc::clone(&f));
+        let snap = reg.snapshot_live();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].0.listen_port, 8001);
     }
@@ -363,18 +384,18 @@ mod tests {
     async fn commit_after_drain_restores_occupancy() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k) else {
             panic!("expected reservation")
         };
         // Drain while we hold the reservation; this removes the Pending
         // slot and decrements occupancy to 0.
-        reg.drain().await;
+        reg.drain();
         assert_eq!(reg.len(), 0);
         // Now commit — slot is missing, occupancy should be restored.
         let f = flow_for(k.src).await;
-        reg.commit(reservation, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f));
         assert_eq!(reg.len(), 1);
-        let live = reg.get(k).await.expect("commit should re-insert");
+        let live = reg.get(k).expect("commit should re-insert");
         assert!(Arc::ptr_eq(&live, &f));
     }
 
@@ -382,13 +403,13 @@ mod tests {
     async fn drain_empties_registry_and_cancels_flows() {
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
-        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k).await else {
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k) else {
             panic!()
         };
         let f = flow_for(k.src).await;
-        reg.commit(reservation, Arc::clone(&f)).await;
+        reg.commit(reservation, Arc::clone(&f));
         assert!(!f.cancel.is_cancelled());
-        reg.drain().await;
+        reg.drain();
         assert_eq!(reg.len(), 0);
         assert!(f.cancel.is_cancelled());
     }

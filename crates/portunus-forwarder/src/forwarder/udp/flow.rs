@@ -23,13 +23,35 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use portunus_core::{RuleId, Target};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+/// Process-wide baseline used to encode `Instant` values as `u64`
+/// nanoseconds inside an atomic. Set lazily on first use; identity does
+/// not matter because callers always go through `now_nanos` /
+/// `instant_from_nanos` which both reference the same baseline.
+fn baseline() -> Instant {
+    static BASELINE: OnceLock<Instant> = OnceLock::new();
+    *BASELINE.get_or_init(Instant::now)
+}
+
+/// Current monotonic time encoded as nanoseconds since `baseline()`.
+/// Saturates at `u64::MAX` (~584 years) to keep the encoding total.
+fn now_nanos() -> u64 {
+    let raw = Instant::now().duration_since(baseline()).as_nanos();
+    u64::try_from(raw).unwrap_or(u64::MAX)
+}
+
+/// Decode a stored nanosecond value back to `Instant`.
+fn instant_from_nanos(nanos: u64) -> Instant {
+    baseline() + Duration::from_nanos(nanos)
+}
 
 use crate::forwarder::stats::RuleStats;
 use crate::resolver::{ConnectError, LiveResolver, Resolve, ResolverError};
@@ -58,11 +80,12 @@ pub struct UdpFlow {
     /// guard at construction).
     pub current_addr_idx: AtomicUsize,
 
-    /// Last time a datagram flowed in either direction. The idle
-    /// reaper (US4) checks this against the configured `idle_window`.
-    /// `Mutex` because both the listener and the reply-pump bump it,
-    /// and `Instant` is `!Copy` for `AtomicCell` reuse.
-    pub last_seen: Mutex<Instant>,
+    /// Last time a datagram flowed in either direction, encoded as
+    /// nanoseconds since the process-wide `baseline()` so reads and
+    /// writes are wait-free atomic operations (no `tokio::sync::Mutex`,
+    /// no scheduler dispatch). The idle reaper (US4) compares this
+    /// against `idle_window` on every sweep tick.
+    pub last_seen_nanos: AtomicU64,
 
     /// Per-flow cumulative byte counters for diagnostic logs. The
     /// rule-level aggregates live on `RuleStats` and update on every
@@ -132,7 +155,7 @@ impl UdpFlow {
             upstream_socket,
             upstream_addrs,
             current_addr_idx: AtomicUsize::new(0),
-            last_seen: Mutex::new(Instant::now()),
+            last_seen_nanos: AtomicU64::new(now_nanos()),
             bytes_in: AtomicU64::new(0),
             bytes_out: AtomicU64::new(0),
             datagrams_in: AtomicU64::new(0),
@@ -167,7 +190,7 @@ impl UdpFlow {
             upstream_socket,
             upstream_addrs,
             current_addr_idx: AtomicUsize::new(0),
-            last_seen: Mutex::new(Instant::now()),
+            last_seen_nanos: AtomicU64::new(now_nanos()),
             bytes_in: AtomicU64::new(0),
             bytes_out: AtomicU64::new(0),
             datagrams_in: AtomicU64::new(0),
@@ -286,7 +309,7 @@ impl UdpFlow {
     pub async fn bump_inbound(&self, n: u64) {
         self.bytes_in.fetch_add(n, Ordering::Relaxed);
         self.datagrams_in.fetch_add(1, Ordering::Relaxed);
-        *self.last_seen.lock().await = Instant::now();
+        self.last_seen_nanos.store(now_nanos(), Ordering::Relaxed);
         self.credit_target_in(n).await;
     }
 
@@ -297,7 +320,7 @@ impl UdpFlow {
     pub async fn bump_outbound(&self, n: u64) {
         self.bytes_out.fetch_add(n, Ordering::Relaxed);
         self.datagrams_out.fetch_add(1, Ordering::Relaxed);
-        *self.last_seen.lock().await = Instant::now();
+        self.last_seen_nanos.store(now_nanos(), Ordering::Relaxed);
         self.credit_target_out(n).await;
     }
 
@@ -317,10 +340,12 @@ impl UdpFlow {
         }
     }
 
-    /// Synchronous read of the last activity timestamp — held under
-    /// the mutex briefly. The reaper (US4) calls this during its sweep.
-    pub async fn last_seen_at(&self) -> Instant {
-        *self.last_seen.lock().await
+    /// Read the last activity timestamp. Wait-free atomic load — the
+    /// reaper (US4) calls this on every sweep tick across every live
+    /// flow, so we want zero scheduler involvement.
+    #[must_use]
+    pub fn last_seen_at(&self) -> Instant {
+        instant_from_nanos(self.last_seen_nanos.load(Ordering::Relaxed))
     }
 
     /// 014-udp-centralized-demux: lightweight constructor for unit
@@ -343,8 +368,17 @@ impl UdpFlow {
     /// `last_seen` to a specific instant so reaper-style unit tests
     /// can drive idle eviction deterministically.
     #[cfg(test)]
-    pub async fn force_last_seen(&self, t: Instant) {
-        *self.last_seen.lock().await = t;
+    pub fn force_last_seen(&self, t: Instant) {
+        let baseline = baseline();
+        let nanos = if t >= baseline {
+            let raw = t.duration_since(baseline).as_nanos();
+            u64::try_from(raw).unwrap_or(u64::MAX)
+        } else {
+            // Caller asked for a moment before our baseline — store 0 so
+            // any `idle_window` check fires immediately.
+            0
+        };
+        self.last_seen_nanos.store(nanos, Ordering::Relaxed);
     }
 
     /// 014-udp-centralized-demux: lightweight constructor for demux
@@ -624,13 +658,13 @@ mod tests {
             sock,
             vec!["127.0.0.1:9999".parse().unwrap()],
         );
-        let before = flow.last_seen_at().await;
+        let before = flow.last_seen_at();
         // Crank time forward enough that monotonic Instant detects motion
         // even on coarse-resolution clocks.
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         flow.bump_inbound(128).await;
         assert_eq!(flow.bytes_in.load(Ordering::Relaxed), 128);
         assert_eq!(flow.datagrams_in.load(Ordering::Relaxed), 1);
-        assert!(flow.last_seen_at().await > before);
+        assert!(flow.last_seen_at() > before);
     }
 }
