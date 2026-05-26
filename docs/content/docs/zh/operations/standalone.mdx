@@ -267,27 +267,75 @@ nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log
 `portunus-server`。请使用日志聚合工具（如 `journald`、sidecar 日志采集器）
 收集 JSON 日志。
 
-## 完整配置示例
+## 配置示例
+
+### 最简
+
+二进制能接受的最小配置：一条 rule，省略 `[global]` 与 `[defaults]`
+（所有可选字段使用默认值）。
 
 ```toml
-[global]
-log_level = "debug"
-
-[defaults]
-udp_max_flows = 4096
-
+# /etc/portunus/standalone.toml
 [[rule]]
-name        = "ssh-tunnel"
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+校验并启动：
+
+```bash
+portunus-standalone --check --config /etc/portunus/standalone.toml
+systemctl restart portunus-standalone
+```
+
+### 完整
+
+涵盖 schema 中的全部字段，并按常见场景各给一条 rule（单端口 TCP、
+TCP 端口段、多目标故障转移 + PROXY 协议、域名 target、单端口 UDP、
+UDP 端口段）。按需复制裁剪。
+
+```toml
+# /etc/portunus/standalone.toml
+#
+# 修改后先校验再重启：
+#   portunus-standalone --check --config /etc/portunus/standalone.toml
+#   systemctl restart portunus-standalone
+# （不支持 SIGHUP / `systemctl reload`，见「运维注意事项」。）
+
+# ─────────── 全局（全部可选） ───────────
+[global]
+label               = "edge-1"     # 仅用于日志标识
+log_level           = "info"       # EnvFilter；如 "portunus=debug,info"
+log_format          = "json"       # "json"（默认）或 "pretty"
+shutdown_drain_secs = 30           # 收到 SIGTERM 后的优雅退出时长
+
+# ─────────── 默认值（rule 未设置时继承） ───────────
+[defaults]
+protocol           = "tcp"         # rule 未指定协议时使用的默认值
+udp_max_flows      = 1024          # 每条 rule 的 UDP flow 上限
+udp_flow_idle_secs = 60            # UDP flow 空闲多久回收（秒）
+prefer_ipv6        = false         # DNS 解析时的地址族偏好
+
+# ─────────── 规则 ───────────
+
+# 1) 单端口 TCP
+[[rule]]
+name        = "ssh-jump"
 protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
 
+# 2) TCP 端口段（listen 与 target 的段宽度必须一致）
 [[rule]]
 name         = "web-range"
 protocol     = "tcp"
 listen_ports = "8000-8009"
 target       = "10.0.0.10:8000-8009"
 
+# 3) 多目标故障转移 + PROXY 协议 v2
+#    priority 数字小的优先；相同优先级轮询。
 [[rule]]
 name        = "ha-https"
 protocol    = "tcp"
@@ -297,12 +345,29 @@ targets = [
   { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
 ]
 
+# 4) 域名 target（每次 connect 时解析；prefer_ipv6 覆盖 defaults）
 [[rule]]
-name             = "game-udp"
-protocol         = "udp"
-listen_port      = 27015
-target           = "10.0.0.20:27015"
+name        = "api"
+protocol    = "tcp"
+listen_port = 9000
+target      = "api.internal.example.com:443"
+prefer_ipv6 = false
+
+# 5) 单端口 UDP，提高 flow 上限和空闲超时
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_max_flows      = 4096
 udp_flow_idle_secs = 120
+
+# 6) UDP 端口段
+[[rule]]
+name         = "voice-udp"
+protocol     = "udp"
+listen_ports = "30000-30019"
+target       = "10.0.0.30:30000-30019"
 ```
 
 ## 运维注意事项
