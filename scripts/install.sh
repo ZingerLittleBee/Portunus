@@ -951,6 +951,13 @@ menu_service() {
 }
 
 menu_config() {
+  local _mf _r
+  _mf="$(current_meta_file 2>/dev/null || true)"
+  _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || true)"
+  if [ "${_r:-$ROLE}" = "standalone" ]; then
+    echo "$(t config_na_standalone)" >&2
+    return 2
+  fi
   local a k v
   a="$(ask ask_config_key)"
   case "$a" in
@@ -1120,8 +1127,13 @@ lifecycle_uninstall() {
 }
 
 lifecycle_config() {
-  validate_config_key
   local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local _r; _r="$(meta_read "$mf" role 2>/dev/null || true)"
+  if [ "${_r:-$ROLE}" = "standalone" ]; then
+    echo "$(t config_na_standalone)" >&2
+    return 2
+  fi
+  validate_config_key
   local d; d="$(meta_read "$mf" deploy || echo binary)"
   local target_file
   if [ "$d" = docker ]; then target_file="$(dirname "$mf")/.env"; else target_file="/etc/systemd/system/portunus-server.service.d/10-portunus.conf"; fi
