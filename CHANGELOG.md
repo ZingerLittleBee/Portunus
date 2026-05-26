@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation & deployment
+
+- **`crates/portunus-standalone/contrib/`** — production templates:
+  hardened systemd unit (`AmbientCapabilities=CAP_NET_BIND_SERVICE`,
+  `ProtectSystem=strict`, `LimitNOFILE=65535`), multi-stage Dockerfile
+  with distroless runtime, host-networking `docker-compose.yml`,
+  single-replica `hostNetwork` Kubernetes manifest, and a runnable
+  `portunus.example.toml`.
+- **`scripts/install.sh`** — accepts `standalone` as a third role
+  alongside `client` and `server`. Installs the binary, creates the
+  `portunus` system user, seeds `/etc/portunus/standalone.toml` from
+  `contrib/portunus.example.toml`, and installs the hardened unit file.
+  `config get/set` is not applicable for standalone and exits 2 with
+  a descriptive message.
+- **`.github/workflows/release.yml`** — Linux and macOS release
+  tarballs now include the `portunus-standalone` binary alongside
+  `portunus-server` and `portunus-client`. No GHCR image is published
+  for standalone yet.
+- **`docs/content/docs/operations/standalone.mdx`** (and `zh/`) — new
+  "Production deployment" section covering installer, Docker, K8s,
+  and the hardened systemd unit, all linking into `contrib/`.
+
 ## Unreleased — UDP runtime correction (014)
 
 ### Behavior corrections
