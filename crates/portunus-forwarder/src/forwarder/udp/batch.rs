@@ -127,8 +127,12 @@ pub(crate) fn recv_batch(socket: &UdpSocket, bufs: &mut BatchBufs) -> io::Result
             };
             hdrs[i].msg_hdr.msg_name =
                 std::ptr::from_mut::<libc::sockaddr_storage>(&mut addrs[i]).cast();
+            // sockaddr_storage is 128 B on every supported target;
+            // `try_from` keeps clippy::cast_possible_truncation quiet
+            // without losing the invariant.
             hdrs[i].msg_hdr.msg_namelen =
-                std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_storage>())
+                    .unwrap_or(libc::socklen_t::MAX);
             hdrs[i].msg_hdr.msg_iov = std::ptr::from_mut::<libc::iovec>(&mut iovs[i]);
             hdrs[i].msg_hdr.msg_iovlen = 1;
         }
@@ -136,11 +140,14 @@ pub(crate) fn recv_batch(socket: &UdpSocket, bufs: &mut BatchBufs) -> io::Result
         // MSG_DONTWAIT: the socket is already non-blocking, but
         // setting this defensively makes recvmmsg semantics identical
         // even if the underlying fd's O_NONBLOCK ever drifts.
+        // `BATCH_SIZE` is 32, fits in c_uint trivially; try_from
+        // keeps clippy::cast_possible_truncation quiet.
+        let batch_count = libc::c_uint::try_from(BATCH_SIZE).unwrap_or(libc::c_uint::MAX);
         let rc = unsafe {
             libc::recvmmsg(
                 fd,
                 hdrs.as_mut_ptr(),
-                BATCH_SIZE as libc::c_uint,
+                batch_count,
                 libc::MSG_DONTWAIT,
                 std::ptr::null_mut(),
             )
@@ -148,9 +155,12 @@ pub(crate) fn recv_batch(socket: &UdpSocket, bufs: &mut BatchBufs) -> io::Result
         if rc < 0 {
             return Err(io::Error::last_os_error());
         }
-        let n = rc as usize;
+        // rc ≥ 0 checked above; on 64-bit usize is wider than c_int.
+        let n = usize::try_from(rc).unwrap_or(0);
         for i in 0..n {
-            bufs.lens[i] = hdrs[i].msg_len as usize;
+            // msg_len ≤ iov_len (which is itself usize); no truncation
+            // possible on any supported target.
+            bufs.lens[i] = usize::try_from(hdrs[i].msg_len).unwrap_or(0);
             bufs.addrs[i] = sockaddr_to_socketaddr(&addrs[i], hdrs[i].msg_hdr.msg_namelen);
         }
         Ok(n)
@@ -194,18 +204,14 @@ pub(crate) fn send_batch_connected(socket: &UdpSocket, payloads: &[&[u8]]) -> io
             hdrs[i].msg_hdr.msg_iovlen = 1;
         }
 
-        let rc = unsafe {
-            libc::sendmmsg(
-                fd,
-                hdrs.as_mut_ptr(),
-                len as libc::c_uint,
-                libc::MSG_DONTWAIT,
-            )
-        };
+        // `len ≤ BATCH_SIZE` (32) by the `.min()` above; fits in c_uint.
+        let send_count = libc::c_uint::try_from(len).unwrap_or(libc::c_uint::MAX);
+        let rc = unsafe { libc::sendmmsg(fd, hdrs.as_mut_ptr(), send_count, libc::MSG_DONTWAIT) };
         if rc < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(rc as usize)
+        // rc ≥ 0 checked above; usize ≥ c_int on every supported target.
+        Ok(usize::try_from(rc).unwrap_or(0))
     })
 }
 
