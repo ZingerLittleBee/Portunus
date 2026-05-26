@@ -633,7 +633,7 @@ main() {
   [ -n "$VERB" ] || VERB="install"
   detect_platform
   resolve_version_static
-  [ -n "$DOMAIN" ] && [ "$ROLE" != server ] && die "--domain is server-only"
+  [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
   apply_advertised_default
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
