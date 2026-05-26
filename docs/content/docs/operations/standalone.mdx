@@ -198,22 +198,69 @@ udp_flow_idle_secs = 120
 | TCP splice fast path (Linux) | Yes | Yes (same forwarder code) |
 | PROXY protocol out | Yes | Yes |
 
-## systemd unit example
+## Production deployment
 
-```ini
-[Unit]
-Description=Portunus standalone forwarder
-After=network.target
+Reference templates for all four deployment styles live in
+[`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib).
 
-[Service]
-ExecStart=/usr/local/bin/portunus-standalone --config /etc/portunus/standalone.toml
-Restart=on-failure
-StandardOutput=journal
-StandardError=journal
-User=portunus
-ProtectSystem=strict
-ReadWritePaths=/etc/portunus
+### Installer (binary + systemd) — recommended
 
-[Install]
-WantedBy=multi-user.target
+The lifecycle installer (`scripts/install.sh`) treats `standalone` as a
+first-class role alongside `client` and `server`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
 ```
+
+The installer downloads the release tarball, installs the binary to
+`/usr/local/bin/portunus-standalone`, creates the `portunus` system
+user/group, writes a hardened unit file to
+`/etc/systemd/system/portunus-standalone.service` (sourced from
+[`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)),
+and leaves a starter config at `/etc/portunus/standalone.toml`. Edit
+that file, then `systemctl start portunus-standalone`.
+
+To uninstall: `bash install.sh uninstall standalone` (purges the unit
+and binary; pass `--purge` to also delete `/etc/portunus`).
+
+### Docker / docker-compose
+
+The reference [`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
+is a two-stage build that produces a distroless runtime image.
+[`docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)
+defaults to host networking so port ranges work without per-port
+mapping:
+
+```sh
+cd crates/portunus-standalone/contrib
+docker compose up -d
+docker compose logs -f
+```
+
+No GHCR image is published yet — build locally or push to your own
+registry.
+
+### Kubernetes
+
+The manifests in
+[`contrib/k8s/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib/k8s)
+run a single-replica `Deployment` with `hostNetwork: true` (required
+for arbitrary-port forwarding):
+
+```sh
+kubectl apply -f crates/portunus-standalone/contrib/k8s/configmap.yaml
+kubectl apply -f crates/portunus-standalone/contrib/k8s/deployment.yaml
+```
+
+See [`contrib/k8s/README.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/k8s/README.md)
+for the Deployment-vs-DaemonSet decision and PodSecurityPolicy caveats.
+
+### Hardened systemd unit
+
+The unit file shipped in
+[`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)
+sets `LimitNOFILE=65535`, runs as `User=portunus`, adds
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` for binding privileged
+ports, and applies `ProtectSystem=strict` / `PrivateTmp=true` /
+`NoNewPrivileges=true`. The binary does not implement SIGHUP reload —
+edit the TOML, then `systemctl restart portunus-standalone`.
