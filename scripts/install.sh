@@ -28,7 +28,7 @@ LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
-ROLE=""           # client|server
+ROLE=""           # client|server|standalone
 DEPLOY=""         # binary|docker
 VERSION=""        # user-supplied version (may have leading v)
 BIN_DIR="$DEFAULT_BIN_DIR"
@@ -87,9 +87,10 @@ MSG_EN=(
   [menu_exit]="  [0] Exit"
   [menu_select]="Select [0-7]: "
   [lang_prompt]="Select language\n  [1] English\n  [2] 中文"
-  [ask_role]="Install which role?\n  [1] server\n  [2] client"
+  [ask_role]="Install which role?\n  [1] server\n  [2] client\n  [3] standalone"
   [ask_deploy_server]="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + systemd"
   [ask_deploy_client]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
+  [ask_deploy_standalone]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
   [ask_version]="Version (blank = latest): "
   [ask_bindir]="Install dir [%s]: "
   [ask_datadir]="Server data dir (blank = default): "
@@ -97,7 +98,7 @@ MSG_EN=(
   [confirm_proceed]="Proceed? [Y/n]: "
   [confirm_uninstall]="Uninstall portunus-%s (%s)? [y/N]: "
   [confirm_purge_typed]="Type 'purge' to also delete data at %s: "
-  [need_role]="role required: client or server"
+  [need_role]="role required: client, server, or standalone"
   [no_install_found]="No Portunus install detected (no .install-meta and no probe match)."
   [done_next]="Done. Next steps:"
   [next_systemd]="  start:   sudo systemctl enable --now portunus-%s"
@@ -144,6 +145,7 @@ MSG_EN=(
   [https_ready]="HTTPS ready: https://%s/"
   [https_public_note]="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token."
   [adv_from_domain]="  advertised endpoint:  %s  (from domain)"
+  [config_na_standalone]="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly"
 )
 MSG_ZH=(
   [menu_title]="Portunus 管理器"
@@ -157,9 +159,10 @@ MSG_ZH=(
   [menu_exit]="  [0] 退出    Exit"
   [menu_select]="请选择 [0-7]: "
   [lang_prompt]="请选择语言\n  [1] English\n  [2] 中文"
-  [ask_role]="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）"
+  [ask_role]="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）"
   [ask_deploy_server]="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + systemd"
   [ask_deploy_client]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
+  [ask_deploy_standalone]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
   [ask_version]="版本号（留空则使用最新版）: "
   [ask_bindir]="程序安装目录 [%s]: "
   [ask_datadir]="服务端数据目录（留空则使用默认值）: "
@@ -167,7 +170,7 @@ MSG_ZH=(
   [confirm_proceed]="确认继续吗？[Y/n]: "
   [confirm_uninstall]="确定要卸载 portunus-%s（%s）吗？[y/N]: "
   [confirm_purge_typed]="如需连同数据一并删除 %s，请输入 'purge' 确认: "
-  [need_role]="请指定角色：client 或 server"
+  [need_role]="请指定角色：client、server 或 standalone"
   [no_install_found]="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。"
   [done_next]="安装完成，后续步骤："
   [next_systemd]="  启动服务：sudo systemctl enable --now portunus-%s"
@@ -214,6 +217,7 @@ MSG_ZH=(
   [https_ready]="HTTPS 已就绪：https://%s/"
   [https_public_note]="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。"
   [adv_from_domain]="  对外通告地址：%s（由域名推导）"
+  [config_na_standalone]="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml"
 )
 
 resolve_lang() {
@@ -383,6 +387,29 @@ install_binary() {
   maybe_sudo "$BIN_DIR"
   echo "→ installing portunus-${ROLE} to ${BIN_DIR}"
   ${SUDO:-} install -m 0755 "$src" "${BIN_DIR}/portunus-${ROLE}"
+
+  if [ "$ROLE" = "standalone" ]; then
+    # Create the system user (idempotent) and seed the config dir.
+    if ! id -u portunus >/dev/null 2>&1; then
+      ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus \
+        || die "failed to create portunus user"
+    fi
+    ${SUDO:-} mkdir -p /etc/portunus
+    if [ ! -f /etc/portunus/standalone.toml ]; then
+      local self_dir2=""
+      if [ -n "${SELF_SCRIPT:-}" ]; then
+        self_dir2="$(dirname "$SELF_SCRIPT")"
+      fi
+      if [ -n "$self_dir2" ] && [ -r "$self_dir2/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
+        ${SUDO:-} cp "$self_dir2/../crates/portunus-standalone/contrib/portunus.example.toml" /etc/portunus/standalone.toml
+      else
+        ${SUDO:-} curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o /etc/portunus/standalone.toml \
+          || die "failed to fetch starter standalone.toml"
+      fi
+      ${SUDO:-} chown root:portunus /etc/portunus/standalone.toml
+      ${SUDO:-} chmod 0640 /etc/portunus/standalone.toml
+    fi
+  fi
 }
 
 # ─── Systemd ──────────────────────────────────────────────────────────
@@ -391,10 +418,30 @@ install_systemd_unit() {
     echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
   local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
-  curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
+  if [ "$ROLE" = "standalone" ]; then
+    # Use the hardened contrib unit verbatim; user edits live in
+    # /etc/portunus/standalone.toml, not in the unit file.
+    local self_dir=""
+    if [ -n "${SELF_SCRIPT:-}" ]; then
+      self_dir="$(dirname "$SELF_SCRIPT")"
+    fi
+    if [ -n "$self_dir" ] && [ -r "$self_dir/../crates/portunus-standalone/contrib/portunus-standalone.service" ]; then
+      cp "$self_dir/../crates/portunus-standalone/contrib/portunus-standalone.service" "$tmp/$unit"
+    else
+      # Network-resolved (curl|bash) invocation: fetch the unit from the repo.
+      curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus-standalone.service" -o "$tmp/$unit" \
+        || die "failed to fetch portunus-standalone.service"
+    fi
+  else
+    curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
+  fi
   if [ "$ROLE" = "client" ]; then
     id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
     sudo install -d -o root -g portunus-client -m 0750 /etc/portunus
+  elif [ "$ROLE" = "standalone" ]; then
+    # User and /etc/portunus already handled in install_binary(); only
+    # the systemd unit file remains here.
+    :
   else
     id portunus-server >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
     sudo install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
@@ -456,6 +503,29 @@ write_compose_env() {
 write_compose_file() {
   local dir="$1" f="$1/compose.yml" port; port="$(op_http_port)"
   mkdir -p "$dir"
+  if [ "$ROLE" = "standalone" ]; then
+    # No GHCR image is published for standalone — copy the reference
+    # compose file from contrib/ and the user builds locally.
+    local self_dir3=""
+    if [ -n "${SELF_SCRIPT:-}" ]; then
+      self_dir3="$(dirname "$SELF_SCRIPT")"
+    fi
+    if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/docker-compose.yml" ]; then
+      cp "$self_dir3/../crates/portunus-standalone/contrib/docker-compose.yml" "$dir/docker-compose.yml"
+    else
+      curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/docker-compose.yml" -o "$dir/docker-compose.yml" \
+        || die "failed to fetch contrib/docker-compose.yml"
+    fi
+    if [ ! -f "$dir/portunus.toml" ]; then
+      if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
+        cp "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" "$dir/portunus.toml"
+      else
+        curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o "$dir/portunus.toml" \
+          || die "failed to fetch contrib/portunus.example.toml"
+      fi
+    fi
+    return 0
+  fi
   [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
   # The server's --operator-http-listen has no env binding and defaults
   # to container-internal 127.0.0.1, which Docker's published port (and
@@ -502,7 +572,7 @@ install_docker() {
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      client|server) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
+      client|server|standalone) ROLE="$1"; [ -z "$VERB" ] && VERB="install" ;;
       install|uninstall|upgrade|status|service|config|env|domain) VERB="$1" ;;
       start|stop|restart) SERVICE_ACTION="$1" ;;
       get|set) CONFIG_OP="$1" ;;
@@ -563,7 +633,7 @@ main() {
   [ -n "$VERB" ] || VERB="install"
   detect_platform
   resolve_version_static
-  [ -n "$DOMAIN" ] && [ "$ROLE" = client ] && die "--domain is server-only"
+  [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
   apply_advertised_default
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
@@ -813,12 +883,15 @@ apply_advertised_default() {
 
 wizard_install() {
   local a adv_prov=""
-  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; *) ROLE=server ;; esac
+  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; 3) ROLE=standalone ;; *) ROLE=server ;; esac
   # Recommended deploy form differs by role: server ⇒ docker compose,
   # client ⇒ binary. Enter (empty) accepts the recommended one.
   if [ "$ROLE" = server ]; then
     a="$(ask ask_deploy_server)"
     case "$a" in 2|binary) DEPLOY=binary; WANT_SYSTEMD=yes ;; *) DEPLOY=docker ;; esac
+  elif [ "$ROLE" = standalone ]; then
+    a="$(ask ask_deploy_standalone)"
+    case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
   else
     a="$(ask ask_deploy_client)"
     case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
@@ -878,6 +951,13 @@ menu_service() {
 }
 
 menu_config() {
+  local _mf _r
+  _mf="$(current_meta_file 2>/dev/null || true)"
+  _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || true)"
+  if [ "${_r:-$ROLE}" = "standalone" ]; then
+    echo "$(t config_na_standalone)" >&2
+    return 2
+  fi
   local a k v
   a="$(ask ask_config_key)"
   case "$a" in
@@ -1047,8 +1127,13 @@ lifecycle_uninstall() {
 }
 
 lifecycle_config() {
-  validate_config_key
   local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local _r; _r="$(meta_read "$mf" role 2>/dev/null || true)"
+  if [ "${_r:-$ROLE}" = "standalone" ]; then
+    echo "$(t config_na_standalone)" >&2
+    return 2
+  fi
+  validate_config_key
   local d; d="$(meta_read "$mf" deploy || echo binary)"
   local target_file
   if [ "$d" = docker ]; then target_file="$(dirname "$mf")/.env"; else target_file="/etc/systemd/system/portunus-server.service.d/10-portunus.conf"; fi

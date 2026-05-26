@@ -8,7 +8,7 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ZingerLittleBee/Portunus"
 authors = ["Portunus contributors"]
-version = "1.4.3"
+version = "1.5.0"
 
 [workspace.lints.rust]
 # `deny` (not `forbid`) so that `crates/portunus-client/src/forwarder/splice.rs`
@@ -119,6 +119,10 @@ num_cpus = "1"
 # refuse NFS / tmpfs / ramfs at startup. Linux + macOS coverage. See
 # specs/008-sqlite-storage/research.md R-008.
 nix = { version = "0.29", default-features = false, features = ["fs", "net", "socket"] }
+
+# Sharded concurrent hash map for UDP flow registry hot path. Replaces
+# tokio::sync::Mutex<HashMap> to drop the per-packet scheduler dispatch.
+dashmap = "6"
 
 # Forward workspace crates
 portunus-proto = { path = "crates/portunus-proto" }

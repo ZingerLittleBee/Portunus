@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## Unreleased — UDP runtime correction (014)
+## [1.5.0] — 2026-05-27
 
-### Behavior corrections
+### Behavior corrections (UDP runtime, spec 014)
 
 - **UDP rule flow cap is now true per-rule (was per-port-listener).**
   Previously, `udp_max_flows_per_rule` was applied independently to
@@ -40,26 +40,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- Per-rule UDP receive-buffer memory dropped from `O(flows) × 64 KiB`
-  to `O(1) × 64 KiB`. A 1000-flow workload now uses ~64 KiB of
+- **Batched UDP I/O on Linux (`recvmmsg(2)` / `sendmmsg(2)`).** The
+  per-rule UDP listener loop now reads up to 32 datagrams per syscall
+  and run-length groups consecutive same-flow packets for a single
+  `sendmmsg` flush. On a 1 Gbps single-flow iperf3 UDP workload this
+  reduces syscalls from 107 k to 8.6 k over a 5 s window (≈ 0.6× of
+  realm v2.9.4's `batched-udp` build) and erases the +11 pp UDP CPU
+  gap measured against realm on the 2026-05-26 VPS benchmark. Cold-
+  path (new flow / cancelled / quota-exhausted) packets still go
+  through the FR-004 single-packet admission sequence. Non-Linux
+  platforms (macOS, FreeBSD) automatically fall back to the v0.4
+  single-packet path; no operator surface change. See
+  `docs/superpowers/notes/2026-05-26-portunus-vs-realm-benchmark.md`
+  for full before/after data and reproducible methodology.
+- **Per-rule UDP receive-buffer memory dropped from `O(flows) × 64
+  KiB` to `O(1) × 64 KiB`.** A 1000-flow workload now uses ~64 KiB of
   receive buffer instead of ~64 MiB (factor scales with flow count).
+- **UDP flow registry switched to `DashMap` (sharded lockless
+  concurrent hash map).** Removes two per-packet `tokio::sync::Mutex`
+  awaits from the fast path (registry lookup + `last_seen` update).
+  `UdpFlow::last_seen` is now an `AtomicU64` of nanoseconds since a
+  process-wide baseline.
+- **TCP `splice(2)` zero-copy path: `try_io`-first + thread-local
+  pipe pool.** The shared-data-plane `copy_bidirectional` helper now
+  attempts the syscall before parking on socket readiness and
+  amortizes the 6 setup syscalls per connection across a 16-deep
+  per-worker `PipePair` pool. Net effect on long-lived streams is
+  within noise on loopback but benefits short-connection workloads.
+
+### Added
+
+- `QuotaHandle::restore(n)` and `UdpFlow::{quota_try_consume,
+  quota_restore}` — eager-debit + refund seam used by the batched
+  UDP listener so per-flow quota accounting stays byte-exact across
+  `sendmmsg` partial success.
+- `scripts/install.sh` accepts `standalone` as a third role
+  alongside `client` and `server`. Installs the binary, creates the
+  `portunus` system user, seeds `/etc/portunus/standalone.toml` from
+  `contrib/portunus.example.toml`, and installs the hardened unit
+  file. `config get/set` is not applicable for standalone and exits
+  2 with a descriptive message.
+- `.github/workflows/release.yml` — Linux and macOS release tarballs
+  now include the `portunus-standalone` binary alongside
+  `portunus-server` and `portunus-client`. Multi-arch
+  (`linux/amd64`, `linux/arm64`) GHCR image
+  `ghcr.io/zingerlittlebee/portunus-standalone:{version,latest}` is
+  also published on every release via
+  `deploy/docker/Dockerfile.standalone` (distroless `nonroot`
+  runtime; rules read from `/etc/portunus/standalone.toml`).
 
 ### Fixed
 
-- UDP cold path first-packet send no longer silently drops the very
-  first datagram of a flow. Previously the cold path issued
+- **UDP cold-path first-packet send no longer silently drops the
+  very first datagram of a flow.** Previously the cold path issued
   `try_send` immediately after `bind` + `connect` on a Tokio
   `UdpSocket`; the reactor had not yet observed writability and
-  returned a spurious `WouldBlock`, so the first datagram was
-  logged-and-dropped while the flow itself was committed. UDP
-  applications that send a single request per flow (DNS, some QUIC
-  paths) saw 100 % first-datagram loss per new flow on Linux loopback
-  under this shape. The cold path now uses `send().await` for the
-  first packet,
-  which parks once on the writability future and then commits the
-  datagram. Subsequent fast-path packets continue to use
-  `try_send` with drop-on-WouldBlock semantics. This also resolves
-  the pre-014 "macOS-only `udp_smoke` e2e flake".
+  returned a spurious `WouldBlock`. UDP applications that send a
+  single request per flow (DNS, some QUIC paths) saw 100 % first-
+  datagram loss per new flow on Linux loopback. The cold path now
+  uses `send().await` for the first packet; subsequent fast-path
+  packets continue to use `try_send` with drop-on-WouldBlock
+  semantics. This also resolves the pre-014 "macOS-only `udp_smoke`
+  e2e flake".
+- **Batched UDP listener: ICMP-class errors on the tail of a
+  `sendmmsg` batch now classify and evict the flow immediately.**
+  Previously eviction was delayed by one batch (≈ 50 ms – 1 s)
+  because `sendmmsg` drops the unsent tail with no errno on partial
+  success. `flush_run` now probes the first unsent packet via
+  `try_send` to recover the errno and classifies against the
+  fast-path error map, restoring v0.4 single-packet semantics. Adds
+  at most 1 syscall per partial-send event (rare in practice).
 
 ### Removed
 
@@ -78,6 +128,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `rule.udp_flow_evicted_icmp`, `rule.udp_reply_wouldblock`,
 `rule.udp_emsgsize`, `rule.udp_runtime_started`,
 `rule.udp_shutdown_unexpected_exit`. No new Prometheus metrics.
+
+### Documentation & deployment
+
+- **`crates/portunus-standalone/contrib/`** — production templates:
+  hardened systemd unit (`AmbientCapabilities=CAP_NET_BIND_SERVICE`,
+  `ProtectSystem=strict`, `LimitNOFILE=65535`), multi-stage
+  Dockerfile with distroless runtime, host-networking
+  `docker-compose.yml`, single-replica `hostNetwork` Kubernetes
+  manifest, and a runnable `portunus.example.toml`.
+- **`docs/content/docs/operations/standalone.mdx`** (and `zh/`) —
+  new "Production deployment" section covering installer, Docker,
+  K8s, and the hardened systemd unit, all linking into `contrib/`.
+- **`docs/superpowers/notes/2026-05-26-portunus-vs-realm-benchmark.md`**
+  — full portunus-standalone vs realm v2.9.4 benchmark report with
+  the optimization journey (baseline → DashMap → sendmmsg → quota
+  fix) and reproducible methodology (cross-compile, VPS bench
+  scripts, strace patterns, common pitfalls).
 
 ## [1.4.3] — 2026-05-18
 

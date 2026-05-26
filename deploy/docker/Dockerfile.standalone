@@ -1,0 +1,31 @@
+# portunus-standalone runtime image.
+# Build context must provide prebuilt Linux binaries at:
+#   docker-bin/amd64/portunus-standalone
+#   docker-bin/arm64/portunus-standalone
+#
+# Standalone is the TOML-driven, control-plane-free forwarder. It
+# reads forwarding rules from /etc/portunus/standalone.toml (mounted
+# read-only by the operator) and exposes only data-plane ports — no
+# gRPC, no operator HTTP, no SQLite.
+
+ARG TARGETARCH
+
+FROM debian:12-slim AS abi-check
+ARG TARGETARCH
+COPY docker-bin/${TARGETARCH}/portunus-standalone /usr/local/bin/portunus-standalone
+RUN /usr/local/bin/portunus-standalone --version
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+ARG TARGETARCH
+COPY --from=abi-check /usr/local/bin/portunus-standalone /usr/local/bin/portunus-standalone
+
+# Forwarding rules in /etc/portunus/standalone.toml may bind any port
+# the kernel allows. Host networking (or explicit `-p` per rule) is
+# required for traffic to reach the listener from outside the
+# container — see crates/portunus-standalone/contrib/docker-compose.yml
+# for a working host-networking example.
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/portunus-standalone"]
+CMD ["--config", "/etc/portunus/standalone.toml"]

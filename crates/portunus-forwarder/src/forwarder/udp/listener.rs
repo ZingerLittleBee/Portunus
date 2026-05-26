@@ -38,6 +38,7 @@ use crate::forwarder::rate_limit::scope::{
 };
 use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
+use crate::forwarder::udp::batch::{BatchBufs, recv_batch, send_batch_connected};
 use crate::forwarder::udp::demux::DemuxCommand;
 use crate::forwarder::udp::error::{UdpAction, classify_udp_error};
 use crate::forwarder::udp::flow::UdpFlow;
@@ -80,27 +81,82 @@ pub struct ListenerConfig<R: Resolve + 'static> {
 /// runtime supervises the task; this function never spawns its own.
 /// `listener_socket` is pre-bound by the runtime and shared with the
 /// demux via the runtime's `listener_sockets` map.
+///
+/// On Linux this loop uses batched `recvmmsg(2)` / `sendmmsg(2)`
+/// syscalls (see `batch.rs`) to amortize per-packet syscall cost.
+/// Run-length grouping by flow means a chatty single-flow workload
+/// (e.g. iperf3 UDP) collapses 1 batch of N packets into 1 recvmmsg +
+/// 1 sendmmsg. Mixed-flow batches flush per-flow runs as they appear;
+/// cold-path (new-flow) packets fall back to the single-packet
+/// `handle_datagram` path so the FR-004 admission order stays
+/// authoritative.
+///
+/// On non-Linux platforms the batched helpers return `WouldBlock` and
+/// the loop falls through to the original `recv_from` single-packet
+/// path, unchanged from v0.4.
 pub async fn run_listener<R: Resolve + 'static>(
     cfg: ListenerConfig<R>,
     listener_socket: Arc<UdpSocket>,
 ) {
-    let mut buf = vec![0u8; UDP_BUFFER_BYTES];
+    let mut bufs = BatchBufs::new();
+    let mut fallback_buf = vec![0u8; UDP_BUFFER_BYTES];
     loop {
         tokio::select! {
             () = cfg.cancel.cancelled() => {
                 break;
             }
-            recv = listener_socket.recv_from(&mut buf) => match recv {
-                Ok((n, src)) => {
-                    handle_datagram(&cfg, &listener_socket, &buf[..n], src).await;
-                }
-                Err(e) => {
+            ready = listener_socket.readable() => {
+                if let Err(e) = ready {
                     warn!(
                         event = "rule.udp_listener_recv_failed",
                         rule_id = %cfg.rule_id,
                         listen_port = cfg.listen_port,
                         error = %e,
                     );
+                    continue;
+                }
+                // Try the batched path first. On Linux this calls
+                // recvmmsg; on other platforms (or on any error) we
+                // fall back to single-packet recv_from below.
+                match recv_batch(&listener_socket, &mut bufs) {
+                    Ok(0) => {} // spurious wakeup → just re-loop
+                    Ok(n) => {
+                        process_batch(&cfg, &listener_socket, &bufs, n).await;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Either the readiness event was spurious or
+                        // we're on a platform without recvmmsg. Try
+                        // a single-packet recv_from once, then loop.
+                        match listener_socket.try_recv_from(&mut fallback_buf) {
+                            Ok((n, src)) => {
+                                handle_datagram(
+                                    &cfg,
+                                    &listener_socket,
+                                    &fallback_buf[..n],
+                                    src,
+                                ).await;
+                            }
+                            Err(e2) if e2.kind() == std::io::ErrorKind::WouldBlock => {
+                                // Spurious — fall through to next loop iter.
+                            }
+                            Err(e2) => {
+                                warn!(
+                                    event = "rule.udp_listener_recv_failed",
+                                    rule_id = %cfg.rule_id,
+                                    listen_port = cfg.listen_port,
+                                    error = %e2,
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            event = "rule.udp_listener_recv_failed",
+                            rule_id = %cfg.rule_id,
+                            listen_port = cfg.listen_port,
+                            error = %e,
+                        );
+                    }
                 }
             }
         }
@@ -110,6 +166,272 @@ pub async fn run_listener<R: Resolve + 'static>(
         rule_id = %cfg.rule_id,
         listen_port = cfg.listen_port,
     );
+}
+
+/// Iterate the `n` datagrams freshly delivered by `recv_batch` and
+/// dispatch them to the correct path. Consecutive packets that belong
+/// to the same live flow are accumulated into a single `sendmmsg`
+/// call; flow changes / cold-path packets flush the pending run
+/// first.
+///
+/// Why run-length grouping (not full hashmap-grouping):
+/// * Common workloads cluster temporally — iperf3 UDP is single-flow,
+///   NAT-style multi-flow tends to interleave in bursts. Run-length
+///   captures both with O(batch) work and zero allocations on the
+///   hot path.
+/// * Reordering: UDP gives no ordering guarantee in general, but
+///   sendmmsg preserves the order *within* a single syscall, and the
+///   per-flow groups we emit match the order packets arrived in. So
+///   we never reorder packets that share a flow.
+async fn process_batch<R: Resolve + 'static>(
+    cfg: &ListenerConfig<R>,
+    listener_socket: &Arc<UdpSocket>,
+    bufs: &BatchBufs,
+    n: usize,
+) {
+    // Pending run: shared flow + indices of slots queued for a
+    // single sendmmsg. Indices are into `bufs`; sizes are pre-cast to
+    // u64 so the flush path doesn't redo the conversion.
+    let mut pending: Option<PendingRun> = None;
+
+    for i in 0..n {
+        let (payload, src) = bufs.slot(i);
+        let key = FlowKey::new(cfg.listen_port, src);
+        let payload_len = payload.len();
+        let n_u64 = u64::try_from(payload_len).unwrap_or(u64::MAX);
+
+        // Try the fast path: existing Live flow. If we hit it, we may
+        // be able to extend a pending run for the same flow.
+        if let Some(flow) = cfg.registry.get(key) {
+            if flow.cancel.is_cancelled() {
+                // Flush previous run, then route this packet through
+                // the cold path so the next datagram for this source
+                // rebuilds the flow.
+                if let Some(run) = pending.take() {
+                    flush_run(cfg, bufs, run).await;
+                }
+                handle_datagram(cfg, listener_socket, payload, src).await;
+                continue;
+            }
+            // Eager-debit the quota BEFORE adding to the pending run.
+            // This closes the v1.5.0 hole where batch-build could let
+            // up to `batch_size - 1` over-budget packets through
+            // because `quota_allows()` only flipped after the late
+            // `quota_consume_after_send`. If the debit straddles the
+            // boundary, drop this packet (FR-013 silent drop) and
+            // every subsequent packet on this flow this batch — but
+            // do NOT skip cold-path handling for other flows in the
+            // batch.
+            if !flow.quota_try_consume(n_u64) {
+                continue;
+            }
+            match &mut pending {
+                Some(run) if Arc::ptr_eq(&run.flow.upstream_socket, &flow.upstream_socket) => {
+                    run.indices.push(i);
+                    run.sizes.push(n_u64);
+                    continue;
+                }
+                _ => {
+                    if let Some(run) = pending.take() {
+                        flush_run(cfg, bufs, run).await;
+                    }
+                    pending = Some(PendingRun {
+                        flow,
+                        indices: vec![i],
+                        sizes: vec![n_u64],
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // Cold path: flush any pending run, then dispatch the new
+        // flow through the full FR-004 admission sequence.
+        if let Some(run) = pending.take() {
+            flush_run(cfg, bufs, run).await;
+        }
+        handle_datagram(cfg, listener_socket, payload, src).await;
+    }
+
+    if let Some(run) = pending.take() {
+        flush_run(cfg, bufs, run).await;
+    }
+}
+
+/// A run of consecutive datagrams (from `process_batch`) that all
+/// belong to the same live flow. Flushed via `sendmmsg(2)` on Linux.
+struct PendingRun {
+    flow: Arc<UdpFlow>,
+    /// Indices into `BatchBufs` for the payloads to send.
+    indices: Vec<usize>,
+    /// Pre-cast byte counts, parallel to `indices`. Saves a re-cast
+    /// in the success path.
+    sizes: Vec<u64>,
+}
+
+/// Send a pending run of packets via batched `sendmmsg` on Linux,
+/// falling back to per-packet `try_send` when the batch helper is
+/// unavailable (non-Linux) or the kernel reports WouldBlock for the
+/// first packet (avoids re-doing the syscall for the whole batch).
+async fn flush_run<R: Resolve + 'static>(
+    cfg: &ListenerConfig<R>,
+    bufs: &BatchBufs,
+    run: PendingRun,
+) {
+    let PendingRun {
+        flow,
+        indices,
+        sizes,
+    } = run;
+    debug_assert_eq!(indices.len(), sizes.len());
+    debug_assert!(!indices.is_empty());
+
+    // Build the payload-slice array. All slices borrow from `bufs`,
+    // which lives for the duration of `process_batch` — fine.
+    let payloads: Vec<&[u8]> = indices.iter().map(|&i| bufs.slot(i).0).collect();
+
+    match send_batch_connected(&flow.upstream_socket, &payloads) {
+        Ok(sent) => {
+            // Account for the prefix that the kernel accepted. Quota
+            // was eagerly debited in process_batch, so no consume
+            // call here — just stats + last_seen.
+            for s in sizes.iter().take(sent) {
+                flow.bump_inbound(*s).await;
+                cfg.stats.inc_datagram_in(cfg.listen_port, *s);
+            }
+            if sent < indices.len() {
+                // Refund the eagerly-debited quota for the unsent
+                // tail so per-batch over-debit stays at 0.
+                for s in sizes.iter().skip(sent) {
+                    flow.quota_restore(*s);
+                }
+                // Probe-after-partial: sendmmsg drops the tail with
+                // no errno, so we don't know whether the kernel
+                // bailed on SO_SNDBUF (WouldBlock) or on an ICMP
+                // error queue (Evict). Issue one synchronous
+                // try_send on the first unsent packet to recover the
+                // errno; classify it the same way the fast path
+                // does. This keeps v0.4 parity on ICMP-driven
+                // eviction (≈ one extra syscall per partial-send
+                // event, which is rare).
+                let probe_idx = indices[sent];
+                let (probe_payload, probe_src) = bufs.slot(probe_idx);
+                let probe_size = sizes[sent];
+                match flow.upstream_socket.try_send(probe_payload) {
+                    Ok(_) => {
+                        flow.bump_inbound(probe_size).await;
+                        cfg.stats.inc_datagram_in(cfg.listen_port, probe_size);
+                        // We refunded probe_size above; re-debit it.
+                        let _ = flow.quota_try_consume(probe_size);
+                        // Remaining tail (sent + 1 ..) stays dropped;
+                        // their quota refunds are correct.
+                    }
+                    Err(e) => match classify_udp_error(&e) {
+                        UdpAction::Evict => {
+                            info!(
+                                event = "rule.udp_flow_evicted_icmp",
+                                rule_id = %cfg.rule_id,
+                                listen_port = cfg.listen_port,
+                                source = %probe_src,
+                                error = %e,
+                            );
+                            let key = FlowKey::new(cfg.listen_port, probe_src);
+                            let _ = cfg.registry.remove(key);
+                            flow.cancel.cancel();
+                        }
+                        UdpAction::MessageTooLarge => {
+                            debug!(
+                                event = "rule.udp_emsgsize",
+                                rule_id = %cfg.rule_id,
+                                listen_port = cfg.listen_port,
+                                source = %probe_src,
+                            );
+                        }
+                        UdpAction::WouldBlock | UdpAction::Transient => {
+                            trace!(
+                                event = "rule.udp_upstream_wouldblock",
+                                rule_id = %cfg.rule_id,
+                                listen_port = cfg.listen_port,
+                                dropped = indices.len() - sent,
+                            );
+                        }
+                    },
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // Zero packets accepted. Refund everything we
+            // eagerly-debited, then fall back to per-packet
+            // try_send (which re-debits via quota_consume_after_send
+            // on success). This preserves the single-packet
+            // WouldBlock semantics from v0.4.
+            for s in &sizes {
+                flow.quota_restore(*s);
+            }
+            for (idx, n_u64) in indices.iter().zip(sizes.iter()) {
+                let (payload, _src) = bufs.slot(*idx);
+                send_single(cfg, &flow, payload, *n_u64).await;
+            }
+        }
+        Err(e) => {
+            // Total failure with a non-WouldBlock errno (typically
+            // ICMP-class on the FIRST packet — sendmmsg short-
+            // circuits before sending anything). Refund the whole
+            // run, then classify.
+            for s in &sizes {
+                flow.quota_restore(*s);
+            }
+            match classify_udp_error(&e) {
+                UdpAction::Evict => {
+                    info!(
+                        event = "rule.udp_flow_evicted_icmp",
+                        rule_id = %cfg.rule_id,
+                        listen_port = cfg.listen_port,
+                        source = %flow.source_addr,
+                        error = %e,
+                    );
+                    let (_payload, src) = bufs.slot(indices[0]);
+                    let key = FlowKey::new(cfg.listen_port, src);
+                    let _ = cfg.registry.remove(key);
+                    flow.cancel.cancel();
+                }
+                UdpAction::MessageTooLarge => {
+                    debug!(
+                        event = "rule.udp_emsgsize",
+                        rule_id = %cfg.rule_id,
+                        listen_port = cfg.listen_port,
+                        source = %flow.source_addr,
+                    );
+                }
+                UdpAction::WouldBlock | UdpAction::Transient => {
+                    // Defensive — WouldBlock was matched above, but
+                    // classifier owns the source of truth.
+                }
+            }
+        }
+    }
+}
+
+/// Single-packet send used by both the in-batch flush fallback and
+/// the cold path. Mirrors the fast-path arm of `handle_datagram`.
+async fn send_single<R: Resolve + 'static>(
+    cfg: &ListenerConfig<R>,
+    flow: &Arc<UdpFlow>,
+    payload: &[u8],
+    n_u64: u64,
+) {
+    match flow.upstream_socket.try_send(payload) {
+        Ok(_) => {
+            flow.bump_inbound(n_u64).await;
+            cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);
+            let _ = flow.quota_consume_after_send(n_u64);
+        }
+        Err(_e) => {
+            // Drop; next packet will hit `handle_datagram` and
+            // classify properly. We avoid re-classifying here to keep
+            // this helper allocation- and branch-light.
+        }
+    }
 }
 
 /// Apply FR-004 admission order to a single datagram. Pure async
@@ -128,7 +450,7 @@ async fn handle_datagram<R: Resolve + 'static>(
     let n_u64 = u64::try_from(n).unwrap_or(u64::MAX);
 
     // ---- Fast path (FR-004 step 1): existing Live flow ----
-    if let Some(flow) = cfg.registry.get(key).await {
+    if let Some(flow) = cfg.registry.get(key) {
         if flow.cancel.is_cancelled() {
             // Race vs reaper / demux Evict — fall through to cold path
             // so the next datagram from this source rebuilds the flow.
@@ -154,7 +476,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                             source = %src,
                             error = %e,
                         );
-                        let _ = cfg.registry.remove(key).await;
+                        let _ = cfg.registry.remove(key);
                         flow.cancel.cancel();
                     }
                     UdpAction::MessageTooLarge => {
@@ -196,7 +518,7 @@ async fn handle_datagram<R: Resolve + 'static>(
     //     accounted for by `try_get_or_reserve` itself (it bumps
     //     `dropped_overflow`). Reservation is RAII — early returns
     //     below release it via Drop.
-    let reservation = match cfg.registry.try_get_or_reserve(key).await {
+    let reservation = match cfg.registry.try_get_or_reserve(key) {
         TryGetOrReserve::Existing(flow) => {
             // Rare: another listener committed for the same (port, src)
             // between our `get` above and `try_get_or_reserve` here.
@@ -334,7 +656,7 @@ async fn handle_datagram<R: Resolve + 'static>(
         flow = flow.attach_quota(Arc::clone(q));
     }
     flow.attach_admit_guards(admit_guards).await;
-    cfg.registry.commit(reservation, Arc::clone(&flow)).await;
+    cfg.registry.commit(reservation, Arc::clone(&flow));
 
     // (8) Hand the flow to the demux. Channel full = back-pressured
     //     demux — rollback so we don't leave a Live slot the demux
@@ -350,7 +672,7 @@ async fn handle_datagram<R: Resolve + 'static>(
             source = %src,
             reason = ?send_err,
         );
-        let _ = cfg.registry.remove(key).await;
+        let _ = cfg.registry.remove(key);
         flow.cancel.cancel();
         return;
     }
@@ -388,7 +710,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                     error = %e,
                     phase = "first_packet",
                 );
-                let _ = cfg.registry.remove(key).await;
+                let _ = cfg.registry.remove(key);
                 flow.cancel.cancel();
             }
             // WouldBlock is unreachable after the `send().await` switch
@@ -629,7 +951,7 @@ mod tests {
         );
         // And `get` returns None for the key — defensive double-check.
         let key = FlowKey::new(listen_addr.port(), src);
-        assert!(registry.get(key).await.is_none());
+        assert!(registry.get(key).is_none());
     }
 
     /// Regression: in v014 Batch 3 the new `acquire_first_packet`
@@ -721,7 +1043,7 @@ mod tests {
         );
         let k3 = FlowKey::new(listen_addr.port(), src3);
         assert!(
-            registry.get(k3).await.is_none(),
+            registry.get(k3).is_none(),
             "rejected flow must NOT appear in registry",
         );
 
@@ -738,7 +1060,6 @@ mod tests {
         let k1 = FlowKey::new(listen_addr.port(), src1);
         let removed = registry
             .remove(k1)
-            .await
             .expect("flow should exist before remove");
         drop(removed);
 
@@ -756,7 +1077,7 @@ mod tests {
 
         let k4 = FlowKey::new(listen_addr.port(), src4);
         assert!(
-            registry.get(k4).await.is_some(),
+            registry.get(k4).is_some(),
             "4th source must be admitted after a slot frees up",
         );
         assert_eq!(

@@ -25,6 +25,7 @@
 //! port)` ourselves. Cost is O(flows) sockets and tasks; the per-rule
 //! `UdpFlowTable` cap keeps that bounded.
 
+pub mod batch;
 pub mod demux;
 pub mod error;
 pub mod flow;

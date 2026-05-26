@@ -13,14 +13,22 @@ workstream.
 
 ## Architecture
 
-Rust workspace, edition 2024, MSRV 1.88. Six crates under `crates/`:
+Rust workspace, edition 2024, MSRV 1.88. Eight crates under `crates/`:
 
 - `portunus-proto` — gRPC schema (tonic-prost generated).
 - `portunus-core` — shared IDs, errors, config, log-redaction.
+- `portunus-forwarder` — shared data-plane library (TCP/UDP forwarders,
+  resolver, shutdown). Consumed by both `portunus-client` and
+  `portunus-standalone`. No `tonic` / `prost` / `portunus-proto`
+  dependencies — proto-free.
 - `portunus-auth` — `Authenticator` trait + token store.
 - `portunus-server` — control-plane binary: gRPC + operator HTTP +
   Prometheus + embedded Web UI (rust-embed).
 - `portunus-client` — edge binary: bidi gRPC stream + TCP/UDP forwarding.
+- `portunus-standalone` — TOML-driven TCP/UDP forwarder binary with no
+  gRPC control plane. Reuses `portunus-forwarder` end-to-end. See
+  `crates/portunus-standalone/contrib/` for deployment templates and
+  `docs/content/docs/operations/standalone.mdx` for the user guide.
 - `portunus-e2e` — process-level integration tests.
 
 `webui/` is a React + Vite + TypeScript SPA compiled to `webui/dist/`
@@ -43,6 +51,8 @@ make ui           # Vite dev server only, proxies /v1 → 127.0.0.1:7080
 make serve        # release server with embedded UI on http://127.0.0.1:7080
 make test         # server lib tests + auth/password contract tests
 make test-csrf    # focused CSRF unit tests (fast)
+make standalone        # build portunus-standalone binary
+make standalone-check  # validate every tests/fixtures/valid_*.toml
 make clean        # nuke /tmp/portunus-dev (forces re-bootstrap)
 ```
 

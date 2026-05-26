@@ -157,7 +157,7 @@ jobs:
 
       - name: cargo build --release
         shell: bash
-        run: cargo build --release -p portunus-server -p portunus-client --target "${{ matrix.target }}"
+        run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Package binaries
         shell: bash
@@ -171,6 +171,7 @@ jobs:
           mkdir -p "${staging}"
           cp "target/${target}/release/portunus-server" "${staging}/"
           cp "target/${target}/release/portunus-client" "${staging}/"
+          cp "target/${target}/release/portunus-standalone" "${staging}/"
           cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
@@ -222,7 +223,7 @@ jobs:
 
       - name: cargo build --release
         shell: bash
-        run: cargo build --release -p portunus-server -p portunus-client --target "${{ matrix.target }}"
+        run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Package binaries
         shell: bash
@@ -236,6 +237,7 @@ jobs:
           mkdir -p "${staging}"
           cp "target/${target}/release/portunus-server" "${staging}/"
           cp "target/${target}/release/portunus-client" "${staging}/"
+          cp "target/${target}/release/portunus-standalone" "${staging}/"
           cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
@@ -277,7 +279,11 @@ jobs:
             mkdir -p "docker-bin/${arch}"
             cp "${extracted}/portunus-${version}-${target}/portunus-server" "docker-bin/${arch}/"
             cp "${extracted}/portunus-${version}-${target}/portunus-client" "docker-bin/${arch}/"
-            chmod 0755 "docker-bin/${arch}/portunus-server" "docker-bin/${arch}/portunus-client"
+            cp "${extracted}/portunus-${version}-${target}/portunus-standalone" "docker-bin/${arch}/"
+            chmod 0755 \
+              "docker-bin/${arch}/portunus-server" \
+              "docker-bin/${arch}/portunus-client" \
+              "docker-bin/${arch}/portunus-standalone"
           done <<'EOF'
           x86_64-unknown-linux-gnu amd64
           aarch64-unknown-linux-gnu arm64
@@ -328,6 +334,23 @@ jobs:
           labels: |
             org.opencontainers.image.title=Portunus client
             org.opencontainers.image.description=Portunus edge forwarding client
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+
+      - name: Build and push standalone image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.standalone
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ needs.metadata.outputs.image_namespace }}/portunus-standalone:${{ needs.metadata.outputs.version }}
+            ghcr.io/${{ needs.metadata.outputs.image_namespace }}/portunus-standalone:latest
+          labels: |
+            org.opencontainers.image.title=Portunus standalone
+            org.opencontainers.image.description=Portunus TOML-driven control-plane-free forwarder
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.metadata.outputs.version }}

@@ -10,7 +10,9 @@ entirely from a TOML file. It uses the same data-plane code as
 single-host deployments, edge devices, and scenarios where a control-plane
 server is unnecessary.
 
-## Quick start
+## Quick start (try locally)
+
+For local development or a quick smoke test:
 
 ```sh
 cargo build --release -p portunus-standalone
@@ -39,6 +41,105 @@ Validate without starting:
 ./target/release/portunus-standalone --check --config portunus.toml
 # prints "ok" and exits 0 on success, exits 2 on error
 ```
+
+For a real Linux host, jump to [Install](#install).
+
+## Install
+
+Pick one of three paths. The **installer** is the recommended path on
+Linux servers — it handles user, directories, file permissions, and
+the systemd unit for you.
+
+### Option A: Installer (binary + systemd)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+```
+
+What this does, in order:
+
+1. Detects OS/arch and resolves the latest release.
+2. Downloads `portunus-<version>-<target>.tar.gz` and verifies its
+   SHA-256 against the published checksums.
+3. Installs the binary to `/usr/local/bin/portunus-standalone` (mode
+   `0755`).
+4. Creates the `portunus` system user/group if missing
+   (`useradd --system --no-create-home --shell /usr/sbin/nologin`).
+5. Creates `/etc/portunus/` and writes a starter
+   `/etc/portunus/standalone.toml` (mode `0640`, owner `root:portunus`)
+   sourced from
+   [`contrib/portunus.example.toml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus.example.toml).
+6. Installs a hardened unit at
+   `/etc/systemd/system/portunus-standalone.service` sourced from
+   [`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)
+   (`LimitNOFILE=65535`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`,
+   `ProtectSystem=strict`, `NoNewPrivileges=true`, …).
+7. Prints next-step hints.
+
+The installer does **not** auto-start the service. After editing
+`/etc/portunus/standalone.toml`:
+
+```sh
+sudo systemctl enable --now portunus-standalone
+```
+
+Interactive mode (no arguments) presents a menu — pick option 3 for
+the standalone role.
+
+### Option B: Manual installation (no installer)
+
+Use this when you don't want a script to touch your system, or when
+the installer can't reach GitHub.
+
+```sh
+# 1. Get the binary (download a release artifact, or cross-compile
+#    and scp from a workstation — cargo build on a small VPS can OOM):
+sudo install -m 0755 ./portunus-standalone /usr/local/bin/portunus-standalone
+
+# 2. Create the system user (idempotent):
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus
+
+# 3. Place the config (download the example and edit it):
+sudo mkdir -p /etc/portunus
+sudo curl -fsSL -o /etc/portunus/standalone.toml \
+  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
+sudo chown root:portunus /etc/portunus/standalone.toml
+sudo chmod 0640 /etc/portunus/standalone.toml
+sudo "$EDITOR" /etc/portunus/standalone.toml
+
+# 4. Install the hardened systemd unit:
+sudo curl -fsSL -o /etc/systemd/system/portunus-standalone.service \
+  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus-standalone.service
+sudo systemctl daemon-reload
+
+# 5. Start it:
+sudo systemctl enable --now portunus-standalone
+```
+
+Validate the config before starting if you want to fail fast:
+
+```sh
+sudo -u portunus /usr/local/bin/portunus-standalone --check \
+  --config /etc/portunus/standalone.toml
+# prints "ok" and exits 0 on success
+```
+
+### Option C: Container (Docker or Kubernetes)
+
+Starting with v1.5.0 the GHCR image
+`ghcr.io/zingerlittlebee/portunus-standalone:<version>` is published
+on every release (multi-arch: `linux/amd64`, `linux/arm64`):
+
+```sh
+docker run -d --network host \
+  --name portunus-standalone \
+  -v /etc/portunus/standalone.toml:/etc/portunus/standalone.toml:ro \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+See [Production deployment](#production-deployment) below for the
+full `docker compose` reference, raw `docker run` caveats, and
+Kubernetes manifests.
 
 ## Config file lookup
 
@@ -135,6 +236,49 @@ connection. Useful when the backend needs the original client address.
 | `SIGTERM` / `SIGINT` | Graceful shutdown — active connections drain for up to `shutdown_drain_secs`, then the process exits 0. |
 | `SIGHUP` | No-op in the current release (config reload is not yet supported). |
 
+The shipped systemd unit deliberately omits `ExecReload`, so
+`systemctl reload portunus-standalone` reports "Job type reload is not
+applicable" rather than killing the service. Edit the TOML and run
+`systemctl restart portunus-standalone`.
+
+## Verifying the installation
+
+After `systemctl enable --now portunus-standalone`, confirm the rule is
+active and traffic actually flows:
+
+```sh
+# 1. Service is active and recent log lines look healthy:
+systemctl status portunus-standalone --no-pager
+journalctl -u portunus-standalone -n 20 --no-pager
+```
+
+You should see (one event per rule):
+
+```json
+{"event":"standalone.rlimit_nofile","soft":65535,"hard":65535,…}
+{"event":"rule.activated","rule_id":"…","listen_port":2222,…,"target":"10.0.0.5:22-22"}
+```
+
+```sh
+# 2. The listen port is bound:
+ss -ltn | grep 2222
+
+# 3. End-to-end TCP echo (replace 7777 / 7778 with your rule's ports;
+#    run upstream first so the connect succeeds):
+sudo apt-get install -y socat                 # or any echo server
+nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log 2>&1 &
+( echo "verify-payload"; sleep 1 ) | socat -t 3 - TCP:127.0.0.1:7777
+#   → verify-payload
+```
+
+The forwarder logs a `rule.conn_closed` event with non-zero
+`bytes_in`/`bytes_out` for each closed connection:
+
+```json
+{"event":"rule.conn_closed","rule_id":"…","listen_port":7777,
+ "peer":"127.0.0.1:51340","bytes_in":15,"bytes_out":15}
+```
+
 ## Observability
 
 `portunus-standalone` logs to **stderr** in JSON format by default
@@ -146,27 +290,75 @@ There is no embedded HTTP server, Prometheus endpoint, or gRPC stream —
 those surfaces belong to `portunus-server`. Use log aggregation (e.g.
 `journald`, a sidecar log shipper) to collect the JSON output.
 
-## Full example config
+## Example configs
+
+### Minimal
+
+The smallest config that the binary will accept: one rule, no `[global]`
+or `[defaults]` blocks (every optional field falls back to its default).
 
 ```toml
-[global]
-log_level = "debug"
-
-[defaults]
-udp_max_flows = 4096
-
+# /etc/portunus/standalone.toml
 [[rule]]
-name        = "ssh-tunnel"
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+Validate then start:
+
+```bash
+portunus-standalone --check --config /etc/portunus/standalone.toml
+systemctl restart portunus-standalone
+```
+
+### Full
+
+Every field the schema recognises, plus one rule per common scenario
+(single TCP, TCP range, multi-target failover with PROXY protocol,
+DNS target, single UDP, UDP range). Copy and trim as needed.
+
+```toml
+# /etc/portunus/standalone.toml
+#
+# After editing, validate then restart:
+#   portunus-standalone --check --config /etc/portunus/standalone.toml
+#   systemctl restart portunus-standalone
+# (SIGHUP / `systemctl reload` are NOT supported — see Operational notes.)
+
+# ─────────── Global (all fields optional) ───────────
+[global]
+label               = "edge-1"     # informational label printed in logs
+log_level           = "info"       # EnvFilter; e.g. "portunus=debug,info"
+log_format          = "json"       # "json" (default) or "pretty"
+shutdown_drain_secs = 30           # graceful-drain budget on SIGTERM
+
+# ─────────── Defaults (inherited by rules that omit the field) ───────────
+[defaults]
+protocol           = "tcp"         # default protocol when a rule omits it
+udp_max_flows      = 1024          # per-rule UDP flow table cap
+udp_flow_idle_secs = 60            # idle UDP flow expiry, seconds
+prefer_ipv6        = false         # DNS address-family preference
+
+# ─────────── Rules ───────────
+
+# 1) Single-port TCP
+[[rule]]
+name        = "ssh-jump"
 protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
 
+# 2) TCP port range (listen and target widths must match)
 [[rule]]
 name         = "web-range"
 protocol     = "tcp"
 listen_ports = "8000-8009"
 target       = "10.0.0.10:8000-8009"
 
+# 3) Multi-target failover + PROXY protocol v2
+#    Lower `priority` wins; ties round-robin.
 [[rule]]
 name        = "ha-https"
 protocol    = "tcp"
@@ -176,13 +368,69 @@ targets = [
   { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
 ]
 
+# 4) DNS target (resolved on each connect; `prefer_ipv6` overrides defaults)
 [[rule]]
-name             = "game-udp"
-protocol         = "udp"
-listen_port      = 27015
-target           = "10.0.0.20:27015"
+name        = "api"
+protocol    = "tcp"
+listen_port = 9000
+target      = "api.internal.example.com:443"
+prefer_ipv6 = false
+
+# 5) Single-port UDP with bumped flow cap + idle timeout
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_max_flows      = 4096
 udp_flow_idle_secs = 120
+
+# 6) UDP port range
+[[rule]]
+name         = "voice-udp"
+protocol     = "udp"
+listen_ports = "30000-30019"
+target       = "10.0.0.30:30000-30019"
 ```
+
+## Operational notes
+
+Things worth knowing before running this in production:
+
+- **No live config reload.** `SIGHUP` is a no-op and the shipped
+  systemd unit refuses `systemctl reload`. To change rules, edit the
+  TOML and `systemctl restart portunus-standalone`. Established TCP
+  connections drain on the way out (up to `shutdown_drain_secs`).
+- **Config-file permissions matter.** When using the systemd unit, the
+  process runs as `User=portunus` with `ReadOnlyPaths=/etc/portunus`.
+  The config file must be readable by that user — the installer sets
+  `chown root:portunus` + `chmod 0640`. Anything stricter (e.g.
+  `chmod 0600 root:root`) will cause startup to fail.
+- **Privileged listen ports (`< 1024`).** The unit grants
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`, so listening on ports
+  like 22, 53, 80, 443 works without running as root. Outside of
+  systemd you must either run as root, set the capability via
+  `setcap cap_net_bind_service+ep /usr/local/bin/portunus-standalone`,
+  or use ports `≥ 1024`.
+- **File-descriptor limit.** The binary emits a `standalone.rlimit_nofile`
+  log on startup. The shipped unit sets `LimitNOFILE=65535`; if you
+  see `… "soft":1024 …`, raise it (each concurrent flow consumes
+  one fd per side).
+- **TCP `splice(2)` zero-copy** is auto-selected on Linux when no
+  PROXY-protocol prelude is configured. You'll see a
+  `proxy.splice_selected` event in the log on the first connection of
+  the rule.
+- **Port-range rules bind atomically.** A rule that declares
+  `listen_ports = "8000-8009"` binds all 10 ports up-front; if any one
+  is unavailable the rule's startup fails and the others are released.
+  Check for port collisions before deploying.
+- **Don't compile on tiny VPSes.** A 1 vCPU / 1 GB VPS will likely
+  OOM during `cargo build`. Cross-compile on a workstation
+  (`cargo zigbuild --release --target x86_64-unknown-linux-gnu -p portunus-standalone`)
+  and `scp` the resulting binary.
+- **Logs are JSON on stderr.** Aggregate via `journald` (systemd
+  collects automatically) or a sidecar log shipper. Switch to
+  `log_format = "pretty"` for local iteration.
 
 ## Differences from portunus-client
 
@@ -198,22 +446,110 @@ udp_flow_idle_secs = 120
 | TCP splice fast path (Linux) | Yes | Yes (same forwarder code) |
 | PROXY protocol out | Yes | Yes |
 
-## systemd unit example
+## Production deployment
 
-```ini
-[Unit]
-Description=Portunus standalone forwarder
-After=network.target
+Reference templates for all four deployment styles live in
+[`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib).
 
-[Service]
-ExecStart=/usr/local/bin/portunus-standalone --config /etc/portunus/standalone.toml
-Restart=on-failure
-StandardOutput=journal
-StandardError=journal
-User=portunus
-ProtectSystem=strict
-ReadWritePaths=/etc/portunus
+### Docker / docker-compose
 
-[Install]
-WantedBy=multi-user.target
+**Prebuilt image (recommended).** From v1.5.0 onwards every release
+publishes a multi-arch (`linux/amd64`, `linux/arm64`) image to GHCR:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-standalone:1.5.0
+# or :latest for the most recent release
+```
+
+Pin to a specific version in production — `:latest` tracks the most
+recent tagged release and may shift under your feet.
+
+**Local build.** The reference
+[`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
+is a two-stage build that produces a distroless runtime image from
+source — useful when you can't reach GHCR or want to vendor a
+custom build.
+[`docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)
+defaults to host networking so port ranges work without per-port
+mapping:
+
+```sh
+cd crates/portunus-standalone/contrib
+cp portunus.example.toml portunus.toml   # edit before starting
+docker compose up -d
+docker compose logs -f
+```
+
+**Caveats**:
+
+- The runtime image is `gcr.io/distroless/cc-debian12:nonroot` (UID
+  65532). Any config file you bind-mount must be readable by that UID
+  (`chmod 0644` on the host, or use a numeric UID match).
+- When invoking `docker run` directly (instead of via compose), passing
+  `--check` overrides the image's `CMD`, dropping the default `--config`
+  argument. Provide both explicitly:
+  `docker run … portunus-standalone --config /etc/portunus/standalone.toml --check`.
+- **Snap-packaged Docker on Ubuntu** confines bind-mount sources to
+  `/home`, `/media`, `/mnt`, and a few other allowlisted paths.
+  Bind-mounts from `/root`, `/tmp`, or `/etc` will surface as
+  `No such file or directory` inside the container. Either move the
+  config file under `/home`, or install the non-snap
+  `docker-ce`/`docker.io` packages.
+
+### Kubernetes
+
+The manifests in
+[`contrib/k8s/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib/k8s)
+run a single-replica `Deployment` with `hostNetwork: true` (required
+for arbitrary-port forwarding):
+
+```sh
+kubectl apply -f crates/portunus-standalone/contrib/k8s/configmap.yaml
+kubectl apply -f crates/portunus-standalone/contrib/k8s/deployment.yaml
+```
+
+See [`contrib/k8s/README.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/k8s/README.md)
+for the Deployment-vs-DaemonSet decision and PodSecurityPolicy caveats.
+
+### Hardened systemd unit
+
+The unit file shipped in
+[`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)
+sets `LimitNOFILE=65535`, runs as `User=portunus`, adds
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` for binding privileged
+ports, and applies `ProtectSystem=strict` / `PrivateTmp=true` /
+`NoNewPrivileges=true`. The binary does not implement SIGHUP reload —
+edit the TOML, then `systemctl restart portunus-standalone`.
+
+## Upgrade and uninstall
+
+If you installed via [Option A](#option-a-installer-binary--systemd):
+
+```sh
+# Upgrade to the latest release (or pin --version v1.5.0):
+bash install.sh upgrade standalone
+
+# Check status (binary version, service active, deploy form):
+bash install.sh status standalone
+
+# Service control passthrough:
+bash install.sh service standalone restart
+
+# Uninstall (removes binary + unit; keeps /etc/portunus by default):
+bash install.sh uninstall standalone
+
+# Purge: also wipes /etc/portunus and the portunus user:
+bash install.sh uninstall standalone --purge
+```
+
+If you installed manually ([Option B](#option-b-manual-installation-no-installer)):
+
+```sh
+sudo systemctl disable --now portunus-standalone
+sudo rm /etc/systemd/system/portunus-standalone.service
+sudo rm /usr/local/bin/portunus-standalone
+sudo systemctl daemon-reload
+# Optional — also remove config and user:
+sudo rm -rf /etc/portunus
+sudo userdel portunus
 ```

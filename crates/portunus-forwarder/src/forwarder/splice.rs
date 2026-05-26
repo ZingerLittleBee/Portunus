@@ -247,6 +247,15 @@ mod linux {
     /// Kernel default pipe size on every Linux ≥ 2.6.11. Used as the
     /// fallback `capacity_bytes` when `F_GETPIPE_SZ` itself fails.
     const KERNEL_DEFAULT_PIPE_SIZE: usize = 64 * 1024;
+    /// Maximum pipes retained per tokio worker. 16 covers typical
+    /// short-connection bursts without bounded growth. Pipes beyond this
+    /// drop normally on release.
+    const PIPE_POOL_MAX: usize = 16;
+
+    std::thread_local! {
+        static PIPE_POOL: std::cell::RefCell<Vec<PipePair>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
 
     /// RAII wrapper around a `pipe2(O_NONBLOCK | O_CLOEXEC)` pair.
     ///
@@ -267,6 +276,37 @@ mod linux {
     }
 
     impl PipePair {
+        /// Acquire a pipe pair from the thread-local pool, allocating
+        /// a fresh one if the pool is empty. The pool retains at most
+        /// [`PIPE_POOL_MAX`] pipes per worker thread; bursts beyond
+        /// that drop normally on `release`.
+        ///
+        /// Reuse is safe because a pipe is only returned to the pool
+        /// via [`release`](Self::release), which is called only after a
+        /// clean `splice_dir` shutdown — at which point both directions
+        /// have fully drained the pipe (EOF cascade guarantees zero
+        /// bytes remain).
+        pub(crate) fn acquire(rule_id: u64) -> io::Result<Self> {
+            if let Some(pipe) = PIPE_POOL.with(|p| p.borrow_mut().pop()) {
+                return Ok(pipe);
+            }
+            Self::new(rule_id)
+        }
+
+        /// Return a drained pipe pair to the thread-local pool. If the
+        /// pool is full, the pipe is dropped normally (closes both fds).
+        /// Callers MUST only invoke this after a clean `splice_dir`
+        /// completion — passing a pipe with leftover bytes would cause
+        /// the next consumer to read stale data.
+        pub(crate) fn release(self) {
+            PIPE_POOL.with(|p| {
+                let mut pool = p.borrow_mut();
+                if pool.len() < PIPE_POOL_MAX {
+                    pool.push(self);
+                }
+            });
+        }
+
         /// Allocate a fresh non-blocking, close-on-exec pipe pair and
         /// best-effort enlarge it to [`TARGET_PIPE_SIZE`].
         ///
@@ -502,11 +542,13 @@ mod linux {
         bytes_out: &AtomicU64,
         quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
     ) -> io::Result<DrainOutcome> {
+        // try_io-first pattern: attempt the splice immediately and only
+        // await `dst.writable()` on WouldBlock. Under steady-state load
+        // the destination socket is almost always writable, so this skips
+        // an epoll wait per splice batch (see bench notes).
         while remaining > 0 {
-            dst.writable().await?;
             let res = dst.try_io(Interest::WRITABLE, || {
                 splice_raw(pipe_read_fd, dst.as_raw_fd(), remaining).map_err(|errno| {
-                    // EAGAIN → tokio re-arms; EINTR → retry
                     if errno == Errno::EAGAIN {
                         io::Error::from(io::ErrorKind::WouldBlock)
                     } else {
@@ -536,10 +578,9 @@ mod linux {
                         return Ok(DrainOutcome::QuotaExhausted);
                     }
                 }
-                // EAGAIN → re-arm via dst.writable() on next iteration;
-                // EINTR → retry. Both fall through to the next `while`
-                // iteration.
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    dst.writable().await?;
+                }
                 Err(e) if e.raw_os_error() == Some(libc::EINTR) => {}
                 Err(e) => return Err(e),
             }
@@ -585,10 +626,10 @@ mod linux {
                 let _ = nix_shutdown(dst.as_raw_fd(), NixShutdown::Write);
                 return Ok(());
             }
-            // Wait for read readiness on the source socket.
-            src.readable().await.map_err(SpliceError::Io)?;
 
-            // src → pipe
+            // try_io-first: attempt splice immediately; only await
+            // `src.readable()` when we get EAGAIN. Saves an epoll wait per
+            // batch under steady-state load (see bench notes).
             let read_res = src.try_io(Interest::READABLE, || {
                 splice_raw(src_fd, pipe_write_fd, capacity).map_err(|errno| {
                     if errno == Errno::EAGAIN {
@@ -615,7 +656,10 @@ mod linux {
                     moved_any.store(true, Ordering::Relaxed);
                     n
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    src.readable().await.map_err(SpliceError::Io)?;
+                    continue;
+                }
                 Err(e) if e.raw_os_error() == Some(libc::EINTR) => continue,
                 Err(e) => {
                     if let Some(raw) = e.raw_os_error() {
@@ -660,8 +704,8 @@ mod linux {
         );
 
         let rule_id = ctx.rule_id.0;
-        let pipe_dn_to_up = PipePair::new(rule_id).map_err(SpliceError::Io)?;
-        let pipe_up_to_dn = PipePair::new(rule_id).map_err(SpliceError::Io)?;
+        let pipe_dn_to_up = PipePair::acquire(rule_id).map_err(SpliceError::Io)?;
+        let pipe_up_to_dn = PipePair::acquire(rule_id).map_err(SpliceError::Io)?;
 
         // proxy.splice_selected event — emitted at the first successful
         // entry per rule. See contracts/internal-api.md § §3.
@@ -691,10 +735,19 @@ mod linux {
         );
 
         match result {
-            Ok(((), ())) => Ok(Transferred {
-                bytes_in: bytes_in.load(Ordering::Relaxed),
-                bytes_out: bytes_out.load(Ordering::Relaxed),
-            }),
+            Ok(((), ())) => {
+                // Clean shutdown: pipes are drained (both directions hit
+                // EOF + drain_pipe_to flushed remaining bytes). Return
+                // them to the thread-local pool for reuse.
+                pipe_dn_to_up.release();
+                pipe_up_to_dn.release();
+                Ok(Transferred {
+                    bytes_in: bytes_in.load(Ordering::Relaxed),
+                    bytes_out: bytes_out.load(Ordering::Relaxed),
+                })
+            }
+            // On error the pipes may have leftover bytes; drop normally
+            // so the fds are closed and the kernel reclaims any pages.
             Err(e) => Err(e),
         }
     }

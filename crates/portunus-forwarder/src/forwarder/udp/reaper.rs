@@ -47,19 +47,18 @@ pub async fn run_reaper(
         tokio::select! {
             () = cancel.cancelled() => return,
             _ = ticker.tick() => {
-                sweep_once(&registry, idle_window, rule_id).await;
+                sweep_once(&registry, idle_window, rule_id);
             }
         }
     }
 }
 
-async fn sweep_once(registry: &Arc<UdpFlowRegistry>, idle_window: Duration, rule_id: RuleId) {
+fn sweep_once(registry: &Arc<UdpFlowRegistry>, idle_window: Duration, rule_id: RuleId) {
     let now = Instant::now();
-    let snap = registry.snapshot_live().await;
+    let snap = registry.snapshot_live();
     for (key, flow) in snap {
-        let last = flow.last_seen_at().await;
-        if now.saturating_duration_since(last) > idle_window && registry.remove(key).await.is_some()
-        {
+        let last = flow.last_seen_at();
+        if now.saturating_duration_since(last) > idle_window && registry.remove(key).is_some() {
             flow.cancel.cancel();
             info!(
                 event = "rule.udp_flow_closed_idle",
@@ -83,7 +82,7 @@ mod tests {
         let reg = UdpFlowRegistry::new(4);
         let src: SocketAddr = "127.0.0.1:50000".parse().unwrap();
         let key = FlowKey::new(8000, src);
-        let reservation = match reg.try_get_or_reserve(key).await {
+        let reservation = match reg.try_get_or_reserve(key) {
             TryGetOrReserve::Reserved(r) => r,
             TryGetOrReserve::Existing(_) => panic!("expected Reserved, got Existing"),
             TryGetOrReserve::CapExhausted => panic!("expected Reserved, got CapExhausted"),
@@ -95,9 +94,8 @@ mod tests {
             Instant::now()
                 .checked_sub(Duration::from_secs(60))
                 .expect("instant - 60s must not underflow on a running test"),
-        )
-        .await;
-        reg.commit(reservation, Arc::clone(&flow)).await;
+        );
+        reg.commit(reservation, Arc::clone(&flow));
 
         let cancel = CancellationToken::new();
         let reg_ref = Arc::clone(&reg);

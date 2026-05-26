@@ -124,6 +124,33 @@ impl QuotaHandle {
             .exhausted
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed);
     }
+
+    /// Refund `n` bytes that were eagerly consumed but turned out not
+    /// to have been sent. Used by the v1.5 batched UDP listener
+    /// (`udp/listener.rs::flush_run`) when `sendmmsg(2)` returns
+    /// partial success — the caller pre-consumed the whole run before
+    /// the syscall, and `restore` walks back the unsent tail so the
+    /// budget stays accurate to the byte. Single-packet callers
+    /// should keep using `consume` directly; `restore` exists
+    /// strictly for the eagerly-debited batch path.
+    ///
+    /// Effect: `remaining += n` (no upper-bound clamp — refund is
+    /// bounded by what the caller eagerly consumed within the same
+    /// batch, so it can never inflate the budget past its original
+    /// value), and clears `exhausted` if the refund moves `remaining`
+    /// strictly above 0.
+    pub fn restore(&self, n: i64) {
+        debug_assert!(n >= 0, "negative restore {n}");
+        if n == 0 {
+            return;
+        }
+        let prev = self.remaining.fetch_add(n, Ordering::AcqRel);
+        if prev.saturating_add(n) > 0 {
+            let _ =
+                self.exhausted
+                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,6 +182,26 @@ mod tests {
         assert_eq!(h.remaining(), 0);
         assert!(h.is_exhausted());
         assert_eq!(h.consume(1), ConsumeOutcome::Exhausted);
+    }
+
+    #[test]
+    fn restore_refills_remaining_and_clears_exhausted() {
+        let h = QuotaHandle::new("u".into(), "c".into(), state(100, 100, false));
+        assert_eq!(h.consume(100), ConsumeOutcome::Granted);
+        assert!(h.is_exhausted());
+        h.restore(40);
+        assert_eq!(h.remaining(), 40);
+        assert!(!h.is_exhausted());
+        assert_eq!(h.consume(30), ConsumeOutcome::Granted);
+        assert_eq!(h.remaining(), 10);
+    }
+
+    #[test]
+    fn restore_zero_is_noop() {
+        let h = QuotaHandle::new("u".into(), "c".into(), state(100, 50, false));
+        h.restore(0);
+        assert_eq!(h.remaining(), 50);
+        assert!(!h.is_exhausted());
     }
 
     #[test]

@@ -481,7 +481,7 @@ impl Supervisor {
 
         // (c) Cancel + remove any remaining live flows. After the
         // drain, the final visible gauge value is 0.
-        self.registry.drain().await;
+        self.registry.drain();
         self.stats.set_active_flows(0);
 
         // (d) Send the EXPLICIT shutdown command. Channel-close MUST

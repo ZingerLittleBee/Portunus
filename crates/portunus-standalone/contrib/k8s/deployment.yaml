@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portunus-standalone
+  namespace: default
+  labels:
+    app: portunus-standalone
+spec:
+  # hostNetwork pins this Pod to a single node's port space. Replicas > 1
+  # would collide on the same listen ports — keep this at 1, and use a
+  # DaemonSet (see contrib/k8s/README.md) if you need every node to forward.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: portunus-standalone
+  template:
+    metadata:
+      labels:
+        app: portunus-standalone
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: portunus-standalone
+          # Replace with your own registry — no GHCR image is published
+          # for portunus-standalone yet.
+          image: portunus-standalone:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config"
+            - "/etc/portunus/standalone.toml"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/portunus
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: portunus-standalone-config
+            items:
+              - key: standalone.toml
+                path: standalone.toml

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portunus-standalone-config
+  namespace: default
+data:
+  standalone.toml: |
+    [global]
+    log_level  = "info"
+    log_format = "json"
+
+    [[rule]]
+    name        = "ssh-tunnel"
+    protocol    = "tcp"
+    listen_port = 2222
+    target      = "10.0.0.5:22"

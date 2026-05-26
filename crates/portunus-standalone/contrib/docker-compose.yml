@@ -1,0 +1,38 @@
+# portunus-standalone — reference docker-compose configuration.
+#
+# Uses host networking by default so port-range and arbitrary-port
+# forwarding rules work without per-port `ports:` declarations. On
+# Docker Desktop (macOS/Windows), host networking is limited — switch
+# to the commented `ports:` block and enumerate the listen ports your
+# rules use.
+
+services:
+  portunus-standalone:
+    build:
+      context: ../../..
+      dockerfile: crates/portunus-standalone/contrib/Dockerfile
+    # Or, when consuming a locally-built tag:
+    # image: portunus-standalone:dev
+    container_name: portunus-standalone
+    restart: unless-stopped
+    network_mode: host
+    # ── Alternative for Docker Desktop / when host networking is unavailable:
+    # network_mode: bridge
+    # ports:
+    #   - "2222:2222/tcp"
+    #   - "8000-8009:8000-8009/tcp"
+    #   - "27015:27015/udp"
+    volumes:
+      # Mounts ./portunus.toml — when running from the repo's contrib/
+      # directory directly, first: cp portunus.example.toml portunus.toml
+      - ./portunus.toml:/etc/portunus/standalone.toml:ro
+    cap_add:
+      - NET_BIND_SERVICE
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    # Logs go to stderr in JSON; collect with Docker's json-file driver
+    # or a sidecar log shipper. Adjust `--log-format pretty` while
+    # iterating locally.
+    # command: ["--config", "/etc/portunus/standalone.toml", "--log-format", "pretty"]
