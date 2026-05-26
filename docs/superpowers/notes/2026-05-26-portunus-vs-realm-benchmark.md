@@ -59,6 +59,67 @@ moved the throughput needle in either direction.
 
 ---
 
+## Update 2 — Batched UDP I/O (recvmmsg/sendmmsg) closes the gap
+
+After OPT-1 the remaining +11 % UDP CPU gap was traced to **syscall
+count**, not flow lookup cost. `strace -c` over a 5 s / 1 Gbps iperf3
+UDP window:
+
+| syscall | portunus (post-OPT-1) | realm | ratio |
+|---|---:|---:|---:|
+| send | 36 919 × `sendto` | 1 934 × `sendmmsg` | realm 19× fewer |
+| recv | 36 918 × `recvfrom` | 2 016 × `recvmmsg` | realm 18× fewer |
+| epoll | 33 186 | 15 137 | realm 2.2× fewer |
+| **total syscalls** | **107 023** | **19 087** | realm 5.6× fewer |
+
+realm averages ~18 datagrams per syscall via batched UDP
+(`recvmmsg(2)` / `sendmmsg(2)`); portunus was 1-packet-per-syscall.
+
+**OPT-4** (`udp/batch.rs`, `udp/listener.rs`): new Linux-only batched
+recvmmsg/sendmmsg hot path. The listener loop reads up to 32
+datagrams per `recvmmsg`, then run-length groups consecutive packets
+that belong to the same live flow and flushes each run via
+`sendmmsg`. Cold-path (new flow, quota-exhausted, ICMP-evicted)
+packets fall back to the single-packet `handle_datagram` so the
+FR-004 admission order stays authoritative. Non-Linux platforms
+degrade to the v0.4 single-packet path automatically (cfg-gated
+helpers return `WouldBlock` and the caller uses `try_recv_from`).
+
+`strace -c` re-run after OPT-4 on the same VPS:
+
+| syscall | portunus (post-OPT-4) | realm | delta |
+|---|---:|---:|---:|
+| sendmmsg | **3 599** | 3 393 | parity |
+| recvmmsg | **3 607** | 4 741 | portunus 24 % fewer |
+| epoll_wait | **16** | 11 185 | portunus 700× fewer |
+| **total syscalls** | **7 230** | **19 345** | portunus **2.7× fewer** |
+| syscall CPU time / 5 s | 2.695 s | 3.438 s | portunus 22 % less |
+
+The 700× drop in `epoll_wait` calls comes from the new architecture:
+one `readable().await` per batch drives 32 packets through one
+`recvmmsg`, whereas the v0.4 path called `recv_from` per datagram and
+each `recv_from` armed a fresh readiness future. Combined with
+sendmmsg, portunus now spends measurably **less** syscall time than
+realm on the same workload.
+
+CPU re-measurement via `pidstat -u 1 10` (same `cpu_final.sh`):
+
+| Test | portunus pre-OPT-4 | portunus post-OPT-4 | realm | Δ vs realm |
+|---|---:|---:|---:|---|
+| TCP 1-stream | 42.9 % | **45.0 %** | 59.3 % | ‑14 pp (portunus wins) |
+| TCP 8-stream | 66.4 % | **65.9 %** | 93.0 % | ‑27 pp (portunus wins) |
+| **UDP 1 Gbps** | 52.7 % | **48.9 %** | 48.6 % | **+0.3 pp (tie)** |
+| UDP throughput receiver | — | 306 Mbps | 293 Mbps | portunus 4 % more |
+
+**Verdict for OPT-4:** the +11 % UDP CPU gap is closed. Portunus
+matches realm on UDP CPU while keeping the 12× memory advantage at
+high flow counts, and the receive-side throughput is marginally
+better (less loss). The change touches no operator surface and has
+no platform regressions — non-Linux falls back to the v0.4
+single-packet path. All 232 lib tests + 42 UDP-module tests pass on
+macOS; the Linux recvmmsg/sendmmsg path is exercised by the live VPS
+benchmark.
+
 ---
 
 ## Executive summary
