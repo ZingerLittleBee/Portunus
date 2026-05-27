@@ -203,6 +203,7 @@ if echo "$dm" | grep -q -- '--advertised-endpoint'; then fail "minimal drop-in m
 # --- standalone role: dry-run plan accepted, artifact name correct ---
 out_sa="$(bash "$script" standalone --version 1.4.1 --dry-run)" || fail "standalone dry-run exit non-zero"
 echo "$out_sa" | grep -q '^role:[[:space:]]*standalone$' || fail "standalone: role line missing"
+echo "$out_sa" | grep -q '^systemd:[[:space:]]*yes$' || fail "standalone: default binary install must include systemd"
 echo "$out_sa" | grep -q 'portunus-standalone' || fail "standalone: portunus-standalone not in plan"
 
 # --- standalone role: explicit install verb ---

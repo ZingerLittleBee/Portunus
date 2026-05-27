@@ -45,7 +45,8 @@ target = "10.0.0.5:22"
 ## 安装
 
 下面三种路径任选其一。**Installer** 是 Linux 服务器上的推荐方式 ——
-帮你处理系统用户、目录、文件权限、systemd unit。
+帮你处理系统用户、目录、文件权限、systemd unit。直接安装
+`standalone` 默认就是 **二进制 + systemd**，不需要额外传 `--systemd`。
 
 ### 方式 A：Installer（二进制 + systemd）
 
@@ -70,10 +71,11 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
    [`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)），
    含 `LimitNOFILE=65535`、`AmbientCapabilities=CAP_NET_BIND_SERVICE`、
    `ProtectSystem=strict`、`NoNewPrivileges=true` 等。
-7. 打印 next-step 提示。
+7. 重新加载 systemd，使 `systemctl` 立刻能看到该 unit。
+8. 打印 next-step 提示。
 
-Installer **不会**自动启动服务。编辑 `/etc/portunus/standalone.toml`
-之后：
+Installer **不会**自动启动服务，因为首次写入的
+`/etc/portunus/standalone.toml` 是带示例上游目标的起步模板。编辑后：
 
 ```sh
 sudo systemctl enable --now portunus-standalone

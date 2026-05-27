@@ -48,7 +48,8 @@ For a real Linux host, jump to [Install](#install).
 
 Pick one of three paths. The **installer** is the recommended path on
 Linux servers — it handles user, directories, file permissions, and
-the systemd unit for you.
+the systemd unit for you. A plain `standalone` install means
+**binary + systemd**; you do not need to pass `--systemd`.
 
 ### Option A: Installer (binary + systemd)
 
@@ -74,10 +75,12 @@ What this does, in order:
    [`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)
    (`LimitNOFILE=65535`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`,
    `ProtectSystem=strict`, `NoNewPrivileges=true`, …).
-7. Prints next-step hints.
+7. Reloads systemd so the unit is immediately visible to `systemctl`.
+8. Prints next-step hints.
 
-The installer does **not** auto-start the service. After editing
-`/etc/portunus/standalone.toml`:
+The installer deliberately does **not** auto-start the service, because
+the first `/etc/portunus/standalone.toml` is a starter template with
+example upstream targets. After editing it:
 
 ```sh
 sudo systemctl enable --now portunus-standalone

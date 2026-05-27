@@ -101,6 +101,7 @@ MSG_EN=(
   [need_role]="role required: client, server, or standalone"
   [no_install_found]="No Portunus install detected (no .install-meta and no probe match)."
   [done_next]="Done. Next steps:"
+  [next_standalone_config]="  edit:    sudoedit /etc/portunus/standalone.toml"
   [next_systemd]="  start:   sudo systemctl enable --now portunus-%s"
   [next_docker]="  manage:  (cd %s && docker compose ps)"
   [next_status]="  status:  install.sh status"
@@ -173,6 +174,7 @@ MSG_ZH=(
   [need_role]="请指定角色：client、server 或 standalone"
   [no_install_found]="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。"
   [done_next]="安装完成，后续步骤："
+  [next_standalone_config]="  编辑配置：sudoedit /etc/portunus/standalone.toml"
   [next_systemd]="  启动服务：sudo systemctl enable --now portunus-%s"
   [next_docker]="  查看容器：cd %s && docker compose ps"
   [next_status]="  查看状态：install.sh status"
@@ -417,6 +419,7 @@ install_systemd_unit() {
   if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
     echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
   fi
+  maybe_sudo "/etc/systemd/system"
   local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
   if [ "$ROLE" = "standalone" ]; then
     # Use the hardened contrib unit verbatim; user edits live in
@@ -436,17 +439,18 @@ install_systemd_unit() {
     curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
   fi
   if [ "$ROLE" = "client" ]; then
-    id portunus-client >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
-    sudo install -d -o root -g portunus-client -m 0750 /etc/portunus
+    id portunus-client >/dev/null 2>&1 || ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
+    ${SUDO:-} install -d -o root -g portunus-client -m 0750 /etc/portunus
   elif [ "$ROLE" = "standalone" ]; then
     # User and /etc/portunus already handled in install_binary(); only
     # the systemd unit file remains here.
     :
   else
-    id portunus-server >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
-    sudo install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
+    id portunus-server >/dev/null 2>&1 || ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
+    ${SUDO:-} install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
   fi
-  sudo install -m 0644 "$tmp/$unit" "/etc/systemd/system/$unit"
+  ${SUDO:-} install -m 0644 "$tmp/$unit" "/etc/systemd/system/$unit"
+  ${SUDO:-} systemctl daemon-reload || true
 }
 
 # ─── Server config (drop-in / .env) ───────────────────────────────────
@@ -479,6 +483,7 @@ print_next_steps() {
   if [ "${DEPLOY:-binary}" = "docker" ]; then
     t next_docker "${COMPOSE_DIR:-$PWD}"; echo
   else
+    [ "$ROLE" = "standalone" ] && { t next_standalone_config; echo; }
     t next_systemd "$ROLE"; echo
   fi
   t next_status; echo
@@ -635,6 +640,7 @@ main() {
   resolve_version_static
   [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
   apply_advertised_default
+  apply_install_defaults
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
     case "$VERB" in
@@ -879,6 +885,19 @@ apply_advertised_default() {
   ADVERTISED="${DOMAIN}:7443"
   ADVERTISED_FROM_DOMAIN=yes
   return 0
+}
+
+apply_install_defaults() {
+  [ "${VERB:-install}" = "install" ] || return 0
+  [ -n "${ROLE:-}" ] || return 0
+  if [ -z "${DEPLOY:-}" ]; then
+    DEPLOY="binary"
+    [ "$ROLE" = "standalone" ] && WANT_SYSTEMD="yes"
+    return 0
+  fi
+  if [ "$ROLE" = "standalone" ] && [ "$DEPLOY" = "binary" ]; then
+    WANT_SYSTEMD="yes"
+  fi
 }
 
 wizard_install() {
