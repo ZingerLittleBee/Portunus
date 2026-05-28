@@ -278,6 +278,7 @@ fn collect_process_info() -> ProcessSnap {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
 fn read_rlimit_nofile_soft() -> Option<u64> {
     // SAFETY: `getrlimit` is a pure syscall with no memory hazards when
     // given a valid mutable pointer to an initialised `rlimit`.
