@@ -328,6 +328,7 @@ async fn flush_run<R: Resolve + 'static>(
                     }
                     Err(e) => match classify_udp_error(&e) {
                         UdpAction::Evict => {
+                            cfg.stats.errors.inc_icmp_evict();
                             info!(
                                 event = "rule.udp_flow_evicted_icmp",
                                 rule_id = %cfg.rule_id,
@@ -340,6 +341,7 @@ async fn flush_run<R: Resolve + 'static>(
                             flow.cancel.cancel();
                         }
                         UdpAction::MessageTooLarge => {
+                            cfg.stats.errors.inc_emsgsize();
                             debug!(
                                 event = "rule.udp_emsgsize",
                                 rule_id = %cfg.rule_id,
@@ -383,6 +385,7 @@ async fn flush_run<R: Resolve + 'static>(
             }
             match classify_udp_error(&e) {
                 UdpAction::Evict => {
+                    cfg.stats.errors.inc_icmp_evict();
                     info!(
                         event = "rule.udp_flow_evicted_icmp",
                         rule_id = %cfg.rule_id,
@@ -396,6 +399,7 @@ async fn flush_run<R: Resolve + 'static>(
                     flow.cancel.cancel();
                 }
                 UdpAction::MessageTooLarge => {
+                    cfg.stats.errors.inc_emsgsize();
                     debug!(
                         event = "rule.udp_emsgsize",
                         rule_id = %cfg.rule_id,
@@ -469,6 +473,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                 }
                 Err(e) => match classify_udp_error(&e) {
                     UdpAction::Evict => {
+                        cfg.stats.errors.inc_icmp_evict();
                         info!(
                             event = "rule.udp_flow_evicted_icmp",
                             rule_id = %cfg.rule_id,
@@ -480,6 +485,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                         flow.cancel.cancel();
                     }
                     UdpAction::MessageTooLarge => {
+                        cfg.stats.errors.inc_emsgsize();
                         debug!(
                             event = "rule.udp_emsgsize",
                             rule_id = %cfg.rule_id,
@@ -622,6 +628,7 @@ async fn handle_datagram<R: Resolve + 'static>(
                 break;
             }
             Err(e) => {
+                cfg.stats.errors.inc_upstream_connect_failed();
                 warn!(
                     event = "rule.udp_upstream_connect_failed",
                     rule_id = %cfg.rule_id,
@@ -665,6 +672,7 @@ async fn handle_datagram<R: Resolve + 'static>(
         key,
         flow: Arc::clone(&flow),
     }) {
+        cfg.stats.errors.inc_addflow_dropped();
         warn!(
             event = "rule.udp_addflow_dropped",
             rule_id = %cfg.rule_id,
@@ -701,6 +709,7 @@ async fn handle_datagram<R: Resolve + 'static>(
         }
         Err(e) => match classify_udp_error(&e) {
             UdpAction::Evict => {
+                cfg.stats.errors.inc_icmp_evict();
                 info!(
                     event = "rule.udp_flow_evicted_icmp",
                     rule_id = %cfg.rule_id,
