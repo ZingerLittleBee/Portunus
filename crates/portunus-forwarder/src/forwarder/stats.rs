@@ -97,6 +97,74 @@ pub struct PerPortCounters {
     pub datagrams_out: AtomicU64,
 }
 
+/// 015-standalone-stats-tui: per-rule failure event counters.
+/// Each `AtomicU64` is bumped from the existing `tracing::warn!` /
+/// `tracing::info!` call site for the matching event name. Counters
+/// are cumulative since the rule was activated.
+#[derive(Debug, Default)]
+pub struct ErrorCounters {
+    /// `rule.failed` (port_in_use) — TCP bind failure.
+    pub port_in_use: AtomicU64,
+    /// `rule.udp_upstream_connect_failed` — connect(2) on a UDP
+    /// upstream socket failed before the flow was installed.
+    pub upstream_connect_failed: AtomicU64,
+    /// `rule.udp_flow_evicted_icmp` — kernel returned an ICMP
+    /// error on the connected upstream socket; flow evicted.
+    pub icmp_evict: AtomicU64,
+    /// `rule.udp_emsgsize` — datagram too large for the path MTU.
+    pub emsgsize: AtomicU64,
+    /// `rule.udp_reply_wouldblock` — reply send_to returned
+    /// WouldBlock; datagram dropped.
+    pub wouldblock: AtomicU64,
+    /// `rule.udp_addflow_dropped` — new-flow datagram dropped
+    /// because the per-rule flow table is at capacity.
+    pub addflow_dropped: AtomicU64,
+}
+
+impl ErrorCounters {
+    pub fn inc_port_in_use(&self) {
+        self.port_in_use.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_upstream_connect_failed(&self) {
+        self.upstream_connect_failed.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_icmp_evict(&self) {
+        self.icmp_evict.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_emsgsize(&self) {
+        self.emsgsize.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_wouldblock(&self) {
+        self.wouldblock.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_addflow_dropped(&self) {
+        self.addflow_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Snapshot all six counters at once.
+    #[must_use]
+    pub fn snapshot(&self) -> ErrorSnapshot {
+        ErrorSnapshot {
+            port_in_use: self.port_in_use.load(Ordering::Relaxed),
+            upstream_connect_failed: self.upstream_connect_failed.load(Ordering::Relaxed),
+            icmp_evict: self.icmp_evict.load(Ordering::Relaxed),
+            emsgsize: self.emsgsize.load(Ordering::Relaxed),
+            wouldblock: self.wouldblock.load(Ordering::Relaxed),
+            addflow_dropped: self.addflow_dropped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ErrorSnapshot {
+    pub port_in_use: u64,
+    pub upstream_connect_failed: u64,
+    pub icmp_evict: u64,
+    pub emsgsize: u64,
+    pub wouldblock: u64,
+    pub addflow_dropped: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct RuleStats {
     pub bytes_in: AtomicU64,
@@ -106,6 +174,9 @@ pub struct RuleStats {
     /// connections per rule. UDP rules carry the field but never
     /// increment it (use `datagrams_in` / `flows_active` instead).
     pub connections_total: AtomicU64,
+    /// 015-standalone-stats-tui: failure-event counters paired with
+    /// existing tracing call sites.
+    pub errors: ErrorCounters,
     /// 003-domain-name-forward (FR-008): monotonic count of end-user
     /// connections that ultimately failed to dial because of DNS —
     /// either resolution returned an error, the answer was empty, or
@@ -177,6 +248,7 @@ impl RuleStats {
             bytes_out: AtomicU64::new(0),
             active_connections: AtomicU32::new(0),
             connections_total: AtomicU64::new(0),
+            errors: ErrorCounters::default(),
             dns_failures: AtomicU64::new(0),
             datagrams_in: AtomicU64::new(0),
             datagrams_out: AtomicU64::new(0),
@@ -562,5 +634,17 @@ mod tests {
             "single-port rule still allocates one per-port slot"
         );
         assert_eq!(snap.per_port[0].listen_port, 8080);
+    }
+
+    #[test]
+    fn error_counters_default_zero_and_bump() {
+        let s = RuleStats::new();
+        assert_eq!(s.errors.port_in_use.load(Ordering::Relaxed), 0);
+        assert_eq!(s.errors.upstream_connect_failed.load(Ordering::Relaxed), 0);
+        s.errors.inc_port_in_use();
+        s.errors.inc_upstream_connect_failed();
+        s.errors.inc_upstream_connect_failed();
+        assert_eq!(s.errors.port_in_use.load(Ordering::Relaxed), 1);
+        assert_eq!(s.errors.upstream_connect_failed.load(Ordering::Relaxed), 2);
     }
 }
