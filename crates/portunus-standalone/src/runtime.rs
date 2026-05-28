@@ -11,12 +11,55 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, ParsedRule};
 use crate::reporter::spawn_standalone_reporter;
 use crate::signal::install_standalone_signal_handler;
+use crate::stats;
+
+// ---------------------------------------------------------------------------
+// Helpers for building stats metadata from a ParsedRule
+// ---------------------------------------------------------------------------
+
+fn format_listen(rule: &ParsedRule) -> String {
+    let start = rule.listen_range.start();
+    let end = rule.listen_range.end();
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    }
+}
+
+fn collect_targets(rule: &ParsedRule) -> Vec<stats::server::TargetMetaStatic> {
+    if rule.targets.is_empty() {
+        // Single-target rule: synthesise one entry from target_host / target_range.
+        vec![stats::server::TargetMetaStatic {
+            host: rule.target_host.clone(),
+            port: rule.target_range.start(),
+            priority: 0,
+            proxy_protocol: None,
+        }]
+    } else {
+        rule.targets
+            .iter()
+            .map(|mt| {
+                let pp = mt.spec.proxy_protocol.as_ref().map(|p| match p {
+                    portunus_core::ProxyProtocolVersion::V1 => "v1".to_string(),
+                    portunus_core::ProxyProtocolVersion::V2 => "v2".to_string(),
+                });
+                stats::server::TargetMetaStatic {
+                    host: mt.spec.host.clone(),
+                    port: mt.spec.port,
+                    priority: mt.spec.priority,
+                    proxy_protocol: pp,
+                }
+            })
+            .collect()
+    }
+}
 
 #[allow(clippy::too_many_lines, clippy::implicit_hasher)] // internal API; callers always use std HashMap
-pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
+pub async fn run(mut cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
     let registry = Arc::new(registry);
     let shutdown = Shutdown::new();
 
@@ -42,7 +85,11 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
     log_fd_limit();
 
     let drain = Duration::from_secs(cfg.global.shutdown_drain_secs);
+    // Take stats config before cfg is consumed by into_iter_rules.
+    let stats_cfg = std::mem::take(&mut cfg.stats);
     let rule_stats_handles: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let rule_entries: stats::server::Registry =
         Arc::new(RwLock::new(HashMap::new()));
     let reporter_handle = spawn_standalone_reporter(
         Arc::clone(&rule_stats_handles),
@@ -73,6 +120,22 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
 
     for parsed in rules_iter {
         let rule_id = parsed.rule_id;
+        // Extract stats server metadata before consuming parsed.
+        let rule_meta = stats::server::RuleMetaStatic {
+            name: parsed.name.clone(),
+            proto: match parsed.protocol {
+                portunus_core::Protocol::Tcp => "tcp".into(),
+                portunus_core::Protocol::Udp => "udp".into(),
+            },
+            listen: format_listen(&parsed),
+            targets: collect_targets(&parsed),
+            splice_capable: matches!(parsed.protocol, portunus_core::Protocol::Tcp),
+            udp_max_flows: if matches!(parsed.protocol, portunus_core::Protocol::Udp) {
+                Some(parsed.udp_max_flows)
+            } else {
+                None
+            },
+        };
         let mut rule = parsed.into_client_rule();
         let listen_range = rule.listen_range; // PortRange: Copy
         // for_range already returns Arc<RuleStats>
@@ -107,6 +170,15 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
                 );
             }
         }
+        if let Ok(mut g) = rule_entries.write() {
+            g.insert(
+                rule_id,
+                stats::server::RuleEntry {
+                    stats: Arc::clone(&stats),
+                    meta: rule_meta,
+                },
+            );
+        }
         joinset.spawn(run_forwarder(
             rule,
             Arc::clone(&resolver),
@@ -117,6 +189,37 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
         ));
     }
     drop(status_tx);
+
+    // ─── Stats server ───
+    let stats_handle = if stats_cfg.enabled {
+        // u128 → u64: wall-clock ms since epoch fits comfortably in u64
+        // for centuries; truncation is intentional.
+        #[allow(clippy::cast_possible_truncation)]
+        let daemon_started_at_ms: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let refresh = Duration::from_millis(stats_cfg.refresh_ms);
+        match stats::server::spawn(
+            stats_cfg.socket_path.clone(),
+            Arc::clone(&rule_entries),
+            refresh,
+            daemon_started_at_ms,
+            shutdown.token(),
+        ) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                error!(
+                    event = "standalone.stats_socket_bind_failed",
+                    path = %stats_cfg.socket_path.display(),
+                    error = %e,
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // ─── Startup gate ───
     let mut pending = expected;
@@ -146,6 +249,9 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
         shutdown.trigger();
         while joinset.join_next().await.is_some() {}
         let _ = reporter_handle.await;
+        if let Some(h) = stats_handle {
+            let _ = h.await;
+        }
         let _ = signal_task.await;
         return ExitCode::from(1);
     }
@@ -202,6 +308,9 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
         shutdown.trigger();
     }
     let _ = reporter_handle.await;
+    if let Some(h) = stats_handle {
+        let _ = h.await;
+    }
     let _ = signal_task.await;
     info!(event = "standalone.stopped");
     if fatal_flag {
