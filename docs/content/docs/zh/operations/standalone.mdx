@@ -314,6 +314,59 @@ nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log
 每条连接关闭时，转发器会输出 `rule.conn_closed`，包含非零的
 `bytes_in` / `bytes_out`。
 
+## 实时流量面板
+
+`portunus-standalone stats` 是一个 TUI 看板，通过 Unix 域 socket
+从运行中的 daemon 流式获取每条规则的实时计数器。无 HTTP、无
+Prometheus、无额外进程——只是同一个二进制的子命令。
+
+```sh
+# 交互式 TUI：
+portunus-standalone stats
+
+# 一次性 JSON 快照（脚本场景）：
+portunus-standalone stats --once | jq '.snapshot.r[] | {id, in, out, conns_active}'
+```
+
+Docker 安装：
+
+```sh
+docker exec -it portunus-standalone portunus-standalone stats
+```
+
+三个标签页：
+
+- **Overview** —— 每规则一行：当前 in/out 速率、活跃连接、UDP flow 数。
+- **Detail** —— 选中规则的 60s sparkline + 累计字节数 +（UDP）按
+  `udp_max_flows` 显示的饱和 gauge。
+- **Errors** —— 每条规则的非零失败累计计数（`port_in_use`、
+  `upstream_connect_failed`、`icmp_evict`、`emsgsize`、`wouldblock`、
+  `addflow_dropped`、`dns_failures`、`flows_dropped_overflow`）。
+
+键位：`q` 退出，`?` 帮助，`Tab`/`h`/`l`/`←`/`→` 切 tab，`↑↓jk` 选行，
+`p` 暂停，`s` 切排序，`r` 翻转排序方向，`/` 过滤，`c` 重置基线。
+
+### 配置
+
+```toml
+[stats]
+enabled     = true                                # 默认 true
+socket_path = "/run/portunus/standalone.sock"     # Linux 默认
+refresh_ms  = 1000                                # 250..=5000
+```
+
+daemon CLI 覆盖：`--no-stats`、`--stats-socket <PATH>`。
+
+TUI 客户端按平台选默认 socket：
+
+- Linux → `/run/portunus/standalone.sock`（shipped systemd unit 的
+  `RuntimeDirectory=portunus` 会自动创建）
+- macOS → `$TMPDIR/portunus-standalone.sock`
+- 都不合适时用 `--socket <PATH>` 覆盖。
+
+快照频率由 daemon 决定，client 没有请求通道。要改频率得编辑
+`[stats] refresh_ms` 后重启 daemon。
+
 ## 可观测性
 
 `portunus-standalone` 默认以 JSON 格式写 **stderr**（本地迭代时可切换到
