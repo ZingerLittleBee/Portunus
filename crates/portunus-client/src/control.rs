@@ -667,6 +667,11 @@ fn handle_server_message(
             } else {
                 Some(rule.health_check_interval_secs)
             };
+            // Range-aware stats constructed early so the target_failovers_total
+            // Arc can be shared with multi_target_obs below (015-standalone-stats-tui).
+            // The SNI path gets its own stats from apply_push; this value is used
+            // by the legacy/multi-target/UDP/range path at the bottom.
+            let early_stats = RuleStats::for_range(listen_range);
             // T033: build the per-target observability for multi-target
             // rules ONCE, here. The same Arc lands in both the
             // failover_path task (mutator) and the RuleSlot below
@@ -689,8 +694,8 @@ fn handle_server_message(
                 );
                 Some(std::sync::Arc::new(
                     portunus_forwarder::forwarder::MultiTargetObservability {
-                        target_failovers_total: std::sync::Arc::new(
-                            std::sync::atomic::AtomicU64::new(0),
+                        target_failovers_total: Arc::clone(
+                            &early_stats.target_failovers_total,
                         ),
                         states,
                     },
@@ -866,7 +871,8 @@ fn handle_server_message(
             // `listen_range`. Single-port rules get a single-element
             // per-port slot — the wire emit logic in
             // `send_stats_report` strips it for backwards compat.
-            let stats = RuleStats::for_range(listen_range);
+            // Reuse early_stats (constructed above for multi_target_obs Arc sharing).
+            let stats = early_stats;
             let task_stats = Arc::clone(&stats);
             tokio::spawn(async move {
                 forwarder::run(

@@ -218,6 +218,12 @@ pub struct RuleStats {
     pub sni_route_exact_total: Arc<AtomicU64>,
     pub sni_route_wildcard_total: Arc<AtomicU64>,
     pub sni_route_fallback_total: Arc<AtomicU64>,
+    /// 015-standalone-stats-tui: aggregate count of failover events
+    /// across the rule's target list. Always present; for
+    /// single-target rules the counter stays 0. The `Arc` is shared
+    /// with the failover supervisor in `failover_path.rs` so both
+    /// the failover hot path and the stats server observe one value.
+    pub target_failovers_total: Arc<AtomicU64>,
 }
 
 impl RuleStats {
@@ -258,6 +264,7 @@ impl RuleStats {
             sni_route_exact_total: Arc::new(AtomicU64::new(0)),
             sni_route_wildcard_total: Arc::new(AtomicU64::new(0)),
             sni_route_fallback_total: Arc::new(AtomicU64::new(0)),
+            target_failovers_total: Arc::new(AtomicU64::new(0)),
         })
     }
 

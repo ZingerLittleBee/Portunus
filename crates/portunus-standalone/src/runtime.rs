@@ -74,26 +74,27 @@ pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
     for parsed in rules_iter {
         let rule_id = parsed.rule_id;
         let mut rule = parsed.into_client_rule();
+        let listen_range = rule.listen_range; // PortRange: Copy
+        // for_range already returns Arc<RuleStats>
+        let stats = RuleStats::for_range(listen_range);
         // Wire up multi_target_obs for multi-target rules so that
         // failover_path::run_tcp can find the per-target health state.
         // Single-target rules leave multi_target_obs = None (hot path).
+        // The target_failovers_total Arc is cloned from RuleStats so
+        // the stats server can read it without plumbing failover state.
         if !rule.targets.is_empty() {
             use portunus_forwarder::MultiTargetObservability;
             use portunus_forwarder::forwarder::failover::HealthState;
-            use std::sync::atomic::AtomicU64;
-            let states: Vec<_> = rule
+            let health_states: Vec<_> = rule
                 .targets
                 .iter()
                 .map(|_| tokio::sync::Mutex::new(HealthState::new()))
                 .collect();
             rule.multi_target_obs = Some(std::sync::Arc::new(MultiTargetObservability {
-                target_failovers_total: std::sync::Arc::new(AtomicU64::new(0)),
-                states: std::sync::Arc::new(states),
+                target_failovers_total: Arc::clone(&stats.target_failovers_total),
+                states: std::sync::Arc::new(health_states),
             }));
         }
-        let listen_range = rule.listen_range; // PortRange: Copy
-        // for_range already returns Arc<RuleStats>
-        let stats = RuleStats::for_range(listen_range);
         match stats_for_main.write() {
             Ok(mut g) => {
                 g.insert(rule_id, Arc::clone(&stats));
