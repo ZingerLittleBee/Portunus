@@ -70,12 +70,22 @@ fn bind_port(port: u16) -> io::Result<Vec<TcpListener>> {
 fn bind_ipv6(port: u16) -> io::Result<TcpListener> {
     let socket = TcpSocket::new_v6()?;
     set_ipv6_only(&socket)?;
+    // SO_REUSEADDR: without this, accept()-ed child sockets sitting in
+    // TIME_WAIT after process death keep the local port reserved for
+    // ~tcp_fin_timeout (60s default), so a restart of the listener
+    // hits EADDRINUSE even though no LISTEN socket is held. On Linux
+    // SO_REUSEADDR only relaxes TIME_WAIT bind — it does NOT allow two
+    // concurrent LISTEN sockets on the same address (that needs
+    // SO_REUSEPORT), so the "duplicate rule" detection in tests still
+    // observes EADDRINUSE as expected.
+    socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))?;
     socket.listen(1024)
 }
 
 fn bind_ipv4(port: u16) -> io::Result<TcpListener> {
     let socket = TcpSocket::new_v4()?;
+    socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))?;
     socket.listen(1024)
 }

@@ -13,12 +13,21 @@ ARG TARGETARCH
 FROM debian:12-slim AS abi-check
 ARG TARGETARCH
 COPY docker-bin/${TARGETARCH}/portunus-standalone /usr/local/bin/portunus-standalone
-RUN /usr/local/bin/portunus-standalone --version
+# Stage the stats UDS parent directory with the nonroot UID baked in so
+# the final distroless image (which has no shell / mkdir / chown) can
+# COPY it into place. Without this, the default `[stats]` socket path
+# `/run/portunus/standalone.sock` errors at startup with EACCES because
+# the `nonroot` user can't create `/run/portunus/` itself.
+RUN /usr/local/bin/portunus-standalone --version \
+ && mkdir -p /tmp/run-portunus \
+ && chown 65532:65532 /tmp/run-portunus \
+ && chmod 0755 /tmp/run-portunus
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 ARG TARGETARCH
 COPY --from=abi-check /usr/local/bin/portunus-standalone /usr/local/bin/portunus-standalone
+COPY --from=abi-check --chown=65532:65532 /tmp/run-portunus /run/portunus
 
 # Forwarding rules in /etc/portunus/standalone.toml may bind any port
 # the kernel allows. Host networking (or explicit `-p` per rule) is

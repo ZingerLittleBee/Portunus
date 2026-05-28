@@ -428,6 +428,58 @@ impl RuleStats {
 
 use portunus_core::RuleId;
 
+/// Per-connection live-stats hook for incremental byte tallying.
+///
+/// Without this, `RuleStats::bytes_in/out` is only updated at the end of
+/// each connection (the `copy_bidirectional` return value is recorded
+/// in a single batch by `proxy::proxy_with_preread_and_prelude`). For
+/// short-lived connections that's fine, but for long-lived TCP flows
+/// (common: SSH, gRPC streams, websockets, anything keep-alive) the
+/// gauge stays at 0 until the connection closes, breaking the standalone
+/// reporter's rate display and the v0.15 stats TUI.
+///
+/// Copy paths that want live updates create a `LiveBytesSink` (cloning
+/// the rule's `Arc<RuleStats>`) and call `record_in` / `record_out` per
+/// chunk. The sink also tracks the running total so the proxy caller
+/// can subtract it from the final `(bytes_in, bytes_out)` to avoid
+/// double-counting in the post-copy batch record.
+pub struct LiveBytesSink {
+    stats: Arc<RuleStats>,
+    listen_port: u16,
+    recorded_in: AtomicU64,
+    recorded_out: AtomicU64,
+}
+
+impl LiveBytesSink {
+    #[must_use]
+    pub fn new(stats: Arc<RuleStats>, listen_port: u16) -> Self {
+        Self {
+            stats,
+            listen_port,
+            recorded_in: AtomicU64::new(0),
+            recorded_out: AtomicU64::new(0),
+        }
+    }
+
+    pub fn record_in(&self, n: u64) {
+        self.recorded_in.fetch_add(n, Ordering::Relaxed);
+        self.stats.record_in(self.listen_port, n);
+    }
+
+    pub fn record_out(&self, n: u64) {
+        self.recorded_out.fetch_add(n, Ordering::Relaxed);
+        self.stats.record_out(self.listen_port, n);
+    }
+
+    #[must_use]
+    pub fn snapshot_recorded(&self) -> (u64, u64) {
+        (
+            self.recorded_in.load(Ordering::Relaxed),
+            self.recorded_out.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// Per-port detail for range rules. Single-port rules still emit one slot
 /// for symmetry. Empty `per_port` keeps proto3 default-strip semantics
 /// at the wire-translation layer.
