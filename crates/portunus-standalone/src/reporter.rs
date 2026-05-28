@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
+#[allow(clippy::implicit_hasher)] // internal API; callers always use std HashMap
 pub fn spawn_standalone_reporter(
     rule_stats: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>>,
     registry: Arc<HashMap<RuleId, String>>,

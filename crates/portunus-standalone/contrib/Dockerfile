@@ -16,11 +16,15 @@ WORKDIR /usr/src/portunus
 # only re-link portunus-standalone when its sources change.
 COPY . .
 RUN cargo build --release -p portunus-standalone \
- && strip target/release/portunus-standalone
+ && strip target/release/portunus-standalone \
+ && mkdir -p /tmp/run-portunus \
+ && chown 65532:65532 /tmp/run-portunus \
+ && chmod 0755 /tmp/run-portunus
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /usr/src/portunus/target/release/portunus-standalone \
      /usr/local/bin/portunus-standalone
+COPY --from=builder --chown=65532:65532 /tmp/run-portunus /run/portunus
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/portunus-standalone"]
 CMD ["--config", "/etc/portunus/standalone.toml"]

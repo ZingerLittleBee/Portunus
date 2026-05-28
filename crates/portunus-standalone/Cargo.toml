@@ -10,6 +10,14 @@ description = "Standalone TOML-driven TCP/UDP forwarder (no gRPC control plane).
 [lints]
 workspace = true
 
+[features]
+default   = ["stats-tui"]
+stats-tui = ["dep:ratatui", "dep:crossterm"]
+
+[lib]
+name = "portunus_standalone"
+path = "src/lib.rs"
+
 [[bin]]
 name = "portunus-standalone"
 path = "src/main.rs"
@@ -27,6 +35,9 @@ thiserror          = { workspace = true }
 toml               = { workspace = true }
 blake3             = { workspace = true }
 libc               = "0.2"
+serde_json         = { workspace = true }
+ratatui            = { workspace = true, optional = true }
+crossterm          = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_cmd  = { workspace = true }

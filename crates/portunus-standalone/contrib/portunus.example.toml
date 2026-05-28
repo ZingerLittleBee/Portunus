@@ -13,6 +13,16 @@ log_level          = "info"
 log_format         = "json"
 shutdown_drain_secs = 30
 
+# ─────────── Stats UDS (optional; default ON) ───────────
+# A daemon-local Unix-domain socket streams per-rule traffic snapshots.
+# Use `portunus-standalone stats` to view the live TUI dashboard, or
+# `portunus-standalone stats --once` for a one-shot JSON dump.
+#
+# [stats]
+# enabled     = true
+# socket_path = "/run/portunus/standalone.sock"
+# refresh_ms  = 1000
+
 [defaults]
 udp_max_flows      = 1024
 udp_flow_idle_secs = 60

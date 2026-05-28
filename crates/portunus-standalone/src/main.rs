@@ -1,7 +1,4 @@
-mod config;
-mod reporter;
-mod runtime;
-mod signal;
+use portunus_standalone::{config, runtime};
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -19,7 +16,7 @@ use config::derive_rule_id;
 struct Cli {
     /// Path to standalone.toml. If omitted, the loader searches
     /// $PORTUNUS_STANDALONE_CONFIG, ./portunus.toml.
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     config: Option<std::path::PathBuf>,
 
     /// Validate config and exit (0 = valid, 2 = invalid).
@@ -27,18 +24,47 @@ struct Cli {
     check: bool,
 
     /// Override log level (e.g. debug, info, warn, error).
-    #[arg(long)]
+    #[arg(long, global = true)]
     log_level: Option<String>,
 
     /// Override log format: "json" (default) or "pretty".
-    #[arg(long)]
+    #[arg(long, global = true)]
     log_format: Option<String>,
+
+    /// Disable the [stats] UDS server entirely (daemon mode only).
+    #[arg(long)]
+    no_stats: bool,
+
+    /// Override [stats] socket_path (daemon mode only).
+    #[arg(long)]
+    stats_socket: Option<std::path::PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Subcommand>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Subcommand {
+    /// Connect to a running daemon's stats UDS and render a TUI.
+    Stats {
+        /// Path to the stats UDS (overrides daemon default).
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+        /// Print one snapshot as JSON and exit (no TUI).
+        #[arg(long)]
+        once: bool,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let cfg = match cli.config.as_deref() {
+    // Stats subcommand: connect to a running daemon and render / dump.
+    if let Some(Subcommand::Stats { socket, once }) = &cli.command {
+        return run_stats(socket.clone(), *once);
+    }
+
+    let mut cfg = match cli.config.as_deref() {
         Some(p) => match config::Config::load_from(p) {
             Ok(c) => c,
             Err(e) => {
@@ -54,6 +80,14 @@ fn main() -> ExitCode {
             }
         },
     };
+
+    // Apply daemon-only CLI overrides before validation.
+    if cli.no_stats {
+        cfg.stats.enabled = false;
+    }
+    if let Some(ref p) = cli.stats_socket {
+        cfg.stats.socket_path.clone_from(p);
+    }
 
     if let Err(e) = cfg.validate() {
         eprintln!("error: {e}");
@@ -85,6 +119,66 @@ fn main() -> ExitCode {
         }
     };
     rt.block_on(runtime::run(cfg, registry))
+}
+
+fn run_stats(socket: Option<std::path::PathBuf>, once: bool) -> ExitCode {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async move {
+        let path = match socket {
+            Some(p) => p,
+            None => default_stats_socket_path_runtime(),
+        };
+        if once {
+            match portunus_standalone::stats::client::once(&path).await {
+                Ok(s) => {
+                    println!("{s}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: stats --once: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        } else {
+            #[cfg(feature = "stats-tui")]
+            {
+                portunus_standalone::stats::tui::run(&path).await
+            }
+            #[cfg(not(feature = "stats-tui"))]
+            {
+                eprintln!(
+                    "error: this build was compiled without --features stats-tui; only `stats --once` is available"
+                );
+                ExitCode::from(2)
+            }
+        }
+    })
+}
+
+/// Default stats socket path for the client side (no config file loaded).
+/// Mirrors `config::default_stats_socket_path`. Duplicated here because
+/// `stats --socket` may be invoked without `--config`.
+fn default_stats_socket_path_runtime() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/run/portunus/standalone.sock")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let base = std::env::var_os("TMPDIR").map_or_else(
+            || std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from,
+        );
+        base.join("portunus-standalone.sock")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        std::path::PathBuf::from("portunus-standalone.sock")
+    }
 }
 
 fn init_tracing(cli: &Cli, cfg: &config::Config) {

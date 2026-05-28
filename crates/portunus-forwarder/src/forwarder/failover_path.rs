@@ -66,6 +66,7 @@ pub async fn run_tcp<R: Resolve + 'static>(
             offending_port,
             reason,
         }) => {
+            stats.errors.inc_port_in_use();
             warn!(
                 event = "rule.failed",
                 rule_id = %rule.rule_id,
@@ -285,6 +286,7 @@ async fn accept_loop<R: Resolve + 'static>(
                         }
                     };
 
+                    stats.inc_connection();
                     let conn_cancel = proxy_cancel.clone();
                     let conn_resolver = Arc::clone(&resolver);
                     let conn_targets = targets.clone();
@@ -658,6 +660,7 @@ pub async fn run_udp<R: Resolve + 'static>(
                 } else {
                     format!("port_in_use:{port}")
                 };
+                stats.errors.inc_port_in_use();
                 warn!(
                     event = "rule.failed",
                     rule_id = %rule.rule_id,

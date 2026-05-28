@@ -8,47 +8,51 @@ icon: Cpu
 `portunus-client` 共享同一套数据面代码，但无需运行 `portunus-server` ——
 适用于单机部署、边缘设备以及不需要控制面服务器的场景。
 
-## 快速上手（本地试跑）
-
-适合本地开发或快速冒烟测试：
-
-```sh
-cargo build --release -p portunus-standalone
-# →  target/release/portunus-standalone
-```
-
-创建一个最简配置 `portunus.toml`：
-
-```toml
-[[rule]]
-name = "ssh"
-protocol = "tcp"
-listen_port = 2222
-target = "10.0.0.5:22"
-```
-
-运行：
-
-```sh
-./target/release/portunus-standalone --config portunus.toml
-```
-
-仅验证配置，不启动服务：
-
-```sh
-./target/release/portunus-standalone --check --config portunus.toml
-# 配置合法时打印 "ok" 并以 0 退出，配置有误时以 2 退出
-```
-
-需要部署到 Linux 服务器请直接看 [安装](#安装)。
-
 ## 安装
 
-下面三种路径任选其一。**Installer** 是 Linux 服务器上的推荐方式 ——
-帮你处理系统用户、目录、文件权限、systemd unit。直接安装
-`standalone` 默认就是 **二进制 + systemd**，不需要额外传 `--systemd`。
+只有两种受支持的安装方式：容器宿主选 **Docker**，普通 Linux + systemd 选
+**一键脚本**。
 
-### 方式 A：Installer（二进制 + systemd）
+### Docker
+
+每次发布都会向 GHCR 推送多架构镜像
+`ghcr.io/zingerlittlebee/portunus-standalone:<version>`
+（支持 `linux/amd64`、`linux/arm64`）。
+
+```sh
+# 1. 在工作目录放一份起步配置并编辑：
+curl -fsSL -o portunus.toml \
+  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
+chmod 0644 portunus.toml
+# 用任意编辑器修改 portunus.toml（vi、nano 等）。
+${EDITOR:-vi} portunus.toml
+
+# 2. 启动容器：
+docker run -d --network host \
+  --name portunus-standalone \
+  --restart unless-stopped \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+注意事项：
+
+- 生产环境固定到具体版本（`:1.5.0` 而非 `:latest`）。
+- 容器以 **UID 65532**（`nonroot`）运行，宿主机文件必须对该 UID 可读 ——
+  `chmod 0644 portunus.toml` 是最简单的做法。如果看到
+  `error: io error: Permission denied (os error 13)` 就是这个原因。
+- `--network host` 让端口段和任意端口规则不必逐端口映射。Docker Desktop
+  或不支持 host 网络时改成 bridge 模式并显式列出端口，参考
+  [`contrib/docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)。
+- 容器**内部**路径 `/etc/portunus/standalone.toml` 是镜像默认 `CMD` 写死的，
+  宿主机路径任意。
+- `docker compose` 和 Kubernetes manifests 见
+  [`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib)。
+
+### 一键脚本（二进制 + systemd）
+
+不用 Docker 的 Linux 服务器走这条。脚本会安装二进制、创建系统用户、写入
+起步配置，以及一份加固版 systemd unit。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
@@ -56,127 +60,60 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 它依次做这些事：
 
-1. 检测 OS / 架构，解析最新 release。
-2. 下载 `portunus-<version>-<target>.tar.gz`，对照官方 checksums
-   做 SHA-256 校验。
-3. 把二进制安装到 `/usr/local/bin/portunus-standalone`（mode `0755`）。
-4. 若不存在，创建 `portunus` 系统用户/组
-   （`useradd --system --no-create-home --shell /usr/sbin/nologin`）。
-5. 创建 `/etc/portunus/` 目录，并在
-   `/etc/portunus/standalone.toml` 写入起步配置（mode `0640`，属主
-   `root:portunus`），内容来自
+1. 检测 OS / 架构，下载最新 release 产物并校验 SHA-256。
+2. 把二进制安装到 `/usr/local/bin/portunus-standalone`（mode `0755`）。
+3. 若不存在，创建 `portunus` 系统用户/组。
+4. 在 `/etc/portunus/standalone.toml` 写入起步配置（mode `0640`，
+   属主 `root:portunus`），内容来自
    [`contrib/portunus.example.toml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus.example.toml)。
-6. 在 `/etc/systemd/system/portunus-standalone.service` 写入加固版
-   unit（来自
-   [`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)），
-   含 `LimitNOFILE=65535`、`AmbientCapabilities=CAP_NET_BIND_SERVICE`、
-   `ProtectSystem=strict`、`NoNewPrivileges=true` 等。
-7. 重新加载 systemd，使 `systemctl` 立刻能看到该 unit。
-8. 打印 next-step 提示。
+5. 在 `/etc/systemd/system/portunus-standalone.service` 写入加固版
+   unit（`LimitNOFILE=65535`、`AmbientCapabilities=CAP_NET_BIND_SERVICE`、
+   `ProtectSystem=strict`、`NoNewPrivileges=true`）。
+6. 重新加载 systemd。**不会**自动启动 —— 初始配置是带示例上游的模板。
 
-Installer **不会**自动启动服务，因为首次写入的
-`/etc/portunus/standalone.toml` 是带示例上游目标的起步模板。编辑后：
+编辑配置后启动：
 
 ```sh
+sudo ${EDITOR:-vi} /etc/portunus/standalone.toml
 sudo systemctl enable --now portunus-standalone
+sudo systemctl status portunus-standalone --no-pager
 ```
 
-不带参数运行 `install.sh` 进入交互菜单，选 `3` 即 standalone。
+不带参数运行 `bash install.sh` 进入交互菜单，选 `3` 即 standalone。
 
-### 方式 B：手动安装（不用 installer）
-
-适合你不想让脚本碰你系统，或安装环境无法访问 GitHub 的场景：
-
-```sh
-# 1. 获取二进制（下载 release 产物，或在工作站交叉编译后 scp 过来 ——
-#    在小内存 VPS 上跑 cargo build 容易 OOM）：
-sudo install -m 0755 ./portunus-standalone /usr/local/bin/portunus-standalone
-
-# 2. 创建系统用户（幂等）：
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin portunus
-
-# 3. 放置配置（先下载示例再改）：
-sudo mkdir -p /etc/portunus
-sudo curl -fsSL -o /etc/portunus/standalone.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-sudo chown root:portunus /etc/portunus/standalone.toml
-sudo chmod 0640 /etc/portunus/standalone.toml
-sudo "$EDITOR" /etc/portunus/standalone.toml
-
-# 4. 安装加固版 systemd unit：
-sudo curl -fsSL -o /etc/systemd/system/portunus-standalone.service \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus-standalone.service
-sudo systemctl daemon-reload
-
-# 5. 启动：
-sudo systemctl enable --now portunus-standalone
-```
-
-启动前可以先校验配置以便快速失败：
-
-```sh
-sudo -u portunus /usr/local/bin/portunus-standalone --check \
-  --config /etc/portunus/standalone.toml
-# 合法时打印 "ok" 并以 0 退出
-```
-
-### 方式 C：容器（Docker 或 Kubernetes）
-
-从 v1.5.0 起每次发版都会推送多架构（`linux/amd64`、`linux/arm64`）
-镜像到 GHCR：`ghcr.io/zingerlittlebee/portunus-standalone:<version>`。
-
-```sh
-docker run -d --network host \
-  --name portunus-standalone \
-  -v /etc/portunus/standalone.toml:/etc/portunus/standalone.toml:ro \
-  ghcr.io/zingerlittlebee/portunus-standalone:latest
-```
-
-完整的 `docker compose`、原生 `docker run` 注意事项以及 Kubernetes
-manifest 见下方 [生产环境部署](#生产环境部署)。
-
-## 配置文件查找顺序
-
-省略 `--config` 时，按以下顺序查找：
-
-1. `$PORTUNUS_STANDALONE_CONFIG`（环境变量）
-2. `./portunus.toml`（当前工作目录）
-
-如果所有路径均不存在，打印详细错误并以 2 退出。
-
-## 配置文件结构
+## 配置 schema
 
 ```toml
-# [global] 节 — 所有字段均可选
+# [global] 段 —— 所有字段可选
 [global]
-label              = "my-forwarder"   # 人类可读标签，仅供参考
-log_level          = "info"           # tracing EnvFilter 指令（默认："info"）
+label              = "my-forwarder"   # 人类可读标签，仅作信息用途
+log_level          = "info"           # tracing EnvFilter（默认 "info"）
 log_format         = "json"           # "json"（默认）或 "pretty"
-shutdown_drain_secs = 30              # SIGTERM 后的优雅关闭等待时间（默认：30 秒）
+shutdown_drain_secs = 30              # SIGTERM 后优雅关闭的预算秒数（默认 30）
 
-# [defaults] 节 — 规则未指定字段时的默认值
+# [defaults] 段 —— 给未显式声明该字段的规则做兜底
 [defaults]
-protocol          = "tcp"    # 可选；规则仍可单独覆盖
-udp_max_flows     = 1024     # 每条规则的 UDP 流表上限（默认：1024）
-udp_flow_idle_secs = 60      # 空闲流过期时间，单位秒（默认：60）
-prefer_ipv6       = false    # 地址族偏好（默认：false，即优先 IPv4）
+protocol          = "tcp"    # 可选；规则可覆盖
+udp_max_flows     = 1024     # 每规则 UDP flow 表容量（默认 1024）
+udp_flow_idle_secs = 60      # idle flow 过期秒数（默认 60）
+prefer_ipv6       = false    # DNS 地址族偏好（默认 false）
 
-# [[rule]] — 至少需要一条
+# [[rule]] —— 至少一条
 [[rule]]
-name          = "ssh-tunnel"          # 唯一名称，用于日志输出
+name          = "ssh-tunnel"          # 唯一名，写入日志
 protocol      = "tcp"                 # "tcp" 或 "udp"
 listen_port   = 2222                  # 单端口  }  二选一
-# listen_ports = "8000-8009"          # 端口范围 }
-target        = "10.0.0.5:22"        # 单目标   }  二选一
-# targets = [...]                     # 多目标   }
-prefer_ipv6   = false                 # 每条规则的覆盖项（可选）
-udp_max_flows = 1024                  # UDP 规则的覆盖项（可选）
-udp_flow_idle_secs = 60              # UDP 规则的覆盖项（可选）
+# listen_ports = "8000-8009"          # 端口段   }
+target        = "10.0.0.5:22"        # 单目标  }  二选一
+# targets = [...]                     # 多目标  }
+prefer_ipv6   = false                 # 单规则覆盖（可选）
+udp_max_flows = 1024                  # 单规则覆盖（仅 UDP，可选）
+udp_flow_idle_secs = 60              # 单规则覆盖（仅 UDP，可选）
 ```
 
-### 端口范围
+### 端口段
 
-使用 `listen_ports` 配合 `"lo-hi"` 字符串，将连续监听端口窗口映射到目标端的同偏移窗口：
+用 `listen_ports = "lo-hi"` 把连续 listen 端口段一一对应映射到目标端口段：
 
 ```toml
 [[rule]]
@@ -186,11 +123,11 @@ listen_ports = "8000-8009"
 target       = "10.0.0.10:8000-8009"
 ```
 
-监听端口范围与目标端口范围的宽度必须相同。
+listen 和 target 端口段宽度必须一致。
 
-### 多目标故障转移
+### 多目标 failover
 
-使用 `targets` 列表形式实现按优先级排列的故障转移：
+用 `targets` 列表实现优先级 failover：
 
 ```toml
 [[rule]]
@@ -203,91 +140,47 @@ targets = [
 ]
 ```
 
-`priority` 值越小优先级越高。转发器会优先尝试优先级最高的健康目标；连接失败时按优先级顺序回退。
+`priority` 值越小优先级越高。转发器先尝试最高优先级的健康目标，连接失败时
+按优先级回落。
 
-### PROXY 协议
+### PROXY protocol
 
-在任意目标（单目标或 `targets = [...]` 列表内）设置 `proxy_protocol = "v1"` 或
-`"v2"`，可在上游连接建立前发送 PROXY 协议头，使后端获得原始客户端地址。
+在任意目标（单目标或 `targets = [...]` 中的某项）上设
+`proxy_protocol = "v1"` 或 `"v2"`，转发器会在上游连接前注入 PROXY protocol
+头。后端需要拿到原始客户端地址时用。
 
 ## CLI 参数
 
-| 参数 | 默认值 | 说明 |
+| 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `--config <PATH>` | （自动查找） | TOML 配置文件路径 |
-| `--check` | false | 仅验证配置并退出（0 = 合法，2 = 有误） |
-| `--log-level <LEVEL>` | 读取配置 | 覆盖日志级别 |
-| `--log-format <FMT>` | 读取配置 | 覆盖日志格式（`json` 或 `pretty`） |
+| `--config <PATH>` |（自动搜索）| TOML 配置文件路径 |
+| `--check` | false | 仅验证配置后退出（0 = 合法，2 = 非法）|
+| `--log-level <LEVEL>` | 取自配置 | 覆盖日志级别 |
+| `--log-format <FMT>` | 取自配置 | 覆盖日志格式（`json` 或 `pretty`）|
 
-## 信号处理
+不传 `--config` 时，按顺序搜索 `$PORTUNUS_STANDALONE_CONFIG`、
+`./portunus.toml`，都不存在时以 2 退出。
+
+## 信号
 
 | 信号 | 行为 |
 | --- | --- |
-| `SIGTERM` / `SIGINT` | 优雅关闭 — 活跃连接在 `shutdown_drain_secs` 内排空后进程以 0 退出。 |
-| `SIGHUP` | 当前版本为空操作（配置热重载尚未支持）。 |
+| `SIGTERM` / `SIGINT` | 优雅关闭 —— 已建立连接最多 drain `shutdown_drain_secs` 秒，进程以 0 退出 |
+| `SIGHUP` | 当前版本不处理（暂不支持 config reload）|
 
-附带的 systemd unit 故意没设 `ExecReload`，因此
-`systemctl reload portunus-standalone` 会报告 "Job type reload is not
-applicable" 而不是把服务杀掉。改配置请编辑 TOML 然后
+shipped 的 systemd unit 故意不写 `ExecReload`，因此
+`systemctl reload portunus-standalone` 会报 "Job type reload is not
+applicable" 而不是把服务杀掉。改 TOML 后请用
 `systemctl restart portunus-standalone`。
 
-## 安装后验证
-
-`systemctl enable --now portunus-standalone` 之后，确认规则已激活、
-数据真的在流：
-
-```sh
-# 1. 服务 active + 最近日志无错：
-systemctl status portunus-standalone --no-pager
-journalctl -u portunus-standalone -n 20 --no-pager
-```
-
-每条规则会有一条 `rule.activated` 事件：
-
-```json
-{"event":"standalone.rlimit_nofile","soft":65535,"hard":65535,…}
-{"event":"rule.activated","rule_id":"…","listen_port":2222,…,"target":"10.0.0.5:22-22"}
-```
-
-```sh
-# 2. 监听端口已绑定：
-ss -ltn | grep 2222
-
-# 3. 端到端 TCP echo（把 7777 / 7778 换成你规则里的端口；先把
-#    上游起来，否则 connect 失败）：
-sudo apt-get install -y socat                 # 或任意 echo server
-nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log 2>&1 &
-( echo "verify-payload"; sleep 1 ) | socat -t 3 - TCP:127.0.0.1:7777
-#   → verify-payload
-```
-
-每条关闭的连接会有一条 `rule.conn_closed` 事件，`bytes_in` /
-`bytes_out` 应该非零：
-
-```json
-{"event":"rule.conn_closed","rule_id":"…","listen_port":7777,
- "peer":"127.0.0.1:51340","bytes_in":15,"bytes_out":15}
-```
-
-## 可观测性
-
-`portunus-standalone` 默认将日志以 **JSON** 格式输出到 **stderr**
-（开发时可设置 `log_format = "pretty"` 以获得可读输出）。每条规则在启动时
-发出结构化事件，周期性报告器每隔 30 秒记录各规则的字节数和连接数统计。
-
-本二进制不内嵌 HTTP 服务、Prometheus 端点或 gRPC 流——这些能力属于
-`portunus-server`。请使用日志聚合工具（如 `journald`、sidecar 日志采集器）
-收集 JSON 日志。
-
-## 配置示例
+## 示例配置
 
 ### 最简
 
-二进制能接受的最小配置：一条 rule，省略 `[global]` 与 `[defaults]`
-（所有可选字段使用默认值）。
+二进制能接受的最小配置：一条规则，没有 `[global]` 或 `[defaults]` 块（所有
+可选字段走默认）。
 
 ```toml
-# /etc/portunus/standalone.toml
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -295,42 +188,28 @@ listen_port = 2222
 target      = "10.0.0.5:22"
 ```
 
-校验并启动：
-
-```bash
-portunus-standalone --check --config /etc/portunus/standalone.toml
-systemctl restart portunus-standalone
-```
-
 ### 完整
 
-涵盖 schema 中的全部字段，并按常见场景各给一条 rule（单端口 TCP、
-TCP 端口段、多目标故障转移 + PROXY 协议、域名 target、单端口 UDP、
-UDP 端口段）。按需复制裁剪。
+涵盖 schema 所有字段，且常见场景各一条规则（单端口 TCP、TCP 端口段、带
+PROXY protocol 的多目标 failover、DNS 目标、单端口 UDP、UDP 端口段）。复制
+后按需裁剪。
 
 ```toml
-# /etc/portunus/standalone.toml
-#
-# 修改后先校验再重启：
-#   portunus-standalone --check --config /etc/portunus/standalone.toml
-#   systemctl restart portunus-standalone
-# （不支持 SIGHUP / `systemctl reload`，见「运维注意事项」。）
-
-# ─────────── 全局（全部可选） ───────────
+# ─────────── Global（所有字段可选） ───────────
 [global]
-label               = "edge-1"     # 仅用于日志标识
-log_level           = "info"       # EnvFilter；如 "portunus=debug,info"
+label               = "edge-1"     # 写入日志的标识
+log_level           = "info"       # EnvFilter；例如 "portunus=debug,info"
 log_format          = "json"       # "json"（默认）或 "pretty"
-shutdown_drain_secs = 30           # 收到 SIGTERM 后的优雅退出时长
+shutdown_drain_secs = 30           # SIGTERM 后优雅关闭预算
 
-# ─────────── 默认值（rule 未设置时继承） ───────────
+# ─────────── Defaults（被未声明该字段的规则继承） ───────────
 [defaults]
-protocol           = "tcp"         # rule 未指定协议时使用的默认值
-udp_max_flows      = 1024          # 每条 rule 的 UDP flow 上限
-udp_flow_idle_secs = 60            # UDP flow 空闲多久回收（秒）
-prefer_ipv6        = false         # DNS 解析时的地址族偏好
+protocol           = "tcp"         # 规则未声明 protocol 时的默认值
+udp_max_flows      = 1024          # 每规则 UDP flow 表容量
+udp_flow_idle_secs = 60            # idle UDP flow 过期秒数
+prefer_ipv6        = false         # DNS 地址族偏好
 
-# ─────────── 规则 ───────────
+# ─────────── Rules ───────────
 
 # 1) 单端口 TCP
 [[rule]]
@@ -339,15 +218,14 @@ protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
 
-# 2) TCP 端口段（listen 与 target 的段宽度必须一致）
+# 2) TCP 端口段（listen 和 target 宽度必须一致）
 [[rule]]
 name         = "web-range"
 protocol     = "tcp"
 listen_ports = "8000-8009"
 target       = "10.0.0.10:8000-8009"
 
-# 3) 多目标故障转移 + PROXY 协议 v2
-#    priority 数字小的优先；相同优先级轮询。
+# 3) 多目标 failover + PROXY protocol v2
 [[rule]]
 name        = "ha-https"
 protocol    = "tcp"
@@ -357,7 +235,7 @@ targets = [
   { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
 ]
 
-# 4) 域名 target（每次 connect 时解析；prefer_ipv6 覆盖 defaults）
+# 4) DNS 目标（每次 connect 时解析；prefer_ipv6 覆盖 defaults）
 [[rule]]
 name        = "api"
 protocol    = "tcp"
@@ -365,7 +243,7 @@ listen_port = 9000
 target      = "api.internal.example.com:443"
 prefer_ipv6 = false
 
-# 5) 单端口 UDP，提高 flow 上限和空闲超时
+# 5) 单端口 UDP，提升 flow 容量和 idle 超时
 [[rule]]
 name               = "game-udp"
 protocol           = "udp"
@@ -382,150 +260,191 @@ listen_ports = "30000-30019"
 target       = "10.0.0.30:30000-30019"
 ```
 
-## 运维注意事项
+启动前验证配置：
 
-部署到生产前需要知道的事：
+```sh
+# 二进制
+portunus-standalone --check --config /etc/portunus/standalone.toml
 
-- **不支持热加载配置。** `SIGHUP` 是空操作，附带的 systemd unit 也
-  拒绝 `systemctl reload`。改规则需编辑 TOML 然后
-  `systemctl restart portunus-standalone`。已建立的 TCP 连接会在
-  `shutdown_drain_secs` 内排空。
-- **配置文件权限有要求。** 通过 systemd unit 运行时进程以
-  `User=portunus` 起，加 `ReadOnlyPaths=/etc/portunus`。配置文件
-  必须该用户可读 —— installer 会设 `chown root:portunus`
-  + `chmod 0640`。再严（如 `chmod 0600 root:root`）会导致启动失败。
-- **特权监听端口（`< 1024`）。** unit 通过
-  `AmbientCapabilities=CAP_NET_BIND_SERVICE` 授权，所以监听
-  22、53、80、443 等无需 root。脱离 systemd 运行时需要：以 root 启
-  动、或 `setcap cap_net_bind_service+ep /usr/local/bin/portunus-standalone`、
-  或只用 `≥ 1024` 的端口。
-- **文件描述符上限。** 启动时会发 `standalone.rlimit_nofile` 日志。
-  附带的 unit 设了 `LimitNOFILE=65535`；如果看到
-  `… "soft":1024 …` 请提升（每条并发流占用每侧一个 fd）。
-- **TCP `splice(2)` 零拷贝**：Linux 上未配 PROXY-protocol 前置时自动
-  选用。该规则首次连接的日志里会出现 `proxy.splice_selected` 事件。
-- **端口范围规则原子绑定。** 例如 `listen_ports = "8000-8009"` 会一次
-  绑全部 10 个端口；任一不可用则该规则启动失败、其余端口立即释放。
-  部署前请先排查端口冲突。
-- **别在小机型 VPS 上编译。** 1 vCPU / 1 GB 的 VPS 跑 `cargo build`
-  几乎必 OOM。在工作站交叉编译
-  （`cargo zigbuild --release --target x86_64-unknown-linux-gnu -p portunus-standalone`）
-  然后 `scp` 二进制过去。
-- **日志为 stderr 上的 JSON。** 通过 `journald`（systemd 自动收集）
-  或 sidecar 日志采集器聚合。本地迭代时切到
-  `log_format = "pretty"` 更易读。
+# Docker
+docker run --rm \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest \
+  --config /etc/portunus/standalone.toml --check
+```
+
+合法时打印 `ok` 并以 0 退出，非法时以 2 退出。
+
+## 验证安装
+
+确认规则已激活，并且流量真的能转发。
+
+**systemd 安装：**
+
+```sh
+systemctl status portunus-standalone --no-pager
+journalctl -u portunus-standalone -n 20 --no-pager
+ss -ltn | grep 2222     # 检查 listen 端口是否已绑定
+```
+
+**Docker 安装：**
+
+```sh
+docker logs portunus-standalone | head -20
+ss -ltn | grep 2222
+```
+
+启动时每条规则应输出一条事件：
+
+```json
+{"event":"standalone.rlimit_nofile","soft":65535,"hard":65535,…}
+{"event":"rule.activated","rule_id":"…","listen_port":2222,…,"target":"10.0.0.5:22-22"}
+```
+
+端到端 TCP echo（把 7777/7778 换成你规则上的端口；先起 upstream 否则
+connect 失败）：
+
+```sh
+sudo apt-get install -y socat
+nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log 2>&1 &
+( echo "verify-payload"; sleep 1 ) | socat -t 3 - TCP:127.0.0.1:7777
+#   → verify-payload
+```
+
+每条连接关闭时，转发器会输出 `rule.conn_closed`，包含非零的
+`bytes_in` / `bytes_out`。
+
+## 实时流量面板
+
+`portunus-standalone stats` 是一个 TUI 看板，通过 Unix 域 socket
+从运行中的 daemon 流式获取每条规则的实时计数器。无 HTTP、无
+Prometheus、无额外进程——只是同一个二进制的子命令。
+
+```sh
+# 交互式 TUI：
+portunus-standalone stats
+
+# 一次性 JSON 快照（脚本场景）：
+portunus-standalone stats --once | jq '.snapshot.r[] | {id, in, out, conns_active}'
+```
+
+Docker 安装：
+
+```sh
+docker exec -it portunus-standalone portunus-standalone stats
+```
+
+三个标签页：
+
+- **Overview** —— 每规则一行：当前 in/out 速率、活跃连接、UDP flow 数。
+- **Detail** —— 选中规则的 60s sparkline + 累计字节数 +（UDP）按
+  `udp_max_flows` 显示的饱和 gauge。
+- **Errors** —— 每条规则的非零失败累计计数（`port_in_use`、
+  `upstream_connect_failed`、`icmp_evict`、`emsgsize`、`wouldblock`、
+  `addflow_dropped`、`dns_failures`、`flows_dropped_overflow`）。
+
+键位：`q` 退出，`?` 帮助，`Tab`/`h`/`l`/`←`/`→` 切 tab，`↑↓jk` 选行，
+`p` 暂停，`s` 切排序，`r` 翻转排序方向，`/` 过滤，`c` 重置基线。
+
+### 配置
+
+```toml
+[stats]
+enabled     = true                                # 默认 true
+socket_path = "/run/portunus/standalone.sock"     # Linux 默认
+refresh_ms  = 1000                                # 250..=5000
+```
+
+daemon CLI 覆盖：`--no-stats`、`--stats-socket <PATH>`。
+
+TUI 客户端按平台选默认 socket：
+
+- Linux → `/run/portunus/standalone.sock`（shipped systemd unit 的
+  `RuntimeDirectory=portunus` 会自动创建）
+- macOS → `$TMPDIR/portunus-standalone.sock`
+- 都不合适时用 `--socket <PATH>` 覆盖。
+
+快照频率由 daemon 决定，client 没有请求通道。要改频率得编辑
+`[stats] refresh_ms` 后重启 daemon。
+
+## 可观测性
+
+`portunus-standalone` 默认以 JSON 格式写 **stderr**（本地迭代时可切换到
+`log_format = "pretty"`）。每条规则启动时写结构化事件，且有一个周期 reporter
+每 30 秒输出一次按规则汇总的字节数与连接数。
+
+不内嵌 HTTP / Prometheus / gRPC 任何接口 —— 那些是 `portunus-server` 的范畴。
+用日志聚合器（`journald`、`docker logs`、sidecar log shipper 等）来收集 JSON 输出。
+
+## 运维注意
+
+- **不支持热重载。** `SIGHUP` 是 no-op，shipped 的 systemd unit 拒绝
+  `systemctl reload`。改规则只能编辑 TOML 再
+  `systemctl restart portunus-standalone`（或
+  `docker restart portunus-standalone`）。已建立的 TCP 连接在退出时
+  drain（不超过 `shutdown_drain_secs`）。
+- **配置文件权限敏感。**
+  - systemd：进程以 `User=portunus` 运行，并带
+    `ReadOnlyPaths=/etc/portunus`。Installer 会设
+    `chown root:portunus` + `chmod 0640`。严于此（如
+    `chmod 0600 root:root`）会导致启动失败。
+  - Docker：容器以 UID 65532 运行，宿主机文件必须对该 UID 可读
+    —— `chmod 0644` 最省事。
+- **绑定特权端口（`< 1024`）。** systemd unit 已带
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`，所以 22/53/80/443 这些端口
+  不用 root 也能绑。Docker 镜像声明了 `NET_BIND_SERVICE` capability；
+  如果你额外约束了 capabilities，加 `--cap-add NET_BIND_SERVICE`。
+- **文件描述符上限。** 启动时输出 `standalone.rlimit_nofile`。systemd
+  unit 设 `LimitNOFILE=65535`；Docker 端可加
+  `--ulimit nofile=65535:65535`。
+- **TCP `splice(2)` 零拷贝**：未配置 PROXY-protocol 前缀时在 Linux 上
+  自动启用。规则首次连接时会输出 `proxy.splice_selected` 事件。
+- **端口段规则原子绑定。** `listen_ports = "8000-8009"` 启动时一次绑
+  10 个端口；任何一个不可用就整条规则启动失败、其它已绑端口释放。
+- **Ubuntu snap 版 Docker** 限制 bind-mount source 只能在 `/home`、
+  `/media`、`/mnt` 等白名单路径下；从 `/root`、`/tmp`、`/etc` 挂载会
+  在容器内表现为 `No such file or directory`。把 `portunus.toml` 放
+  `/home` 下，或安装非 snap 的 `docker-ce` / `docker.io`。
 
 ## 与 portunus-client 的差异
 
 | 功能 | `portunus-client` | `portunus-standalone` |
 | --- | --- | --- |
-| 控制面 | 连接 `portunus-server` 的 gRPC 流 | 无——仅 TOML |
-| 动态规则更新 | 是（服务端推送） | 否——需重启 |
-| RBAC / 多用户 | 是 | 否 |
-| 限速 / QoS | 是 | 否 |
-| Prometheus 指标 | 是（本地 HTTP） | 否 |
-| 审计日志 | 经由服务端 | 结构化日志输出到 stderr |
-| SNI 路由 | 是 | 否 |
-| TCP splice 快速路径（Linux） | 是 | 是（共享同一数据面代码） |
-| PROXY 协议输出 | 是 | 是 |
-
-## 生产环境部署
-
-四种部署方式的参考模板均位于
-[`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib)。
-
-### Docker / docker-compose
-
-**预构建镜像（推荐）**。从 v1.5.0 起每次发版都会推送多架构
-（`linux/amd64`、`linux/arm64`）镜像到 GHCR：
-
-```sh
-docker pull ghcr.io/zingerlittlebee/portunus-standalone:1.5.0
-# 或使用 :latest 跟最新 release
-```
-
-生产环境请固定具体版本号 —— `:latest` 会随新 release 漂移，可能导致
-非预期的行为变更。
-
-**本地构建**。参考
-[`Dockerfile`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/Dockerfile)
-是一个两阶段构建，运行时镜像基于 distroless ——
-适用于无法访问 GHCR 或需要 vendor 自定义构建的场景。
-[`docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)
-默认使用 host 网络，端口范围转发因此无需逐端口 mapping：
-
-```sh
-cd crates/portunus-standalone/contrib
-cp portunus.example.toml portunus.toml   # 启动前编辑
-docker compose up -d
-docker compose logs -f
-```
-
-**注意事项**：
-
-- 运行时镜像为 `gcr.io/distroless/cc-debian12:nonroot`（UID 65532）。
-  bind-mount 进容器的配置文件需要该 UID 可读
-  （宿主上 `chmod 0644`，或显式映射 UID）。
-- 直接用 `docker run` 调用（而非 compose）时，传 `--check` 会覆盖镜像
-  默认 `CMD`，从而丢失默认的 `--config` 参数。两个都要显式传：
-  `docker run … portunus-standalone --config /etc/portunus/standalone.toml --check`。
-- **Ubuntu 上的 snap Docker** 把 bind-mount 来源限制在 `/home`、
-  `/media`、`/mnt` 等白名单路径下。来自 `/root`、`/tmp`、`/etc` 的
-  bind-mount 在容器内会表现为 `No such file or directory`。请把配置
-  文件放到 `/home` 下，或改用非 snap 的 `docker-ce` / `docker.io` 包。
-
-### Kubernetes
-
-[`contrib/k8s/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib/k8s)
-中的 manifest 运行一个单副本 `Deployment`，启用 `hostNetwork: true`
-（任意端口转发的硬性要求）：
-
-```sh
-kubectl apply -f crates/portunus-standalone/contrib/k8s/configmap.yaml
-kubectl apply -f crates/portunus-standalone/contrib/k8s/deployment.yaml
-```
-
-Deployment 与 DaemonSet 的取舍以及 PodSecurityPolicy 注意事项见
-[`contrib/k8s/README.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/k8s/README.md)。
-
-### 加固版 systemd unit
-
-[`contrib/portunus-standalone.service`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus-standalone.service)
-设置了 `LimitNOFILE=65535`、以 `User=portunus` 运行、新增
-`AmbientCapabilities=CAP_NET_BIND_SERVICE` 以便绑定特权端口，并启用
-`ProtectSystem=strict` / `PrivateTmp=true` / `NoNewPrivileges=true`。
-二进制不支持 SIGHUP 热加载 —— 修改 TOML 后请执行
-`systemctl restart portunus-standalone`。
+| 控制面 | 到 `portunus-server` 的 gRPC 流 | 无 —— 仅 TOML |
+| 动态规则更新 | 支持（server push） | 不支持 —— 需重启 |
+| RBAC / 多用户 | 支持 | 不支持 |
+| 限流 / QoS | 支持 | 不支持 |
+| Prometheus 指标 | 支持（loopback HTTP） | 不支持 |
+| 审计日志 | 通过 server | 结构化 stderr 日志 |
+| SNI 路由 | 支持 | 不支持 |
+| TCP splice 零拷贝（Linux） | 支持 | 支持（同一份数据面代码） |
+| 上游 PROXY protocol | 支持 | 支持 |
 
 ## 升级与卸载
 
-如果你通过 [方式 A](#方式-ainstaller二进制--systemd) 安装：
+如果用 **一键脚本** 安装：
 
 ```sh
-# 升级到最新 release（或 --version v1.5.0 指定版本）：
+# 升级到最新 release（或固定 --version v1.5.0）：
 bash install.sh upgrade standalone
 
-# 查看状态（二进制版本、服务是否 active、部署形式）：
+# 状态（二进制版本、服务是否 active、部署形态）：
 bash install.sh status standalone
 
 # 服务控制透传：
 bash install.sh service standalone restart
 
-# 卸载（清理二进制 + unit；默认保留 /etc/portunus）：
+# 卸载（默认保留 /etc/portunus）：
 bash install.sh uninstall standalone
 
-# 彻底清理：连 /etc/portunus 和 portunus 用户一起删：
+# Purge：连 /etc/portunus 和 portunus 用户一起清掉：
 bash install.sh uninstall standalone --purge
 ```
 
-如果你通过 [方式 B](#方式-b手动安装不用-installer) 手动安装：
+如果用 **Docker** 安装：
 
 ```sh
-sudo systemctl disable --now portunus-standalone
-sudo rm /etc/systemd/system/portunus-standalone.service
-sudo rm /usr/local/bin/portunus-standalone
-sudo systemctl daemon-reload
-# 可选 —— 同时清理配置和用户：
-sudo rm -rf /etc/portunus
-sudo userdel portunus
+docker pull ghcr.io/zingerlittlebee/portunus-standalone:latest
+docker stop portunus-standalone && docker rm portunus-standalone
+# 然后用「安装」一节里的 docker run … 重新启动
 ```

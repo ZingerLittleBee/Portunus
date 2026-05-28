@@ -109,6 +109,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                         let _ = flow.quota_consume_after_send(bytes);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        cfg.stats.errors.inc_wouldblock();
                         trace!(
                             event = "rule.udp_reply_wouldblock",
                             rule_id = %cfg.rule_id,
@@ -131,6 +132,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
             Err(e) => match classify_udp_error(&e) {
                 UdpAction::WouldBlock => return,
                 UdpAction::Evict => {
+                    cfg.stats.errors.inc_icmp_evict();
                     info!(
                         event = "rule.udp_flow_evicted_icmp",
                         rule_id = %cfg.rule_id,
@@ -142,6 +144,7 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
                     return;
                 }
                 UdpAction::MessageTooLarge => {
+                    cfg.stats.errors.inc_emsgsize();
                     debug!(
                         event = "rule.udp_emsgsize",
                         rule_id = %cfg.rule_id,
