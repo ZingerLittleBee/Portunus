@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-05-29
+
+### Fixed
+- `portunus-forwarder` — TCP listener bind now sets `SO_REUSEADDR`.
+  Without it, `accept()`-ed child sockets sitting in TIME_WAIT after
+  process death held the local port for ~`tcp_fin_timeout` (60 s
+  default), so `docker restart` / fast process recycles on busy ports
+  hit `rule.failed port_in_use` and bounced through `--restart
+  unless-stopped` until TIME_WAIT cleared. Verified against a live
+  stop+immediate-start cycle with TIME_WAIT entries present: pre-fix
+  loops, post-fix rebinds cleanly across three back-to-back cycles.
+- `portunus-standalone` Docker image (`deploy/docker/Dockerfile.standalone`)
+  — pre-create `/run/portunus/` with UID 65532 ownership so the
+  default `[stats] socket_path = /run/portunus/standalone.sock` no
+  longer errors at startup with `EACCES` under the distroless
+  `nonroot` user. Mirrors the pattern already in `contrib/Dockerfile`.
+- `portunus-forwarder` — `RuleStats.bytes_in/out` now update
+  incrementally on the splice fast path instead of only at connection
+  close. Long-lived TCP flows (SSH, gRPC streams, websockets, any
+  keep-alive) previously left the gauge frozen at 0 until the
+  connection ended, which broke the `standalone stats` TUI's rate
+  display and the standalone reporter's `in_bytes`/`out_bytes` lines
+  for users generating continuous traffic. Other copy paths
+  (rate-limited, userspace fallback, non-Linux) keep the prior batch
+  behaviour. One `Relaxed` `fetch_add` per 64 KiB splice batch per
+  direction; bench gate untouched.
+
 ## [1.6.0] — 2026-05-28
 
 ### Added
