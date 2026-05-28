@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::reporter::spawn_standalone_reporter;
 use crate::signal::install_standalone_signal_handler;
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::implicit_hasher)] // internal API; callers always use std HashMap
 pub async fn run(cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode {
     let registry = Arc::new(registry);
     let shutdown = Shutdown::new();

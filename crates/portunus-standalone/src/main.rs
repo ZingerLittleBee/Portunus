@@ -1,7 +1,4 @@
-mod config;
-mod reporter;
-mod runtime;
-mod signal;
+use portunus_standalone::{config, runtime};
 
 use std::collections::HashMap;
 use std::process::ExitCode;
