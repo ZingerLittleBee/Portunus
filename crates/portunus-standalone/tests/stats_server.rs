@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use portunus_core::{PortRange, RuleId};
 use portunus_forwarder::RuleStats;
-use portunus_standalone::stats::{server, Hello, Snapshot};
+use portunus_standalone::stats::{Hello, Snapshot, server};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixStream;
@@ -21,8 +21,8 @@ async fn server_emits_hello_then_snapshots() {
     let rule_id = RuleId(1);
     let stats = RuleStats::for_range(PortRange::single(2222));
 
-    let registry: server::Registry = Arc::new(std::sync::RwLock::new(
-        std::collections::HashMap::from([(
+    let registry: server::Registry =
+        Arc::new(std::sync::RwLock::new(std::collections::HashMap::from([(
             rule_id,
             server::RuleEntry {
                 stats: Arc::clone(&stats),
@@ -40,8 +40,7 @@ async fn server_emits_hello_then_snapshots() {
                     udp_max_flows: None,
                 },
             },
-        )]),
-    ));
+        )])));
 
     let cancel = CancellationToken::new();
     let started_at_ms: u64 = 12345;

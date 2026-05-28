@@ -106,8 +106,7 @@ pub async fn once(path: &Path) -> std::io::Result<String> {
         "hello": client.hello,
         "snapshot": snap,
     });
-    serde_json::to_string_pretty(&out)
-        .map_err(std::io::Error::other)
+    serde_json::to_string_pretty(&out).map_err(std::io::Error::other)
 }
 
 #[cfg(test)]

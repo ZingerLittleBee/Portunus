@@ -169,8 +169,10 @@ fn default_stats_socket_path_runtime() -> std::path::PathBuf {
     }
     #[cfg(target_os = "macos")]
     {
-        let base = std::env::var_os("TMPDIR")
-            .map_or_else(|| std::path::PathBuf::from("/tmp"), std::path::PathBuf::from);
+        let base = std::env::var_os("TMPDIR").map_or_else(
+            || std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from,
+        );
         base.join("portunus-standalone.sock")
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

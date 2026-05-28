@@ -3,7 +3,9 @@
 #[must_use]
 pub fn fmt_bytes(b: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
-    if b < 1024 { return format!("{b}   B"); }
+    if b < 1024 {
+        return format!("{b}   B");
+    }
     // cast_precision_loss: u64 → f64 is intentional here; display
     // precision of ±1 LSB is acceptable for a human-readable size label.
     #[allow(clippy::cast_precision_loss)]
@@ -26,7 +28,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bytes_zero() { assert_eq!(fmt_bytes(0).trim(), "0   B"); }
+    fn bytes_zero() {
+        assert_eq!(fmt_bytes(0).trim(), "0   B");
+    }
 
     #[test]
     fn bytes_kb() {

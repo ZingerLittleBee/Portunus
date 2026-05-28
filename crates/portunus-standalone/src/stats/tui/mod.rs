@@ -12,14 +12,14 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::io::AsyncBufReadExt;
 
-use crate::stats::client::Client;
 use crate::stats::Snapshot;
+use crate::stats::client::Client;
 use state::{AppState, Tab};
 
 /// Entry point for the TUI; manages raw-mode setup/teardown around
@@ -91,8 +91,9 @@ async fn run_loop(
             }
             // IMPORTANT: match Ctrl-C BEFORE plain 'c' (session-reset).
             match (k.code, k.modifiers) {
-                (KeyCode::Char('q'), _)
-                | (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                    return Ok(());
+                }
 
                 (KeyCode::Char('?'), _) => state.show_help = !state.show_help,
 

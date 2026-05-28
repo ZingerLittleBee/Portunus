@@ -89,8 +89,7 @@ pub async fn run(mut cfg: Config, registry: HashMap<RuleId, String>) -> ExitCode
     let stats_cfg = std::mem::take(&mut cfg.stats);
     let rule_stats_handles: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>> =
         Arc::new(RwLock::new(HashMap::new()));
-    let rule_entries: stats::server::Registry =
-        Arc::new(RwLock::new(HashMap::new()));
+    let rule_entries: stats::server::Registry = Arc::new(RwLock::new(HashMap::new()));
     let reporter_handle = spawn_standalone_reporter(
         Arc::clone(&rule_stats_handles),
         Arc::clone(&registry),

@@ -91,8 +91,7 @@ fn default_stats_socket_path() -> PathBuf {
     }
     #[cfg(target_os = "macos")]
     {
-        let base = std::env::var_os("TMPDIR")
-            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let base = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
         base.join("portunus-standalone.sock")
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -799,8 +798,10 @@ target = "1.1.1.1:1"
 "#;
         let cfg: Result<Config, _> = toml::from_str(toml);
         if let Ok(c) = cfg {
-            assert!(c.validate().is_err(),
-                    "refresh_ms=100 must be rejected by validate()");
+            assert!(
+                c.validate().is_err(),
+                "refresh_ms=100 must be rejected by validate()"
+            );
         }
     }
 }

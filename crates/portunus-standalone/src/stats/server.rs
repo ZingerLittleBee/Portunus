@@ -16,11 +16,11 @@ use portunus_forwarder::RuleStats;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ErrorSnap, Hello, ProcessSnap, RuleMeta, RuleSnap, Snapshot, TargetMeta, PROTOCOL_VERSION,
+    ErrorSnap, Hello, PROTOCOL_VERSION, ProcessSnap, RuleMeta, RuleSnap, Snapshot, TargetMeta,
 };
 
 pub type Registry = Arc<RwLock<HashMap<RuleId, RuleEntry>>>;
@@ -164,8 +164,7 @@ async fn write_line<T: serde::Serialize>(
     stream: &mut UnixStream,
     value: &T,
 ) -> std::io::Result<()> {
-    let mut buf = serde_json::to_vec(value)
-        .map_err(std::io::Error::other)?;
+    let mut buf = serde_json::to_vec(value).map_err(std::io::Error::other)?;
     buf.push(b'\n');
     stream.write_all(&buf).await?;
     stream.flush().await

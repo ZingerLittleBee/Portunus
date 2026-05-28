@@ -31,7 +31,11 @@ impl Tab {
     }
     #[must_use]
     pub fn index(self) -> usize {
-        match self { Tab::Overview => 0, Tab::Detail => 1, Tab::Errors => 2 }
+        match self {
+            Tab::Overview => 0,
+            Tab::Detail => 1,
+            Tab::Errors => 2,
+        }
     }
 }
 
@@ -47,19 +51,19 @@ impl SortKey {
     #[must_use]
     pub fn cycle(self) -> Self {
         match self {
-            SortKey::RateIn  => SortKey::TotalIn,
+            SortKey::RateIn => SortKey::TotalIn,
             SortKey::TotalIn => SortKey::Name,
-            SortKey::Name    => SortKey::Conns,
-            SortKey::Conns   => SortKey::RateIn,
+            SortKey::Name => SortKey::Conns,
+            SortKey::Conns => SortKey::RateIn,
         }
     }
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            SortKey::RateIn  => "rate",
+            SortKey::RateIn => "rate",
             SortKey::TotalIn => "total",
-            SortKey::Name    => "name",
-            SortKey::Conns   => "conns",
+            SortKey::Name => "name",
+            SortKey::Conns => "conns",
         }
     }
 }
@@ -108,23 +112,28 @@ impl AppState {
     pub fn reset_baseline(&mut self, snap: &Snapshot) {
         self.baseline.clear();
         for r in &snap.r {
-            self.baseline.insert(r.id.clone(), BaselineEntry {
-                bytes_in: r.bytes_in,
-                out: r.out,
-                conns_total: r.conns_total,
-            });
+            self.baseline.insert(
+                r.id.clone(),
+                BaselineEntry {
+                    bytes_in: r.bytes_in,
+                    out: r.out,
+                    conns_total: r.conns_total,
+                },
+            );
         }
     }
 
     /// Display value: cumulative minus baseline (if set), saturating.
     #[must_use]
     pub fn displayed_in(&self, rule: &RuleSnap) -> u64 {
-        self.baseline.get(&rule.id)
+        self.baseline
+            .get(&rule.id)
             .map_or(rule.bytes_in, |b| rule.bytes_in.saturating_sub(b.bytes_in))
     }
     #[must_use]
     pub fn displayed_out(&self, rule: &RuleSnap) -> u64 {
-        self.baseline.get(&rule.id)
+        self.baseline
+            .get(&rule.id)
             .map_or(rule.out, |b| rule.out.saturating_sub(b.out))
     }
 }
@@ -136,10 +145,15 @@ mod tests {
 
     fn rule(id: &str, in_b: u64) -> RuleSnap {
         RuleSnap {
-            id: id.into(), bytes_in: in_b, out: 0,
-            conns_active: 0, conns_total: 0,
-            datagrams_in: 0, datagrams_out: 0,
-            flows_active: 0, target_failovers_total: 0,
+            id: id.into(),
+            bytes_in: in_b,
+            out: 0,
+            conns_active: 0,
+            conns_total: 0,
+            datagrams_in: 0,
+            datagrams_out: 0,
+            flows_active: 0,
+            target_failovers_total: 0,
             err: ErrorSnap::default(),
         }
     }
@@ -148,7 +162,9 @@ mod tests {
     fn baseline_reset_subtracts() {
         let mut s = AppState::new();
         let snap = Snapshot {
-            t_ms: 0, uptime_ms: 0, seq: 0,
+            t_ms: 0,
+            uptime_ms: 0,
+            seq: 0,
             process: ProcessSnap::default(),
             r: vec![rule("x", 1000)],
         };

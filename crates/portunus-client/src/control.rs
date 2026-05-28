@@ -694,9 +694,7 @@ fn handle_server_message(
                 );
                 Some(std::sync::Arc::new(
                     portunus_forwarder::forwarder::MultiTargetObservability {
-                        target_failovers_total: Arc::clone(
-                            &early_stats.target_failovers_total,
-                        ),
+                        target_failovers_total: Arc::clone(&early_stats.target_failovers_total),
                         states,
                     },
                 ))
