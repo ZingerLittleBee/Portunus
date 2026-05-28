@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — Unreleased
+
+### Added
+- `portunus-standalone stats` — TUI dashboard for per-rule traffic
+  observability over a Unix-domain socket. Three tabs (Overview /
+  Detail / Errors), 60 s sparklines, session-reset baseline, regex
+  filter, sortable, pauseable. `stats --once` prints a single JSON
+  snapshot for scripts.
+- `[stats]` config section (`enabled`, `socket_path`, `refresh_ms`)
+  with platform-aware defaults: `/run/portunus/standalone.sock` on
+  Linux, `$TMPDIR/portunus-standalone.sock` on macOS. Override via
+  `--no-stats` / `--stats-socket` on the daemon.
+- `RuleStats.connections_total`, `RuleStats.errors: ErrorCounters`,
+  and migrated `target_failovers_total: Arc<AtomicU64>` onto
+  `RuleStats`. Existing tracing call sites for `rule.failed`,
+  `rule.udp_*` events now bump matching `AtomicU64` counters
+  alongside the log emit.
+- `stats-tui` Cargo feature (default on). Build with
+  `--no-default-features` for a smaller binary without `ratatui` /
+  `crossterm`; `stats --once` still works in that build.
+- systemd unit gains `RuntimeDirectory=portunus`; Docker image
+  pre-creates `/run/portunus/` with UID 65532 ownership.
+
+### Changed
+- Spec: `docs/superpowers/specs/2026-05-28-standalone-stats-tui-design.md`.
+
+### Tests
+- New: `tests/stats_server.rs` (UDS server round-trip),
+  `tests/stats_once.rs` (e2e `stats --once`).
+- `ratatui::backend::TestBackend` snapshot tests cover Overview,
+  Detail, Errors tabs.
+
 ## [1.5.0] — 2026-05-27
 
 ### Behavior corrections (UDP runtime, spec 014)
