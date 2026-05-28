@@ -1207,7 +1207,7 @@ mod integration {
         let mut upstream_proxy = upstream_proxy;
         let ctx = ctx_eligible();
         let result =
-            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx, None).await;
+            copy_bidirectional(&mut downstream_proxy, &mut upstream_proxy, &ctx, None, None).await;
 
         let transferred = result.expect("splice copy_bidirectional should succeed");
         assert_eq!(
@@ -1276,6 +1276,7 @@ mod integration {
             &mut upstream_proxy,
             &ctx_eligible(),
             None,
+            None,
         )
         .await
         .expect("splice should succeed under half-close");
@@ -1339,6 +1340,7 @@ mod integration {
                 &mut upstream_proxy,
                 &ctx_eligible(),
                 None,
+                None,
             ),
         )
         .await
@@ -1397,6 +1399,7 @@ mod integration {
                 &mut downstream_proxy,
                 &mut upstream_proxy,
                 &ctx_eligible(),
+                None,
                 None,
             )
             .await
