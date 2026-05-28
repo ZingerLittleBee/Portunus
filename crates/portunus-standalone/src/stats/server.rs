@@ -261,7 +261,7 @@ fn build_snapshot(registry: &Registry, start_instant: Instant, seq: u64) -> Snap
 fn collect_process_info() -> ProcessSnap {
     let fd_open = std::fs::read_dir("/proc/self/fd")
         .ok()
-        .map(|d| d.count() as u32);
+        .and_then(|d| u32::try_from(d.count()).ok());
     let fd_limit = read_rlimit_nofile_soft();
     let rss_bytes = read_proc_status_rss();
     ProcessSnap {
@@ -285,10 +285,10 @@ fn read_rlimit_nofile_soft() -> Option<u64> {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) };
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut rlim) };
     if rc == 0 {
-        // libc::rlim_t is u64 on Linux; cast is value-preserving.
-        Some(rlim.rlim_cur as u64)
+        // libc::rlim_t is u64 on Linux; no cast needed.
+        Some(rlim.rlim_cur)
     } else {
         None
     }
