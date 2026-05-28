@@ -265,6 +265,14 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
     let owner_has_bw = owner_rate_limit
         .as_ref()
         .is_some_and(|l| l.has_bandwidth_cap());
+    // 015-stats-live: when this rule has a `RuleStats` arc, build a
+    // sink so the splice fast path can flush `bytes_in/out` per chunk
+    // rather than waiting for connection close. Other copy paths
+    // (rate-limited, userspace fallback) leave the sink untouched and
+    // get the final batch record below — same as before.
+    let live_sink = stats
+        .as_ref()
+        .map(|s| super::stats::LiveBytesSink::new(Arc::clone(s), listen_port));
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             // Both streams drop at function exit, closing the sockets. We
@@ -306,6 +314,7 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
                     quota.as_ref(),
                     preread_in > 0,
                     had_proxy_prelude,
+                    live_sink.as_ref(),
                 )
                 .await
             }
@@ -314,8 +323,18 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
         }
     };
     if let (Some(s), Ok((bin, bout))) = (stats.as_ref(), result.as_ref()) {
-        s.record_in(listen_port, *bin + preread_in);
-        s.record_out(listen_port, *bout);
+        // Subtract what the live sink already flushed per-chunk so we
+        // don't double-count. Paths that didn't use the sink (rate-
+        // limited, userspace fallback, splice unsupported→fallback)
+        // leave it at zero and the full amount is recorded here, just
+        // like before.
+        let (live_in, live_out) = live_sink
+            .as_ref()
+            .map_or((0, 0), super::stats::LiveBytesSink::snapshot_recorded);
+        let remaining_in = bin.saturating_sub(live_in);
+        let remaining_out = bout.saturating_sub(live_out);
+        s.record_in(listen_port, remaining_in + preread_in);
+        s.record_out(listen_port, remaining_out);
     }
     result.map(|(bin, bout)| (bin + preread_in, bout))
 }
@@ -341,6 +360,7 @@ async fn copy_uncapped(
     quota: Option<&Arc<super::quota::QuotaHandle>>,
     has_sni_replay_done: bool,
     has_proxy_out: bool,
+    live: Option<&super::stats::LiveBytesSink>,
 ) -> io::Result<(u64, u64)> {
     #[cfg(target_os = "linux")]
     {
@@ -354,7 +374,7 @@ async fn copy_uncapped(
             has_proxy_out,
         );
         if splice::eligible(&ctx) {
-            match splice::copy_bidirectional(inbound, outbound, &ctx, quota).await {
+            match splice::copy_bidirectional(inbound, outbound, &ctx, quota, live).await {
                 Ok(t) => return Ok((t.bytes_in, t.bytes_out)),
                 Err(splice::SpliceError::Unsupported { errno }) => {
                     warn!(
@@ -379,6 +399,7 @@ async fn copy_uncapped(
             owner_rate_limit,
             has_sni_replay_done,
             has_proxy_out,
+            live,
         );
     }
     // 013-traffic-quotas E3: when splice is unavailable (non-Linux,

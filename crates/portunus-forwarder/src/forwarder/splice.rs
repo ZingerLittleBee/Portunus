@@ -541,6 +541,12 @@ mod linux {
         mut remaining: usize,
         bytes_out: &AtomicU64,
         quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
+        // Live byte sink + direction flag. When `Some`, each successful
+        // splice batch is reported up to the rule's `RuleStats` while
+        // the connection is still open, so the reporter / TUI see
+        // real-time throughput instead of a single end-of-connection
+        // jump. `is_in == true` means downstream→upstream (`bytes_in`).
+        live: Option<(&crate::forwarder::stats::LiveBytesSink, bool)>,
     ) -> io::Result<DrainOutcome> {
         // try_io-first pattern: attempt the splice immediately and only
         // await `dst.writable()` on WouldBlock. Under steady-state load
@@ -565,6 +571,13 @@ mod linux {
                 }
                 Ok(n) => {
                     bytes_out.fetch_add(n as u64, Ordering::Relaxed);
+                    if let Some((sink, is_in)) = live {
+                        if is_in {
+                            sink.record_in(n as u64);
+                        } else {
+                            sink.record_out(n as u64);
+                        }
+                    }
                     remaining -= n;
                     // 013-traffic-quotas E3: consume AFTER the bytes have
                     // landed on the destination socket. Mirrors the E1
@@ -609,6 +622,7 @@ mod linux {
         moved_any: &AtomicBool,
         bytes_out: &AtomicU64,
         quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
+        live: Option<(&crate::forwarder::stats::LiveBytesSink, bool)>,
     ) -> Result<(), SpliceError> {
         let pipe_read_fd = pipe.read_fd.as_raw_fd();
         let pipe_write_fd = pipe.write_fd.as_raw_fd();
@@ -672,7 +686,7 @@ mod linux {
 
             // pipe → dst (must drain n_in before next read iteration,
             // otherwise the pipe fills and src→pipe blocks).
-            let outcome = drain_pipe_to(dst, pipe_read_fd, n_in, bytes_out, quota)
+            let outcome = drain_pipe_to(dst, pipe_read_fd, n_in, bytes_out, quota, live)
                 .await
                 .map_err(SpliceError::Io)?;
             if outcome == DrainOutcome::QuotaExhausted {
@@ -697,6 +711,7 @@ mod linux {
         upstream: &mut TcpStream,
         ctx: &CopyCtx,
         quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
+        live: Option<&crate::forwarder::stats::LiveBytesSink>,
     ) -> Result<Transferred, SpliceError> {
         debug_assert!(
             super::eligible(ctx),
@@ -723,6 +738,7 @@ mod linux {
                 &moved_any,
                 &bytes_in,
                 quota,
+                live.map(|s| (s, true)),
             ),
             splice_dir(
                 &*upstream,
@@ -731,6 +747,7 @@ mod linux {
                 &moved_any,
                 &bytes_out,
                 quota,
+                live.map(|s| (s, false)),
             ),
         );
 
