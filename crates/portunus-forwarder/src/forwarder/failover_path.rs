@@ -66,6 +66,7 @@ pub async fn run_tcp<R: Resolve + 'static>(
             offending_port,
             reason,
         }) => {
+            stats.errors.inc_port_in_use();
             warn!(
                 event = "rule.failed",
                 rule_id = %rule.rule_id,
@@ -659,6 +660,7 @@ pub async fn run_udp<R: Resolve + 'static>(
                 } else {
                     format!("port_in_use:{port}")
                 };
+                stats.errors.inc_port_in_use();
                 warn!(
                     event = "rule.failed",
                     rule_id = %rule.rule_id,
