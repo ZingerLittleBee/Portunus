@@ -102,6 +102,10 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # Metrics
 prometheus = "0.13"
 
+# TUI (portunus-standalone stats-tui feature)
+ratatui   = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.28", default-features = false, features = ["events"] }
+
 # Persistent store (008-sqlite-storage)
 # `bundled` statically links a pinned SQLite (preserves single-binary
 # deployment posture; no system libsqlite3 build dep). `backup` exposes
