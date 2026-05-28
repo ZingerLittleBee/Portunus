@@ -7,7 +7,7 @@
 //! TOML round-trip fidelity; suppress dead_code for the whole module.
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -50,11 +50,60 @@ pub enum ConfigError {
 
     #[error("port range string invalid in rule {rule:?}: {msg}")]
     PortRangeParse { rule: String, msg: String },
+
+    #[error("validation error: {msg}")]
+    Validation { msg: String },
 }
 
 // ---------------------------------------------------------------------------
 // Raw TOML schema (deny_unknown_fields)
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatsConfig {
+    #[serde(default = "default_stats_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_stats_socket_path")]
+    pub socket_path: PathBuf,
+    #[serde(default = "default_stats_refresh_ms")]
+    pub refresh_ms: u64,
+}
+
+impl Default for StatsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_stats_enabled(),
+            socket_path: default_stats_socket_path(),
+            refresh_ms: default_stats_refresh_ms(),
+        }
+    }
+}
+
+fn default_stats_enabled() -> bool {
+    true
+}
+
+fn default_stats_socket_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from("/run/portunus/standalone.sock")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        base.join("portunus-standalone.sock")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        PathBuf::from("portunus-standalone.sock")
+    }
+}
+
+fn default_stats_refresh_ms() -> u64 {
+    1000
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +113,9 @@ pub struct Config {
 
     #[serde(default)]
     pub defaults: DefaultsConfig,
+
+    #[serde(default)]
+    pub stats: StatsConfig,
 
     #[serde(default, rename = "rule")]
     pub rules: Vec<RawRule>,
@@ -346,6 +398,15 @@ impl Config {
                     });
                 }
             }
+        }
+
+        if self.stats.enabled && !(250..=5000).contains(&self.stats.refresh_ms) {
+            return Err(ConfigError::Validation {
+                msg: format!(
+                    "[stats] refresh_ms must be in 250..=5000 (got {})",
+                    self.stats.refresh_ms
+                ),
+            });
         }
 
         Ok(())
@@ -699,5 +760,47 @@ mod tests {
         let id_c = derive_rule_id("game-udp");
         assert_eq!(id_a, id_b, "deterministic for same name");
         assert_ne!(id_a, id_c, "different names → different ids");
+    }
+
+    #[test]
+    fn stats_default_enabled_with_platform_path() {
+        let toml = r#"
+[[rule]]
+name = "x"
+protocol = "tcp"
+listen_port = 1
+target = "1.1.1.1:1"
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert!(cfg.stats.enabled);
+        assert_eq!(cfg.stats.refresh_ms, 1000);
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            cfg.stats.socket_path.as_os_str(),
+            std::ffi::OsStr::new("/run/portunus/standalone.sock"),
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let p = cfg.stats.socket_path.display().to_string();
+            assert!(p.ends_with("portunus-standalone.sock"));
+        }
+    }
+
+    #[test]
+    fn stats_refresh_ms_validation() {
+        let toml = r#"
+[stats]
+refresh_ms = 100
+[[rule]]
+name = "x"
+protocol = "tcp"
+listen_port = 1
+target = "1.1.1.1:1"
+"#;
+        let cfg: Result<Config, _> = toml::from_str(toml);
+        if let Ok(c) = cfg {
+            assert!(c.validate().is_err(),
+                    "refresh_ms=100 must be rejected by validate()");
+        }
     }
 }
