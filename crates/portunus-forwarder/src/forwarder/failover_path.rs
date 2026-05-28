@@ -285,6 +285,7 @@ async fn accept_loop<R: Resolve + 'static>(
                         }
                     };
 
+                    stats.inc_connection();
                     let conn_cancel = proxy_cancel.clone();
                     let conn_resolver = Arc::clone(&resolver);
                     let conn_targets = targets.clone();
