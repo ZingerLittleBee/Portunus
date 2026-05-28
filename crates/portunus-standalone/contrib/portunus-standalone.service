@@ -24,7 +24,10 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+RuntimeDirectory=portunus
+RuntimeDirectoryMode=0755
 ReadOnlyPaths=/etc/portunus
+ReadWritePaths=/run/portunus
 
 # Network capabilities — allows binding privileged ports (<1024)
 # without running as root. Required for ports such as 22, 53, 80, 443.
