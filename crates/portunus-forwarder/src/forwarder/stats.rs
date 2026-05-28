@@ -102,6 +102,10 @@ pub struct RuleStats {
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
     pub active_connections: AtomicU32,
+    /// 015-standalone-stats-tui: monotonic count of accepted TCP
+    /// connections per rule. UDP rules carry the field but never
+    /// increment it (use `datagrams_in` / `flows_active` instead).
+    pub connections_total: AtomicU64,
     /// 003-domain-name-forward (FR-008): monotonic count of end-user
     /// connections that ultimately failed to dial because of DNS —
     /// either resolution returned an error, the answer was empty, or
@@ -172,6 +176,7 @@ impl RuleStats {
             bytes_in: AtomicU64::new(0),
             bytes_out: AtomicU64::new(0),
             active_connections: AtomicU32::new(0),
+            connections_total: AtomicU64::new(0),
             dns_failures: AtomicU64::new(0),
             datagrams_in: AtomicU64::new(0),
             datagrams_out: AtomicU64::new(0),
@@ -255,6 +260,12 @@ impl RuleStats {
                 )
             })
             .collect()
+    }
+
+    /// 015-standalone-stats-tui: bump on each accepted TCP connection.
+    /// TCP-only call sites; UDP listener path does not invoke this.
+    pub fn inc_connection(&self) {
+        self.connections_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 003-domain-name-forward (FR-008): one DNS failure (NXDOMAIN,
@@ -524,6 +535,15 @@ mod tests {
         assert_eq!(per_port.len(), 2);
         assert_eq!(per_port[0].1, 0);
         assert_eq!(per_port[1].1, 0);
+    }
+
+    #[test]
+    fn connections_total_starts_at_zero_and_increments() {
+        let s = RuleStats::new();
+        assert_eq!(s.connections_total.load(Ordering::Relaxed), 0);
+        s.inc_connection();
+        s.inc_connection();
+        assert_eq!(s.connections_total.load(Ordering::Relaxed), 2);
     }
 
     #[test]
