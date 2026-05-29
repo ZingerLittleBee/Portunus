@@ -50,6 +50,12 @@ use crate::resolver::{LiveResolver, Resolve};
 /// well-formed datagram at the proxy layer.
 const UDP_BUFFER_BYTES: usize = 65_535;
 
+/// Max datagrams the non-Linux single-packet fallback drains per
+/// readiness wake before yielding to the `select!` (so a sustained UDP
+/// flood can't starve the `cancel` branch). Sized to match the Linux
+/// `recvmmsg` batch so both paths bound per-wake work similarly.
+const UDP_DRAIN_PER_WAKE: usize = 32;
+
 /// Per-listener configuration handed to [`run_listener`].
 ///
 /// All shared state (registry, demux channel, stats, resolver, rate
@@ -113,6 +119,10 @@ pub async fn run_listener<R: Resolve + 'static>(
                         listen_port = cfg.listen_port,
                         error = %e,
                     );
+                    // Brief backoff: a persistent readiness error would
+                    // otherwise spin this loop at 100% CPU with a log
+                    // flood. Mirrors the SNI/TCP accept-error pattern.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 }
                 // Try the batched path first. On Linux this calls
@@ -125,27 +135,48 @@ pub async fn run_listener<R: Resolve + 'static>(
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // Either the readiness event was spurious or
-                        // we're on a platform without recvmmsg. Try
-                        // a single-packet recv_from once, then loop.
-                        match listener_socket.try_recv_from(&mut fallback_buf) {
-                            Ok((n, src)) => {
-                                handle_datagram(
-                                    &cfg,
-                                    &listener_socket,
-                                    &fallback_buf[..n],
-                                    src,
-                                ).await;
-                            }
-                            Err(e2) if e2.kind() == std::io::ErrorKind::WouldBlock => {
-                                // Spurious — fall through to next loop iter.
-                            }
-                            Err(e2) => {
-                                warn!(
-                                    event = "rule.udp_listener_recv_failed",
-                                    rule_id = %cfg.rule_id,
-                                    listen_port = cfg.listen_port,
-                                    error = %e2,
-                                );
+                        // we're on a platform without recvmmsg. Drain
+                        // the socket with single-packet recv_from until
+                        // it would block (or we hit the per-wake cap),
+                        // so one readiness wake processes the whole
+                        // backlog instead of one datagram per wake —
+                        // which would otherwise cost a select round-trip
+                        // per packet on non-Linux platforms. The cap
+                        // mirrors the Linux batch size so a sustained
+                        // flood can't starve the `cancel` branch.
+                        let mut drained = 0usize;
+                        loop {
+                            match listener_socket.try_recv_from(&mut fallback_buf) {
+                                Ok((n, src)) => {
+                                    handle_datagram(
+                                        &cfg,
+                                        &listener_socket,
+                                        &fallback_buf[..n],
+                                        src,
+                                    ).await;
+                                    drained += 1;
+                                    if drained >= UDP_DRAIN_PER_WAKE {
+                                        // Yield back to the select loop
+                                        // so cancellation stays responsive.
+                                        break;
+                                    }
+                                }
+                                Err(e2) if e2.kind() == std::io::ErrorKind::WouldBlock => {
+                                    // Socket drained — back to the select.
+                                    break;
+                                }
+                                Err(e2) => {
+                                    warn!(
+                                        event = "rule.udp_listener_recv_failed",
+                                        rule_id = %cfg.rule_id,
+                                        listen_port = cfg.listen_port,
+                                        error = %e2,
+                                    );
+                                    // Brief backoff so a persistent error
+                                    // doesn't spin this drain loop.
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -156,6 +187,10 @@ pub async fn run_listener<R: Resolve + 'static>(
                             listen_port = cfg.listen_port,
                             error = %e,
                         );
+                        // Brief backoff: a persistent non-WouldBlock
+                        // recv error would otherwise spin this loop at
+                        // 100% CPU with a log flood.
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
             }
@@ -510,11 +545,95 @@ async fn handle_datagram<R: Resolve + 'static>(
         }
     }
 
-    // ---- Cold path (FR-004 strict order) ----
+    // ---- Cold path ----
+    //
+    // Building a new flow means a resolver lookup, an upstream
+    // bind+connect, and a first-packet send. For DNS targets the
+    // resolver step can block on a network round-trip; running it inline
+    // here would head-of-line block the listener's recv loop, stalling
+    // datagrams for every *other* (already-established) flow behind one
+    // brand-new flow. So for DNS targets we hand the full FR-004
+    // cold-path sequence to a detached task and return immediately. The
+    // registry's `Pending` slot keeps concurrent datagrams for the same
+    // source safe (they observe `CapExhausted` and are dropped until the
+    // flow goes Live). IP targets resolve synchronously and UDP-connect
+    // without a network round-trip, so they run inline — no HOL, and
+    // behaviour stays byte-identical to the pre-fix path.
+    let ctx = ColdPathCtx::from_listener(cfg);
+    let payload_owned = payload.to_vec();
+    if matches!(cfg.target, Target::Dns(_)) {
+        tokio::spawn(complete_cold_flow(ctx, key, src, payload_owned));
+    } else {
+        complete_cold_flow(ctx, key, src, payload_owned).await;
+    }
+
+    // `listener_socket` is held by the runtime, but we reference it via
+    // the parameter to keep the signature stable for unit tests that
+    // pass a hand-rolled socket; suppress the unused-binding warning
+    // here without leaking the binding to callers.
+    let _ = listener_socket;
+}
+
+/// Owned snapshot of the listener state the cold path needs, so the
+/// FR-004 flow-setup sequence can run in a detached task (DNS targets)
+/// without borrowing `ListenerConfig`. Every field is `Copy` or an
+/// `Arc`/`mpsc::Sender` clone — cheap to build per new flow.
+struct ColdPathCtx<R: Resolve + 'static> {
+    rule_id: RuleId,
+    listen_port: u16,
+    target: Target,
+    target_port: u16,
+    prefer_ipv6: bool,
+    registry: Arc<UdpFlowRegistry>,
+    demux_tx: mpsc::Sender<DemuxCommand>,
+    stats: Arc<RuleStats>,
+    resolver: Arc<LiveResolver<R>>,
+    rate_limit: Option<Arc<RuleRateLimitHandle>>,
+    rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
+    owner_rate_limit_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<QuotaHandle>>,
+}
+
+impl<R: Resolve + 'static> ColdPathCtx<R> {
+    fn from_listener(cfg: &ListenerConfig<R>) -> Self {
+        Self {
+            rule_id: cfg.rule_id,
+            listen_port: cfg.listen_port,
+            target: cfg.target.clone(),
+            target_port: cfg.target_port,
+            prefer_ipv6: cfg.prefer_ipv6,
+            registry: Arc::clone(&cfg.registry),
+            demux_tx: cfg.demux_tx.clone(),
+            stats: Arc::clone(&cfg.stats),
+            resolver: Arc::clone(&cfg.resolver),
+            rate_limit: cfg.rate_limit.clone(),
+            rate_limit_stats: cfg.rate_limit_stats.clone(),
+            owner_rate_limit: cfg.owner_rate_limit.clone(),
+            owner_rate_limit_stats: cfg.owner_rate_limit_stats.clone(),
+            quota: cfg.quota.clone(),
+        }
+    }
+}
+
+/// FR-004 cold-path flow setup (steps 2–9), factored out of
+/// `handle_datagram` so it can run either inline (IP targets) or in a
+/// detached task (DNS targets — see the dispatcher in
+/// `handle_datagram`). Identical sequence and semantics to the former
+/// inline path; the only change is that it operates on an owned
+/// [`ColdPathCtx`] instead of borrowing `ListenerConfig`, and the
+/// payload is owned so it can cross the `tokio::spawn` boundary.
+async fn complete_cold_flow<R: Resolve + 'static>(
+    ctx: ColdPathCtx<R>,
+    key: FlowKey,
+    src: SocketAddr,
+    payload: Vec<u8>,
+) {
+    let n_u64 = u64::try_from(payload.len()).unwrap_or(u64::MAX);
 
     // (2) Quota exhaustion short-circuit — don't burn resolver / bind /
     //     rate-limit work on a budget that can't deliver bytes.
-    if let Some(q) = cfg.quota.as_ref()
+    if let Some(q) = ctx.quota.as_ref()
         && q.is_exhausted()
     {
         return;
@@ -524,21 +643,21 @@ async fn handle_datagram<R: Resolve + 'static>(
     //     accounted for by `try_get_or_reserve` itself (it bumps
     //     `dropped_overflow`). Reservation is RAII — early returns
     //     below release it via Drop.
-    let reservation = match cfg.registry.try_get_or_reserve(key) {
+    let reservation = match ctx.registry.try_get_or_reserve(key) {
         TryGetOrReserve::Existing(flow) => {
-            // Rare: another listener committed for the same (port, src)
-            // between our `get` above and `try_get_or_reserve` here.
-            // Treat as if we'd seen the Live flow on the fast path —
-            // forward the current datagram through it. Use `send().await`
-            // (not `try_send`): the racing cold path may not yet have
-            // issued its own first send, so the socket can still be
+            // Rare: another cold path committed for the same (port, src)
+            // between our `get` and this `try_get_or_reserve`. Treat as
+            // if we'd seen the Live flow on the fast path — forward the
+            // current datagram through it. Use `send().await` (not
+            // `try_send`): the racing cold path may not yet have issued
+            // its own first send, so the socket can still be
             // pre-reactor-writability — same race as cold-path step 9.
             if !flow.quota_allows() {
                 return;
             }
-            if flow.upstream_socket.send(payload).await.is_ok() {
+            if flow.upstream_socket.send(&payload).await.is_ok() {
                 flow.bump_inbound(n_u64).await;
-                cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);
+                ctx.stats.inc_datagram_in(ctx.listen_port, n_u64);
                 let _ = flow.quota_consume_after_send(n_u64);
             }
             // On error: drop this datagram; the next one hits the
@@ -547,11 +666,11 @@ async fn handle_datagram<R: Resolve + 'static>(
         }
         TryGetOrReserve::Reserved(r) => r,
         TryGetOrReserve::CapExhausted => {
-            cfg.stats.inc_flow_dropped_overflow();
+            ctx.stats.inc_flow_dropped_overflow();
             warn!(
                 event = "rule.udp_flow_dropped_overflow",
-                rule_id = %cfg.rule_id,
-                listen_port = cfg.listen_port,
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
                 source = %src,
             );
             return;
@@ -562,36 +681,36 @@ async fn handle_datagram<R: Resolve + 'static>(
     //     Reject → silent drop, RAII releases the reservation. On
     //     admit, the returned guards ride the `UdpFlow` Arc for the
     //     flow's lifetime (v0.11 `concurrent_connections` cap).
-    let admit_guards = match acquire_first_packet(cfg, src) {
+    let admit_guards = match acquire_first_packet(&ctx, src) {
         AdmitOutcome::Allowed { guards } => guards,
         AdmitOutcome::Rejected => return,
     };
 
     // (5) Resolve target. Single SocketAddr for IP targets;
     //     multi-A ordered list for DNS targets.
-    let resolved = match cfg
+    let resolved = match ctx
         .resolver
-        .resolve_target(cfg.rule_id, &cfg.target, cfg.target_port, cfg.prefer_ipv6)
+        .resolve_target(ctx.rule_id, &ctx.target, ctx.target_port, ctx.prefer_ipv6)
         .await
     {
         Ok((addrs, _src)) if !addrs.is_empty() => addrs,
         Ok((_, _)) => {
-            cfg.stats.inc_dns_failure();
+            ctx.stats.inc_dns_failure();
             warn!(
                 event = "rule.udp_dns_failed",
-                rule_id = %cfg.rule_id,
-                listen_port = cfg.listen_port,
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
                 source = %src,
                 reason = "empty",
             );
             return;
         }
         Err(err) => {
-            cfg.stats.inc_dns_failure();
+            ctx.stats.inc_dns_failure();
             warn!(
                 event = "rule.udp_dns_failed",
-                rule_id = %cfg.rule_id,
-                listen_port = cfg.listen_port,
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
                 source = %src,
                 error = %err,
             );
@@ -613,8 +732,8 @@ async fn handle_datagram<R: Resolve + 'static>(
             Err(e) => {
                 warn!(
                     event = "rule.udp_upstream_bind_failed",
-                    rule_id = %cfg.rule_id,
-                    listen_port = cfg.listen_port,
+                    rule_id = %ctx.rule_id,
+                    listen_port = ctx.listen_port,
                     source = %src,
                     target = %addr,
                     error = %e,
@@ -628,11 +747,11 @@ async fn handle_datagram<R: Resolve + 'static>(
                 break;
             }
             Err(e) => {
-                cfg.stats.errors.inc_upstream_connect_failed();
+                ctx.stats.errors.inc_upstream_connect_failed();
                 warn!(
                     event = "rule.udp_upstream_connect_failed",
-                    rule_id = %cfg.rule_id,
-                    listen_port = cfg.listen_port,
+                    rule_id = %ctx.rule_id,
+                    listen_port = ctx.listen_port,
                     source = %src,
                     target = %addr,
                     error = %e,
@@ -641,11 +760,11 @@ async fn handle_datagram<R: Resolve + 'static>(
         }
     }
     let Some((upstream_socket, chosen_target)) = selected else {
-        cfg.stats.inc_dns_failure();
+        ctx.stats.inc_dns_failure();
         warn!(
             event = "rule.udp_dns_failed",
-            rule_id = %cfg.rule_id,
-            listen_port = cfg.listen_port,
+            rule_id = %ctx.rule_id,
+            listen_port = ctx.listen_port,
             source = %src,
             reason = "all_targets_unreachable",
         );
@@ -659,28 +778,28 @@ async fn handle_datagram<R: Resolve + 'static>(
     //     install it pre-commit so the guards are bound to the flow
     //     before any other task can observe it.
     let mut flow = UdpFlow::new(src, Arc::clone(&upstream_socket), vec![chosen_target]);
-    if let Some(q) = cfg.quota.as_ref() {
+    if let Some(q) = ctx.quota.as_ref() {
         flow = flow.attach_quota(Arc::clone(q));
     }
     flow.attach_admit_guards(admit_guards).await;
-    cfg.registry.commit(reservation, Arc::clone(&flow));
+    ctx.registry.commit(reservation, Arc::clone(&flow));
 
     // (8) Hand the flow to the demux. Channel full = back-pressured
     //     demux — rollback so we don't leave a Live slot the demux
     //     never sees (FR-005 invariant).
-    if let Err(send_err) = cfg.demux_tx.try_send(DemuxCommand::AddFlow {
+    if let Err(send_err) = ctx.demux_tx.try_send(DemuxCommand::AddFlow {
         key,
         flow: Arc::clone(&flow),
     }) {
-        cfg.stats.errors.inc_addflow_dropped();
+        ctx.stats.errors.inc_addflow_dropped();
         warn!(
             event = "rule.udp_addflow_dropped",
-            rule_id = %cfg.rule_id,
-            listen_port = cfg.listen_port,
+            rule_id = %ctx.rule_id,
+            listen_port = ctx.listen_port,
             source = %src,
             reason = ?send_err,
         );
-        let _ = cfg.registry.remove(key);
+        let _ = ctx.registry.remove(key);
         flow.cancel.cancel();
         return;
     }
@@ -694,32 +813,32 @@ async fn handle_datagram<R: Resolve + 'static>(
     //     `datagram_in`; EMSGSIZE / Transient drop this datagram but
     //     keep the flow — demux ReadWait is armed, next packet hits the
     //     fast path.
-    match upstream_socket.send(payload).await {
+    match upstream_socket.send(&payload).await {
         Ok(_) => {
             flow.bump_inbound(n_u64).await;
-            cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);
+            ctx.stats.inc_datagram_in(ctx.listen_port, n_u64);
             let _ = flow.quota_consume_after_send(n_u64);
             info!(
                 event = "rule.udp_flow_opened",
-                rule_id = %cfg.rule_id,
-                listen_port = cfg.listen_port,
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
                 source = %src,
                 target = %chosen_target,
             );
         }
         Err(e) => match classify_udp_error(&e) {
             UdpAction::Evict => {
-                cfg.stats.errors.inc_icmp_evict();
+                ctx.stats.errors.inc_icmp_evict();
                 info!(
                     event = "rule.udp_flow_evicted_icmp",
-                    rule_id = %cfg.rule_id,
-                    listen_port = cfg.listen_port,
+                    rule_id = %ctx.rule_id,
+                    listen_port = ctx.listen_port,
                     source = %src,
                     target = %chosen_target,
                     error = %e,
                     phase = "first_packet",
                 );
-                let _ = cfg.registry.remove(key);
+                let _ = ctx.registry.remove(key);
                 flow.cancel.cancel();
             }
             // WouldBlock is unreachable after the `send().await` switch
@@ -730,8 +849,8 @@ async fn handle_datagram<R: Resolve + 'static>(
             @ (UdpAction::WouldBlock | UdpAction::MessageTooLarge | UdpAction::Transient) => {
                 debug!(
                     event = "rule.udp_first_packet_send_dropped",
-                    rule_id = %cfg.rule_id,
-                    listen_port = cfg.listen_port,
+                    rule_id = %ctx.rule_id,
+                    listen_port = ctx.listen_port,
                     source = %src,
                     target = %chosen_target,
                     action = ?action,
@@ -739,20 +858,14 @@ async fn handle_datagram<R: Resolve + 'static>(
                 );
                 info!(
                     event = "rule.udp_flow_opened",
-                    rule_id = %cfg.rule_id,
-                    listen_port = cfg.listen_port,
+                    rule_id = %ctx.rule_id,
+                    listen_port = ctx.listen_port,
                     source = %src,
                     target = %chosen_target,
                 );
             }
         },
     }
-
-    // `listener_socket` is held by the runtime, but we reference it via
-    // the parameter to keep the signature stable for unit tests that
-    // pass a hand-rolled socket; suppress the unused-binding warning
-    // here without leaking the binding to callers.
-    let _ = listener_socket;
 }
 
 /// Outcome of [`acquire_first_packet`]. On `Allowed`, the caller MUST
@@ -782,10 +895,10 @@ enum AdmitOutcome {
 /// gate releases the owner slot internally when the rule layer
 /// rejects.
 fn acquire_first_packet<R: Resolve + 'static>(
-    cfg: &ListenerConfig<R>,
+    ctx: &ColdPathCtx<R>,
     src: SocketAddr,
 ) -> AdmitOutcome {
-    match try_acquire_layered(cfg.owner_rate_limit.as_ref(), cfg.rate_limit.as_ref(), true) {
+    match try_acquire_layered(ctx.owner_rate_limit.as_ref(), ctx.rate_limit.as_ref(), true) {
         LayeredAcquire::Granted {
             owner_guard,
             rule_guard,
@@ -800,13 +913,13 @@ fn acquire_first_packet<R: Resolve + 'static>(
             AdmitOutcome::Allowed { guards }
         }
         LayeredAcquire::OwnerRejected(reason) => {
-            if let Some(s) = cfg.owner_rate_limit_stats.as_deref() {
+            if let Some(s) = ctx.owner_rate_limit_stats.as_deref() {
                 s.record_reject(reason);
             }
             warn!(
                 event = "rule.udp_first_packet_rejected",
-                rule_id = %cfg.rule_id,
-                listen_port = cfg.listen_port,
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
                 source = %src,
                 scope = "owner",
                 reason = ?reason,
@@ -814,13 +927,13 @@ fn acquire_first_packet<R: Resolve + 'static>(
             AdmitOutcome::Rejected
         }
         LayeredAcquire::RuleRejected(reason) => {
-            if let Some(s) = cfg.rate_limit_stats.as_deref() {
+            if let Some(s) = ctx.rate_limit_stats.as_deref() {
                 s.record_reject(reason);
             }
             warn!(
                 event = "rule.udp_first_packet_rejected",
-                rule_id = %cfg.rule_id,
-                listen_port = cfg.listen_port,
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
                 source = %src,
                 scope = "rule",
                 reason = ?reason,
