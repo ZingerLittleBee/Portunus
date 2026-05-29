@@ -90,7 +90,11 @@ mod tests {
 
     #[test]
     fn active_target_picks_lowest_priority() {
-        let m = meta_with(vec![target("a", 1, 5), target("b", 1, 0), target("c", 1, 3)]);
+        let m = meta_with(vec![
+            target("a", 1, 5),
+            target("b", 1, 0),
+            target("c", 1, 3),
+        ]);
         assert_eq!(active_target_index(&m), Some(1));
         assert_eq!(active_target(&m).unwrap().host, "b");
     }

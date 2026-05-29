@@ -738,9 +738,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = super::super::state::AppState::new();
         state.tab = Tab::Detail;
-        state
-            .probes
-            .insert("abc".to_string(), ProbeSample::Ok(Duration::from_millis(12)));
+        state.probes.insert(
+            "abc".to_string(),
+            ProbeSample::Ok(Duration::from_millis(12)),
+        );
         terminal
             .draw(|f| render(f, f.area(), &client, &mut state))
             .unwrap();
