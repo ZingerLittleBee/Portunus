@@ -506,6 +506,11 @@ async fn accept_loop<R: Resolve + 'static>(
                         listen_port = listen_port,
                         error = %e,
                     );
+                    // Brief backoff so a persistent error (e.g. EMFILE
+                    // when the fd table is exhausted) doesn't spin the
+                    // accept loop at 100% CPU with a log flood. Mirrors
+                    // the SNI listener's accept-error pattern.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             }
         }
