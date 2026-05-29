@@ -190,6 +190,10 @@ impl Cache {
                         Action::Refresh { stale_addrs: None }
                     }
                     None => {
+                        // Brand-new key grows the map — enforce the
+                        // entry cap before inserting so the cache stays
+                        // bounded under high-name-cardinality workloads.
+                        evict_locked(&mut guard, now, config.max_cache_entries);
                         let notify = Arc::new(Notify::new());
                         guard.insert(
                             name.clone(),
@@ -305,6 +309,57 @@ enum Action {
 
 fn clamp_ttl(ttl: Duration, config: &super::ResolverConfig) -> Duration {
     ttl.clamp(config.cache_floor, config.cache_ceiling)
+}
+
+/// The instant past which an entry carries no useful value and may be
+/// freely evicted. `Pending` has no deadline — it is mid-flight and
+/// owns a `Notify` that single-flight waiters are blocked on, so it is
+/// never an eviction candidate.
+fn entry_deadline(entry: &CacheEntry) -> Option<Instant> {
+    match entry {
+        CacheEntry::Pending { .. } => None,
+        CacheEntry::Resolved { expiry, .. } => Some(*expiry),
+        CacheEntry::StaleAfterFailedRefresh {
+            fail_grace_until, ..
+        } => Some(*fail_grace_until),
+        CacheEntry::Failed { retry_after, .. } => Some(*retry_after),
+    }
+}
+
+/// Keep the cache map bounded (memory-leak guard). Called under the
+/// lock immediately before a brand-new key is inserted. Two passes:
+///
+/// 1. Drop every entry whose useful lifetime has already elapsed — a
+///    later lookup for the same name simply re-resolves.
+/// 2. If still at/over `max_entries` (all remaining live), evict the
+///    entries closest to their deadline (least remaining value) until
+///    under the cap.
+///
+/// `Pending` entries are never evicted: removing one would strand the
+/// single-flight waiters blocked on its `Notify`, leaking those tasks.
+fn evict_locked(map: &mut HashMap<Hostname, CacheEntry>, now: Instant, max_entries: usize) {
+    if map.len() < max_entries {
+        return;
+    }
+    map.retain(|_, entry| match entry_deadline(entry) {
+        // No deadline → Pending → always retained.
+        None => true,
+        Some(deadline) => deadline > now,
+    });
+    while map.len() >= max_entries {
+        let victim = map
+            .iter()
+            .filter_map(|(k, e)| entry_deadline(e).map(|d| (k.clone(), d)))
+            .min_by_key(|(_, d)| *d)
+            .map(|(k, _)| k);
+        match victim {
+            Some(k) => {
+                map.remove(&k);
+            }
+            // Only `Pending` entries remain — nothing safe to evict.
+            None => break,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -486,6 +541,73 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ResolverError::Lookup(_)));
         assert_eq!(resolver.calls(), 3, "post-grace lookup must re-attempt");
+    }
+
+    /// Memory-leak guard: a workload that resolves an ever-growing set
+    /// of distinct names MUST NOT grow the cache without bound. With a
+    /// small `max_cache_entries`, the map size stays at/under the cap
+    /// no matter how many unique names are looked up.
+    #[tokio::test]
+    async fn cache_is_bounded_by_max_entries() {
+        let (cache, _clock) = fresh_cache();
+        // Long TTL so nothing expires on its own — eviction is the only
+        // thing that can keep the map bounded.
+        let resolver = MockResolver::ok(vec![ip("10.0.0.5")], Duration::from_secs(300));
+        let cfg = ResolverConfig {
+            max_cache_entries: 4,
+            ..ResolverConfig::default()
+        };
+
+        for i in 0..50u32 {
+            let h = host(&format!("name{i}.example"));
+            let r = cache.get_or_resolve(&h, &resolver, &cfg).await.unwrap();
+            assert_eq!(r.addrs, vec![ip("10.0.0.5")]);
+            let len = cache.inner.lock().await.len();
+            assert!(
+                len <= 4,
+                "cache grew to {len} entries, exceeding the cap of 4"
+            );
+        }
+    }
+
+    /// Eviction MUST NOT remove a `Pending` entry: doing so would
+    /// strand the single-flight waiters blocked on its `Notify`. Here
+    /// we pre-seed the map with `max_entries` live entries plus one
+    /// in-flight `Pending`, then evict; the `Pending` must survive.
+    #[tokio::test]
+    async fn eviction_never_drops_pending_entries() {
+        let (cache, clock) = fresh_cache();
+        let now = clock.now();
+        let mut guard = cache.inner.lock().await;
+        // Two live (Resolved) entries.
+        guard.insert(
+            host("live-a.example"),
+            CacheEntry::Resolved {
+                addrs: vec![ip("10.0.0.1")],
+                expiry: now + Duration::from_secs(300),
+            },
+        );
+        guard.insert(
+            host("live-b.example"),
+            CacheEntry::Resolved {
+                addrs: vec![ip("10.0.0.2")],
+                expiry: now + Duration::from_secs(300),
+            },
+        );
+        // One in-flight resolution.
+        guard.insert(
+            host("pending.example"),
+            CacheEntry::Pending {
+                notify: Arc::new(Notify::new()),
+                started_at: now,
+            },
+        );
+        // Force eviction down to a cap of 1.
+        super::evict_locked(&mut guard, now, 1);
+        assert!(
+            guard.contains_key(&host("pending.example")),
+            "Pending entry must never be evicted"
+        );
     }
 
     /// T026: after grace expiry, the negative-cache `retry_after`
