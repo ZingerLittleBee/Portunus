@@ -3,14 +3,17 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::symbols;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Gauge, Paragraph, Row, Sparkline, Table, TableState, Tabs,
+    Axis, Block, Borders, Cell, Chart, Dataset, GraphType, List, ListItem, Paragraph, Row, Table,
+    TableState, Tabs,
 };
 
 use super::format::{fmt_bytes, fmt_rate};
 use super::state::{AppState, Tab};
 use crate::stats::client::Client;
+use crate::stats::{RuleMeta, RuleSnap};
 
 pub fn render(frame: &mut Frame, area: Rect, client: &Client, state: &mut AppState) {
     let layout = Layout::default()
@@ -118,8 +121,10 @@ fn render_detail(frame: &mut Frame, area: Rect, client: &Client, state: &AppStat
     }
     let idx = state.selected.min(client.hello.rules.len() - 1);
     let meta = &client.hello.rules[idx];
-    let last = client.ring.back();
-    let snap = last.and_then(|s| s.r.iter().find(|r| r.id == meta.id));
+    let snap = client
+        .ring
+        .back()
+        .and_then(|s| s.r.iter().find(|r| r.id == meta.id));
 
     let block = Block::default().borders(Borders::ALL).title(format!(
         " Detail · {} ({} {}) ",
@@ -128,66 +133,281 @@ fn render_detail(frame: &mut Frame, area: Rect, client: &Client, state: &AppStat
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Top: throughput chart. Bottom: structured per-rule panels.
     let vchunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2), // in spark
-            Constraint::Length(2), // out spark
-            Constraint::Length(2), // gauge
-            Constraint::Min(1),    // text
-        ])
+        .constraints([Constraint::Percentage(55), Constraint::Min(6)])
         .split(inner);
 
-    let in_series: Vec<u64> = client
-        .ring
-        .iter()
-        .filter_map(|s| s.r.iter().find(|r| r.id == meta.id))
-        .map(|r| r.bytes_in)
-        .collect();
-    let uptime_series: Vec<u64> = client.ring.iter().map(|s| s.uptime_ms).collect();
+    render_detail_chart(frame, vchunks[0], client, meta);
+    render_detail_panels(frame, vchunks[1], meta, snap, state);
+}
+
+/// Top throughput chart: in/out byte-rate lines over the 60 s window,
+/// with scaled axes and exact peak/avg annotations in the title.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn render_detail_chart(frame: &mut Frame, area: Rect, client: &Client, meta: &RuleMeta) {
+    // Single pass over the ring, pushing all three series together only
+    // for snapshots that actually contain this rule. Collecting them in
+    // lockstep keeps the byte and uptime series the same length, so
+    // `pairwise_rates` always pairs a byte delta with its own time delta
+    // (a separate uptime pass would misalign if the rule were ever
+    // absent from a snapshot).
+    let cap = client.ring.len();
+    let mut uptime_series: Vec<u64> = Vec::with_capacity(cap);
+    let mut in_series: Vec<u64> = Vec::with_capacity(cap);
+    let mut out_series: Vec<u64> = Vec::with_capacity(cap);
+    for s in &client.ring {
+        if let Some(r) = s.r.iter().find(|r| r.id == meta.id) {
+            uptime_series.push(s.uptime_ms);
+            in_series.push(r.bytes_in);
+            out_series.push(r.out);
+        }
+    }
     let in_rates = pairwise_rates(&in_series, &uptime_series);
-    let sp_in = Sparkline::default()
-        .block(Block::default().title(format!("in  {}", fmt_rate(client.in_rate(&meta.id)))))
-        .data(&in_rates);
-    frame.render_widget(sp_in, vchunks[0]);
-
-    let out_series: Vec<u64> = client
-        .ring
-        .iter()
-        .filter_map(|s| s.r.iter().find(|r| r.id == meta.id))
-        .map(|r| r.out)
-        .collect();
     let out_rates = pairwise_rates(&out_series, &uptime_series);
-    let sp_out = Sparkline::default()
-        .block(Block::default().title(format!("out {}", fmt_rate(client.out_rate(&meta.id)))))
-        .data(&out_rates);
-    frame.render_widget(sp_out, vchunks[1]);
 
-    if let (Some(s), Some(max)) = (snap, meta.udp_max_flows) {
-        let ratio = (f64::from(s.flows_active) / f64::from(max)).min(1.0);
-        let g = Gauge::default()
-            .block(Block::default().title(format!("flows {}/{max}", s.flows_active)))
-            .ratio(ratio);
-        frame.render_widget(g, vchunks[2]);
-    } else if let Some(s) = snap {
-        let p = Paragraph::new(format!(
-            "conns active {} / total {}",
-            s.conns_active, s.conns_total
-        ));
-        frame.render_widget(p, vchunks[2]);
+    // pairwise_rates yields one fewer point than snapshots; an empty
+    // series means fewer than two snapshots have arrived yet.
+    if in_rates.is_empty() {
+        let p = Paragraph::new("collecting…")
+            .block(Block::default().title(" throughput · 60s window "));
+        frame.render_widget(p, area);
+        return;
     }
 
-    if let Some(s) = snap {
-        let lines = vec![
-            Line::from(format!("total in  {}", fmt_bytes(state.displayed_in(s)))),
-            Line::from(format!("total out {}", fmt_bytes(state.displayed_out(s)))),
-            Line::from(format!(
-                "target_failovers_total {}",
-                s.target_failovers_total
-            )),
+    let in_pts: Vec<(f64, f64)> = in_rates
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i as f64, v as f64))
+        .collect();
+    let out_pts: Vec<(f64, f64)> = out_rates
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i as f64, v as f64))
+        .collect();
+
+    let peak = in_rates
+        .iter()
+        .chain(out_rates.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let avg_in = in_rates.iter().sum::<u64>() / in_rates.len() as u64;
+    let y_max = (peak as f64 * 1.15).max(1.0);
+    let x_max = in_rates.len().saturating_sub(1).max(1) as f64;
+
+    let datasets = vec![
+        Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Green))
+            .data(&in_pts),
+        Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Cyan))
+            .data(&out_pts),
+    ];
+
+    // Custom title doubles as the legend (colored in/out) plus exact
+    // current/peak/avg figures the axis ticks can only approximate. The
+    // "now" figures are the rightmost plotted points (last() is safe —
+    // the empty-series case returned above), so the title and the line
+    // ends can never disagree.
+    let now_in = *in_rates.last().unwrap();
+    let now_out = *out_rates.last().unwrap_or(&0);
+    let title = Line::from(vec![
+        Span::raw(" throughput · 60s   "),
+        Span::styled("in ", Style::default().fg(Color::Green)),
+        Span::raw(format!("{}  ", fmt_rate(now_in))),
+        Span::styled("out ", Style::default().fg(Color::Cyan)),
+        Span::raw(format!(
+            "{}   peak {}  avg in {} ",
+            fmt_rate(now_out),
+            fmt_rate(peak),
+            fmt_rate(avg_in),
+        )),
+    ]);
+
+    let x_axis = Axis::default()
+        .style(Style::default().fg(Color::DarkGray))
+        .bounds([0.0, x_max])
+        .labels(vec![Line::from("-60s"), Line::from("now")]);
+    let y_axis = Axis::default()
+        .style(Style::default().fg(Color::DarkGray))
+        .bounds([0.0, y_max])
+        .labels(vec![
+            Line::from("0"),
+            Line::from(fmt_rate((y_max / 2.0) as u64)),
+            Line::from(fmt_rate(y_max as u64)),
+        ]);
+
+    let chart = Chart::new(datasets)
+        .block(Block::default().title(title))
+        .x_axis(x_axis)
+        .y_axis(y_axis);
+    frame.render_widget(chart, area);
+}
+
+/// Minimum body width (columns) at which the four detail panels fit
+/// side by side as three columns. Roughly the sum of the narrowest
+/// legible widths of Targets + Counters + Capabilities; below it the
+/// panels stack vertically instead.
+const WIDE_PANELS_MIN_WIDTH: u16 = 78;
+
+/// Bottom panels: Targets + per-rule Errors on the left, Counters in
+/// the middle, Capabilities on the right. Collapses to a single stacked
+/// column on narrow terminals. The wide/narrow branch only chooses the
+/// four panel rects; the render calls below happen once so the panel set
+/// and order can never drift between layouts.
+fn render_detail_panels(
+    frame: &mut Frame,
+    area: Rect,
+    meta: &RuleMeta,
+    snap: Option<&RuleSnap>,
+    state: &AppState,
+) {
+    let (targets_area, errors_area, counters_area, caps_area) =
+        if area.width < WIDE_PANELS_MIN_WIDTH {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Ratio(1, 4); 4])
+                .split(area);
+            (rows[0], rows[3], rows[1], rows[2])
+        } else {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Ratio(1, 3); 3])
+                .split(area);
+            let left = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .split(cols[0]);
+            (left[0], left[1], cols[1], cols[2])
+        };
+
+    render_targets(frame, targets_area, meta);
+    render_counters(frame, counters_area, meta, snap, state);
+    render_capabilities(frame, caps_area, meta, snap);
+    render_rule_errors(frame, errors_area, snap);
+}
+
+fn render_targets(frame: &mut Frame, area: Rect, meta: &RuleMeta) {
+    let block = Block::default().borders(Borders::ALL).title(" Targets ");
+    // Lowest-priority target is the active/primary one.
+    let min_prio = meta.targets.iter().map(|t| t.priority).min();
+    let items: Vec<ListItem> = meta
+        .targets
+        .iter()
+        .map(|t| {
+            let active = Some(t.priority) == min_prio;
+            let marker = if active { "▶ " } else { "  " };
+            let proxy = if t.proxy_protocol.is_some() {
+                "  proxy"
+            } else {
+                ""
+            };
+            let text = format!("{marker}{}:{}  prio {}{proxy}", t.host, t.port, t.priority);
+            let style = if active {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+            ListItem::new(text).style(style)
+        })
+        .collect();
+    frame.render_widget(List::new(items).block(block), area);
+}
+
+fn render_counters(
+    frame: &mut Frame,
+    area: Rect,
+    meta: &RuleMeta,
+    snap: Option<&RuleSnap>,
+    state: &AppState,
+) {
+    let block = Block::default().borders(Borders::ALL).title(" Counters ");
+    let lines = if let Some(s) = snap {
+        let mut lines = vec![
+            Line::from(format!("total in   {}", fmt_bytes(state.displayed_in(s)))),
+            Line::from(format!("total out  {}", fmt_bytes(state.displayed_out(s)))),
         ];
-        frame.render_widget(Paragraph::new(lines), vchunks[3]);
+        if let Some(max) = meta.udp_max_flows {
+            lines.push(Line::from(format!("flows      {}/{max}", s.flows_active)));
+            lines.push(Line::from(format!(
+                "datagrams  {} / {}",
+                s.datagrams_in, s.datagrams_out
+            )));
+        } else {
+            lines.push(Line::from(format!(
+                "conns      {}/{}",
+                s.conns_active, s.conns_total
+            )));
+            lines.push(Line::from("datagrams  —".to_string()));
+        }
+        lines.push(Line::from(format!(
+            "failovers  {}",
+            s.target_failovers_total
+        )));
+        lines
+    } else {
+        vec![Line::from("—")]
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_capabilities(frame: &mut Frame, area: Rect, meta: &RuleMeta, snap: Option<&RuleSnap>) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Capabilities ");
+    let badge = |on: bool| if on { "● on" } else { "○ off" };
+    let proxy_on = meta.targets.iter().any(|t| t.proxy_protocol.is_some());
+    let mut lines = vec![
+        Line::from(format!("splice     {}", badge(meta.splice_capable))),
+        Line::from(format!("proxy      {}", badge(proxy_on))),
+    ];
+    if let Some(max) = meta.udp_max_flows {
+        let active = snap.map_or(0, |s| s.flows_active);
+        lines.push(Line::from(format!("udp flows  {active}/{max}")));
+    } else {
+        lines.push(Line::from("udp flows  —".to_string()));
     }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_rule_errors(frame: &mut Frame, area: Rect, snap: Option<&RuleSnap>) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Errors (this rule) ");
+    let lines = if let Some(s) = snap {
+        let mut v: Vec<Line> = s
+            .err
+            .labeled()
+            .into_iter()
+            .filter(|(_, c)| *c > 0)
+            .map(|(n, c)| {
+                Line::from(Span::styled(
+                    format!("{n} {c}"),
+                    Style::default().fg(Color::Yellow),
+                ))
+            })
+            .collect();
+        if v.is_empty() {
+            v.push(Line::from(Span::styled(
+                "✓ none",
+                Style::default().fg(Color::Green),
+            )));
+        }
+        v
+    } else {
+        vec![Line::from("—")]
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_errors(frame: &mut Frame, area: Rect, client: &Client, _state: &AppState) {
@@ -196,29 +416,9 @@ fn render_errors(frame: &mut Frame, area: Rect, client: &Client, _state: &AppSta
     if let Some(snap) = last {
         for meta in &client.hello.rules {
             if let Some(r) = snap.r.iter().find(|r| r.id == meta.id) {
-                push_err_row(&mut rows, &meta.name, "port_in_use", r.err.port_in_use);
-                push_err_row(
-                    &mut rows,
-                    &meta.name,
-                    "upstream_connect_failed",
-                    r.err.upstream_connect_failed,
-                );
-                push_err_row(&mut rows, &meta.name, "icmp_evict", r.err.icmp_evict);
-                push_err_row(&mut rows, &meta.name, "emsgsize", r.err.emsgsize);
-                push_err_row(&mut rows, &meta.name, "wouldblock", r.err.wouldblock);
-                push_err_row(
-                    &mut rows,
-                    &meta.name,
-                    "addflow_dropped",
-                    r.err.addflow_dropped,
-                );
-                push_err_row(&mut rows, &meta.name, "dns_failures", r.err.dns_failures);
-                push_err_row(
-                    &mut rows,
-                    &meta.name,
-                    "flows_dropped_overflow",
-                    r.err.flows_dropped_overflow,
-                );
+                for (name, count) in r.err.labeled() {
+                    push_err_row(&mut rows, &meta.name, name, count);
+                }
             }
         }
     }
@@ -432,6 +632,85 @@ mod tests {
         let s = buffer_to_string(buf);
         assert!(s.contains("smoke"), "buffer:\n{s}");
         assert!(s.contains("tcp"));
+    }
+
+    fn draw_detail(client: &Client, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = super::super::state::AppState::new();
+        state.tab = Tab::Detail;
+        terminal
+            .draw(|f| render(f, f.area(), client, &mut state))
+            .unwrap();
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn detail_tcp_renders_chart_and_panels() {
+        let s = draw_detail(&fake_client(), 100, 30);
+        assert!(s.contains("throughput"), "missing chart title:\n{s}");
+        assert!(s.contains("Targets"), "missing targets panel:\n{s}");
+        assert!(s.contains("Counters"), "missing counters panel:\n{s}");
+        assert!(s.contains("splice"), "missing capabilities:\n{s}");
+        assert!(s.contains("1.1.1.1"), "missing target host:\n{s}");
+    }
+
+    #[test]
+    fn detail_narrow_terminal_still_shows_all_panels() {
+        // Below WIDE_PANELS_MIN_WIDTH the panels stack vertically; the
+        // same four panels must still render (no drift between layouts).
+        let s = draw_detail(&fake_client(), 70, 30);
+        assert!(
+            s.contains("Targets"),
+            "missing targets panel (narrow):\n{s}"
+        );
+        assert!(
+            s.contains("Counters"),
+            "missing counters panel (narrow):\n{s}"
+        );
+        assert!(
+            s.contains("Capabilities"),
+            "missing capabilities panel (narrow):\n{s}"
+        );
+        assert!(s.contains("Errors"), "missing errors panel (narrow):\n{s}");
+    }
+
+    #[test]
+    fn detail_collecting_with_single_snapshot() {
+        let mut client = fake_client();
+        client.ring.pop_back(); // leave a single snapshot in the ring
+        let s = draw_detail(&client, 100, 30);
+        assert!(s.contains("collecting"), "expected collecting state:\n{s}");
+    }
+
+    #[test]
+    fn detail_udp_shows_flows() {
+        let mut client = fake_client();
+        client.hello.rules[0].proto = "udp".into();
+        client.hello.rules[0].udp_max_flows = Some(128);
+        for snap in &mut client.ring {
+            snap.r[0].flows_active = 7;
+        }
+        let s = draw_detail(&client, 100, 30);
+        assert!(s.contains("flows"), "missing flows row:\n{s}");
+        assert!(s.contains("7/128"), "missing flow saturation:\n{s}");
+    }
+
+    #[test]
+    fn detail_errors_panel_lists_nonzero() {
+        let mut client = fake_client();
+        if let Some(last) = client.ring.back_mut() {
+            last.r[0].err.upstream_connect_failed = 3;
+        }
+        let s = draw_detail(&client, 100, 30);
+        assert!(s.contains("connect_failed"), "missing error counter:\n{s}");
+        assert!(s.contains('3'), "missing error count:\n{s}");
+    }
+
+    #[test]
+    fn detail_errors_panel_none_when_clean() {
+        let s = draw_detail(&fake_client(), 100, 30);
+        assert!(s.contains("none"), "expected clean errors marker:\n{s}");
     }
 
     #[test]
