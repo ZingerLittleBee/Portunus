@@ -564,7 +564,9 @@ This exercises the live connect probe end-to-end, which the unit tests cannot.
 # Terminal A: a throwaway upstream to forward to.
 python3 -m http.server 9099
 
-# Terminal B: minimal config, then run the daemon.
+# Terminal B: minimal config, then run the daemon (daemon mode is the
+# default command — there is no `run` subcommand; the rule field is
+# `listen_port`, not `listen`).
 cat > /tmp/lat-smoke.toml <<'EOF'
 [stats]
 enabled = true
@@ -573,10 +575,10 @@ socket_path = "/tmp/portunus-lat.sock"
 [[rule]]
 name = "smoke"
 protocol = "tcp"
-listen = "18080"
+listen_port = 18080
 target = "127.0.0.1:9099"
 EOF
-cargo run -p portunus-standalone -- run --config /tmp/lat-smoke.toml
+cargo run -p portunus-standalone -- --config /tmp/lat-smoke.toml
 
 # Terminal C: attach the TUI, press Enter to reach Detail, watch the
 # Targets panel. Expect "127.0.0.1:9099  prio 0   <N>ms" in green within ~2s.
