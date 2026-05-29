@@ -8,7 +8,7 @@ pub mod state;
 use std::io;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -21,6 +21,7 @@ use tokio::io::AsyncBufReadExt;
 
 use crate::stats::Snapshot;
 use crate::stats::client::Client;
+use probe::{ProbeSample, active_target};
 use state::{AppState, Tab};
 
 /// Entry point for the TUI; manages raw-mode setup/teardown around
@@ -62,6 +63,9 @@ async fn run_loop(
     state: &mut AppState,
 ) -> io::Result<()> {
     let mut line_buf = String::new();
+    // Results from spawned probe tasks. Bounded; a full channel just drops
+    // a probe result, which self-heals on the next tick.
+    let (probe_tx, mut probe_rx) = tokio::sync::mpsc::channel::<(String, ProbeSample)>(8);
     loop {
         // Try to receive a snapshot with a short timeout so we can poll key events.
         line_buf.clear();
@@ -81,6 +85,38 @@ async fn run_loop(
             }
             Ok(Err(e)) => return Err(e),
             Err(_) => { /* timeout — fall through to event poll + render */ }
+        }
+
+        // Drain any probe results that arrived since the last iteration.
+        while let Ok((id, sample)) = probe_rx.try_recv() {
+            state.probes.insert(id, sample);
+        }
+
+        // Issue a probe for the selected rule's active TCP target while the
+        // Detail tab is visible. Spawned off the render path so the connect
+        // timeout never blocks key handling. Probing continues while paused
+        // (RTT is live, not part of the throughput ring).
+        if state.tab == Tab::Detail {
+            let due = state
+                .last_probe_at
+                .is_none_or(|t| t.elapsed() >= probe::PROBE_INTERVAL);
+            if due && !client.hello.rules.is_empty() {
+                let idx = state.selected.min(client.hello.rules.len() - 1);
+                let meta = &client.hello.rules[idx];
+                if meta.proto == "tcp"
+                    && let Some(target) = active_target(meta)
+                {
+                    let tx = probe_tx.clone();
+                    let id = meta.id.clone();
+                    let host = target.host.clone();
+                    let port = target.port;
+                    tokio::spawn(async move {
+                        let sample = probe::probe_tcp(&host, port).await;
+                        let _ = tx.send((id, sample)).await;
+                    });
+                    state.last_probe_at = Some(Instant::now());
+                }
+            }
         }
 
         // Non-blocking key event poll (10 ms budget).
