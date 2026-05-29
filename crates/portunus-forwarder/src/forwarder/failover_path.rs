@@ -419,6 +419,13 @@ async fn handle_connection<R: Resolve>(
     let owner_has_bw = owner_rate_limit
         .as_ref()
         .is_some_and(|l| l.has_bandwidth_cap());
+    // 016-failover-splice-live-bytes: the uncapped branch reuses the
+    // single-target `copy_uncapped` (splice fast path + live sink) so
+    // multi-target rules get zero-copy AND real-time `bytes_in/out`
+    // updates instead of a frozen gauge until connection close. The
+    // sink stays at zero on the capped branch / userspace fallback, so
+    // the post-copy batch record below remains byte-identical.
+    let live_sink = crate::forwarder::stats::LiveBytesSink::new(Arc::clone(&stats), listen_port);
     let result = tokio::select! {
         () = shutdown.cancelled() => {
             Err(io::Error::other("proxy_cancelled"))
@@ -448,15 +455,34 @@ async fn handle_connection<R: Resolve>(
                 )
                 .await
             } else {
-                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+                // quota: not threaded into the failover copy path (unchanged).
+                // preread / had_proxy_prelude: no SNI preread here, and the
+                // per-target PROXY prelude was already written in
+                // `dial_with_failover`; the flag is a tracing-only CopyCtx field.
+                crate::forwarder::proxy::copy_uncapped(
+                    &mut inbound,
+                    &mut outbound,
+                    rule_id,
+                    rate_limit.as_deref(),
+                    owner_rate_limit.as_deref(),
+                    None,
+                    false,
+                    false,
+                    Some(&live_sink),
+                )
+                .await
             }
         } => {
             result
         }
     };
     if let Ok((bin, bout)) = result.as_ref() {
-        stats.record_in(listen_port, *bin);
-        stats.record_out(listen_port, *bout);
+        // Subtract what the live sink already flushed per-chunk to avoid
+        // double-counting; the capped branch / userspace fallback leave
+        // it at zero, so the full amount is booked here as before.
+        let (live_in, live_out) = live_sink.snapshot_recorded();
+        stats.record_in(listen_port, bin.saturating_sub(live_in));
+        stats.record_out(listen_port, bout.saturating_sub(live_out));
         // T034: per-target byte accumulation. Same atomicity as the
         // global counters — `add_bytes_in/out` use Relaxed adds.
         let state = states[idx].lock().await;

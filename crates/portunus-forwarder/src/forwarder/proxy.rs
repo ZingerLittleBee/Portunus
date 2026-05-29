@@ -350,8 +350,12 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
 /// (FR-006).
 ///
 /// On non-Linux this is a thin wrapper around `copy_bidirectional_with_sizes`.
+///
+/// `pub(crate)` so the multi-target `failover_path` can reuse the same
+/// splice + live-sink machinery as the single-target path instead of
+/// duplicating a userspace copy loop.
 #[allow(clippy::too_many_arguments)]
-async fn copy_uncapped(
+pub(crate) async fn copy_uncapped(
     inbound: &mut TcpStream,
     outbound: &mut TcpStream,
     rule_id: RuleId,
