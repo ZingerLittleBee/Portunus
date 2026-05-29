@@ -81,6 +81,26 @@ pub struct ErrorSnap {
     pub flows_dropped_overflow: u64,
 }
 
+impl ErrorSnap {
+    /// Canonical `(label, count)` pairs in a fixed order. Shared by the
+    /// Errors tab and the per-rule Detail errors panel so a newly added
+    /// counter only has to be wired through here once instead of in every
+    /// renderer.
+    #[must_use]
+    pub fn labeled(&self) -> [(&'static str, u64); 8] {
+        [
+            ("port_in_use", self.port_in_use),
+            ("upstream_connect_failed", self.upstream_connect_failed),
+            ("icmp_evict", self.icmp_evict),
+            ("emsgsize", self.emsgsize),
+            ("wouldblock", self.wouldblock),
+            ("addflow_dropped", self.addflow_dropped),
+            ("dns_failures", self.dns_failures),
+            ("flows_dropped_overflow", self.flows_dropped_overflow),
+        ]
+    }
+}
+
 pub mod client;
 pub mod server;
 #[cfg(feature = "stats-tui")]

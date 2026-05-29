@@ -151,19 +151,23 @@ fn render_detail(frame: &mut Frame, area: Rect, client: &Client, state: &AppStat
     clippy::cast_sign_loss
 )]
 fn render_detail_chart(frame: &mut Frame, area: Rect, client: &Client, meta: &RuleMeta) {
-    let uptime_series: Vec<u64> = client.ring.iter().map(|s| s.uptime_ms).collect();
-    let in_series: Vec<u64> = client
-        .ring
-        .iter()
-        .filter_map(|s| s.r.iter().find(|r| r.id == meta.id))
-        .map(|r| r.bytes_in)
-        .collect();
-    let out_series: Vec<u64> = client
-        .ring
-        .iter()
-        .filter_map(|s| s.r.iter().find(|r| r.id == meta.id))
-        .map(|r| r.out)
-        .collect();
+    // Single pass over the ring, pushing all three series together only
+    // for snapshots that actually contain this rule. Collecting them in
+    // lockstep keeps the byte and uptime series the same length, so
+    // `pairwise_rates` always pairs a byte delta with its own time delta
+    // (a separate uptime pass would misalign if the rule were ever
+    // absent from a snapshot).
+    let cap = client.ring.len();
+    let mut uptime_series: Vec<u64> = Vec::with_capacity(cap);
+    let mut in_series: Vec<u64> = Vec::with_capacity(cap);
+    let mut out_series: Vec<u64> = Vec::with_capacity(cap);
+    for s in &client.ring {
+        if let Some(r) = s.r.iter().find(|r| r.id == meta.id) {
+            uptime_series.push(s.uptime_ms);
+            in_series.push(r.bytes_in);
+            out_series.push(r.out);
+        }
+    }
     let in_rates = pairwise_rates(&in_series, &uptime_series);
     let out_rates = pairwise_rates(&out_series, &uptime_series);
 
@@ -211,15 +215,20 @@ fn render_detail_chart(frame: &mut Frame, area: Rect, client: &Client, meta: &Ru
     ];
 
     // Custom title doubles as the legend (colored in/out) plus exact
-    // current/peak/avg figures the axis ticks can only approximate.
+    // current/peak/avg figures the axis ticks can only approximate. The
+    // "now" figures are the rightmost plotted points (last() is safe —
+    // the empty-series case returned above), so the title and the line
+    // ends can never disagree.
+    let now_in = *in_rates.last().unwrap();
+    let now_out = *out_rates.last().unwrap_or(&0);
     let title = Line::from(vec![
         Span::raw(" throughput · 60s   "),
         Span::styled("in ", Style::default().fg(Color::Green)),
-        Span::raw(format!("{}  ", fmt_rate(client.in_rate(&meta.id)))),
+        Span::raw(format!("{}  ", fmt_rate(now_in))),
         Span::styled("out ", Style::default().fg(Color::Cyan)),
         Span::raw(format!(
             "{}   peak {}  avg in {} ",
-            fmt_rate(client.out_rate(&meta.id)),
+            fmt_rate(now_out),
             fmt_rate(peak),
             fmt_rate(avg_in),
         )),
@@ -245,9 +254,17 @@ fn render_detail_chart(frame: &mut Frame, area: Rect, client: &Client, meta: &Ru
     frame.render_widget(chart, area);
 }
 
+/// Minimum body width (columns) at which the four detail panels fit
+/// side by side as three columns. Roughly the sum of the narrowest
+/// legible widths of Targets + Counters + Capabilities; below it the
+/// panels stack vertically instead.
+const WIDE_PANELS_MIN_WIDTH: u16 = 78;
+
 /// Bottom panels: Targets + per-rule Errors on the left, Counters in
 /// the middle, Capabilities on the right. Collapses to a single stacked
-/// column on narrow terminals.
+/// column on narrow terminals. The wide/narrow branch only chooses the
+/// four panel rects; the render calls below happen once so the panel set
+/// and order can never drift between layouts.
 fn render_detail_panels(
     frame: &mut Frame,
     area: Rect,
@@ -255,39 +272,29 @@ fn render_detail_panels(
     snap: Option<&RuleSnap>,
     state: &AppState,
 ) {
-    if area.width < 78 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-            ])
-            .split(area);
-        render_targets(frame, rows[0], meta);
-        render_counters(frame, rows[1], meta, snap, state);
-        render_capabilities(frame, rows[2], meta, snap);
-        render_rule_errors(frame, rows[3], snap);
-        return;
-    }
+    let (targets_area, errors_area, counters_area, caps_area) =
+        if area.width < WIDE_PANELS_MIN_WIDTH {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Ratio(1, 4); 4])
+                .split(area);
+            (rows[0], rows[3], rows[1], rows[2])
+        } else {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Ratio(1, 3); 3])
+                .split(area);
+            let left = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .split(cols[0]);
+            (left[0], left[1], cols[1], cols[2])
+        };
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-        ])
-        .split(area);
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(cols[0]);
-    render_targets(frame, left[0], meta);
-    render_rule_errors(frame, left[1], snap);
-    render_counters(frame, cols[1], meta, snap, state);
-    render_capabilities(frame, cols[2], meta, snap);
+    render_targets(frame, targets_area, meta);
+    render_counters(frame, counters_area, meta, snap, state);
+    render_capabilities(frame, caps_area, meta, snap);
+    render_rule_errors(frame, errors_area, snap);
 }
 
 fn render_targets(frame: &mut Frame, area: Rect, meta: &RuleMeta) {
@@ -378,19 +385,10 @@ fn render_rule_errors(frame: &mut Frame, area: Rect, snap: Option<&RuleSnap>) {
         .borders(Borders::ALL)
         .title(" Errors (this rule) ");
     let lines = if let Some(s) = snap {
-        let e = &s.err;
-        let pairs = [
-            ("port_in_use", e.port_in_use),
-            ("connect_failed", e.upstream_connect_failed),
-            ("icmp_evict", e.icmp_evict),
-            ("emsgsize", e.emsgsize),
-            ("wouldblock", e.wouldblock),
-            ("addflow_dropped", e.addflow_dropped),
-            ("dns_failures", e.dns_failures),
-            ("overflow", e.flows_dropped_overflow),
-        ];
-        let mut v: Vec<Line> = pairs
-            .iter()
+        let mut v: Vec<Line> = s
+            .err
+            .labeled()
+            .into_iter()
             .filter(|(_, c)| *c > 0)
             .map(|(n, c)| {
                 Line::from(Span::styled(
@@ -418,29 +416,9 @@ fn render_errors(frame: &mut Frame, area: Rect, client: &Client, _state: &AppSta
     if let Some(snap) = last {
         for meta in &client.hello.rules {
             if let Some(r) = snap.r.iter().find(|r| r.id == meta.id) {
-                push_err_row(&mut rows, &meta.name, "port_in_use", r.err.port_in_use);
-                push_err_row(
-                    &mut rows,
-                    &meta.name,
-                    "upstream_connect_failed",
-                    r.err.upstream_connect_failed,
-                );
-                push_err_row(&mut rows, &meta.name, "icmp_evict", r.err.icmp_evict);
-                push_err_row(&mut rows, &meta.name, "emsgsize", r.err.emsgsize);
-                push_err_row(&mut rows, &meta.name, "wouldblock", r.err.wouldblock);
-                push_err_row(
-                    &mut rows,
-                    &meta.name,
-                    "addflow_dropped",
-                    r.err.addflow_dropped,
-                );
-                push_err_row(&mut rows, &meta.name, "dns_failures", r.err.dns_failures);
-                push_err_row(
-                    &mut rows,
-                    &meta.name,
-                    "flows_dropped_overflow",
-                    r.err.flows_dropped_overflow,
-                );
+                for (name, count) in r.err.labeled() {
+                    push_err_row(&mut rows, &meta.name, name, count);
+                }
             }
         }
     }
@@ -675,6 +653,26 @@ mod tests {
         assert!(s.contains("Counters"), "missing counters panel:\n{s}");
         assert!(s.contains("splice"), "missing capabilities:\n{s}");
         assert!(s.contains("1.1.1.1"), "missing target host:\n{s}");
+    }
+
+    #[test]
+    fn detail_narrow_terminal_still_shows_all_panels() {
+        // Below WIDE_PANELS_MIN_WIDTH the panels stack vertically; the
+        // same four panels must still render (no drift between layouts).
+        let s = draw_detail(&fake_client(), 70, 30);
+        assert!(
+            s.contains("Targets"),
+            "missing targets panel (narrow):\n{s}"
+        );
+        assert!(
+            s.contains("Counters"),
+            "missing counters panel (narrow):\n{s}"
+        );
+        assert!(
+            s.contains("Capabilities"),
+            "missing capabilities panel (narrow):\n{s}"
+        );
+        assert!(s.contains("Errors"), "missing errors panel (narrow):\n{s}");
     }
 
     #[test]
