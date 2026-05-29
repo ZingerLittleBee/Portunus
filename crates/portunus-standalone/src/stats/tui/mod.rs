@@ -1,6 +1,7 @@
 //! Ratatui TUI for `portunus-standalone stats`.
 
 pub mod format;
+pub mod probe;
 pub mod render;
 pub mod state;
 
