@@ -2,7 +2,9 @@
 //! and an optional client-side baseline for "session reset".
 
 use std::collections::HashMap;
+use std::time::Instant;
 
+use crate::stats::tui::probe::ProbeSample;
 use crate::stats::{RuleSnap, Snapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,10 @@ pub struct AppState {
     pub show_help: bool,
     /// Captured cumulative values for client-side "session reset".
     pub baseline: HashMap<String, BaselineEntry>,
+    /// Latest probe sample per rule id (active target only).
+    pub probes: HashMap<String, ProbeSample>,
+    /// When the last probe was issued; `None` until the first probe.
+    pub last_probe_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -106,6 +112,8 @@ impl AppState {
             paused: false,
             show_help: false,
             baseline: HashMap::new(),
+            probes: HashMap::new(),
+            last_probe_at: None,
         }
     }
 

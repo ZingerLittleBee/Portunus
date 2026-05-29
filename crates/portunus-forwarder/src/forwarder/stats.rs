@@ -478,6 +478,25 @@ impl LiveBytesSink {
             self.recorded_out.load(Ordering::Relaxed),
         )
     }
+
+    /// Book the portion of a connection's final `(bytes_in, bytes_out)`
+    /// totals that was NOT already flushed live per chunk, so the
+    /// post-copy batch record never double-counts what the sink already
+    /// pushed. Callers pass the full transfer totals (a single-target
+    /// caller folds its SNI preread into `bin`); paths that never used
+    /// the sink see `recorded_* == 0` and book the full amount, exactly
+    /// like the pre-live batch record.
+    ///
+    /// Centralizing the subtraction here keeps the single-target
+    /// (`proxy_with_preread_and_prelude`) and multi-target
+    /// (`failover_path`) call sites from drifting apart.
+    pub fn record_remaining(&self, bin: u64, bout: u64) {
+        let (live_in, live_out) = self.snapshot_recorded();
+        self.stats
+            .record_in(self.listen_port, bin.saturating_sub(live_in));
+        self.stats
+            .record_out(self.listen_port, bout.saturating_sub(live_out));
+    }
 }
 
 /// Per-port detail for range rules. Single-port rules still emit one slot
@@ -629,6 +648,32 @@ mod tests {
         assert_eq!(s.snapshot(), (150, 200, 1));
         // Aggregate-only construction → no per-port slot.
         assert!(s.snapshot_per_port().is_empty());
+    }
+
+    #[test]
+    fn live_sink_record_remaining_books_only_unflushed_bytes() {
+        let s = Arc::new(RuleStats::new());
+        let sink = LiveBytesSink::new(Arc::clone(&s), 0);
+        // Simulate a splice connection that flushed part of the transfer
+        // live, chunk by chunk.
+        sink.record_in(300);
+        sink.record_out(1000);
+        // Connection closes with these final totals; the post-copy batch
+        // record must book only what the sink had not already flushed.
+        sink.record_remaining(500, 1000);
+        // 300 live + (500-300) remaining = 500 in; 1000 live + 0 = 1000 out.
+        assert_eq!(s.snapshot(), (500, 1000, 0));
+    }
+
+    #[test]
+    fn live_sink_record_remaining_books_full_when_unused() {
+        // Capped branch / userspace fallback never call record_in/out, so
+        // the sink is at zero and record_remaining books the full total —
+        // byte-identical to the pre-live batch record.
+        let s = Arc::new(RuleStats::new());
+        let sink = LiveBytesSink::new(Arc::clone(&s), 0);
+        sink.record_remaining(800, 1600);
+        assert_eq!(s.snapshot(), (800, 1600, 0));
     }
 
     #[test]

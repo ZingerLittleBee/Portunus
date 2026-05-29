@@ -67,6 +67,17 @@ pub struct ResolverConfig {
     /// so US2 doesn't need a breaking API change).
     #[allow(dead_code)]
     pub max_concurrent_resolves: usize,
+    /// Hard cap on total cache entries (across all states). The cache
+    /// is keyed by `Hostname`, so without a bound a deployment that
+    /// targets (or is probed with) a large, ever-changing set of names
+    /// would grow the map without limit — expired/failed entries are
+    /// only overwritten when the *same* name is queried again, so a
+    /// name that never recurs would otherwise live forever. When the
+    /// map reaches this size a new-name insert first drops elapsed
+    /// entries, then evicts the entries closest to expiry; in-flight
+    /// `Pending` entries are never evicted (that would strand
+    /// single-flight waiters).
+    pub max_cache_entries: usize,
     /// Outbound TCP `SO_SNDBUF` (bytes) requested on every dial.
     /// `None` keeps the kernel default. Set on the connecting socket
     /// before `connect`; the kernel may clamp the value (Linux:
@@ -89,6 +100,11 @@ impl Default for ResolverConfig {
             attempt_timeout: Duration::from_secs(3),
             negative_cache_retry: Duration::from_secs(3),
             max_concurrent_resolves: 64,
+            // ~8 K distinct names. Each entry is a small Hostname plus a
+            // handful of IpAddrs, so the cap costs on the order of a few
+            // MiB at most — generous for real fan-out, firm against
+            // unbounded growth.
+            max_cache_entries: 8192,
             // 1 MiB conservative default — enough headroom for most
             // WAN-to-target BDPs; small enough that the kernel ceiling
             // (Linux ~4 MiB by default, macOS ~8 MiB) won't reject it.
@@ -302,11 +318,23 @@ impl<R: Resolve> LiveResolver<R> {
         // `ConnectError::Dial` (not `AllAddrsUnreachable`) for parity
         // with the pre-refactor code path.
         if matches!(target, Target::Ip(_)) {
-            return self
-                .dial(addrs[0])
+            // Bound the dial by `attempt_timeout` just like the DNS
+            // branch below. Without it, a SYN-blackhole IP target (a
+            // firewall that DROPs rather than RSTs) would wedge the
+            // connect in kernel SYN-retransmit for ~75-127s, pinning a
+            // proxy task / fd / rate-limit slot — and, in the
+            // multi-target path, serializing failover so later targets
+            // never get tried. A timeout maps to `ConnectError::Dial`
+            // for parity with a refused/unreachable single-address dial.
+            return match tokio::time::timeout(self.config.attempt_timeout, self.dial(addrs[0]))
                 .await
-                .map(|s| (s, source))
-                .map_err(ConnectError::Dial);
+            {
+                Ok(result) => result.map(|s| (s, source)).map_err(ConnectError::Dial),
+                Err(_elapsed) => Err(ConnectError::Dial(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("dial timeout after {:?}", self.config.attempt_timeout),
+                ))),
+            };
         }
 
         let mut last_err: Option<io::Error> = None;

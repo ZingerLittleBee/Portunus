@@ -322,19 +322,13 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
             result
         }
     };
-    if let (Some(s), Ok((bin, bout))) = (stats.as_ref(), result.as_ref()) {
-        // Subtract what the live sink already flushed per-chunk so we
-        // don't double-count. Paths that didn't use the sink (rate-
-        // limited, userspace fallback, splice unsupported→fallback)
-        // leave it at zero and the full amount is recorded here, just
-        // like before.
-        let (live_in, live_out) = live_sink
-            .as_ref()
-            .map_or((0, 0), super::stats::LiveBytesSink::snapshot_recorded);
-        let remaining_in = bin.saturating_sub(live_in);
-        let remaining_out = bout.saturating_sub(live_out);
-        s.record_in(listen_port, remaining_in + preread_in);
-        s.record_out(listen_port, remaining_out);
+    if let (Some(sink), Ok((bin, bout))) = (live_sink.as_ref(), result.as_ref()) {
+        // Book whatever the live sink did not already flush per-chunk.
+        // The preread (replayed ClientHello) is folded into the inbound
+        // total — it was written before the copy loop, so the sink never
+        // saw it. Paths that didn't use the sink leave it at zero, so the
+        // full amount is recorded, just like the pre-live batch record.
+        sink.record_remaining(*bin + preread_in, *bout);
     }
     result.map(|(bin, bout)| (bin + preread_in, bout))
 }
@@ -350,8 +344,12 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
 /// (FR-006).
 ///
 /// On non-Linux this is a thin wrapper around `copy_bidirectional_with_sizes`.
+///
+/// `pub(crate)` so the multi-target `failover_path` can reuse the same
+/// splice + live-sink machinery as the single-target path instead of
+/// duplicating a userspace copy loop.
 #[allow(clippy::too_many_arguments)]
-async fn copy_uncapped(
+pub(crate) async fn copy_uncapped(
     inbound: &mut TcpStream,
     outbound: &mut TcpStream,
     rule_id: RuleId,
