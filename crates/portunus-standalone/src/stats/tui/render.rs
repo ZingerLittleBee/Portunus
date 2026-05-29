@@ -10,8 +10,8 @@ use ratatui::widgets::{
     TableState, Tabs,
 };
 
-use super::format::{fmt_bytes, fmt_rate, fmt_rtt};
-use super::probe::active_target_index;
+use super::format::{fmt_bytes, fmt_bytes_compact, fmt_rate, fmt_rtt};
+use super::probe::{active_target, active_target_index};
 use super::state::{AppState, Tab};
 use crate::stats::client::Client;
 use crate::stats::{RuleMeta, RuleSnap};
@@ -74,31 +74,62 @@ fn render_overview(frame: &mut Frame, area: Rect, client: &Client, state: &mut A
             let in_rate = client.in_rate(&meta.id);
             let out_rate = client.out_rate(&meta.id);
             let (conns, conns_total) = snap_row.map_or((0, 0), |r| (r.conns_active, r.conns_total));
+            // Active (lowest-priority) target — the same row the prober uses.
+            let upstream = active_target(meta).map_or_else(
+                || "\u{2014}".to_string(),
+                |t| format!("{}:{}", t.host, t.port),
+            );
+            // Combined cumulative total "in/out" (session-baseline aware),
+            // bare "0" when empty.
+            let total = snap_row.map_or_else(
+                || "\u{2014}".to_string(),
+                |r| {
+                    format!(
+                        "{}/{}",
+                        fmt_bytes_compact(state.displayed_in(r)),
+                        fmt_bytes_compact(state.displayed_out(r))
+                    )
+                },
+            );
             Row::new(vec![
                 Cell::from(meta.name.clone()),
                 Cell::from(meta.proto.clone()),
                 Cell::from(meta.listen.clone()),
+                Cell::from(upstream),
+                rtt_cell(meta, state),
                 Cell::from(fmt_rate(in_rate)),
                 Cell::from(fmt_rate(out_rate)),
+                Cell::from(total),
                 Cell::from(format!("{conns}/{conns_total}")),
             ])
         })
         .collect();
 
     let header = Row::new(vec![
-        "name", "proto", "listen", "in rate", "out rate", "conns",
+        "name",
+        "proto",
+        "listen",
+        "upstream",
+        "rtt",
+        "in rate",
+        "out rate",
+        "total i/o",
+        "conns",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(18),
+            Constraint::Length(16),
             Constraint::Length(5),
-            Constraint::Length(12),
-            Constraint::Length(13),
-            Constraint::Length(13),
-            Constraint::Length(12),
+            Constraint::Length(7),
+            Constraint::Length(20),
+            Constraint::Length(7),
+            Constraint::Length(11),
+            Constraint::Length(11),
+            Constraint::Length(15),
+            Constraint::Length(9),
         ],
     )
     .header(header)
@@ -112,6 +143,20 @@ fn render_overview(frame: &mut Frame, area: Rect, client: &Client, state: &mut A
             .min(client.hello.rules.len().saturating_sub(1)),
     ));
     frame.render_stateful_widget(table, area, &mut ts);
+}
+
+/// RTT cell for a rule: a coloured `Nms` from the cached probe, `—` for
+/// UDP (TCP probe not applicable), or `…` until the first probe lands.
+fn rtt_cell(meta: &RuleMeta, state: &AppState) -> Cell<'static> {
+    let (text, color) = if meta.proto == "udp" {
+        ("\u{2014}".to_string(), Color::DarkGray)
+    } else {
+        state.probes.get(&meta.id).map_or_else(
+            || ("\u{2026}".to_string(), Color::DarkGray),
+            |s| fmt_rtt(*s),
+        )
+    };
+    Cell::from(Span::styled(text, Style::default().fg(color)))
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, client: &Client, state: &AppState) {
@@ -648,6 +693,27 @@ mod tests {
         let s = buffer_to_string(buf);
         assert!(s.contains("smoke"), "buffer:\n{s}");
         assert!(s.contains("tcp"));
+    }
+
+    #[test]
+    fn overview_shows_upstream_and_rtt() {
+        use crate::stats::tui::probe::ProbeSample;
+        use std::time::Duration;
+        let client = fake_client();
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = super::super::state::AppState::new();
+        state.probes.insert(
+            "abc".to_string(),
+            ProbeSample::Ok(Duration::from_millis(12)),
+        );
+        terminal
+            .draw(|f| render(f, f.area(), &client, &mut state))
+            .unwrap();
+        let s = buffer_to_string(terminal.backend().buffer());
+        assert!(s.contains("1.1.1.1:22"), "missing upstream column:\n{s}");
+        assert!(s.contains("12ms"), "missing rtt column:\n{s}");
+        assert!(s.contains("upstream"), "missing upstream header:\n{s}");
     }
 
     fn draw_detail(client: &Client, w: u16, h: u16) -> String {

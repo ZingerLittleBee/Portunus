@@ -92,17 +92,16 @@ async fn run_loop(
             state.probes.insert(id, sample);
         }
 
-        // Issue a probe for the selected rule's active TCP target while the
-        // Detail tab is visible. Spawned off the render path so the connect
-        // timeout never blocks key handling. Probing continues while paused
-        // (RTT is live, not part of the throughput ring).
-        if state.tab == Tab::Detail {
-            let due = state
-                .last_probe_at
-                .is_none_or(|t| t.elapsed() >= probe::PROBE_INTERVAL);
-            if due && !client.hello.rules.is_empty() {
-                let idx = state.selected.min(client.hello.rules.len() - 1);
-                let meta = &client.hello.rules[idx];
+        // Probe every rule's active TCP target so both the Overview list and
+        // the Detail panel can show live RTT. One connect per rule per
+        // interval; spawned off the render path so the connect timeout never
+        // blocks key handling. Probing continues while paused (RTT is live,
+        // not part of the throughput ring).
+        let due = state
+            .last_probe_at
+            .is_none_or(|t| t.elapsed() >= probe::PROBE_INTERVAL);
+        if due {
+            for meta in &client.hello.rules {
                 if meta.proto == "tcp"
                     && let Some(target) = active_target(meta)
                 {
@@ -114,9 +113,9 @@ async fn run_loop(
                         let sample = probe::probe_tcp(&host, port).await;
                         let _ = tx.send((id, sample)).await;
                     });
-                    state.last_probe_at = Some(Instant::now());
                 }
             }
+            state.last_probe_at = Some(Instant::now());
         }
 
         // Non-blocking key event poll (10 ms budget).

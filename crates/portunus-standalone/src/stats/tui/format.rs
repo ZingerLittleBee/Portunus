@@ -27,6 +27,30 @@ pub fn fmt_rate(bps: u64) -> String {
     format!("{}/s", fmt_bytes(bps).trim_start())
 }
 
+/// Compact byte label with no padding or inner space, e.g. `1.2MB`, `512B`.
+/// Used where horizontal space is tight, such as the Overview total column.
+#[must_use]
+pub fn fmt_bytes_compact(b: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
+    // Zero carries no information in a unit — show a bare "0".
+    if b == 0 {
+        return "0".to_string();
+    }
+    if b < 1024 {
+        return format!("{b}B");
+    }
+    // cast_precision_loss: u64 → f64 is intentional; ±1 LSB display
+    // precision is acceptable for a human-readable size label.
+    #[allow(clippy::cast_precision_loss)]
+    let mut f = b as f64;
+    let mut i = 0;
+    while f >= 1024.0 && i < UNITS.len() - 1 {
+        f /= 1024.0;
+        i += 1;
+    }
+    format!("{f:.1}{}", UNITS[i])
+}
+
 /// Format a probe sample for the Targets panel: the text to display and
 /// the colour to display it in. Green `< 50 ms`, yellow `< 200 ms`, red
 /// otherwise; timeouts and failures are red.
@@ -69,6 +93,19 @@ mod tests {
         let s = fmt_rate(2048);
         assert!(s.ends_with("/s"));
         assert!(s.contains("KB"));
+    }
+
+    #[test]
+    fn bytes_compact_drops_unit_for_zero() {
+        assert_eq!(fmt_bytes_compact(0), "0");
+    }
+
+    #[test]
+    fn bytes_compact_no_space() {
+        assert_eq!(fmt_bytes_compact(512), "512B");
+        let kb = fmt_bytes_compact(1500);
+        assert!(kb.ends_with("KB"), "got {kb}");
+        assert!(!kb.contains(' '), "got {kb}");
     }
 
     #[test]
