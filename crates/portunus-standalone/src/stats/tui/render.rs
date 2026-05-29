@@ -10,7 +10,8 @@ use ratatui::widgets::{
     TableState, Tabs,
 };
 
-use super::format::{fmt_bytes, fmt_rate};
+use super::format::{fmt_bytes, fmt_bytes_compact, fmt_rate, fmt_rtt};
+use super::probe::{active_target, active_target_index};
 use super::state::{AppState, Tab};
 use crate::stats::client::Client;
 use crate::stats::{RuleMeta, RuleSnap};
@@ -73,31 +74,62 @@ fn render_overview(frame: &mut Frame, area: Rect, client: &Client, state: &mut A
             let in_rate = client.in_rate(&meta.id);
             let out_rate = client.out_rate(&meta.id);
             let (conns, conns_total) = snap_row.map_or((0, 0), |r| (r.conns_active, r.conns_total));
+            // Active (lowest-priority) target — the same row the prober uses.
+            let upstream = active_target(meta).map_or_else(
+                || "\u{2014}".to_string(),
+                |t| format!("{}:{}", t.host, t.port),
+            );
+            // Combined cumulative total "in/out" (session-baseline aware),
+            // bare "0" when empty.
+            let total = snap_row.map_or_else(
+                || "\u{2014}".to_string(),
+                |r| {
+                    format!(
+                        "{}/{}",
+                        fmt_bytes_compact(state.displayed_in(r)),
+                        fmt_bytes_compact(state.displayed_out(r))
+                    )
+                },
+            );
             Row::new(vec![
                 Cell::from(meta.name.clone()),
                 Cell::from(meta.proto.clone()),
                 Cell::from(meta.listen.clone()),
+                Cell::from(upstream),
+                rtt_cell(meta, state),
                 Cell::from(fmt_rate(in_rate)),
                 Cell::from(fmt_rate(out_rate)),
+                Cell::from(total),
                 Cell::from(format!("{conns}/{conns_total}")),
             ])
         })
         .collect();
 
     let header = Row::new(vec![
-        "name", "proto", "listen", "in rate", "out rate", "conns",
+        "name",
+        "proto",
+        "listen",
+        "upstream",
+        "rtt",
+        "in rate",
+        "out rate",
+        "total i/o",
+        "conns",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(18),
+            Constraint::Length(16),
             Constraint::Length(5),
-            Constraint::Length(12),
-            Constraint::Length(13),
-            Constraint::Length(13),
-            Constraint::Length(12),
+            Constraint::Length(7),
+            Constraint::Length(20),
+            Constraint::Length(7),
+            Constraint::Length(11),
+            Constraint::Length(11),
+            Constraint::Length(15),
+            Constraint::Length(9),
         ],
     )
     .header(header)
@@ -111,6 +143,20 @@ fn render_overview(frame: &mut Frame, area: Rect, client: &Client, state: &mut A
             .min(client.hello.rules.len().saturating_sub(1)),
     ));
     frame.render_stateful_widget(table, area, &mut ts);
+}
+
+/// RTT cell for a rule: a coloured `Nms` from the cached probe, `—` for
+/// UDP (TCP probe not applicable), or `…` until the first probe lands.
+fn rtt_cell(meta: &RuleMeta, state: &AppState) -> Cell<'static> {
+    let (text, color) = if meta.proto == "udp" {
+        ("\u{2014}".to_string(), Color::DarkGray)
+    } else {
+        state.probes.get(&meta.id).map_or_else(
+            || ("\u{2026}".to_string(), Color::DarkGray),
+            |s| fmt_rtt(*s),
+        )
+    };
+    Cell::from(Span::styled(text, Style::default().fg(color)))
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, client: &Client, state: &AppState) {
@@ -291,34 +337,49 @@ fn render_detail_panels(
             (left[0], left[1], cols[1], cols[2])
         };
 
-    render_targets(frame, targets_area, meta);
+    render_targets(frame, targets_area, meta, state);
     render_counters(frame, counters_area, meta, snap, state);
     render_capabilities(frame, caps_area, meta, snap);
     render_rule_errors(frame, errors_area, snap);
 }
 
-fn render_targets(frame: &mut Frame, area: Rect, meta: &RuleMeta) {
+fn render_targets(frame: &mut Frame, area: Rect, meta: &RuleMeta, state: &AppState) {
     let block = Block::default().borders(Borders::ALL).title(" Targets ");
-    // Lowest-priority target is the active/primary one.
-    let min_prio = meta.targets.iter().map(|t| t.priority).min();
+    // Single active target (first lowest-priority) — same rule the prober
+    // uses, so the `▶` mark and the RTT always describe the same row.
+    let active_idx = active_target_index(meta);
+    let is_udp = meta.proto == "udp";
     let items: Vec<ListItem> = meta
         .targets
         .iter()
-        .map(|t| {
-            let active = Some(t.priority) == min_prio;
+        .enumerate()
+        .map(|(i, t)| {
+            let active = Some(i) == active_idx;
             let marker = if active { "▶ " } else { "  " };
             let proxy = if t.proxy_protocol.is_some() {
                 "  proxy"
             } else {
                 ""
             };
-            let text = format!("{marker}{}:{}  prio {}{proxy}", t.host, t.port, t.priority);
-            let style = if active {
-                Style::default().fg(Color::Green)
+            let base = format!("{marker}{}:{}  prio {}{proxy}", t.host, t.port, t.priority);
+            if active {
+                // UDP: TCP probe is meaningless, show "—". TCP: cached
+                // sample, or "…" until the first probe lands.
+                let (rtt_text, rtt_color) = if is_udp {
+                    ("\u{2014}".to_string(), Color::DarkGray)
+                } else {
+                    state.probes.get(&meta.id).map_or_else(
+                        || ("\u{2026}".to_string(), Color::DarkGray),
+                        |s| fmt_rtt(*s),
+                    )
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{base}   "), Style::default().fg(Color::Green)),
+                    Span::styled(rtt_text, Style::default().fg(rtt_color)),
+                ]))
             } else {
-                Style::default()
-            };
-            ListItem::new(text).style(style)
+                ListItem::new(base)
+            }
         })
         .collect();
     frame.render_widget(List::new(items).block(block), area);
@@ -634,6 +695,27 @@ mod tests {
         assert!(s.contains("tcp"));
     }
 
+    #[test]
+    fn overview_shows_upstream_and_rtt() {
+        use crate::stats::tui::probe::ProbeSample;
+        use std::time::Duration;
+        let client = fake_client();
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = super::super::state::AppState::new();
+        state.probes.insert(
+            "abc".to_string(),
+            ProbeSample::Ok(Duration::from_millis(12)),
+        );
+        terminal
+            .draw(|f| render(f, f.area(), &client, &mut state))
+            .unwrap();
+        let s = buffer_to_string(terminal.backend().buffer());
+        assert!(s.contains("1.1.1.1:22"), "missing upstream column:\n{s}");
+        assert!(s.contains("12ms"), "missing rtt column:\n{s}");
+        assert!(s.contains("upstream"), "missing upstream header:\n{s}");
+    }
+
     fn draw_detail(client: &Client, w: u16, h: u16) -> String {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -711,6 +793,43 @@ mod tests {
     fn detail_errors_panel_none_when_clean() {
         let s = draw_detail(&fake_client(), 100, 30);
         assert!(s.contains("none"), "expected clean errors marker:\n{s}");
+    }
+
+    #[test]
+    fn detail_active_target_shows_rtt() {
+        use crate::stats::tui::probe::ProbeSample;
+        use std::time::Duration;
+        let client = fake_client();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = super::super::state::AppState::new();
+        state.tab = Tab::Detail;
+        state.probes.insert(
+            "abc".to_string(),
+            ProbeSample::Ok(Duration::from_millis(12)),
+        );
+        terminal
+            .draw(|f| render(f, f.area(), &client, &mut state))
+            .unwrap();
+        let s = buffer_to_string(terminal.backend().buffer());
+        assert!(s.contains("12ms"), "missing rtt on active target:\n{s}");
+    }
+
+    #[test]
+    fn detail_udp_active_target_shows_dash() {
+        let mut client = fake_client();
+        client.hello.rules[0].proto = "udp".into();
+        client.hello.rules[0].udp_max_flows = Some(128);
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = super::super::state::AppState::new();
+        state.tab = Tab::Detail;
+        terminal
+            .draw(|f| render(f, f.area(), &client, &mut state))
+            .unwrap();
+        let s = buffer_to_string(terminal.backend().buffer());
+        // The em-dash marks "not applicable" for UDP.
+        assert!(s.contains('\u{2014}'), "missing UDP dash marker:\n{s}");
     }
 
     #[test]
