@@ -476,21 +476,17 @@ async fn handle_connection<R: Resolve>(
             result
         }
     };
-    if let Ok((bin, bout)) = result.as_ref() {
-        // Subtract what the live sink already flushed per-chunk to avoid
-        // double-counting; the capped branch / userspace fallback leave
-        // it at zero, so the full amount is booked here as before.
-        let (live_in, live_out) = live_sink.snapshot_recorded();
-        stats.record_in(listen_port, bin.saturating_sub(live_in));
-        stats.record_out(listen_port, bout.saturating_sub(live_out));
-        // T034: per-target byte accumulation. Same atomicity as the
-        // global counters — `add_bytes_in/out` use Relaxed adds.
-        let state = states[idx].lock().await;
-        state.add_bytes_in(*bin);
-        state.add_bytes_out(*bout);
-    }
     match result {
         Ok((bin, bout)) => {
+            // Book whatever the live sink did not already flush per-chunk;
+            // the capped branch / userspace fallback leave it at zero so the
+            // full amount is recorded, byte-identical to the pre-live path.
+            live_sink.record_remaining(bin, bout);
+            // T034: per-target byte accumulation. Same atomicity as the
+            // global counters — `add_bytes_in/out` use Relaxed adds.
+            let state = states[idx].lock().await;
+            state.add_bytes_in(bin);
+            state.add_bytes_out(bout);
             info!(
                 event = "rule.conn_closed",
                 rule_id = %rule_id,
@@ -502,6 +498,18 @@ async fn handle_connection<R: Resolve>(
             );
         }
         Err(e) => {
+            // On a mid-stream error the live sink already pushed the
+            // transferred bytes into the global RuleStats per chunk (zero on
+            // the capped / userspace-fallback paths). Mirror that same amount
+            // into the per-target counters so the global rule total and the
+            // sum of per-target totals stay consistent for errored
+            // connections.
+            let (live_in, live_out) = live_sink.snapshot_recorded();
+            if live_in > 0 || live_out > 0 {
+                let state = states[idx].lock().await;
+                state.add_bytes_in(live_in);
+                state.add_bytes_out(live_out);
+            }
             warn!(
                 event = "rule.conn_error",
                 rule_id = %rule_id,
