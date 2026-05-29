@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-05-30
+
+### Added
+- `portunus-standalone stats` TUI — upstream target latency. The Overview
+  now shows upstream / RTT / total, the Targets panel surfaces the active
+  target's measured RTT, and the detail page was redesigned with a line
+  chart and dedicated panels. Latency comes from a client-side TCP probe
+  run in the TUI event loop, backed by a per-rule probe cache in
+  `AppState` and an `fmt_rtt` formatter.
+
+### Fixed
+- `portunus-forwarder` — UDP listener loop hardened against head-of-line
+  blocking and busy-spin.
+- `portunus-forwarder` — PROXY protocol prelude write is now time-boxed so
+  a slow/stuck upstream can't hang connection setup.
+- `portunus-forwarder` — DNS cache is now bounded and IP-target dials are
+  time-boxed.
+- `portunus-forwarder` — accept loops back off on transient `accept()`
+  errors instead of tight-looping.
+- `portunus-forwarder` — live byte counters and the splice fast path now
+  work on the multi-target failover path; live-byte reconciliation is
+  centralized and per-target accounting is fixed on error.
+- `portunus-client` — per-rule rate limiter is reclaimed on rule removal
+  (previously leaked).
+
 ## [1.6.1] — 2026-05-29
 
 ### Fixed
