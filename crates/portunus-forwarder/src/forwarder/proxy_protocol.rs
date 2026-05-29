@@ -1,8 +1,19 @@
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+
+/// Upper bound on how long the (tiny, ≤ 52-byte) PROXY-protocol prelude
+/// write may block before we abandon the connection. Without it, an
+/// upstream that completes the TCP handshake but never reads (a 0-window
+/// peer or a stalled backend) would wedge `write_all` indefinitely once
+/// the kernel send buffer fills — the connection would not respond to
+/// shutdown/drain and would leak until the rule-level drain timeout
+/// strong-kills it. The prelude is negligible in size, so a short
+/// timeout is safe headroom even on high-latency links.
+const PRELUDE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProxyProtocolPrelude {
@@ -16,7 +27,13 @@ pub async fn write_prelude(
     prelude: ProxyProtocolPrelude,
 ) -> io::Result<()> {
     let bytes = encode(prelude.version, prelude.source, prelude.destination)?;
-    outbound.write_all(&bytes).await
+    match tokio::time::timeout(PRELUDE_WRITE_TIMEOUT, outbound.write_all(&bytes)).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "proxy_protocol_prelude_write_timeout",
+        )),
+    }
 }
 
 pub fn encode(
