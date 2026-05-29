@@ -908,6 +908,12 @@ fn handle_server_message(
             // by the manager) so the same cleanup path works for
             // the operator-visible Removed event.
             let _ = port_groups.apply_remove(rule_id);
+            // 011-rate-limiting-qos: reclaim the per-rule limiter
+            // installed on push. Without this the scope manager's
+            // `HashMap<RuleId, Arc<RuleRateLimiter>>` grows without
+            // bound as capped rules are added and removed over a long-
+            // running session (RuleIds are never reused). Idempotent.
+            rule_rate_limit_scope.remove(rule_id);
             if let Some(slot) = rules.get_mut(&rule_id) {
                 slot.remove_request_id = Some(request_id);
                 slot.cancel.cancel();
