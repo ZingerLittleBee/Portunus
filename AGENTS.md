@@ -31,7 +31,7 @@ Rust workspace, edition 2024, MSRV 1.88. Eight crates under `crates/`:
 - `portunus-standalone` — TOML-driven TCP/UDP forwarder binary with no
   gRPC control plane. Reuses `portunus-forwarder` end-to-end. See
   `crates/portunus-standalone/contrib/` for deployment templates and
-  `docs/content/docs/operations/standalone.mdx` for the user guide.
+  `docs/content/docs/configuration/standalone.mdx` for the user guide.
 - `portunus-e2e` — process-level integration tests.
 
 `webui/` is a React + Vite + TypeScript SPA compiled to `webui/dist/`

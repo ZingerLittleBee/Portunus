@@ -15,4 +15,4 @@ copy-pasteable starting points.
 | `k8s/README.md`                 | hostNetwork vs DaemonSet vs NodePort notes |
 
 Full usage and `[global]/[defaults]/[[rule]]` schema reference is in
-[`docs/content/docs/operations/standalone.mdx`](../../../docs/content/docs/operations/standalone.mdx).
+[`docs/content/docs/configuration/standalone.mdx`](../../../docs/content/docs/configuration/standalone.mdx).

@@ -1,12 +1,18 @@
 ---
-title: 独立转发器
+title: 独立部署（Standalone）
 description: 基于 TOML 配置的 TCP/UDP 转发，无需 gRPC 控制面 — v1.4+。
 icon: Cpu
 ---
 
-`portunus-standalone` 是一个完全由 TOML 文件驱动的独立 TCP/UDP 转发器。它与
-`portunus-client` 共享同一套数据面代码，但无需运行 `portunus-server` ——
-适用于单机部署、边缘设备以及不需要控制面服务器的场景。
+`portunus-standalone` 是一个完全由 TOML 文件驱动的 TCP/UDP 转发器，**单机自给
+自足、不依赖控制面**。它与 `portunus-client` 共享同一套数据面代码，但无需运行
+`portunus-server` —— 适用于单机部署、边缘设备以及不需要控制面服务器的场景。
+
+<Callout>
+初次使用？[安装 → 安装 Standalone](/zh/docs/getting-started/installation#安装-standalone)
+提供了快速上手以及"standalone 与 server + client 如何取舍"的决策指南。本页是完整
+参考：配置 schema、CLI 标志、信号、示例、stats TUI 与运维注意事项。
+</Callout>
 
 ## 安装
 

@@ -1,18 +1,39 @@
 ---
 title: Installation
-description: Install portunus-server and portunus-client with the one-line script, Docker Compose, or a source build.
+description: Install Portunus as a server + client control plane or as a single-binary standalone forwarder, with the one-line script, Docker, or a source build.
 icon: Download
 ---
 
-`Portunus` has two runtime roles:
+`Portunus` ships in two deployment models. Pick one before you install:
 
-- `portunus-server` runs on the control-plane host. Operators talk to it, it
-  stores state, and it pushes rules to connected clients.
-- `portunus-client` runs on each edge host. It connects back to the server,
-  binds forwarded ports, and moves traffic.
+- **Server + client (control plane).** [`portunus-server`](#server-install) runs
+  on a control-plane host — operators talk to it, it stores state, and it pushes
+  rules to connected clients. [`portunus-client`](#client-install) runs on each
+  edge host, connects back to the server, binds forwarded ports, and moves traffic.
+- **Standalone (no control plane).** [`portunus-standalone`](#standalone-install)
+  is a single binary that reads all of its rules from a local TOML file — no
+  server, no enrollment, no gRPC. It reuses the exact same data-plane code as the
+  client, and ships with a built-in terminal UI for live traffic stats
+  (`portunus-standalone stats`).
 
-Install them on the hosts that will run those roles. In a real deployment that
-usually means one server host and one or more client hosts.
+### Which one should I install?
+
+| | [**Standalone**](#standalone-install) | [**Server + client**](#server-install) |
+| --- | :---: | :---: |
+| Rules come from | A local TOML file | The server, pushed live |
+| Best for | One host / edge box | Many hosts, central control |
+| Control-plane server to run, secure, back up | None | Required |
+| Live rule updates (no restart) | ✗ | ✓ |
+| Browser Web UI, RBAC, audit log | ✗ | ✓ |
+| Rate limiting / QoS, per-owner quotas | ✗ | ✓ |
+| TLS-SNI routing | ✗ | ✓ |
+| Prometheus metrics | ✗ | ✓ |
+| Live traffic dashboard | ✓ terminal TUI (`portunus-standalone stats`) | ✓ Web UI + Prometheus |
+| TCP/UDP, port ranges, multi-target failover, PROXY protocol, DNS targets | ✓ | ✓ |
+
+A server+client deployment usually means one server host and one or more client
+hosts. A standalone deployment is just one host with one config file. For a local
+trial, one host with two terminals is enough.
 
 ## Prerequisites
 
@@ -237,6 +258,68 @@ Verify on the client host:
 ```sh
 portunus-client --version
 ```
+
+## Standalone install
+
+`portunus-standalone` reads all of its rules from a TOML file and needs no
+server, no enrollment, and no gRPC. Two install paths — **Docker** for container
+hosts, the **one-click installer** for plain Linux + systemd.
+
+### Docker
+
+```sh
+# 1. Grab a starter config and edit it:
+curl -fsSL -o portunus.toml \
+  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
+chmod 0644 portunus.toml
+${EDITOR:-vi} portunus.toml
+
+# 2. Run it (host networking so port-range rules bind directly):
+docker run -d --network host \
+  --name portunus-standalone \
+  --restart unless-stopped \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+The container runs as UID 65532 (`nonroot`), so the host config must be readable
+by that UID — `chmod 0644 portunus.toml` is the simplest fix. Pin a version tag
+(`:vX.Y.Z`) in production instead of `:latest`.
+
+### One-click installer (binary + systemd)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+```
+
+This installs the binary, creates the `portunus` system user, writes a starter
+`/etc/portunus/standalone.toml`, and installs a hardened systemd unit. The
+service is **not** auto-started — the shipped config is a template. Edit it
+first, then enable:
+
+```sh
+sudo ${EDITOR:-vi} /etc/portunus/standalone.toml
+sudo systemctl enable --now portunus-standalone
+```
+
+Validate any config without starting the service (`ok` + exit 0 on success):
+
+```sh
+portunus-standalone --check --config /etc/portunus/standalone.toml
+```
+
+For a source build:
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-standalone
+sudo install -m 0755 target/release/portunus-standalone /usr/local/bin/
+```
+
+→ Full config schema, rule examples, CLI flags, signals, the live stats TUI,
+and operational notes live in
+[Standalone Forwarder](/en/docs/configuration/standalone).
 
 ## Release binaries
 
