@@ -225,7 +225,7 @@ Run or validate:
 ./target/release/portunus-standalone --check --config portunus.toml  # exits 0 if valid
 ```
 
-See [`docs/content/docs/operations/standalone.mdx`](docs/content/docs/operations/standalone.mdx)
+See [`docs/content/docs/configuration/standalone.mdx`](docs/content/docs/configuration/standalone.mdx)
 for the full configuration reference, multi-target failover, PROXY
 protocol, and systemd unit example.
 

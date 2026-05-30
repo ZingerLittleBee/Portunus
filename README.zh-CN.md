@@ -217,7 +217,7 @@ target      = "10.0.0.5:22"
 
 完整配置参考、多目标 failover、PROXY protocol 以及 systemd unit
 示例见
-[`docs/content/docs/operations/standalone.mdx`](docs/content/docs/operations/standalone.mdx)。
+[`docs/content/docs/configuration/standalone.mdx`](docs/content/docs/configuration/standalone.mdx)。
 
 ## 部署
 

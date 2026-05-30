@@ -11,6 +11,10 @@ map. Run edge clients on remote hosts, push forwarding rules from a central
 server, and keep L4 traffic as byte passthrough while adding RBAC, metrics,
 audit logs, and traffic caps.
 
+Just one host? The single-binary [standalone forwarder](/en/docs/configuration/standalone)
+runs the same data plane from a local TOML file — no server, no enrollment, no
+control plane.
+
 <Cards>
   <Card title="Start in 60 seconds" href="/en/docs/getting-started/installation" />
   <Card title="Read the performance report" href="/en/docs/getting-started/performance" />
@@ -71,7 +75,11 @@ access control, observability, or per-owner quotas around plain L4 forwarding.
 For a single static rule on one Linux host where only absolute peak throughput
 matters, kernel-space forwarding still has the simpler and faster execution
 path. That tradeoff is the whole point of measuring with your bandwidth target
-instead of arguing from the uncapped loopback ceiling.
+instead of arguing from the uncapped loopback ceiling. When you want the
+`Portunus` data plane (port ranges, multi-target failover, PROXY protocol,
+`splice`) on a single host but none of the control plane, reach for the
+[standalone forwarder](/en/docs/configuration/standalone) — same forwarding
+code, driven entirely by a TOML file.
 
 ## Quick links
 
@@ -80,6 +88,7 @@ instead of arguing from the uncapped loopback ceiling.
   <Card title="CLI walkthrough" href="/en/docs/cli/walkthrough" />
   <Card title="Architecture" href="/en/docs/getting-started/architecture" />
   <Card title="Configuration reference" href="/en/docs/configuration/server" />
+  <Card title="Standalone forwarder" href="/en/docs/configuration/standalone" />
   <Card title="CLI reference" href="/en/docs/cli/portunus-server" />
   <Card title="Operator HTTP API" href="/en/docs/api/operator-http" />
 </Cards>

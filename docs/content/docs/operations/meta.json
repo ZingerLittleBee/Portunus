@@ -1,5 +1,5 @@
 {
   "title": "Operations",
   "icon": "Wrench",
-  "pages": ["backup-restore", "upgrade", "standalone", "runbook-traffic-quotas", "troubleshooting"]
+  "pages": ["backup-restore", "upgrade", "runbook-traffic-quotas", "troubleshooting"]
 }

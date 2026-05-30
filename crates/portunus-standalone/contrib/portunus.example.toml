@@ -2,7 +2,7 @@
 #
 # Replace the `target` values with your real upstream hosts/ports.
 # All fields here are documented in:
-#   docs/content/docs/operations/standalone.mdx
+#   docs/content/docs/configuration/standalone.mdx
 #
 # To validate this file before starting the service:
 #   portunus-standalone --check --config /etc/portunus/standalone.toml

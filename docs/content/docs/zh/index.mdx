@@ -10,6 +10,9 @@ icon: BookOpen
 集中下发转发规则；数据面保持 L4 字节直通，同时补上 RBAC、指标、审计日志和
 流量配额。
 
+只有一台主机？单二进制的 [standalone 转发器](/zh/docs/configuration/standalone)
+用一个本地 TOML 文件跑同一套数据面——没有 Server、没有 enrollment、没有控制面。
+
 <Cards>
   <Card title="60 秒安装" href="/zh/docs/getting-started/installation" />
   <Card title="阅读性能报告" href="/zh/docs/getting-started/performance" />
@@ -68,6 +71,10 @@ sweep 在 100 Mbit/s 到 20 Gbit/s 整个区间内都贴近 direct `iperf3` 和
 设置配额时，`Portunus` 比一条静态本机转发规则更像一个可运维的系统。若场景
 只是单机上的单条固定规则，并且唯一目标是极限吞吐，内核态转发路径仍然更简单、
 更快。这里的关键是按你的目标带宽实测，而不是只看无上限 loopback 的极限值。
+如果你想在单机上用 `Portunus` 的数据面（端口范围、多目标故障切换、PROXY
+protocol、`splice`）但完全不需要控制面，就用
+[standalone 转发器](/zh/docs/configuration/standalone)——同一套转发代码，
+完全由 TOML 文件驱动。
 
 ## 快速链接
 
@@ -76,6 +83,7 @@ sweep 在 100 Mbit/s 到 20 Gbit/s 整个区间内都贴近 direct `iperf3` 和
   <Card title="CLI 跑通示例" href="/zh/docs/cli/walkthrough" />
   <Card title="架构说明" href="/zh/docs/getting-started/architecture" />
   <Card title="配置参考" href="/zh/docs/configuration/server" />
+  <Card title="Standalone 转发器" href="/zh/docs/configuration/standalone" />
   <Card title="CLI 参考" href="/zh/docs/cli/portunus-server" />
   <Card title="操作员 HTTP API" href="/zh/docs/api/operator-http" />
 </Cards>

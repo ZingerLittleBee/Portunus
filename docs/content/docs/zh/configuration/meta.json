@@ -1,5 +1,5 @@
 {
   "title": "配置",
   "icon": "Settings",
-  "pages": ["server", "client"]
+  "pages": ["server", "client", "standalone"]
 }
