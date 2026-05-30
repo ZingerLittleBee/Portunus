@@ -5,23 +5,33 @@ working in this repository. Kept in sync with `CLAUDE.md`.
 
 ## Repository status
 
-Stable release line. Latest tag is **v1.2.0** (see `CHANGELOG.md`). The
-active branch is `wellington-v1`. The SPECKIT block below is auto-managed
-by speckit and may still reference an older feature
-(`011-rate-limiting-qos`) until the next `/speckit-specify` run refreshes
-it — treat that block as historical context, not as the currently active
-workstream.
+Stable release line. Latest tag is **v1.7.0** (see `CHANGELOG.md`); the
+working branch is `main`. The SPECKIT block at the bottom of this file is
+auto-managed by speckit and lags the release line — it still describes
+`014-udp-centralized-demux` (v1.5.x) as the active feature even though
+v1.6.0–v1.7.0 (standalone stats TUI + forwarder hardening: UDP HOL,
+time-boxed PROXY prelude, bounded DNS cache, accept-loop backoff) have
+since shipped. Treat that block as historical design context, not the
+current workstream — verify against `git log` / `CHANGELOG.md`.
 
 ## Architecture
 
-Rust workspace, edition 2024, MSRV 1.88. Six crates under `crates/`:
+Rust workspace, edition 2024, MSRV 1.88. Eight crates under `crates/`:
 
 - `portunus-proto` — gRPC schema (tonic-prost generated).
 - `portunus-core` — shared IDs, errors, config, log-redaction.
+- `portunus-forwarder` — shared data-plane library (TCP/UDP forwarders,
+  resolver, shutdown). Consumed by both `portunus-client` and
+  `portunus-standalone`. No `tonic` / `prost` / `portunus-proto`
+  dependencies — proto-free.
 - `portunus-auth` — `Authenticator` trait + token store.
 - `portunus-server` — control-plane binary: gRPC + operator HTTP +
   Prometheus + embedded Web UI (rust-embed).
 - `portunus-client` — edge binary: bidi gRPC stream + TCP/UDP forwarding.
+- `portunus-standalone` — TOML-driven TCP/UDP forwarder binary with no
+  gRPC control plane. Reuses `portunus-forwarder` end-to-end. See
+  `crates/portunus-standalone/contrib/` for deployment templates and
+  `docs/content/docs/operations/standalone.mdx` for the user guide.
 - `portunus-e2e` — process-level integration tests.
 
 `webui/` is a React + Vite + TypeScript SPA compiled to `webui/dist/`
@@ -44,6 +54,8 @@ make ui           # Vite dev server only, proxies /v1 → 127.0.0.1:7080
 make serve        # release server with embedded UI on http://127.0.0.1:7080
 make test         # server lib tests + auth/password contract tests
 make test-csrf    # focused CSRF unit tests (fast)
+make standalone        # build portunus-standalone binary
+make standalone-check  # validate every tests/fixtures/valid_*.toml
 make clean        # nuke /tmp/portunus-dev (forces re-bootstrap)
 ```
 
@@ -75,7 +87,8 @@ pnpm build        # tsc -b && vite build && size-limit (≤ 500 KB gz)
 - **`PORTUNUS_SKIP_WEBUI=1`** is required to build/run/test
   `portunus-server` without first running `pnpm build` in `webui/`. The
   `build.rs` of `portunus-server` errors if `webui/dist/index.html` is
-  missing unless this env var is set.
+  missing unless this env var is set. `make dev`/`make backend`/`make
+  test` all set it.
 - **Vite proxy is hard-coded** to `127.0.0.1:7080` in
   `webui/vite.config.ts`. Changing `LISTEN=` for `make dev` requires
   syncing that file too.
@@ -85,22 +98,24 @@ pnpm build        # tsc -b && vite build && size-limit (≤ 500 KB gz)
   `make clean` removes it.
 - **Strict lints**: workspace sets `clippy::pedantic = warn`. CI gates
   on `-D warnings`. See `[workspace.lints.clippy]` in `Cargo.toml` for
-  the intentional `allow` list and the reason each is allowed.
+  the intentional `allow` list and the reason each is allowed — do not
+  remove an `allow` without re-reading that comment.
 - **Data-plane perf gate**: `.github/workflows/bench.yml` fails PRs
   that regress median benchmark by >25% vs
   `crates/portunus-client/benches/baselines/v0.1.0.json`.
 - **Operator HTTP listener is loopback-pinned** at startup. Remote
   access is an operator concern (SSH tunnel or reverse proxy with auth).
 - **Data-plane reject/throttle events are tracing-only** — they do NOT
-  enter the SQLite operator audit ring.
+  enter the SQLite operator audit ring (mirrors v0.9 D13 / v0.10 / v0.11
+  invariant).
 
 ## Spec-driven workflow
 
 This repo uses speckit for feature work: each
 `specs/NNN-feature-name/` directory contains `spec.md`, `plan.md`,
-`tasks.md`, `contracts/`. The SPECKIT block below is regenerated when a
-new feature is created via `/speckit-specify`. Historical feature plans
-(v0.1.0 – v0.11.0) remain in `specs/` for reference.
+`tasks.md`, `contracts/`. The SPECKIT block in this file is regenerated
+when a new feature is created via `/speckit-specify`. Historical feature
+plans (v0.1.0 – v0.11.0) remain in `specs/` for reference.
 
 ## Documentation pointers
 
@@ -112,52 +127,104 @@ new feature is created via `/speckit-specify`. Historical feature plans
   perf gates).
 
 <!-- SPECKIT START -->
-Active feature: `012-tcp-zero-copy-splice` on branch `wellington-v1`
-(work in an isolated worktree). v1.3.0 adds an internal,
-operator-invisible TCP zero-copy fast path on Linux via `splice(2)` +
-a per-connection `pipe2` pair. The
-`tokio::io::copy_bidirectional_with_sizes` userspace path remains the
-canonical reference and the fallback for non-Linux platforms and
-ineligible rules. No wire / config / Web UI surface; no new workspace
-dependencies.
+Active feature: `014-udp-centralized-demux` on branch
+`014-udp-centralized-demux`. v1.5.x corrects the UDP data-plane
+flow-cap semantics and collapses per-flow receive buffers into a
+single per-rule centralized demux. The v0.4 per-port-listener model
+(each listen port held its own `recv` loop and `UdpFlowTable`) is
+replaced by a single `UdpRuleRuntime` supervising one listener task
+per port, a shared `UdpFlowRegistry` keyed by `(listen_port,
+source_addr)`, and a single idle-window reaper.
 
 Key invariants:
-- Eligibility: `cfg(target_os = "linux") && protocol == Tcp &&
-  !disable_splice && !has_bandwidth_cap`. `has_bandwidth_cap` is the OR
-  of {rule.bandwidth_in_bps, rule.bandwidth_out_bps,
-  owner.bandwidth_in_bps, owner.bandwidth_out_bps}.
-- `concurrent_connections` and `new_connections_per_sec` (v0.11) gate at
-  accept time and remain compatible with the fast path.
-- SNI peek+replay (v0.9) and PROXY-out prelude (v0.10) are prefix-only;
-  splice runs for the post-prelude byte stream.
-- Fallback contract: only when the **first** `splice` syscall returns
-  one of {`ENOSYS`, `EINVAL`, `EPERM`, `EOPNOTSUPP`/`ENOTSUP`} AND zero
-  bytes have moved. After any byte moved → terminal `io::Error`, no
-  path switch.
-- Tokio integration: `TcpStream::try_io` + `readable()`/`writable()`;
-  no `AsyncFd`.
-- Per-connection `pipe2(O_NONBLOCK | O_CLOEXEC)` pair with best-effort
-  `F_SETPIPE_SZ = 1 MiB`; failure is `tracing::debug`.
-- Half-close matches `tokio::io::copy_bidirectional`; counters advance
-  on the pipe-to-destination splice return value (delivered bytes).
-- Tracing events under `proxy.*`: `proxy.splice_selected` (info, once
-  per rule), `proxy.splice_unsupported_fallback` (warn, per fallback
-  connection), `proxy.splice_pipe_size_failed` (debug). No new
-  Prometheus metrics.
-- `PORTUNUS_DISABLE_SPLICE=1` env is the only kill switch
-  (internal/triage; not advertised in `--help`).
-- Perf gate (Constitution II): criterion `splice_throughput` bench on
-  dedicated Linux host — ≥ 1.4× throughput on 1 MiB chunks, p99 setup
-  latency within ±5 %; v1.2.0 baseline captured **before** any splice
-  code lands. Byte-stability gate: full integration suite passes
-  identically with and without `PORTUNUS_DISABLE_SPLICE=1`.
+- **No operator surface change.** No new wire field, operator-API
+  field, Web UI control, or `--help` flag. The runtime is an
+  internal refactor; `udp_max_flows_per_rule` is the same setting,
+  just enforced correctly.
+- **Per-rule flow cap** (FR-002 / SC-002): `rule_cap` is a single
+  registry-wide counter. A range rule with `cap=N` admits at most
+  `N` concurrent flows across **all** listen ports, not `N × range_size`.
+- **`portunus_rule_active_flows` reflects registry size** (FR-014):
+  the gauge reads `registry.len()` directly; no more per-port
+  `AtomicU32` last-writer-wins drift.
+- **Upstream sockets are `connect()`-ed at flow creation** (SC-005):
+  multi-A target selection happens once at the `connect()` seam.
+  On Linux this enables ICMP error reflection (`ECONNREFUSED`,
+  `EHOSTUNREACH`, `ENETUNREACH`) — affected flows are evicted
+  immediately and the next datagram rebuilds the flow against a
+  freshly-selected target.
+- **No mid-flow multi-A fallback.** v0.4's `udp_send_to_fallback`
+  / `udp_send_to_exhausted` tracing paths are removed; the ICMP-
+  driven eviction provides equivalent coarse failover with
+  unambiguous connected-socket semantics.
+- **Receive-buffer memory** (SC-001a): per-rule recv buffer is
+  `O(1) × 64 KiB`, not `O(flows) × 64 KiB`. The listener task owns
+  the single 64 KiB heap buffer used by `recv_from`.
+- **Ordered shutdown** (FR-015): on cancellation the supervisor
+  stops accepting new flows, drains the registry, then joins
+  listener/reaper tasks. `rule.udp_shutdown_unexpected_exit`
+  fires only when a child task exits unexpectedly.
+- **Three pre-existing failure paths get explicit tracing events**
+  (FR-011/FR-013): `rule.udp_upstream_connect_failed`,
+  `rule.udp_addflow_dropped`, `rule.udp_flow_evicted_icmp`,
+  `rule.udp_reply_wouldblock`, `rule.udp_emsgsize`,
+  `rule.udp_runtime_started`, `rule.udp_shutdown_unexpected_exit`.
+  No new Prometheus metrics.
+- **No new workspace dependencies.** The runtime reuses existing
+  `tokio`, `tokio-util` (CancellationToken), `nix`, `tracing`.
+- **Constitution Principle II perf gate**: `criterion` bench
+  `udp_high_flow_count` validates SC-001a (RSS delta ≪ N × 64 KiB
+  at N=1000 concurrent flows, Linux perf host only — not CI) and
+  SC-004 (single-flow throughput / RTT scenarios stay within ±5 %).
+  v1.4.3 baseline captured before this branch.
+- **Constitution Principle III**: integration tests use real
+  loopback sockets (`udp_range_rule_cap_is_per_rule`,
+  `udp_smoke_icmp_evict`); `cargo test --workspace` is green on
+  both macOS and Linux. The pre-014 "macOS-only `udp_smoke` flake"
+  was actually a fresh-socket `try_send` → `WouldBlock` race that
+  silently dropped the first packet of every flow; the cold-path
+  step 9 now uses `send().await` so the first datagram is durable.
 
 For technical context, project structure, dependency choices, and the
 Constitution Check, read the current plan:
-- `specs/012-tcp-zero-copy-splice/plan.md`
-- Supporting artifacts in the same directory: `spec.md`,
-  `research.md` (R-001..R-010 decisions), `data-model.md`,
-  `contracts/internal-api.md`, `quickstart.md`.
+- `specs/014-udp-centralized-demux/plan.md`
+- `specs/014-udp-centralized-demux/spec.md` (FR-001..FR-017,
+  SC-001a..SC-006).
+
+Inherited baselines (do not re-derive):
+- v0.13.0 — `docs/superpowers/plans/2026-05-14-traffic-quotas-and-history.md`.
+  Per-rule and per-owner traffic quotas. v1.5.x's flow-creation
+  path consults the quota allow-list before installing a new
+  registry entry; quota exhaustion is a flow rejection, not a
+  mid-flow drop.
+- v0.12.0 — `specs/012-tcp-zero-copy-splice/plan.md`. Linux
+  `splice(2)` fast path; TCP-only, untouched by v1.5.x.
+- v0.11.0 — `specs/011-rate-limiting-qos/plan.md`. Per-rule and
+  per-owner rate limiting / QoS. v1.5.x runs the layered rate
+  limiter at flow creation and (when configured) before each
+  upstream `send_to` inside the listener's hot path.
+- v0.10.0 — `specs/010-proxy-protocol-and-peek-histogram/plan.md`.
+  PROXY protocol prelude (TCP-only); UDP is unaffected.
+- v0.9.0 — `specs/009-tls-sni-routing/plan.md`. SNI dispatch
+  (TCP-only).
+- v0.8.0 — `specs/008-sqlite-storage/plan.md`. v1.5.x makes no
+  schema changes; SQLite store untouched.
+- v0.7.0 — `specs/007-multi-target-failover/plan.md`. Multi-A
+  failover; v1.5.x selects at the `connect()` seam, then locks
+  the flow. ICMP-evict + flow rebuild provides coarse failover.
+- v0.6.0 — `specs/006-management-web-ui/plan.md`. React+Vite SPA;
+  v1.5.x adds no UI surface.
+- v0.5.0 — `specs/005-multi-user-rbac/plan.md`. RBAC owner is the
+  tenant boundary the per-owner rate limit / quota keys on.
+- v0.4.0 — `specs/004-udp-forward/plan.md`. UDP first-packet
+  enforcement; v1.5.x supersedes the per-port-listener model with
+  the rule-wide `UdpRuleRuntime` supervisor. v0.4's `udp_send_to_*`
+  tracing events are removed.
+- v0.3.0 — `specs/003-domain-name-forward/plan.md`. DNS resolver
+  unchanged.
+- v0.2.0 — `specs/002-port-range-forward/plan.md` (range rules);
+  v1.5.x enforces caps at the rule level, not the port level.
+- v0.1.0 — `specs/001-tcp-forward-mvp/plan.md` (TCP forwarding MVP).
 
 Project-wide governance: `.specify/memory/constitution.md` (currently
 v2.0.2 — TLS + bearer token, NOT mTLS; SQLite as bundled persistence;
