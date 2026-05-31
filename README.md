@@ -8,38 +8,12 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-> Fast TCP/UDP port forwarding in Rust — run it as a single-file standalone forwarder, or as a control plane that pushes rules to edge nodes.
+> **Fast TCP/UDP port forwarding in Rust.** One static binary, no runtime dependencies. Run it standalone from a single TOML file, or as a control plane that pushes rules to a fleet of edge nodes.
 
-Portunus forwards TCP and UDP traffic from a listen port to any `host:port` target. Use it two ways:
-
-- **Standalone** — one binary driven by a single TOML file. No server, no database. Perfect for a VPS or a quick port forward.
-- **Control plane** — a central `portunus-server` pushes rules to any number of `portunus-client` edge nodes over an authenticated gRPC stream, with a Web UI, RBAC, and Prometheus metrics.
-
-## Features
-
-- 🔀 **TCP & UDP forwarding** — TCP and UDP rules can even share the same port; the kernel demuxes by protocol.
-- 📦 **Port ranges** — map a contiguous port window to a same-offset target window in one rule.
-- 🌐 **DNS targets** — resolve target hostnames with TTL-aware caching and a fail-open grace window.
-- 🔁 **Multi-target failover** — multiple A/AAAA records with automatic failover.
-- 🔒 **TLS SNI routing** — route TCP connections by SNI hostname.
-- 🪪 **PROXY protocol** — preserve the original client address to the upstream.
-- 🚦 **Rate limiting & quotas** — per-rule and per-owner QoS and traffic caps.
-- ⚡ **Zero-copy splice** — Linux `splice(2)` fast path for TCP.
-- 👥 **Multi-user RBAC** — bearer-token auth with per-user grants scoped by client, port, and protocol.
-- 📊 **Web UI + metrics** — embedded React dashboard, live per-rule stats, and a Prometheus `/metrics` endpoint.
-- 📺 **Stats TUI** — standalone mode ships a terminal dashboard with sparklines, RTT, and a regex filter.
-
-## Quick Start
-
-Forward a port in three steps — no server, no database:
-
-```sh
-# 1. Install the standalone forwarder
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
-```
+Forward a port in three lines — no server, no database:
 
 ```toml
-# 2. Write portunus.toml
+# portunus.toml
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -48,12 +22,31 @@ target      = "10.0.0.5:22"
 ```
 
 ```sh
-# 3. Run it — TCP :2222 now forwards to 10.0.0.5:22
-portunus-standalone --config portunus.toml
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+portunus-standalone --config portunus.toml   # :2222 → 10.0.0.5:22, TCP and UDP
 ```
 
-- UDP, port ranges, failover, PROXY protocol, the stats TUI → [standalone guide](https://portunus.bybee.dev/en/docs/configuration/standalone)
-- A fleet of edge nodes with central rule push, a Web UI, and RBAC → [control-plane setup](https://portunus.bybee.dev/en/docs/getting-started/installation)
+## Why Portunus
+
+- **Fast, and it stays fast.** Linux `splice(2)` zero-copy lifts single-stream TCP from 9.9 to 21.9 Gbps (2.2×). UDP batches syscalls with `recvmmsg`/`sendmmsg` — ~12× fewer than per-packet — and 1,000 concurrent UDP flows hold a fixed 64 KiB receive buffer, not 64 MiB. A CI benchmark gate fails any PR that regresses the data plane, so the numbers don't quietly rot.
+- **Starts as one TOML, grows into a fleet.** Drop a config on a VPS and you have a forwarder. Point edge nodes at a `portunus-server` and the same tool becomes a control plane — central rule push, Web UI, RBAC, traffic quotas, audit log. One data-plane codebase backs both, so behavior never diverges.
+- **One static binary, no dependencies.** Linux builds are static `musl` — one file runs on any distro (glibc, Alpine/musl, busybox). Docker images are `distroless/static`; install is a single script with checksum verification and a hardened systemd unit.
+
+## Features
+
+- 🔀 **TCP & UDP forwarding** — TCP and UDP rules can even share the same port; the kernel demuxes by protocol.
+- 📦 **Port ranges** — map a contiguous port window to a same-offset target window in one rule.
+- 🌐 **DNS targets** — resolve target hostnames with TTL-aware caching and a fail-open grace window.
+- 🔁 **Multi-target failover** — multiple A/AAAA records with passive and active health checks.
+- 🔒 **TLS SNI routing** — route TCP connections by SNI hostname, wildcards supported.
+- 🪪 **PROXY protocol** — preserve the original client address to the upstream (v1 and v2).
+- 🚦 **Rate limiting & quotas** — per-rule and per-owner QoS plus monthly traffic caps.
+- ⚡ **Zero-copy splice** — Linux `splice(2)` fast path for TCP, auto-enabled when no bandwidth limit applies.
+- 👥 **Multi-user RBAC** — bearer-token auth with per-user grants scoped by client, port, and protocol.
+- 📊 **Web UI + metrics** — embedded React dashboard, live per-rule stats, and a Prometheus `/metrics` endpoint.
+- 📺 **Stats TUI** — standalone mode ships a terminal dashboard with sparklines, RTT, and a regex filter.
+
+For UDP, port ranges, failover, PROXY protocol, and the stats TUI, see the [standalone guide](https://portunus.bybee.dev/en/docs/configuration/standalone). For a fleet of edge nodes with central rule push, a Web UI, and RBAC, see the [control-plane setup](https://portunus.bybee.dev/en/docs/getting-started/installation).
 
 ## Installation
 

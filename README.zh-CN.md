@@ -8,38 +8,12 @@
 
 [English](README.md) | **简体中文**
 
-> 用 Rust 写的高性能 TCP/UDP 端口转发 —— 既能作为单文件独立转发器运行，也能作为控制面向边缘节点下发规则。
+> **用 Rust 写的高性能 TCP/UDP 端口转发。** 单个静态二进制，不依赖任何运行时。既可以一份 TOML 文件单机跑，也可以做控制面，把规则下发到一批边缘节点。
 
-Portunus 把 TCP / UDP 流量从监听端口转发到任意 `host:port` 目标。两种用法：
-
-- **独立模式（Standalone）** —— 单个二进制，由一份 TOML 文件驱动。无需 Server，无需数据库。非常适合 VPS 或快速端口转发。
-- **控制面模式** —— 中心化的 `portunus-server` 通过认证的 gRPC 流向任意数量的 `portunus-client` 边缘节点下发规则，并提供 Web UI、RBAC 与 Prometheus 指标。
-
-## 特性
-
-- 🔀 **TCP & UDP 转发** —— TCP 与 UDP 规则甚至可以共用同一端口，内核按协议解复用。
-- 📦 **端口范围** —— 一条规则即可把一段连续端口窗口映射到同偏移的目标端口窗口。
-- 🌐 **DNS 目标** —— 解析目标主机名，按 TTL 缓存，并带有 fail-open 宽限窗口。
-- 🔁 **多目标 failover** —— 多条 A/AAAA 记录，自动故障切换。
-- 🔒 **TLS SNI 路由** —— 按 SNI 主机名路由 TCP 连接。
-- 🪪 **PROXY protocol** —— 向上游保留原始客户端地址。
-- 🚦 **限速与配额** —— 按规则、按 owner 的 QoS 与流量上限。
-- ⚡ **零拷贝 splice** —— Linux `splice(2)` TCP 快路径。
-- 👥 **多用户 RBAC** —— bearer-token 认证，按 client / 端口 / 协议限定每用户的授权范围。
-- 📊 **Web UI + 指标** —— 内嵌 React 面板、实时每规则统计，以及 Prometheus `/metrics` 端点。
-- 📺 **统计 TUI** —— 独立模式自带终端面板，含 sparkline、RTT 与正则过滤。
-
-## 快速开始
-
-三步转发一个端口 —— 无需 Server，无需数据库：
-
-```sh
-# 1. 安装独立转发器
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
-```
+三行配置转发一个端口，不用 Server、不用数据库：
 
 ```toml
-# 2. 写 portunus.toml
+# portunus.toml
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -48,12 +22,31 @@ target      = "10.0.0.5:22"
 ```
 
 ```sh
-# 3. 运行 —— TCP :2222 现在转发到 10.0.0.5:22
-portunus-standalone --config portunus.toml
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+portunus-standalone --config portunus.toml   # :2222 → 10.0.0.5:22，TCP 与 UDP
 ```
 
-- UDP、端口范围、failover、PROXY protocol、统计 TUI → [独立模式指南](https://portunus.bybee.dev/zh/docs/configuration/standalone)
-- 一批边缘节点、集中下发规则、Web UI 与 RBAC → [控制面部署](https://portunus.bybee.dev/zh/docs/getting-started/installation)
+## 为什么选 Portunus
+
+- **快，而且不会越用越慢。** Linux `splice(2)` 零拷贝让单流 TCP 从 9.9 Gbps 跑到 21.9 Gbps（2.2 倍）。UDP 走 `recvmmsg`/`sendmmsg` 批量收发，系统调用比逐包少了约 12 倍；1000 条并发 UDP 流只占用固定的 64 KiB 接收缓冲，而不是 64 MiB。CI 里有一道性能基准关卡，谁的改动拖慢了数据面就会被挡回去，性能不会随着版本迭代悄悄退化。
+- **单机起步，也能扩成机群。** 在一台 VPS 上放一份配置，它就是个转发器；把边缘节点接到 `portunus-server`，同一个程序又成了控制面：集中下发规则，还带 Web UI、RBAC、流量配额和审计日志。两种用法底层是同一套数据面代码，行为不会有出入。
+- **一个静态二进制，没有依赖。** Linux 版本是静态 `musl` 二进制，一个文件就能在各种发行版上跑（glibc、Alpine/musl、busybox 都行）。Docker 镜像基于 `distroless/static`；安装只要跑一个脚本，自带校验和核对，外加一份加固过的 systemd 配置。
+
+## 特性
+
+- 🔀 **TCP & UDP 转发** —— TCP 与 UDP 规则甚至可以共用同一端口，内核按协议解复用。
+- 📦 **端口范围** —— 一条规则即可把一段连续端口窗口映射到同偏移的目标端口窗口。
+- 🌐 **DNS 目标** —— 解析目标主机名，按 TTL 缓存，并带有 fail-open 宽限窗口。
+- 🔁 **多目标 failover** —— 多条 A/AAAA 记录，被动与主动健康检查。
+- 🔒 **TLS SNI 路由** —— 按 SNI 主机名路由 TCP 连接，支持通配符。
+- 🪪 **PROXY protocol** —— 向上游保留原始客户端地址（v1 与 v2）。
+- 🚦 **限速与配额** —— 按规则、按 owner 的 QoS，以及按月流量上限。
+- ⚡ **零拷贝 splice** —— Linux `splice(2)` TCP 快路径，无带宽限制时自动启用。
+- 👥 **多用户 RBAC** —— bearer-token 认证，按 client / 端口 / 协议限定每用户的授权范围。
+- 📊 **Web UI + 指标** —— 内嵌 React 面板、实时每规则统计，以及 Prometheus `/metrics` 端点。
+- 📺 **统计 TUI** —— 独立模式自带终端面板，含 sparkline、RTT 与正则过滤。
+
+UDP、端口范围、failover、PROXY protocol、统计 TUI，见 [独立模式指南](https://portunus.bybee.dev/zh/docs/configuration/standalone)。一批边缘节点、集中下发规则、Web UI 与 RBAC，见 [控制面部署](https://portunus.bybee.dev/zh/docs/getting-started/installation)。
 
 ## 安装
 
