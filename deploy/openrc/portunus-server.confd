@@ -1,0 +1,5 @@
+# /etc/conf.d/portunus-server
+# Data dir and extra `serve` args (e.g. --operator-http-listen,
+# --advertised-endpoint). The installer rewrites these when flags are given.
+datadir="/var/lib/portunus"
+server_args=""

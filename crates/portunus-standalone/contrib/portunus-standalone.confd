@@ -1,0 +1,4 @@
+# /etc/conf.d/portunus-standalone
+# Config file the service reads. The installer rewrites this line when
+# `--config PATH` is passed; edit it by hand otherwise.
+cfgfile="/etc/portunus/standalone.toml"

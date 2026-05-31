@@ -22,7 +22,7 @@ target      = "10.0.0.5:22"
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
 portunus-standalone --config portunus.toml   # :2222 → 10.0.0.5:22, TCP and UDP
 ```
 
@@ -50,15 +50,15 @@ For UDP, port ranges, failover, PROXY protocol, and the stats TUI, see the [stan
 
 ## Installation
 
-The one-line script detects OS/arch and verifies release checksums (needs `bash` 4+). Add `--deploy docker` to any role to run it via Docker Compose instead of a system binary.
+The one-line script is POSIX `sh` (runs under `dash`/busybox `ash` — no `bash` required), detects OS/arch, and verifies release checksums. By default it installs **and starts** a service; pass `--no-service` to install the binary only. Add `--deploy docker` to any role to run it via Docker Compose instead.
 
 **Standalone** — one host, one TOML file:
 
 ```sh
 ## Docker Compose
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone --deploy docker
-## binary + systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
+## binary + service (systemd / OpenRC)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
 ```
 
 **Control plane** — a central server plus any number of edge clients:
@@ -66,18 +66,18 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ```sh
 # control host
 ## Docker Compose
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server --deploy docker
-## binary + systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server --deploy docker
+## binary + service (systemd / OpenRC)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
 
 # each edge host
 ## Docker Compose
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client --deploy docker
-## binary + systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --deploy docker
+## binary + service (systemd / OpenRC)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
-The script installs a systemd service (binary mode) or writes a `compose.yaml` (Docker mode), and records the deploy so later `upgrade` / `status` / `uninstall` work too. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
+In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus a seeded config and printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone installs accept `--config PATH` to point the service at a specific TOML file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
 
 **From source** (Rust 1.88+ stable; `protoc` is vendored via `prost-build`):
 

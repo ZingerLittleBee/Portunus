@@ -49,6 +49,29 @@ jobs:
           path: webui/dist
           retention-days: 1
 
+  installer:
+    name: install.sh (shellcheck + dash/bash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dash + shellcheck
+        run: sudo apt-get update && sudo apt-get install -y dash shellcheck
+
+      - name: Parse under dash and bash
+        run: |
+          dash -n scripts/install.sh
+          bash -n scripts/install.sh
+
+      - name: shellcheck (POSIX sh dialect)
+        run: shellcheck -s sh -S warning scripts/install.sh
+
+      - name: install.test.sh under bash
+        run: bash scripts/install.test.sh
+
+      - name: install.test.sh under dash
+        run: TEST_SH=dash bash scripts/install.test.sh
+
   test:
     name: cargo test (${{ matrix.os }})
     needs: webui

@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# OpenRC service for portunus-standalone.
+# The config path comes from /etc/conf.d/portunus-standalone (cfgfile=...);
+# the installer rewrites that file when `--config PATH` is given.
+description="Portunus standalone TCP/UDP forwarder"
+
+command="/usr/local/bin/portunus-standalone"
+command_args="--config ${cfgfile:-/etc/portunus/standalone.toml}"
+command_user="portunus:portunus"
+supervisor=supervise-daemon
+pidfile="/run/portunus-standalone.pid"
+respawn_delay=2
+respawn_max=0
+output_log="/var/log/portunus-standalone.log"
+error_log="/var/log/portunus-standalone.log"
+
+depend() {
+	need net
+	after firewall
+}
