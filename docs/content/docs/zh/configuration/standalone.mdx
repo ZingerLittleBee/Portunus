@@ -177,9 +177,9 @@ targets = [
 | `SIGTERM` / `SIGINT` | 优雅关闭 —— 已建立连接最多 drain `shutdown_drain_secs` 秒，进程以 0 退出 |
 | `SIGHUP` | 当前版本不处理（暂不支持 config reload）|
 
-shipped 的 systemd unit 故意不写 `ExecReload`，因此
+随发行版附带的 systemd unit 故意不写 `ExecReload`，因此
 `systemctl reload portunus-standalone` 会报 "Job type reload is not
-applicable" 而不是把服务杀掉。改 TOML 后请用
+applicable"，而不会终止服务。改完 TOML 后请用
 `systemctl restart portunus-standalone`。
 
 ## 示例配置
@@ -370,7 +370,7 @@ daemon 侧覆盖：`--no-stats`、`--stats-socket <PATH>`。
 
 TUI 客户端按平台选默认 socket：
 
-- Linux → `/run/portunus/standalone.sock`（shipped systemd unit 的
+- Linux → `/run/portunus/standalone.sock`（随附 systemd unit 的
   `RuntimeDirectory=portunus` 会自动创建）
 - macOS → `$TMPDIR/portunus-standalone.sock`
 - 都不合适时用 `--socket <PATH>` 覆盖。
@@ -389,7 +389,7 @@ TUI 客户端按平台选默认 socket：
 
 ## 运维注意
 
-- **不支持热重载。** `SIGHUP` 是 no-op，shipped 的 systemd unit 拒绝
+- **不支持热重载。** `SIGHUP` 是 no-op，随发行版附带的 systemd unit 拒绝
   `systemctl reload`。改规则只能编辑 TOML 再
   `systemctl restart portunus-standalone`（或
   `docker restart portunus-standalone`）。已建立的 TCP 连接在退出时

@@ -10,7 +10,7 @@ icon: ServerCog
 ## 监听器
 
 ```toml
-# gRPC 控制面 listener —— Client 拨号此地址。
+# gRPC 控制面 listener —— Client 连向此地址。
 # 跨主机部署绑 0.0.0.0；或绑到具体网卡（如 "10.0.0.5:7443"）。
 control_listen = "0.0.0.0:7443"
 
@@ -32,7 +32,7 @@ operator_http_listen = "127.0.0.1:7080"
 metrics_listen = "127.0.0.1:7081"
 ```
 
-如果未设置 `operator_http_public_origin`，Portunus 会退回到
+如果未设置 `operator_http_public_origin`，Portunus 会回退到
 `http://<operator_http_listen>`，这对本机直连访问没问题。但如果浏览器看到的
 公网主机名和实际 bind 地址不同，就必须显式配置，否则 CSRF Origin 校验和
 cookie Secure 判定都会基于错误的 Origin。

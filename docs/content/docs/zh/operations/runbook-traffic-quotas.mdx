@@ -6,15 +6,15 @@ icon: Activity
 
 v1.4.0 起提供。流量配额按 `(user, client)` pair 限制本月可转发字节。
 执行语义是数据面上的 **bounded best-effort 硬杀**（见下文 §4）；
-真值来源是 server 端 SQLite 表 `traffic_quotas` 的行。
+真值来源是 server 端 SQLite 表 `traffic_quotas` 里的行。
 
-一个**没有 row 的 pair 视为无限制**——不下发配额、不产生 per-IO
-开销。你需要按 pair 逐个 opt-in。
+**没有对应行的 pair 视为无限制**——不下发配额、不产生 per-IO 开销。
+配额需要按 pair 逐个 opt-in。
 
 ## 1. 启用月配额
 
 配额挂在已有的 user 资源下。给 `alice` 在 `edge-tokyo` 上配置 1 TiB
-月度预算：
+的月度预算：
 
 ```sh
 curl -sS -X PUT \
@@ -29,8 +29,8 @@ Body 字段：
 - `monthly_bytes`（必填）—— i64 字节上限。`0` 合法，等价于"开局即
   耗尽"。负数一律 `400 invalid_quota_size`。
 - `billing_anchor`（可选）—— **首个**周期起点的 unix 秒 UTC。缺省
-  为 PUT 时刻 server 的当前时间。之后**不可变**（见 §2）。如果要换
-  锚点，请 `DELETE` 再 `PUT`，会产生两个 audit event，并把
+  为 PUT 时刻 server 的当前时间。设定后**不可变**（见 §2）。如果要换
+  锚点，请先 `DELETE` 再 `PUT`，这会产生两个 audit event，并把
   `current_period_bytes_used` 重置为 0。
 
 `(user, client)` pair 必须已存在 grant，否则返回
@@ -46,7 +46,7 @@ Body 字段：
 ## 2. Billing anchor 策略
 
 `billing_anchor` **不可变**，每个周期起点都基于**原始 anchor** 偏移
-计算（而不是相对上一周期），从而避免 `Jan 31 → Feb 28 → Mar 28 → …`
+计算（而非相对上一周期），从而避免 `Jan 31 → Feb 28 → Mar 28 → …`
 这种漂移。
 
 两种常见策略：
@@ -58,7 +58,7 @@ Body 字段：
 billing_anchor = 1735689600
 ```
 
-每个周期从 UTC 1 号零点开始。跟外部账单系统对账最省事。
+每个周期从 UTC 每月 1 号零点开始。跟外部账单系统对账最省事。
 
 **开通日纪念日** —— 每个客户的周期从其开通日开始。
 
@@ -66,8 +66,8 @@ billing_anchor = 1735689600
 billing_anchor = $(date -u +%s)   # 现在
 ```
 
-把 server 端的翻页时刻在日历上摊开 —— 如果你有上千个 pair，让它们
-不要在同一个 UTC 零点同时翻页。
+把 server 端的翻页时刻在日历上分散开 —— 如果你有上千个 pair，就别让
+它们在同一个 UTC 零点同时翻页。
 
 **日历边界场景：**
 
@@ -78,11 +78,11 @@ billing_anchor = $(date -u +%s)   # 现在
 - **闰年** —— `billing_anchor = 2024-02-29` 产生
   `2025-02-28`（clamp）、`2026-02-28`、`2027-02-28`，到
   `2028-02-29` 又回到 29 号（闰年）。
-- **server 时钟跳进**（NTP 校正跨越数个周期边界）—— 翻页 while 循环
+- **server 时钟向前跳**（NTP 校正跨越多个周期边界）—— 翻页 while 循环
   在一个 tick 内一次性追到当前周期。中间周期不产生 `bytes_used`
   快照，但 1m / 1h 历史样本不受影响。
-- **server 时钟回拨** —— `next_start > now` 一直成立，翻页不会触发。
-  Period 推进是单调的。
+- **server 时钟回拨** —— `next_start > now` 始终成立，翻页不会触发。
+  周期推进是单调的。
 
 ## 3. 读取耗尽状态
 
@@ -108,8 +108,8 @@ curl -sS \
 }
 ```
 
-`exhausted_at` 在配额未用尽时为 `null`；server 端第一次发现 used
-超过 cap 时记下当时的 unix 秒时间戳。
+配额未用尽时 `exhausted_at` 为 `null`；server 端第一次发现 used
+超过 cap 时，会记下当时的 unix 秒时间戳。
 
 **Prometheus**（server 的 `/metrics` 端点）：
 
@@ -121,17 +121,17 @@ portunus_traffic_quota_period_resets_total{user="alice",client="edge-tokyo"} 4
 portunus_traffic_quota_exhausted_total{user="alice",client="edge-tokyo"} 1
 ```
 
-`_exhausted` 是实时的 0/1 gauge —— 告警 `== 1` 即可触发寻呼。
-`_exhausted_total` 是单调 counter；rate-of-change 反映这个 pair 在
+`_exhausted` 是实时的 0/1 gauge —— 对 `== 1` 设告警即可触发寻呼。
+`_exhausted_total` 是单调 counter；它的变化率反映这个 pair 在
 多少个周期里耗尽过。
 
-**Web UI** —— `UserDetail` 中 AccessEntry 行带本期进度条，耗尽时
+**Web UI** —— `UserDetail` 中的 AccessEntry 行带本期进度条，耗尽时
 显示 `EXHAUSTED` Banner。
 
 ## 4. "bounded best-effort" 的含义
 
 数据面在距离 cap **约一个 IO 缓冲区 / 一个 datagram** 时停止 ——
-不是 bit 精确。Spec §9.1 给出量化的过量上限：
+不是 bit 级精确。Spec §9.1 给出了量化的过量上限：
 
 | 数据面路径               | 单连接稳态过量上限                  |
 | ------------------------ | ----------------------------------- |
@@ -139,12 +139,12 @@ portunus_traffic_quota_exhausted_total{user="alice",client="edge-tokyo"} 1
 | TCP splice (Linux)       | 单次 splice 迭代（≤ 1 MiB，pipe 容量） |
 | UDP datagram             | 单个 datagram payload（≤ 65 KiB） |
 
-稳态过量受 `chunk_size × 并发连接数` 约束，与带宽无关。同一时刻
+稳态过量受 `chunk_size × 并发连接数` 约束，与带宽无关。若同一时刻
 有 100 个 TCP 连接冲到 cap，过量上限 = `100 × 64 KiB = 6.4 MiB`。
 
-另外有一类 **恢复过量**：client 重启后内存中的 counter 丢失，
+另外还有一类 **恢复过量**：client 重启后内存中的 counter 丢失，
 server 视图比链路实际滞后最多一个 `StatsReport` 周期（5 s），
-重连 replay 时下发的 `TrafficQuotaUpdate` 把这段差额补回去：
+重连 replay 时下发的 `TrafficQuotaUpdate` 会把这段差额补回去：
 
 | 链路带宽 | 单 pair 恢复过量（StatsReport + RTT） |
 | -------- | ------------------------------------- |
@@ -161,19 +161,19 @@ recommended_threshold =
                         65_536)
 ```
 
-直白讲：把上限设到 (a) 合同 99 %、(b) 按该 pair 峰值带宽算的恢复过量
-等价值、(c) 64 KiB 三者中**最大**那个之下。多数 pair 由 1 % 的
-headroom (a) 决定；小配额跑高速链路时 (b) 决定。
+说白了：把上限设在 (a) 合同值的 99 %、(b) 按该 pair 峰值带宽算的恢复
+过量等价值、(c) 64 KiB 这三者中**最大**的那个以下。多数 pair 由 1 % 的
+余量 (a) 决定；小配额跑高速链路时由 (b) 决定。
 
 <Callout type="warn">
   流量配额**不是 bit-perfect 计费**。账单级别的逐字节会计需要 client
-  端 counter 持久化 + cumulative ack 协议，这两件事在 v1.4 明确不做。
-  请把 cap 当作"已知过量包络下的硬上限"，不是计量表。
+  端 counter 持久化 + cumulative ack 协议，这两件事 v1.4 明确不做。
+  请把 cap 当作"已知过量包络下的硬上限"，而不是计量表。
 </Callout>
 
 ## 5. 周期内重置用量
 
-PATCH 端点接受两个互相独立、可以合并到一个请求里的 op：
+PATCH 端点接受两个互相独立、可以合并到同一个请求里的 op：
 
 ```sh
 curl -sS -X PATCH \
@@ -183,10 +183,9 @@ curl -sS -X PATCH \
   -d '{"clear_period_usage": true}'
 ```
 
-`clear_period_usage: true` 把 `current_period_bytes_used` 清零并
-清掉 `exhausted_at`。Server 立刻推一条新的
-`TrafficQuotaUpdate { action: SET, state: ... }` 到 client，转发
-不需要重连即可恢复。
+`clear_period_usage: true` 会把 `current_period_bytes_used` 清零并
+清掉 `exhausted_at`。Server 立刻向 client 推一条新的
+`TrafficQuotaUpdate { action: SET, state: ... }`，转发无须重连即可恢复。
 
 **不会被重置的东西：**
 
@@ -194,41 +193,41 @@ curl -sS -X PATCH \
 - `current_period_started_at` / `current_period_ends_at` ——
   period 边界不变。下次翻页仍然在原本的纪念日时刻。
 - `traffic_samples_1m` / `traffic_samples_1h` 历史 —— 清用量不会
-  回溯删除样本；图表上仍能看到已实际转发的字节，即使 counter 被清零。
+  回溯删除样本；即使 counter 被清零，图表上仍能看到实际已转发的字节。
 
-提升上限并清零，一条请求即可：
+提升上限并清零用量，一条请求即可：
 
 ```json
 {"monthly_bytes": 2199023255552, "clear_period_usage": true}
 ```
 
-Server 先改 limit 再清 used，然后只推一条携带最终状态的
+Server 先改 limit 再清 used，然后只推一条带最终状态的
 `TrafficQuotaUpdate`。
 
 <Callout type="info">
-  `clear_period_usage` 适用于"本期额外补发字节"的善意补偿，或者修正
-  误计数事故。如果你要永久换 period 边界，请 `DELETE` + `PUT` 带新
-  `billing_anchor` —— 这会产生两个独立的 audit event。
+  `clear_period_usage` 适用于"本期额外补发字节"的善意补偿，或修正
+  误计数事故。如果你要永久改变 period 边界，请用带新 `billing_anchor`
+  的 `DELETE` + `PUT` —— 这会产生两个独立的 audit event。
 </Callout>
 
 ## 6. 在未配置配额的部署上启用
 
-不需要任何手动迁移。v1.4 server 的 V008 SQLite migration 只建表
+无须任何手动迁移。v1.4 server 的 V008 SQLite migration 只建表
 （`traffic_quotas`、`traffic_samples_1m`、`traffic_samples_1h`、
-`traffic_rollup_state`），不做 backfill，不插默认行。
+`traffic_rollup_state`），不做 backfill，也不插默认行。
 
 升级顺序：
 
-1. server 升到 v1.4.0。已有 pair 的转发行为完全不变 —— 没有
-   `traffic_quotas` 行，client 端不会装 `QuotaHandle`，没有 per-IO
+1. server 升到 v1.4.0。已有 pair 的转发逻辑完全不变 —— 没有
+   `traffic_quotas` 行，client 端不会装 `QuotaHandle`，也就没有 per-IO
    开销。
-2. client 按自己的节奏升到 v1.4.0。v1.3.x 及更早的 client 上任何
+2. client 按自己的节奏升到 v1.4.0。对 v1.3.x 及更早的 client 做的任何
    PUT 都会被拒：`422 quota_unsupported_by_client`，但规则照常工作。
-3. 一个 `(user, client)` pair 端到端都跑 v1.4 之后，对你想计量的
+3. 一个 `(user, client)` pair 端到端都跑上 v1.4 之后，对你想计量的
    pair `PUT` 配额。Server 立刻推 `TrafficQuotaUpdate { action: SET }`，
    client 开始按预算消费字节。
 
-从来没 PUT 过的 pair 永远不会被计量。要停止已配置 pair 的计量但又
-不留 row，`DELETE` 配额即可 —— server 推
+从未 PUT 过的 pair 永远不会被计量。要停止已配置 pair 的计量但又
+不留行，`DELETE` 配额即可 —— server 推
 `TrafficQuotaUpdate { action: REMOVE }`，client 摘掉
 `QuotaHandle`。

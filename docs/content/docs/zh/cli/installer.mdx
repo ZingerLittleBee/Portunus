@@ -11,11 +11,11 @@ icon: Terminal
 install · uninstall · upgrade · status · service · config · env
 ```
 
-它在 `server`、`client`、`standalone` 三种角色下同时管理两种部署形态——
-**release 二进制 + systemd unit** 与 **Docker Compose** ——并且是双语的
+它支持 `server`、`client`、`standalone` 三种角色，并同时管理两种部署形态——
+**release 二进制 + systemd unit** 与 **Docker Compose** ，界面支持中英双语
 （English / 中文）。对于 server，它还能为 Web UI 配置一个带自动 Let's
 Encrypt HTTPS 的 **Caddy** 反向代理。CI、自动化以及文档中 `curl … | bash`
-一行命令所依赖的非交互 flag 接口保持不变；交互式菜单是纯粹的增量功能。
+一行命令所依赖的非交互 flag 接口保持不变；交互式菜单只是新增的能力。
 
 同一个脚本有两种使用方式：
 
@@ -28,15 +28,15 @@ bash scripts/install.sh <verb> [flags]
 ```
 
 <Callout type="info">
-需要 **bash 4.0+**。低于该版本脚本会硬报错。macOS 自带 bash 3.2 ——
-请 `brew install bash` 并用该解释器运行（管道 `curl … | bash` 形式使用
-`PATH` 中第一个 `bash`）。
+需要 **bash 4.0+**。版本过低时脚本会直接报错退出。macOS 自带 bash 3.2 ，
+请先 `brew install bash` ，并用该解释器运行（管道 `curl … | bash` 形式会使用
+`PATH` 中找到的第一个 `bash`）。
 </Callout>
 
 ## 两种模式
 
-**交互模式** —— 未给出可执行的 verb/role 且终端可达（stdin 是 TTY，或管道
-时 `/dev/tty` 可读）。会进入菜单：
+**交互模式** —— 未给出可执行的 verb/role 且终端可用（stdin 是 TTY，或在管道
+调用时 `/dev/tty` 可读）。此时进入菜单：
 
 ```text
 Portunus Manager
@@ -51,12 +51,12 @@ Portunus Manager
 Select [0-7]:
 ```
 
-因为管道时它从 `/dev/tty` 读取，所以 `curl … | bash` 也能进入菜单。选 `1`
+因为即使被管道调用也能从 `/dev/tty` 读取，所以 `curl … | bash` 同样能进入菜单。选 `1`
 进入引导式安装向导：角色（`server` / `client` / `standalone`）→ 部署形态
 →（仅 server）HTTPS 域名 → 通告地址 → 计划预览 → 确认。
 
-**非交互模式** —— 出现任意 verb/role/已识别 flag，或 `--yes`，或没有可用
-终端。这是 CI 与自动化的契约；行为与历史下载器加上新 verb 一致。
+**非交互模式** —— 出现任意 verb/role/可识别的 flag，或带 `--yes`，或没有可用
+终端时进入。这是 CI 与自动化所依赖的契约，行为相当于在原下载器之上新增了若干 verb。
 
 ## 用法
 
@@ -125,10 +125,10 @@ curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
 ```
 
 下载 release 归档，校验其 SHA-256，并将 `portunus-<role>` 安装到
-`--bin-dir`。带 `--systemd` 时它会拉取加固 unit、创建
+`--bin-dir`。带 `--systemd` 时会拉取加固 unit，创建
 `portunus-server` / `portunus-client` 服务用户与目录，并（对 server）在
 `/etc/systemd/system/portunus-server.service.d/10-portunus.conf` 写入
-含通告地址的 systemd **drop-in**。出厂 unit 永不被改写——所有 server
+含通告地址的 systemd **drop-in**。出厂 unit 不会被改写，所有 server
 配置都走 drop-in。
 
 ### Docker Compose
@@ -139,10 +139,10 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
   --compose-dir ~/portunus --advertised-endpoint host.example:7443
 ```
 
-写入 `compose.yml`（若已存在则保留）与同级 `.env`（保存限定变量），然后
-`docker compose pull && up -d`。需要 Docker Compose **v2**（旧版
-`docker-compose` 可被检测，但优先 v2）。server 配置走 `.env` 旁挂文件；
-已存在的 compose 文件永不被改写。
+写入 `compose.yml`（若已存在则保留）与同级 `.env`（保存限定变量），然后执行
+`docker compose pull && up -d`。需要 Docker Compose **v2**（也能识别旧版
+`docker-compose` ，但优先使用 v2）。server 配置走 `.env` 旁挂文件，
+已存在的 compose 文件不会被改写。
 
 ## 安装元数据
 
@@ -159,15 +159,15 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 `advertised_endpoint_set`、`domain`、`installed_at`、`installer_version`。
 
 生命周期 verb 按此顺序解析元数据：显式 `--compose-dir`、然后**当前
-目录**、然后 `/var/lib/portunus`、然后 `/etc/portunus`。对 Docker
+目录**、然后 `/var/lib/portunus`、最后 `/etc/portunus`。对 Docker
 部署，请**在 compose 目录中**运行生命周期命令（或传 `--compose-dir`），
-以免陈旧的二进制安装将其遮蔽。
+以免被旧的二进制安装抢先匹配。
 
 ## 限定 config 与 env
 
-`config get/set` 不适用于 `standalone` 角色——请直接编辑
+`config get/set` 不适用于 `standalone` 角色，请直接编辑
 `/etc/portunus/standalone.toml`。对 `server` 与 `client`，`config` 与
-`env` 仅接受以下四个键（其它键为硬错误）：
+`env` 仅接受以下四个键（传入其它键会直接报错）：
 
 | 键 | 映射的环境变量 |
 | --- | --- |
@@ -177,8 +177,8 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 | `version-pin` | `PORTUNUS_VERSION_PIN` |
 
 `set` 把值写入 systemd drop-in（二进制）或 compose `.env`（docker），
-并**合并保留**其它键，随后提供重启服务的选项。`get` 打印持久化值
-（未设置则为 `<unset>`）。`env` 打印全部四个。
+并**合并保留**其它键，随后询问是否重启服务。`get` 打印持久化的值
+（未设置时显示 `<unset>`）。`env` 打印全部四个键。
 
 ```sh
 # 二进制 server（任意目录运行——meta 在 /var/lib/portunus）
@@ -194,11 +194,11 @@ bash install.sh env
 
 ## server 通告地址
 
-安装 **server** 时，向导会提示通告地址——Client 拨号的公网
+安装 **server** 时，向导会提示填写通告地址——也就是 Client 连接的公网
 `host:port`。server 证书 SAN 必须覆盖该 host。留空则让 server 在运行
-时自动解析。安装器只做轻量 `host:port` 合法性检查，并把值持久化
-（systemd drop-in 或 compose `.env` 中的 `PORTUNUS_ADVERTISED_ENDPOINT`）；
-权威的 SAN/语法校验由 server 在启动时完成。
+时自动解析。安装器只做轻量的 `host:port` 合法性检查，并把值持久化
+（systemd drop-in 或 compose `.env` 中的 `PORTUNUS_ADVERTISED_ENDPOINT`），
+权威的 SAN / 语法校验由 server 在启动时完成。
 
 ## 域名与 HTTPS
 
@@ -217,19 +217,19 @@ sudo bash install.sh domain portunus.example.com
 它的行为：
 
 - 预检查域名的 DNS A 记录是否解析到本机（用 `--skip-dns-check` 跳过）。
-- 若缺失则安装 Caddy（apt / dnf / yum），随后把一个受管区块——以
-  `# >>> portunus >>>` / `# <<< portunus <<<` 为界——写入
-  `/etc/caddy/Caddyfile`，将该域名反向代理到 operator HTTP 端口。已存在
-  的 Caddyfile 会被备份，且只重写受管区块。
-- `--acme-email` 为证书签发设置 ACME 联系邮箱。
+- 若未安装 Caddy 则先安装（apt / dnf / yum），随后向
+  `/etc/caddy/Caddyfile` 写入一个以 `# >>> portunus >>>` /
+  `# <<< portunus <<<` 为界的受管区块，将该域名反向代理到 operator HTTP 端口。已存在
+  的 Caddyfile 会先备份，且只重写受管区块。
+- `--acme-email` 用于设置证书签发的 ACME 联系邮箱。
 - 重载 Caddy 并轮询 `https://<domain>/` 直到签发完成（通常约 30 秒）。
 
 提供 `--domain` 时，若未设置 `--advertised-endpoint`，还会把通告地址推导
-为 `<domain>:7443`。当 `domain` 重新对齐通告地址后，server 会在重启时刷新
-其 gRPC 证书 SAN，且**已有的 client bundle 必须重新签发**
+为 `<domain>:7443`。一旦 `domain` 重新对齐了通告地址，server 会在重启时刷新
+其 gRPC 证书 SAN，此时**已有的 client bundle 必须重新签发**
 （`portunus-server enroll-client <name>`）。
 
-Web UI 随之通过 HTTPS 公开可访问，但仍由运维登录 / 令牌保护。
+这样一来 Web UI 可经 HTTPS 公开访问，但仍受运维登录 / 令牌保护。
 
 ## 生命周期示例
 
@@ -254,8 +254,8 @@ sudo bash install.sh uninstall --purge
 ## 语言
 
 解析顺序：`--lang` / `PORTUNUS_LANG` → `LC_ALL` / `LANG` 自动探测
-（`zh*` ⇒ 中文，否则英文）→ 交互时首次运行提示 → 否则英文。所选语言
-存入 `.install-meta`，后续子命令复用。
+（`zh*` ⇒ 中文，否则英文）→ 交互模式下首次运行时询问 → 否则用英文。所选语言
+会存入 `.install-meta`，供后续子命令复用。
 
 ```sh
 PORTUNUS_LANG=zh curl -fsSL .../scripts/install.sh | bash
@@ -267,11 +267,11 @@ bash install.sh --lang en status
 - **`--dry-run`** 打印计划，对每个 verb 都**不**联网、**不**写文件。
 - **`--purge`** 额外删除数据目录 / compose 卷，并要求你键入字面令牌
   `purge`。**`--yes` 永不绕过该输入令牌。**
-- 破坏性操作总会确认；`uninstall` 默认 `[y/N]`。
-- 出厂 systemd unit 与已存在的基础 compose 文件永不被改写——server
-  配置通过 drop-in / `.env` 旁挂文件应用。
-- 在已存在节点上重复 `install` 会经由 `.install-meta` 检测；用
-  `upgrade` 在复用记录配置的同时切换版本。
+- 破坏性操作都会先确认；`uninstall` 默认选项为 `[y/N]`。
+- 出厂 systemd unit 与已存在的基础 compose 文件都不会被改写，server
+  配置通过 drop-in / `.env` 旁挂文件下发。
+- 在已有节点上重复执行 `install` 会通过 `.install-meta` 被识别出来；想在复用
+  原有配置的同时切换版本，请用 `upgrade`。
 
 ## 参见
 
