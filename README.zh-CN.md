@@ -13,9 +13,9 @@
 转发一个端口，不用 Server、不用数据库 —— 先写配置，再装成服务：
 
 ```sh
-# 1. 把转发规则写到服务用户能读到的位置
+# 1. 把转发规则写到默认配置路径
 sudo mkdir -p /etc/portunus
-cat <<'EOF' | sudo tee /etc/portunus/portunus.toml >/dev/null
+cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -23,11 +23,11 @@ listen_port = 2222
 target      = "10.0.0.5:22"
 EOF
 
-# 2. 安装并启动（自动探测 systemd/OpenRC，读取上面的配置）
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone --config /etc/portunus/portunus.toml
+# 2. 安装并启动（自动探测 systemd/OpenRC，读取 /etc/portunus/standalone.toml）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
-`:2222 → 10.0.0.5:22`，TCP 与 UDP，重启和退出 SSH 都不会停。只是想试一下？去掉 `sudo` 和服务、前台运行即可：`portunus-standalone --config portunus.toml`。
+`:2222 → 10.0.0.5:22`，TCP 与 UDP，重启和退出 SSH 都不会停。想用别的文件就加 `--config /path/to/your.toml`。只是想试一下？去掉 `sudo` 和服务、前台运行即可：`portunus-standalone --config portunus.toml`。
 
 ## 为什么选 Portunus
 

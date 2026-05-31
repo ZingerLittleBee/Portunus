@@ -13,9 +13,9 @@
 Forward a port with no server and no database — write a config, then install it as a service:
 
 ```sh
-# 1. write your forwarding rules where the service can read them
+# 1. write your forwarding rules to the default config path
 sudo mkdir -p /etc/portunus
-cat <<'EOF' | sudo tee /etc/portunus/portunus.toml >/dev/null
+cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -23,11 +23,11 @@ listen_port = 2222
 target      = "10.0.0.5:22"
 EOF
 
-# 2. install + start (detects systemd/OpenRC; reads the config above)
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone --config /etc/portunus/portunus.toml
+# 2. install + start (detects systemd/OpenRC; reads /etc/portunus/standalone.toml)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
-`:2222 → 10.0.0.5:22`, TCP and UDP, surviving reboots and SSH logout. Just trying it out? Drop `sudo` and the service and run it in the foreground: `portunus-standalone --config portunus.toml`.
+`:2222 → 10.0.0.5:22`, TCP and UDP, surviving reboots and SSH logout. Point at a different file with `--config /path/to/your.toml`. Just trying it out? Drop `sudo` and the service and run it in the foreground: `portunus-standalone --config portunus.toml`.
 
 ## Why Portunus
 
