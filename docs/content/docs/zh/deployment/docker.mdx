@@ -180,6 +180,15 @@ docker run -d --name portunus-client --network host \
   ghcr.io/zingerlittlebee/portunus-client
 ```
 
+<Callout type="warn">
+**同机试用？** 当 Server 的 advertised endpoint 是默认的 `127.0.0.1:7443` 时，
+一次性接入容器在 Docker bridge 网络下无法连到它（报 `transport error`，不会写出
+bundle）——需要给 `enroll` 命令也加上 `--network host`，或设置一个可达的
+[advertised endpoint](/zh/docs/features/advertised-endpoint)。另外请确认 `enroll`
+步骤在长驻 `docker run` **之前**确实写出了 `client.bundle.json`：Docker 会把不存在
+的 bind-mount 源路径创建成一个**目录**，client 随后会以 `Is a directory` 拒绝它。
+</Callout>
+
 Compose 等价写法（`compose.client.yaml`），bundle 已存在后：
 
 ```yaml

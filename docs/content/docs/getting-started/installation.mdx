@@ -216,6 +216,17 @@ docker run -d --name portunus-client --network host \
   ghcr.io/zingerlittlebee/portunus-client
 ```
 
+<Callout type="warn">
+**Same-host trial?** When the server's advertised endpoint is the default
+`127.0.0.1:7443`, the one-shot enroll container cannot reach it over Docker's
+bridge network (`transport error`, no bundle written) — add `--network host`
+to the `enroll` command too (the long-lived container above already uses it),
+or set a reachable [advertised endpoint](/en/docs/features/advertised-endpoint).
+Also make sure the `enroll` step actually wrote `client.bundle.json` **before**
+the long-lived `docker run`: Docker turns a missing bind-mount source path into
+a **directory**, which the client then rejects with `Is a directory`.
+</Callout>
+
 Compose equivalent (`compose.client.yaml`), after the bundle exists:
 
 ```yaml
