@@ -54,10 +54,10 @@ For UDP, port ranges, failover, PROXY protocol, and the stats TUI, see the [stan
 
 The one-line script is POSIX `sh` (runs under `dash`/busybox `ash` — no `bash` required), detects OS/arch, and verifies release checksums. By default it installs **and starts** a service; pass `--no-service` to install the binary only. Add `--deploy docker` to any role to run it via Docker Compose instead.
 
-**Standalone** — one host, one TOML file. The installer never seeds a config, so create it first:
+**Standalone** — one host, one TOML file. The installer never seeds a config, so create it first. Where it goes depends on the path:
 
 ```sh
-# write your rules (the binary install reads /etc/portunus/standalone.toml)
+# Binary + service (systemd / OpenRC): config lives at /etc/portunus/standalone.toml
 sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
 [[rule]]
 name        = "ssh"
@@ -65,10 +65,18 @@ protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
 EOF
-
-## binary + service (systemd / OpenRC)
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
-## Docker Compose (mounts ./portunus.toml — put the config in your cwd for this one)
+```
+
+```sh
+# Docker Compose: config is ./portunus.toml in the current directory (bind-mounted)
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
 ```
 
