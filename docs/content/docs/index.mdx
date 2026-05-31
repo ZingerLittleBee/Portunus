@@ -17,20 +17,18 @@ control plane.
 
 <Cards>
   <Card title="Start in 60 seconds" href="/en/docs/getting-started/installation" />
-  <Card title="Read the performance report" href="/en/docs/getting-started/performance" />
   <Card title="Open the architecture guide" href="/en/docs/getting-started/architecture" />
+  <Card title="Read the performance report" href="/en/docs/getting-started/performance" />
 </Cards>
 
 ## Performance
 
-Most users are not trying to saturate a local 20 Gbit/s loopback path; they
-are running under a real bandwidth limit. Starting in v1.3.0, plain TCP rules
-with no bandwidth cap use a Linux kernel `splice(2)` fast path. On the same
-measured Linux host that produced the v0.11 baseline, single-flow uncapped
-throughput **doubled from 9.9 Gbit/s to 21.9 Gbit/s** (2.20×). The
-operator-facing offered-load sweep through 20 Gbit/s tracks both direct
-`iperf3` and `iptables` REDIRECT within iperf3 short-run noise — the v0.11
-"Portunus saturates ≥ 12.5 Gbit/s" caveat disappears for uncapped TCP.
+Starting in v1.3.0, plain TCP rules with no bandwidth cap use a Linux kernel
+`splice(2)` fast path. On the same Linux host that produced the v0.11 baseline,
+single-flow uncapped throughput **doubled from 9.9 Gbit/s to 21.9 Gbit/s**
+(2.20×). An offered-load sweep through 20 Gbit/s tracks both direct `iperf3` and
+`iptables` REDIRECT within iperf3 short-run noise — the v0.11 "Portunus
+saturates ≥ 12.5 Gbit/s" caveat disappears for uncapped TCP.
 
 | Offered bandwidth | What to expect (v1.3.0) |
 | --- | --- |
@@ -72,13 +70,11 @@ operator-facing offered-load sweep through 20 Gbit/s tracks both direct
 
 Use `Portunus` when you need centrally managed edge listeners, tenant-aware
 access control, observability, or per-owner quotas around plain L4 forwarding.
-For a single static rule on one Linux host where only absolute peak throughput
-matters, kernel-space forwarding still has the simpler and faster execution
-path. That tradeoff is the whole point of measuring with your bandwidth target
-instead of arguing from the uncapped loopback ceiling. When you want the
+For a single static rule on one Linux host where only peak throughput matters,
+kernel-space forwarding has a simpler, faster execution path. Want the
 `Portunus` data plane (port ranges, multi-target failover, PROXY protocol,
-`splice`) on a single host but none of the control plane, reach for the
-[standalone forwarder](/en/docs/configuration/standalone) — same forwarding
+`splice`) on a single host but none of the control plane? Reach for the
+[standalone forwarder](/en/docs/configuration/standalone) — the same forwarding
 code, driven entirely by a TOML file.
 
 ## Quick links
@@ -95,4 +91,5 @@ code, driven entirely by a TOML file.
 
 ## License
 
-Apache-2.0.
+Licensed under the [GNU Affero General Public License v3.0](https://github.com/ZingerLittleBee/Portunus/blob/main/LICENSE)
+(`AGPL-3.0-only`).

@@ -11,7 +11,7 @@ icon: Archive
   压到 `iptables` 水平的版本。在原始 Debian 13 机器上采集。
 - **v0.11** 是 splice 之前的最后一个基线，v1.3.0 的数字就是对照它测的。
 
-当前的最新对比（在全新 AMD EPYC 硬件上重测，并新增 `portunus-standalone` 与
+当前的最新对比（在同一台机器上重测，并新增 `portunus-standalone` 与
 `portunus-client` 对比）是 [v1.6.1 报告](/zh/docs/getting-started/performance)。
 
 ---
@@ -69,7 +69,7 @@ splice OFF 的 userspace 路径仍被 v1.2.0 userspace memcpy 顶在 ~8.5-10 Gbi
 采集时间：2026-05-10。
 
 ```text
-Linux 69-201-77-68 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64
+Linux host 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64
 rustc 1.95.0 (59807616e 2026-04-14)
 iperf 3.18
 ```
@@ -121,5 +121,5 @@ TMPDIR=/root scripts/perf_loopback.py --seconds 5 --omit-seconds 1 \
 
 12.5 Gbit/s offered 以上，iptables 仍贴近 offered，而 splice 之前的 Portunus
 userspace 路径早早饱和。这正是 v1.3.0 splice 快路径压平的区间（见上），也是
-[v1.6.1 报告](/zh/docs/getting-started/performance#offered-load-sweep) 在全新硬件
+[v1.6.1 报告](/zh/docs/getting-started/performance#offered-load-sweep) 在同一台机器
 上再次确认的结论。

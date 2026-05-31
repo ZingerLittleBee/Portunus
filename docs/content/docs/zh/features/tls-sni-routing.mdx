@@ -75,17 +75,28 @@ portunus_tls_sni_listener_parse_failures_total{client,port}
 portunus_tls_sni_routes_active
 ```
 
-`result` ∈ `{exact, wildcard, fallback, no_match}`。
+- `portunus_tls_sni_route_total` —— 逐规则的成功分发计数，
+  `result` ∈ `{exact, wildcard, fallback}`（每种结果一行）。
+- `portunus_tls_sni_listener_miss_total` —— 逐 listener 统计 SNI 未匹配
+  任何规则 **且** 无兜底（即被丢弃）的连接数。
+- `portunus_tls_sni_listener_parse_failures_total` —— 逐 listener 统计
+  无法解析为 ClientHello、超时或触达大小上限的 peek 次数。
+- `portunus_tls_sni_routes_active` —— 带 SNI 选择器的活跃规则全局计量。
+
+旧的纯 TCP listener 不会暴露上述任何指标序列。
 
 ## Tracing 事件
 
-五类 `target = "tls_sni"` 的结构化事件：
+`target = "tls_sni"` 的结构化事件：
 
-- `client_hello_timeout`
-- `client_hello_parse_failure`
-- `no_sni_fallback`
-- `sni_no_match`
-- `sni_route_success`
+| `event` | 触发时机 |
+| --- | --- |
+| `tls.sni_routed` | 连接已分发到匹配的规则 |
+| `tls.no_sni` | ClientHello 中没有 SNI 扩展 |
+| `tls.sni_no_match` | 有 SNI 但未匹配任何规则（且无兜底） |
+| `tls.client_hello_timeout` | 完整 ClientHello 到齐前 peek 超时 |
+| `tls.parse_failed` | peek 到的字节无法解析为 ClientHello |
+| `tls.sni_listener.started` / `.stopped` / `.accept_error` | listener 生命周期 |
 
 按照审计隔离不变量（D13），数据面 SNI 事件 **不会** 进入 SQLite 操作员
 审计表。

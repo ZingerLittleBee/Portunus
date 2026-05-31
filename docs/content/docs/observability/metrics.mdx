@@ -24,7 +24,9 @@ Per-rule collectors emit **one row per live rule** (labels
 **only on demand** via `?per_port=true` / `?per_target=true` — never as
 default `/metrics` series.
 
-Rows are removed when the rule is removed.
+When a rule is removed, most per-rule rows are removed with it. The
+cumulative byte counters (`portunus_rule_bytes_in_total` /
+`portunus_rule_bytes_out_total`) are kept by Prometheus convention.
 
 ## Server-level
 
@@ -33,10 +35,17 @@ portunus_clients_connected
 portunus_auth_failures_total{reason}
 portunus_operator_requests_total{outcome, reason}
 portunus_audit_buffer_drops_total
+portunus_audit_durable_writer_lag_seconds
+portunus_store_busy_total
 ```
 
 `outcome` ∈ `{allow, deny}`; `reason` is `"ok"` on allow or the static
 `RbacError::code()` string on deny (bounded label set).
+
+`portunus_audit_durable_writer_lag_seconds` is the age of the oldest
+entry in the durable-audit hand-off queue (0 when idle).
+`portunus_store_busy_total` counts `SQLITE_BUSY` events mapped to a
+transient store error; it should stay near zero.
 
 ## Per-rule TCP
 
@@ -45,8 +54,12 @@ portunus_rule_bytes_in_total{client, rule, owner}
 portunus_rule_bytes_out_total{client, rule, owner}
 portunus_rule_active_connections{client, rule, owner}
 portunus_rule_dns_failures_total{client, rule, owner}
-portunus_rule_target_failovers_total{client, rule}
+portunus_rule_target_failovers_total{client, rule, owner}
 ```
+
+`portunus_rule_target_failovers_total` emits one row per multi-target
+rule (counting Healthy↔Failed transitions); single-target rules never
+emit a row.
 
 ## Per-rule UDP
 
@@ -66,7 +79,10 @@ portunus_tls_sni_listener_parse_failures_total{client, port}
 portunus_tls_sni_routes_active
 ```
 
-`result` ∈ `{exact, wildcard, fallback, no_match}`.
+`result` ∈ `{exact, wildcard, fallback}`. A connection whose SNI
+matches no rule (and has no fallback) is counted on
+`portunus_tls_sni_listener_miss_total` instead, not on
+`tls_sni_route_total`.
 
 ## SNI peek histogram (v0.10+)
 
@@ -90,8 +106,30 @@ portunus_rate_limit_active_connections{client, rule, owner}
 Reject reasons: `conn_concurrent`, `conn_rate`, `udp_flow_rate`,
 `owner_concurrent`, `owner_conn_rate`, `owner_udp_flow_rate`.
 
-The `owner` label is **empty** for per-rule rejects, **populated** for
-owner-scoped rejects.
+Per-rule rows carry the rule id in `rule` and the owner in `owner`.
+Owner-aggregated rows (cross-rule totals for an owner) set `rule=""`
+and keep `owner` populated. This applies to all three collectors,
+including `portunus_rate_limit_active_connections`, which also emits an
+owner-aggregate row with `rule=""`. Slice with `{rule!=""}` for per-rule
+rows or `{rule=""}` for the owner aggregate.
+
+## Traffic quotas (v0.13+)
+
+```
+portunus_traffic_quota_bytes_used{user, client}
+portunus_traffic_quota_bytes_limit{user, client}
+portunus_traffic_quota_exhausted{user, client}
+portunus_traffic_quota_period_resets_total{user, client}
+portunus_traffic_quota_exhausted_total{user, client}
+```
+
+These are keyed by `{user, client}` — not `owner` — and track the
+per-(user, client) monthly byte budget. `bytes_used` is the cumulative
+bytes consumed in the current period and `bytes_limit` is the budget.
+`portunus_traffic_quota_exhausted` is a gauge (`1` while the quota is
+currently exhausted, else `0`). `period_resets_total` counts period
+boundary rollovers and `exhausted_total` counts first-time period
+exhaustions.
 
 ## Useful queries
 

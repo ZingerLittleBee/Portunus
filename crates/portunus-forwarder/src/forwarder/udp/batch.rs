@@ -148,7 +148,7 @@ pub(crate) fn recv_batch(socket: &UdpSocket, bufs: &mut BatchBufs) -> io::Result
                 fd,
                 hdrs.as_mut_ptr(),
                 batch_count,
-                libc::MSG_DONTWAIT,
+                libc::MSG_DONTWAIT as _,
                 std::ptr::null_mut(),
             )
         };
@@ -206,7 +206,8 @@ pub(crate) fn send_batch_connected(socket: &UdpSocket, payloads: &[&[u8]]) -> io
 
         // `len ≤ BATCH_SIZE` (32) by the `.min()` above; fits in c_uint.
         let send_count = libc::c_uint::try_from(len).unwrap_or(libc::c_uint::MAX);
-        let rc = unsafe { libc::sendmmsg(fd, hdrs.as_mut_ptr(), send_count, libc::MSG_DONTWAIT) };
+        let rc =
+            unsafe { libc::sendmmsg(fd, hdrs.as_mut_ptr(), send_count, libc::MSG_DONTWAIT as _) };
         if rc < 0 {
             return Err(io::Error::last_os_error());
         }

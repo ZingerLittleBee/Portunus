@@ -11,7 +11,7 @@ COPY docker-bin/${TARGETARCH}/portunus-server /usr/local/bin/portunus-server
 RUN /usr/local/bin/portunus-server --version
 RUN mkdir -p /var/lib/portunus /shared && chown 65532:65532 /var/lib/portunus /shared
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot
 
 ARG TARGETARCH
 COPY --from=abi-check /usr/local/bin/portunus-server /usr/local/bin/portunus-server

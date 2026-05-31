@@ -10,11 +10,13 @@ v0.7.0 起支持。把 `Rule.targets[]` 从单个目标扩展为最多 8 个按 
 ## 工作原理
 
 - **priority 数字越小优先级越高**。Client 总是优先尝试可用目标里 priority
-  最高的那个。
+  最高的那个，失败后按 priority 顺序依次尝试其余目标。
 - **被动失败检测**：30 秒内连续 3 次连接失败就把目标置为 `Failed`；连续
   2 次成功则恢复。
 - **主动探测**（每条规则可选）：设置 `health_check_interval_secs`
   （范围 `1..=3600`）以从 Client 周期性发起 TCP 连接探测。
+- **全部失败时的兜底**：当所有目标都为 `Failed` 时，Client 仍会尝试
+  priority 最高的目标，而不是直接放弃。
 - 全部健康状态 **位于 Client 端、为内存态** —— Client 重启后丢失。
 
 ## 推送多目标规则
@@ -46,7 +48,7 @@ Web UI 的规则推送表单提供 "添加另一个目标" 按钮。
 为保持 Prometheus 基数受控，逐目标字节计数 **仅在按需查询时** 返回：
 
 ```sh
-# CLI
+# CLI（单目标规则会打印一条空操作提示并以 0 退出）
 portunus-server rule-stats <id> --per-target
 
 # HTTP
@@ -58,16 +60,22 @@ curl -N -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats/stream?per_target=true'
 ```
 
-Web UI 规则详情页会展示健康徽标（`Healthy / Degraded / Failed`）、
-最近一次失败 / 成功时间戳，以及在现有 5 秒 SSE 节奏下更新的逐目标字节计数。
+Web UI 规则详情页会展示健康徽标（`Healthy / Failed`）、最近一次失败 / 成功
+时间戳，以及在现有 5 秒 SSE 节奏下更新的逐目标字节计数。
 
 ## 默认 `/metrics`
 
-只有一个常驻计数器：`portunus_rule_target_failovers_total{client,rule}`，
-用于记录每条规则 Healthy↔Failed 的切换次数。逐目标字节计数 **绝不**
-默认进入 `/metrics`。
+只有一个常驻计数器：
+`portunus_rule_target_failovers_total{client,rule,owner}`，用于记录每条
+规则 Healthy↔Failed 的切换次数。逐目标字节计数 **绝不** 默认进入
+`/metrics`。
 
 ## Capability gate
 
 向 v0.6.0 或更早的 Client 推送多目标规则会在 HTTP 层被拒，错误码
 `422 multi_target_unsupported_by_client`。
+
+## 性能
+
+自 v1.7.0 起，实时字节计数与 Linux `splice(2)` 快路径同样适用于多目标
+故障切换路径；逐目标计数集中对账，并在出错时正确关闭。

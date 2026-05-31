@@ -27,7 +27,7 @@ curl -sS -X PUT \
 Body 字段：
 
 - `monthly_bytes`（必填）—— i64 字节上限。`0` 合法，等价于"开局即
-  耗尽"。负数或超 `i64::MAX` 一律 `400 invalid_quota_size`。
+  耗尽"。负数一律 `400 invalid_quota_size`。
 - `billing_anchor`（可选）—— **首个**周期起点的 unix 秒 UTC。缺省
   为 PUT 时刻 server 的当前时间。之后**不可变**（见 §2）。如果要换
   锚点，请 `DELETE` 再 `PUT`，会产生两个 audit event，并把

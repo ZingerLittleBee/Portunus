@@ -9,13 +9,30 @@ listen port — the kernel demuxes by protocol.
 
 ## How it works
 
-Each UDP rule binds a single `recv_from` loop on the client. For every
-unique end-user `(source-addr, source-port)` pair the kernel allocates a
-fresh upstream `UdpSocket` (one per flow), giving NAT-style return-path
-isolation **without any userspace flow tracking**.
+Each UDP rule runs one listener task per listen port, each owning a
+fixed-size receive buffer. A datagram from a new end-user
+`(source-addr, source-port)` opens a **flow**: the proxy binds a fresh
+upstream `UdpSocket`, `connect()`s it to the selected target once, and
+registers the flow in a shared per-rule registry keyed by
+`(listen_port, source_addr)`. Return datagrams are demuxed back to the
+originating source through this registry.
 
-The kernel's source-port selection demuxes replies for free, so the
-proxy never has to track return-paths in userspace.
+Receive-buffer memory is **O(1) in flow count** — each listener task
+owns one fixed-size receive buffer regardless of how many flows are
+live, not one buffer per flow. An idle reaper closes flows that go quiet
+(see `udp_flow_idle_secs` below).
+
+On Linux, the listener uses batched syscalls (`recvmmsg`/`sendmmsg`, up
+to 32 datagrams per call) to cut per-packet syscall overhead. The batch
+path holds a fixed ~2 MiB receive arena per listener (32 slots ×
+64 KiB), plus a single 64 KiB single-packet fallback buffer. Neither
+grows with flow count. Other platforms skip the batch arena and use the
+single 64 KiB `recv_from`/`send` path.
+
+Because the upstream socket is `connect()`-ed, Linux reflects ICMP
+errors (`ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`) back to the
+proxy. An affected flow is evicted immediately; the next datagram from
+that source rebuilds the flow against a freshly selected target.
 
 ## Push a UDP rule
 
@@ -45,7 +62,12 @@ udp_flow_idle_secs = 60
 udp_max_flows_per_rule = 1024
 ```
 
-When sustained churn from many distinct source ports exceeds the cap,
+The cap is **per rule**, not per port: a port-range rule with
+`udp_max_flows_per_rule = N` admits at most `N` concurrent flows across
+**all** its listen ports combined — a single registry-wide counter, not
+`N × range_size`.
+
+When sustained churn from many distinct sources exceeds the cap,
 overflow drops increment `portunus_rule_flows_dropped_overflow_total`.
 Existing flows are **never** evicted to make room — idle eviction
 handles steady-state shrinkage.
@@ -57,10 +79,10 @@ handles steady-state shrinkage.
 
 ## Range + DNS support
 
-UDP works with [port-range rules](/en/docs/features/port-range) (each port in
-the range gets its own listener task with an independent flow table) and
-with [DNS-name targets](/en/docs/features/dns-targets) (resolver cache and
-single-flight semantics carry over verbatim).
+UDP works with [port-range rules](/en/docs/features/port-range) (one
+listener task per port, all sharing the rule's single flow registry and
+per-rule cap) and with [DNS-name targets](/en/docs/features/dns-targets)
+(resolver cache and single-flight semantics carry over verbatim).
 
 ## Metrics
 

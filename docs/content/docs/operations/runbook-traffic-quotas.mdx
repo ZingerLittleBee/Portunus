@@ -28,8 +28,8 @@ curl -sS -X PUT \
 Body fields:
 
 - `monthly_bytes` (required) — i64 byte cap. `0` is legal and means
-  "exhausted on first packet". The server rejects negative values and
-  values above `i64::MAX` with `400 invalid_quota_size`.
+  "exhausted on first packet". The server rejects negative values with
+  `400 invalid_quota_size`.
 - `billing_anchor` (optional) — unix seconds UTC marking the start
   of the **first** period. Defaults to the server's current time at
   PUT. **Immutable** afterwards (see §2). If you need to change it,

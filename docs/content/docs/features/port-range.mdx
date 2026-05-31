@@ -41,7 +41,7 @@ The default cap is **1024 ports per range**, configurable in `server.toml`:
 
 ```toml
 # Maximum ports a single port-range rule may span.
-# Each port consumes one TCP listener (one fd) on the client.
+# Each port consumes one socket (one fd) on the client.
 range_rule_max_ports = 1024
 ```
 
@@ -62,8 +62,9 @@ curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
 ```
 
-Per-port byte counters surface only on demand. The Prometheus cardinality
-budget stays one row per rule no matter how wide the range.
+Per-port byte counters surface only through the API/CLI on demand; they
+are **not** exported as separate Prometheus series. The Prometheus
+cardinality budget stays one row per rule no matter how wide the range.
 
 ## Conflict handling
 

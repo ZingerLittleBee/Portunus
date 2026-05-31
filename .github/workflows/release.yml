@@ -127,9 +127,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
 
@@ -138,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates
+          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates musl-tools musl-dev cmake
           rm -rf /var/lib/apt/lists/*
 
       - name: Install Rust target
@@ -155,8 +155,14 @@ jobs:
           name: webui-dist
           path: webui/dist
 
-      - name: cargo build --release
+      - name: cargo build --release (static musl)
         shell: bash
+        # Native build on each arch's own runner (no cross-compilation).
+        # aws-lc-sys (tonic TLS) compiles C via cmake; point it at musl-gcc
+        # so its objects match the static-musl target ABI.
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
         run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Package binaries
@@ -172,7 +178,7 @@ jobs:
           cp "target/${target}/release/portunus-server" "${staging}/"
           cp "target/${target}/release/portunus-client" "${staging}/"
           cp "target/${target}/release/portunus-standalone" "${staging}/"
-          cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
+          cp README.md CHANGELOG.md LICENSE "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
       - name: Upload release archive
@@ -238,7 +244,7 @@ jobs:
           cp "target/${target}/release/portunus-server" "${staging}/"
           cp "target/${target}/release/portunus-client" "${staging}/"
           cp "target/${target}/release/portunus-standalone" "${staging}/"
-          cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "${staging}/"
+          cp README.md CHANGELOG.md LICENSE "${staging}/"
           (cd dist && tar -czf "${archive_base}.tar.gz" "${archive_base}")
 
       - name: Upload release archive
@@ -261,7 +267,7 @@ jobs:
       - name: Download Linux release archives
         uses: actions/download-artifact@v4
         with:
-          pattern: release-*-unknown-linux-gnu
+          pattern: release-*-unknown-linux-musl
           path: dist
           merge-multiple: true
 
@@ -285,8 +291,8 @@ jobs:
               "docker-bin/${arch}/portunus-client" \
               "docker-bin/${arch}/portunus-standalone"
           done <<'EOF'
-          x86_64-unknown-linux-gnu amd64
-          aarch64-unknown-linux-gnu arm64
+          x86_64-unknown-linux-musl amd64
+          aarch64-unknown-linux-musl arm64
           EOF
 
       - name: Login to GitHub Container Registry

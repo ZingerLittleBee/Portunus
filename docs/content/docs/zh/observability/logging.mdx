@@ -49,12 +49,14 @@ RUST_LOG=portunus_client::forwarder::udp=debug portunus-client
 
 ## Redaction 层
 
-Redaction 层会清洗任何 **字段名** 命中
-`token | secret | private_key` 的日志调用：
+纵深防御的 `RedactionLayer` 会检查每条事件与 span 的 **字段名** 是否包含
+`token`、`secret` 或 `private_key`（大小写不敏感的子串匹配）。它 **不会**
+改写命中的字段值 —— 它是运行期的绊线：命中时累加违规计数器，并向 stderr
+另发一条 `audit.redaction_violation` 事件，即使格式化器配置错误吞掉了原始行，
+也能让泄漏暴露出来。
 
-- `token=…` → `token=<redacted>`
-- `secret=…` → `secret=<redacted>`
-- `private_key=…` → `private_key=<redacted>`
+字段值在记录处就已脱敏（调用点直接写 `token = "<redacted>"` 而非原始值）；
+该层的作用是在未来某次改动遗漏脱敏时大声报错。
 
 审计代码路径尤其 **永不看到原始 Bearer Token** —— 认证中间件 verify 后将
 `OperatorIdentity` 交给审计 emitter；即使操作员实现存在 bug，也无法通过
@@ -62,17 +64,23 @@ Redaction 层会清洗任何 **字段名** 命中
 
 ## 值得告警的事件
 
+以下均为真实的 `event=` 字段值。告警时请按 `event` 字段匹配，而非全文检索。
+
 | 事件 | 级别 | 原因 |
 | --- | --- | --- |
-| `tls.cert_generated` | INFO | 首次启动自动生成自签材料 |
-| `control.tls_pinned_mismatch` | ERROR | 服务端证书指纹不匹配 —— 可能 MITM |
+| `tls.cert_regenerated` | WARN | 重新生成操作员证书（如过期 / SAN 变更） |
+| `tls.operator_cert_in_use` | INFO | 启动时复用已有操作员证书 |
 | `auth.failure` | WARN | Client Bearer 被拒（撤销 / 未知 / 签名不一致） |
 | `operator.deny` | WARN | 操作员 API RBAC 拒绝 |
-| `startup.unsupported_filesystem` | ERROR | `--data-dir` 落在 NFS / tmpfs / ramfs |
-| `startup.store_in_use` | ERROR | 两个 server 进程共享 `--data-dir` |
-| `startup.schema_version_too_new` | ERROR | 用旧二进制对接新 schema |
 | `client.disconnected` | WARN/INFO | Client 丢失 gRPC 流（瞬时 / 撤销） |
+| `client.transport_error` | WARN | client 流上的 gRPC 传输层错误 |
+| `store.pool_exhausted` | WARN | 负载下 SQLite 连接池耗尽 |
 | `rule.failed` | WARN | 规则激活失败（如 `port_in_use`） |
+
+部分致命的启动故障在日志管线可用前就已中止，会以进程错误信息（而非 `event`
+字段）出现：`startup.unsupported_filesystem`（`--data-dir` 落在 NFS / tmpfs /
+ramfs）、`store_in_use`（两个 server 进程共享 `--data-dir`）、
+`schema_version_too_new`（用旧二进制对接更新的 DB schema）。
 
 ## 本地开发小贴士
 

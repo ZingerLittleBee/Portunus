@@ -43,15 +43,24 @@ portunus-server revoke edge-01
 
 ```sh
 portunus-server push-rule edge-01 18080 10.0.0.5:8080
-# exit 6: activation_failed: port_in_use
+# exit 5: port_in_use: port 18080 already in use
 ```
 
-client 上有别的东西（另一条规则、无关进程、低端口的内核 TIME_WAIT 残留）
-占用了监听端口。
+client 上有别的东西（另一条规则、无关进程）占用了监听端口。
 
 **修复**：换一个空闲端口；或先 `remove-rule` 占用者再重试。**没有自动重试**
 —— 失败的规则会一直占住该端口（生命周期 Q4 决策有意为之），直到被显式
 移除。
+
+<Callout type="info">
+  **v1.6.1** 起，TCP listener 以 `SO_REUSEADDR` 绑定，因此 `docker
+  restart` 或进程快速重启时，已死进程 `accept()` 出的子 socket 残留在
+  `TIME_WAIT` 不再导致误报 `port_in_use`（此前会占住端口约
+  `tcp_fin_timeout`，默认 60 s）。`SO_REUSEADDR` 只放宽 `TIME_WAIT`
+  绑定 —— 同一端口上两个存活的 `LISTEN` socket 仍然冲突，所以重复规则
+  仍会被拒为 `port_in_use`。如果在全新启动时看到 `port_in_use`，说明端口
+  确实被另一进程或规则占用。
+</Callout>
 
 ### `client_not_connected`
 
@@ -66,6 +75,31 @@ client 丢失了 gRPC 流。规则在 server 端持久化；client 重连后 ser
 ```sh
 portunus-server list-clients
 ```
+
+## 目标解析（DNS）
+
+目标为 DNS 名称的规则，在每次新连接 / 新 flow 时惰性解析。解析失败**不会**
+让规则失败 —— 只丢掉该次连接（TCP）或首包（UDP），并发出结构化事件：
+
+```json
+{"event":"rule.dns_failed","rule":"…","host":"…","reason":"…"}
+```
+
+UDP 用 `rule.udp_dns_failed`。每次失败还会递增每规则的 Prometheus
+counter：
+
+```text
+portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="42"}
+```
+
+**修复**：确认目标主机名能从 client 主机解析（`dig`、`getent hosts`），且
+client 的 resolver / `/etc/resolv.conf` 可达。上游 DNS 短暂中断会表现为
+counter 上升、恢复后趋平；resolver 会缓存成功结果（遵守 TTL），并在刷新
+失败时短暂提供 stale 条目，所以抖动的 resolver 不一定会丢掉每一条连接。
+
+resolver 缓存是 **bounded** 的（v1.7 起的内存泄漏防护）：在高基数目标
+workload 下，它会优先淘汰最接近过期的条目，而不是无限增长。这是内部
+保护，没有运维开关。
 
 ## RBAC 拒绝
 
@@ -166,6 +200,17 @@ CI 的回归守门
 
 查 `portunus_rule_flows_dropped_overflow_total`。非零则把 `server.toml` 中的
 `udp_max_flows_per_rule` 调高（同时调高 client systemd unit 的 `LimitNOFILE`）。
+
+**v1.5** 起，flow 上限按**每规则**统计，不再按每监听端口统计 —— 设了
+`udp_max_flows_per_rule = N` 的 range 规则在其所有端口上合计只允许 `N`
+条 flow（此前是 `N × range_size`）。如果一条在 v1.4 正常的 range 规则
+现在溢出，请按比例调高上限或拆分 range；该字段上限为 `65535`。见
+[升级指南](/zh/docs/operations/upgrade#v1x-数据面版本)。
+
+**v1.7** 起，每规则 UDP listener 循环对队头阻塞做了硬化，单个慢上游不再
+拖住同规则其它 flow 的数据报。某条行为异常的 flow 仍可能在收到反射的
+ICMP 错误时被提前驱逐（`rule.udp_flow_evicted_icmp`）—— 下一个数据报会
+重建它。
 
 ### "SNI 模式 listener 上 TLS 握手好像变慢"
 
@@ -327,6 +372,11 @@ PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
 3. owner 有没有带宽上限？同 #2。
 4. 看 `proxy.splice_selected`（info 级）——一条规则首次进入快路径时会
    触发一次。这条事件缺席意味着规则不符合条件。
+
+**v1.6.1** 起，`bytes_in` / `bytes_out` 在 splice 路径上增量更新（每方向
+每 64 KiB 批次一次 `Relaxed` 累加），而不是只在连接关闭时更新 —— 长连接
+（SSH、gRPC、WebSocket）不再让速率显示一直停在 0。**v1.7** 起，splice
+快路径与实时字节计数在多目标 failover 路径上也同样生效。
 
 ### "RST 下 `bytes_in` 跟 upstream 实收字节数对不上"
 

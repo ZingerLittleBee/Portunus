@@ -64,9 +64,13 @@ supplied.
   "client_name": "edge-01",
   "server_endpoint": "host-A.example.com:7443",
   "server_cert_sha256": "f5e7c2a1...",
+  "server_cert_pem": "-----BEGIN CERTIFICATE-----\n...",
   "token": "<bearer>"
 }
 ```
+
+`server_cert_pem` is the pinned leaf certificate; the client checks that
+its SHA-256 matches `server_cert_sha256` before connecting.
 
 <Callout type="warn">
   Edit `server_endpoint` if the address the edge host reaches the
@@ -134,10 +138,13 @@ See the [Docker deployment guide](/en/docs/deployment/docker).
 
 ## Flags
 
-| Flag | Purpose |
-| --- | --- |
-| `--bundle <PATH>` | Explicit bundle path (overrides resolution chain) |
-| `--shutdown-drain-timeout-secs <N>` | How long in-flight forwarded connections drain on SIGTERM (default 30) |
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--bundle <PATH>` | (resolution chain) | Explicit bundle path; overrides the resolution chain |
+| `--reconnect-initial-delay-ms <N>` | 500 | Initial reconnect delay; base for full-jitter exponential backoff |
+| `--reconnect-max-delay-secs <N>` | 30 | Reconnect backoff cap |
+| `--shutdown-drain-timeout-secs <N>` | 30 | How long in-flight forwarded connections drain on SIGTERM |
+| `--stats-report-interval-secs <N>` | 5 | Interval between per-rule stats reports sent to the server |
 
 Run `portunus-client --help` for the current full surface.
 

@@ -15,19 +15,17 @@ icon: BookOpen
 
 <Cards>
   <Card title="60 秒安装" href="/zh/docs/getting-started/installation" />
-  <Card title="阅读性能报告" href="/zh/docs/getting-started/performance" />
   <Card title="查看架构说明" href="/zh/docs/getting-started/architecture" />
+  <Card title="阅读性能报告" href="/zh/docs/getting-started/performance" />
 </Cards>
 
 ## 性能
 
-大多数用户并不是要榨干本机 20 Gbit/s loopback 的极限吞吐，而是在有限带宽下
-稳定转发。**v1.3.0 开始**，Linux 上无带宽限制的 TCP 规则会走内核
-`splice(2)` 快路径。在跑出 v0.11 baseline 的同一台 Linux 机器上，单流未限速
-吞吐**从 9.9 Gbit/s 翻倍到 21.9 Gbit/s（2.20×）**；面向运维的 offered-load
-sweep 在 100 Mbit/s 到 20 Gbit/s 整个区间内都贴近 direct `iperf3` 和
-`iptables` REDIRECT（落在 iperf3 短样本噪声内）——v0.11 报告里"Portunus
-≥ 12.5 Gbit/s 早期饱和"这条注意事项，在无带宽限制 TCP 上消失了。
+**v1.3.0 开始**，Linux 上无带宽限制的 TCP 规则会走内核 `splice(2)` 快路径。在
+跑出 v0.11 baseline 的同一台 Linux 机器上，单流未限速吞吐**从 9.9 Gbit/s 翻倍到
+21.9 Gbit/s（2.20×）**；100 Mbit/s 到 20 Gbit/s 的 offered-load sweep 全程都贴近
+direct `iperf3` 和 `iptables` REDIRECT（落在 iperf3 短样本噪声内）——v0.11 报告里
+"Portunus ≥ 12.5 Gbit/s 早期饱和"这条注意事项，在无带宽限制 TCP 上消失了。
 
 | 目标带宽 | 结论（v1.3.0） |
 | --- | --- |
@@ -68,9 +66,8 @@ sweep 在 100 Mbit/s 到 20 Gbit/s 整个区间内都贴近 direct `iperf3` 和
 ## 适合什么场景
 
 当你需要集中管理远端监听端口、给不同用户分配可控范围、观察转发流量、或按 owner
-设置配额时，`Portunus` 比一条静态本机转发规则更像一个可运维的系统。若场景
-只是单机上的单条固定规则，并且唯一目标是极限吞吐，内核态转发路径仍然更简单、
-更快。这里的关键是按你的目标带宽实测，而不是只看无上限 loopback 的极限值。
+设置配额时，`Portunus` 比一条静态本机转发规则更像一个可运维的系统。若场景只是
+单机上的单条固定规则，且唯一目标是极限吞吐，内核态转发路径仍然更简单、更快。
 如果你想在单机上用 `Portunus` 的数据面（端口范围、多目标故障切换、PROXY
 protocol、`splice`）但完全不需要控制面，就用
 [standalone 转发器](/zh/docs/configuration/standalone)——同一套转发代码，
@@ -90,4 +87,4 @@ protocol、`splice`）但完全不需要控制面，就用
 
 ## 许可证
 
-Apache-2.0。
+采用 [GNU Affero 通用公共许可证 v3.0](https://github.com/ZingerLittleBee/Portunus/blob/main/LICENSE)（`AGPL-3.0-only`）授权。

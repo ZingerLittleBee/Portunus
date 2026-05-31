@@ -4,16 +4,21 @@ description: 项目最基础的转发原语 —— 在边缘 Client 上绑定 TC
 icon: ArrowRightLeft
 ---
 
-TCP 转发是项目的核心。其它所有功能（UDP、端口范围、SNI 路由、限流……）都
-建立在它之上。
+TCP 转发是项目的核心原语。其它所有功能（UDP、端口范围、SNI 路由、限流）
+都建立在它之上。
 
 ## 工作原理
 
-每条 TCP 规则在 Client 上启动一个 `accept` 循环。每当 accept 到一条新连接，
+每条 TCP 规则在 Client 上运行一个 `accept` 循环。每当 accept 到一条新连接，
 Client 就 `TcpStream::connect` 上游目标，然后双向字节拷贝直到任意一侧关闭。
 
 用户态 **不做任何缓冲**（除了内核 send/recv 窗口）。转发器是纯粹的 L4 字节
 直通：TLS 会话、HTTP 请求和任意协议都可以原封不动通过。
+
+在 Linux 上，没有带宽限制的连接走 `splice(2)` 快路径（数据零拷贝穿过内核）；
+配置了限流的连接则回退到用户态拷贝循环。监听器以 `SO_REUSEADDR` 绑定，因此
+进程快速重启（如 `docker restart`）能立即重新绑定，而不会在旧 socket 处于
+`TIME_WAIT` 期间因 `port_in_use` 失败。
 
 ## 推送规则
 
@@ -71,6 +76,9 @@ portunus-server remove-rule <rule_id>
 - `portunus_rule_bytes_in_total`
 - `portunus_rule_bytes_out_total`
 - `portunus_rule_active_connections`
+
+即便走 `splice` 快路径，字节计数也会增量更新（每 64 KiB 一次），因此长连接
+（SSH、gRPC 流、WebSocket）会实时上报吞吐量，而不是在连接关闭前一直冻结。
 
 完整 collector 列表见 [指标](/zh/docs/observability/metrics)。
 

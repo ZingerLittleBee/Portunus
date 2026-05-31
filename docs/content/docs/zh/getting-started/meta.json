@@ -1,5 +1,5 @@
 {
   "title": "入门",
   "icon": "Rocket",
-  "pages": ["installation", "performance", "architecture"]
+  "pages": ["installation", "architecture", "performance"]
 }

@@ -16,7 +16,7 @@ day-to-day use of Portunus.
 - **v0.11** is the last pre-splice baseline. The v1.3.0 numbers were
   measured against it.
 
-The current head-to-head (re-measured on fresh AMD EPYC hardware, plus a
+The current head-to-head (re-measured on the same host, plus a
 `portunus-standalone` vs `portunus-client` comparison) is the
 [v1.6.1 report](/en/docs/getting-started/performance).
 
@@ -82,7 +82,7 @@ v1.2.0 userspace-memcpy ceiling of ~8.5-10 Gbit/s.
 Captured on 2026-05-10 on:
 
 ```text
-Linux 69-201-77-68 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64
+Linux host 6.12.74+deb13+1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.74-2 (2026-03-08) x86_64
 rustc 1.95.0 (59807616e 2026-04-14)
 iperf 3.18
 ```
@@ -138,4 +138,4 @@ Above 12.5 Gbit/s offered, iptables stays near the offered load while the
 pre-splice Portunus userspace path saturates much earlier. This is the
 band the v1.3.0 splice fast path closed (see above), and that the
 [v1.6.1 report](/en/docs/getting-started/performance#offered-load-sweep)
-confirms on fresh hardware.
+confirms on the same host.

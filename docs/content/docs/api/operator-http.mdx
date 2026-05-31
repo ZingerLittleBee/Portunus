@@ -72,6 +72,7 @@ Responses on missing / invalid authentication:
 | `POST` | `/v1/client-enrollments` | Create a one-time enrollment command for a new client |
 | `POST` | `/v1/clients/{name}/enrollment` | Create a one-time re-enrollment command for an existing client |
 | `GET` | `/v1/clients` | List clients; superadmin sees all |
+| `PUT` | `/v1/clients/{name}` | Update the client's advertised address; body `{address}` |
 | `POST` | `/v1/clients/{name}/revoke` | Revoke + disconnect |
 | `DELETE` | `/v1/clients/{name}` | Delete a revoked client row |
 
@@ -80,13 +81,14 @@ Responses on missing / invalid authentication:
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/v1/rules` | Push a rule (single-target, multi-target, port-range, with caps, with SNI) |
-| `GET` | `/v1/rules` | List rules; non-superadmin sees only owned rules |
-| `GET` | `/v1/rules?owner=<user_id>` | Superadmin filter |
-| `GET` | `/v1/rules/{id}/stats` | Aggregate stats |
-| `GET` | `/v1/rules/{id}/stats?per_port=true` | Per-port detail (range rules) |
-| `GET` | `/v1/rules/{id}/stats?per_target=true` | Per-target detail (multi-target rules) |
-| `GET` | `/v1/rules/{id}/stats/stream` | SSE stream, 5-second cadence (v0.6+) |
-| `DELETE` | `/v1/rules/{id}` | Drain + remove |
+| `GET` | `/v1/rules` | List rules; non-superadmin sees only owned rules. Optional `?client=<name>` filter |
+| `GET` | `/v1/rules?owner=<user_id>` | Superadmin filter by owner |
+| `PUT` | `/v1/rules/{rule_id}` | Hot-update `rate_limit` only; `client`, `listen`, `protocol`, and targets must stay unchanged |
+| `DELETE` | `/v1/rules/{rule_id}` | Drain + remove |
+| `GET` | `/v1/rules/{rule_id}/stats` | Aggregate stats |
+| `GET` | `/v1/rules/{rule_id}/stats?per_port=true` | Per-port detail (range rules) |
+| `GET` | `/v1/rules/{rule_id}/stats?per_target=true` | Per-target detail (multi-target rules) |
+| `GET` | `/v1/rules/{rule_id}/stats/stream` | SSE stream, 5-second cadence; accepts `?per_target=true` (v0.6+) |
 
 ### Users
 
@@ -117,11 +119,40 @@ Responses on missing / invalid authentication:
 
 ### Rate limiting (v0.11+)
 
+Per-rule caps travel on the `POST` / `PUT /v1/rules` body (see `rate_limit`
+above). The endpoints below set a per-(owner, client) envelope.
+
 | Method | Path | Notes |
 | --- | --- | --- |
-| `PUT` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | Set per-owner envelope |
-| `GET` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | Read envelope |
-| `DELETE` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | Remove envelope |
+| `GET` | `/v1/clients/{client_id}/owners` | List owners with rules under this client |
+| `GET` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | Read the per-owner envelope |
+| `PUT` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | Set the per-owner envelope |
+| `DELETE` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | Remove the per-owner envelope |
+
+### Traffic quotas (v0.13+)
+
+Per-(user, client) monthly traffic quotas and historical traffic queries.
+Traffic queries take `from` and `to` (Unix seconds, required) plus an optional
+`bucket` (sample granularity).
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/users/{user_id}/quotas` | List a user's quotas |
+| `PUT` | `/v1/users/{user_id}/quotas/{client_name}` | Set the monthly quota |
+| `PATCH` | `/v1/users/{user_id}/quotas/{client_name}` | Update `monthly_bytes` and/or clear period usage |
+| `DELETE` | `/v1/users/{user_id}/quotas/{client_name}` | Remove the quota |
+| `GET` | `/v1/users/{user_id}/quotas/{client_name}/status` | Current period usage vs. cap |
+| `GET` | `/v1/users/{user_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic for a user |
+| `GET` | `/v1/clients/{client_name}/quotas` | List a client's quotas |
+| `GET` | `/v1/clients/{client_name}/traffic?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic for a client |
+| `GET` | `/v1/traffic/global?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic across all rules |
+
+### Settings (v0.14+)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/settings/advertised-endpoint` | Read the advertised-endpoint override + effective value (superadmin) |
+| `PUT` | `/v1/settings/advertised-endpoint` | Set/clear the override; host must be covered by the server cert SAN (superadmin) |
 
 ### Audit (v0.6+)
 

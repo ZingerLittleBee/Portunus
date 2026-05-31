@@ -45,7 +45,7 @@ docker run -d --network host \
 
 Notes:
 
-- Pin a specific version in production (`:1.5.0` rather than `:latest`).
+- Pin a specific version in production (`:1.7.0` rather than `:latest`).
 - The container runs as **UID 65532** (`nonroot`). The host file must be
   readable by that UID — `chmod 0644 portunus.toml` is the simplest fix.
   If you get `error: io error: Permission denied (os error 13)`, this is
@@ -169,13 +169,17 @@ connection. Useful when the backend needs the original client address.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--config <PATH>` | (auto-search) | Path to the TOML config file |
+| `--config <PATH>` | `./portunus.toml` | Path to the TOML config file |
 | `--check` | false | Validate config and exit (0 = valid, 2 = invalid) |
 | `--log-level <LEVEL>` | from config | Override log level |
 | `--log-format <FMT>` | from config | Override log format (`json` or `pretty`) |
+| `--no-stats` | false | Disable the `[stats]` UDS server (daemon only) |
+| `--stats-socket <PATH>` | from config | Override `[stats].socket_path` (daemon only) |
 
-When `--config` is omitted the binary searches `$PORTUNUS_STANDALONE_CONFIG`,
-then `./portunus.toml`. Exit 2 if neither resolves.
+The `stats` subcommand has its own flags — see [Live stats dashboard](#live-stats-dashboard).
+
+When `--config` is omitted the binary loads `./portunus.toml` from the
+working directory. Exit 2 if that file does not resolve.
 
 ## Signals
 
@@ -375,7 +379,9 @@ socket_path = "/run/portunus/standalone.sock"     # Linux default
 refresh_ms  = 1000                                # 250..=5000
 ```
 
-CLI overrides on the daemon: `--no-stats`, `--stats-socket <PATH>`.
+Daemon-side overrides: `--no-stats`, `--stats-socket <PATH>`.
+`stats`-subcommand flags: `--socket <PATH>` (override the socket the
+client connects to) and `--once` (print one JSON snapshot and exit).
 
 The TUI client picks the default socket per platform:
 
@@ -393,7 +399,7 @@ the daemon.
 `portunus-standalone` logs to **stderr** in JSON format by default
 (switch to `log_format = "pretty"` for human-readable output during
 development). Every rule emits structured events on startup, and a
-periodic reporter logs per-rule byte + connection counts every 30 seconds.
+periodic reporter logs per-rule byte + connection counts every 60 seconds.
 
 There is no embedded HTTP server, Prometheus endpoint, or gRPC stream —
 those surfaces belong to `portunus-server`. Use log aggregation (e.g.
@@ -455,7 +461,7 @@ output.
 If you installed via the **one-click installer**:
 
 ```sh
-# Upgrade to the latest release (or pin --version v1.5.0):
+# Upgrade to the latest release (or pin --version v1.7.0):
 bash install.sh upgrade standalone
 
 # Status (binary version, service active, deploy form):

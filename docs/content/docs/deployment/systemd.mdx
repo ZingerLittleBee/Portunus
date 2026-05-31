@@ -5,9 +5,9 @@ icon: Server
 ---
 
 `Portunus` ships hardened systemd units under `deploy/systemd/` that
-are ready to drop in. Both units use `User=`, `ProtectSystem=full`,
-`CapabilityBoundingSet=`, and `LimitNOFILE` overrides appropriate to
-the workload.
+are ready to drop in. Both units run as a dedicated system user with
+`ProtectSystem=strict`, a `@system-service` syscall filter, a restricted
+address-family set, and `LimitNOFILE` sized to the workload.
 
 ## One-shot install
 
@@ -22,9 +22,10 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 This downloads + checksum-verifies the release binary, creates the
 `portunus-client` service user, lays out `/etc/portunus` (mode 0750),
 and installs the hardened `portunus-client.service`. For the server,
-use `… | sudo sh -s -- server --systemd` (creates `portunus-server`,
-`/var/lib/portunus`). Binary acquisition and flags are documented once
-in [Client Configuration](/en/docs/configuration/client#install-the-binary).
+use `… | sudo sh -s -- server --systemd` (creates `portunus-server` and
+`/var/lib/portunus`, mode 0750). Binary acquisition and flags are
+documented once in
+[Client Configuration](/en/docs/configuration/client#install-the-binary).
 
 From a source checkout you can instead install only the units with
 `cd deploy/systemd && sudo ./install.sh client` (the binary must already
@@ -34,62 +35,101 @@ be on `PATH`).
 
 ```ini
 [Unit]
-Description=Portunus server
-After=network.target
+Description=Portunus control plane
+Documentation=https://github.com/ZingerLittleBee/Portunus
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=exec
 User=portunus-server
 Group=portunus-server
-StateDirectory=portunus
-StateDirectoryMode=0700
-ExecStart=/usr/local/bin/portunus-server serve \
-    --data-dir /var/lib/portunus
+ExecStart=/usr/local/bin/portunus-server --data-dir /var/lib/portunus serve
 Restart=on-failure
-RestartSec=2
-TimeoutStopSec=35
-ProtectSystem=full
-ProtectHome=true
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=4096
+
+# Hardening
 NoNewPrivileges=true
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-LimitNOFILE=65535
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/portunus
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`StateDirectory=portunus` is the systemd-native way: systemd
-auto-creates `/var/lib/portunus` with the right ownership and
-exposes `$STATE_DIRECTORY=/var/lib/portunus` to the process.
-
-`TimeoutStopSec=35` allows the configured drain
-(`shutdown_drain_timeout_secs = 30`) plus a 5-second buffer.
+`TimeoutStopSec=60` is kept larger than the configured drain
+(`shutdown_drain_timeout_secs`, default 30 s) so the server's own drain
+runs before `SIGKILL`. The server does not bind forwarding ports (the
+client does), so it needs no `CAP_NET_BIND_SERVICE` and `LimitNOFILE=4096`
+covers gRPC streams, operator HTTP, metrics, and persistence for hundreds
+of clients. `ReadWritePaths=/var/lib/portunus` is the only writable path:
+SQLite state, generated TLS material, and the optional `server.toml`.
 
 ## client.service
 
 ```ini
 [Unit]
-Description=Portunus client
-After=network.target
+Description=Portunus edge client
+Documentation=https://github.com/ZingerLittleBee/Portunus
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=exec
 User=portunus-client
 Group=portunus-client
-ExecStart=/usr/local/bin/portunus-client \
-    --bundle /etc/portunus/client.bundle.json
+ExecStart=/usr/local/bin/portunus-client --bundle /etc/portunus/client.bundle.json
 Restart=on-failure
-RestartSec=2
-TimeoutStopSec=35
-ProtectSystem=full
-ProtectHome=true
-NoNewPrivileges=true
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=16384
+
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-LimitNOFILE=65535
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/portunus/client.bundle.json
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+The client binds the listen ports configured by pushed rules, so it
+carries `CAP_NET_BIND_SERVICE` for privileged ports (those below 1024).
+`LimitNOFILE=16384` covers the default range cap of 1024 ports plus
+in-flight connections (each port = one listener fd; each connection =
+two fds). Operators raising `range_rule_max_ports` in `server.toml` must
+scale this proportionally. The bundle is mounted read-only.
 
 ## First-boot procedure
 
@@ -156,13 +196,14 @@ after login. It opens the SQLite store directly, so do not run it while
 
 ## Hardening notes
 
-- **Ports < 1024** require `CAP_NET_BIND_SERVICE` (already in the
-  unit). The forwarder only ever binds the listen ports configured by
-  rules, so caps are scoped tightly.
+- **Ports < 1024** require `CAP_NET_BIND_SERVICE`, present in the
+  **client** unit (the client binds rule listen ports; the server does
+  not). The forwarder only ever binds the listen ports configured by
+  rules, so the capability is scoped tightly.
 - **NFS / tmpfs / ramfs** for `--data-dir` is **rejected** at startup
   with `event=startup.unsupported_filesystem`. Use a local filesystem.
-- **Two server processes against the same data-dir** exit with
-  `event=startup.store_in_use` (exit 75). Clustering is out of scope.
+- **Two server processes against the same data-dir**: the second exits
+  with `event=startup.store_in_use` (exit 75). Clustering is out of scope.
 
 ## Backup cron
 

@@ -21,13 +21,16 @@ Debian runtime image 启动 server。
 control_listen = "0.0.0.0:7443"
 operator_http_listen = "0.0.0.0:${PORT}"
 metrics_listen = "127.0.0.1:7081"
+# 仅在解析出 public origin 时才追加（见下文）：
 operator_http_public_origin = "https://${RAILWAY_PUBLIC_DOMAIN}"
 ```
 
 `$PORT` 是 Railway 分配给 HTTP 服务的端口。control-plane listener 固定在
-`7443`，方便 Railway TCP Proxy 单独暴露。public origin 默认从 Railway 的
-`RAILWAY_PUBLIC_DOMAIN` 推导；如果绑定自定义域名，可以用
-`PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN` 覆盖。
+`7443`，方便 Railway TCP Proxy 单独暴露。前三行始终写入；
+`operator_http_public_origin` 这一行只有在解析出 public origin 时才会追加
+—— 优先取 `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN`（若已设置），否则取 Railway
+的 `RAILWAY_PUBLIC_DOMAIN`。两者都未设置时，这一行会被完全省略。绑定自定义
+域名时设置 `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN` 即可。
 
 ## 必需的 Railway 资源
 

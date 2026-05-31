@@ -4,10 +4,17 @@ description: How the control-plane server, edge clients, operator surface, and d
 icon: Network
 ---
 
-`Portunus` is a two-process system with a strict separation between the
-**control plane** (rule push, auth, metrics rollup) and the **data plane**
-(byte forwarding). The two never share code paths, which is what lets the
-project guarantee data-plane stability across releases.
+`Portunus` separates the **control plane** (rule push, auth, metrics rollup)
+from the **data plane** (byte forwarding). The two never share code paths,
+which is what lets the project guarantee data-plane stability across releases.
+
+The full control-plane deployment is a two-process system: `portunus-server`
+manages state and pushes rules to one or more `portunus-client` edge processes.
+The data plane itself lives in the standalone `portunus-forwarder` library,
+which both the client and the single-binary
+[`portunus-standalone`](/en/docs/configuration/standalone) forwarder consume —
+so a TOML-driven standalone host runs the same forwarding code without any
+control plane.
 
 ## Components
 
@@ -40,6 +47,41 @@ project guarantee data-plane stability across releases.
                    Configured upstream targets
 ```
 
+## Standalone mode
+
+For a single host that needs the same forwarding without a control plane,
+[`portunus-standalone`](/en/docs/configuration/standalone) reads a TOML file
+and runs the `portunus-forwarder` data plane directly:
+
+```
+                  portunus.toml
+                       │ rules, defaults, [stats]
+                       ▼
+              ┌──────────────────────────────────────┐
+              │          portunus-standalone          │
+              │                                      │
+   End-user ──▶ portunus-forwarder data plane        │
+   traffic     │  • Per-rule TCP / UDP listeners      │
+              │  • Port ranges, DNS targets          │
+              │  • Multi-target failover             │
+              │  • PROXY protocol                    │
+              │  • Optional stats over a Unix socket │
+              │    → `portunus-standalone stats` TUI │
+              └──────────────┬───────────────────────┘
+                             │ TCP / UDP
+                             ▼
+                   Configured upstream targets
+```
+
+It runs the **same data plane** as `portunus-client`, so the
+[Data plane](#data-plane) section below applies unchanged. Everything else
+is gone: no gRPC control stream, operator HTTP API, Web UI, RBAC, audit log,
+or Prometheus `/metrics`. Configuration is the TOML file, reloaded on
+restart, and its schema does not expose TLS SNI routing or rate limiting —
+both are configured only through the server. Live throughput is read from
+the optional stats socket and the built-in `stats` TUI. See the
+[standalone guide](/en/docs/configuration/standalone) for the full schema.
+
 ## Control plane
 
 - **TLS-pinned client authentication**. The server generates a self-signed leaf
@@ -57,14 +99,31 @@ project guarantee data-plane stability across releases.
 ## Data plane
 
 - **TCP**: each rule binds an `accept` loop; per-connection bidirectional
-  copy with no userspace buffering beyond the kernel send/recv windows.
-- **UDP**: each rule binds a `recv_from` loop; the kernel allocates one
-  upstream socket per `(source-addr, port)` pair, providing NAT-style
-  return-path isolation without userspace tracking.
+  copy with no userspace buffering beyond the kernel send/recv windows. On
+  Linux, an uncapped rule moves bytes through a kernel `splice + pipe` fast
+  path so the payload never enters userspace; any bandwidth cap, UDP, or a
+  non-Linux build falls back to the userspace copy. See the
+  [performance report](/en/docs/getting-started/performance).
+- **UDP**: each rule runs a single centralized runtime — one listener task
+  per listen port, a shared flow registry keyed by `(listen_port,
+  source-addr)`, a reply-demux task, and an idle-flow reaper. Each flow gets
+  one `connect()`-ed upstream socket (multi-target selection happens once, at
+  flow creation), giving NAT-style return-path isolation. The flow cap
+  (`udp_max_flows_per_rule`) is enforced rule-wide. On Linux, ICMP errors
+  (`port`/`host`/`network unreachable`) evict the affected flow; the next
+  datagram rebuilds it against a freshly selected target.
 - **DNS targets**: resolved on first connect, cached per the resolver's
   TTL clamped to `[5 s, 5 min]`, with 30 s stale-while-error grace.
-- **Multi-target failover**: 1..=8 targets per rule, priority-ordered,
-  passive health detection (3 consecutive failures → Failed).
+- **Multi-target failover**: 1..=8 targets per rule, priority-ordered.
+  Passive health detection (3 consecutive failures → `Failed`, 2
+  consecutive successes → `Healthy`) is always on and is the only health
+  mechanism in standalone mode. An optional active TCP-connect probe is a
+  **control-plane-only** feature: it runs only when the server pushes a
+  rule with `--health-check-interval-secs`, so the TOML-driven
+  `portunus-standalone` forwarder has passive failover only — no active
+  probing.
+- **PROXY protocol**: an optional v1/v2 header prepended to the upstream
+  connection so the target sees the original client address (TCP only).
 - **TLS SNI routing**: peeks the ClientHello, parses the SNI extension,
   routes by exact host or single-label wildcard. Never decrypts.
 - **Rate limiting**: token-bucket throttle for bandwidth caps;

@@ -43,9 +43,9 @@ for offline maintenance and tests.
 
 | Subcommand | Purpose |
 | --- | --- |
-| `enroll-client <name>` | Print a short-lived `portunus-client enroll ...` command |
+| `enroll-client <name> [--address <host>] [--ttl-secs <N>]` | Print a short-lived `portunus-client enroll ...` command. `--ttl-secs` defaults to 600; `--address` overrides the host clients dial |
 | `revoke <client_name>` | Revoke a client's bearer; immediate disconnect |
-| `list-clients` | Show connected status for every provisioned client |
+| `list-clients [--format text\|json]` | Show connected status for every provisioned client |
 
 ## Rules
 
@@ -68,7 +68,7 @@ for offline maintenance and tests.
 
 | Subcommand | Purpose |
 | --- | --- |
-| `user-add <id> --display-name <name>` | Add a user |
+| `user-add <id> --display-name <name> [--role admin\|user]` | Add a user (`--role` defaults to `user`) |
 | `user-list` | List users |
 | `user-get <id>` | Show user details |
 | `user-remove <id>` | Remove user (cascades grants + rules) |

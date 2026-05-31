@@ -6,7 +6,7 @@ icon: Container
 
 Docker Compose is the recommended deployment path for most installs. The
 release pipeline publishes multi-arch Linux images to GitHub Container
-Registry, and the examples below use the `:latest` tag by default:
+Registry; the examples below use the `:latest` tag by default:
 
 ```sh
 docker pull ghcr.io/zingerlittlebee/portunus-server:latest
@@ -14,7 +14,7 @@ docker pull ghcr.io/zingerlittlebee/portunus-client:latest
 ```
 
 For fully repeatable production deploys, replace `:latest` with a pinned
-release tag such as `:1.0.0`.
+release tag such as `:1.7.0`.
 
 ## Server compose
 
@@ -113,30 +113,39 @@ a one-shot CLI sidecar that shares the server network namespace and the same
 named volume. `docker compose run` overrides the service `command`, so each
 invocation can run a different subcommand:
 
+Operator commands fall into two groups, and they have very different runtime
+requirements.
+
+**HTTP API commands** (`push-rule`, `list-rules`, `remove-rule`, `rule-stats`)
+talk to the running server's operator HTTP API, so they require an API token
+and can run while `server` is up. After Web onboarding, create a token from the
+Web UI Credentials page and pass it as `PORTUNUS_OPERATOR_TOKEN`:
+
 ```sh
 docker compose run --rm \
   -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
-  operator list-clients
+  operator push-rule edge-01 18080 backend.internal:8080
 ```
 
-Most operator commands use the HTTP API and require an API token. After Web
-onboarding, create one from the Web UI Credentials page and pass it as
-`PORTUNUS_OPERATOR_TOKEN`:
+**Store-direct commands** (`enroll-client`, `revoke`, `list-clients`,
+`reset-password`, `onboarding-token`) open the SQLite store directly and take an
+exclusive lock. They do **not** read `PORTUNUS_OPERATOR_TOKEN`, and they cannot
+run while `server` holds the store — a running server makes them exit with
+`store_in_use` (exit code 75). Stop `server` first:
 
 ```sh
-docker compose run --rm \
-  -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
-  operator enroll-client edge-01
+docker compose stop server
+docker compose run --rm operator enroll-client edge-01
+docker compose up -d server
 ```
 
 Run the printed `portunus-client enroll 'portunus://...'` command on the edge
-host. Use the same operator container pattern for commands such as `push-rule`
-and `revoke-client`.
+host.
 
-Local break-glass commands (`reset-password`, `onboarding-token`) open the
-SQLite store directly, so stop `server` first. `onboarding-token` is mainly an
-offline maintenance command; a later `serve` start rotates the setup token
-again, so browser onboarding normally uses the token printed by `server` logs.
+`onboarding-token` is mainly an offline maintenance command; a later `serve`
+start rotates the setup token again, so browser onboarding normally uses the
+token printed in the `server` logs. `reset-password` follows the same
+stop-server pattern:
 
 ```sh
 docker compose stop server
@@ -253,15 +262,19 @@ from a newer host distribution into these images; that can produce
 
 ## Health checks
 
-A simple `HEALTHCHECK` for the server:
+Do not use `list-clients` (or any other store-direct command) as a
+`HEALTHCHECK` probe. It opens the SQLite store with an exclusive lock, so
+running it periodically against a live server fights the server for that lock
+and fails with `store_in_use` (exit code 75) — the container would never report
+healthy.
 
-```dockerfile
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD ["portunus-server", "list-clients"]
-```
-
-(This requires `PORTUNUS_OPERATOR_TOKEN` to be in the container's
-environment; set it via the orchestrator's secret system.)
+The distroless runtime image also has no shell, `curl`, or `wget`, so a
+container-internal `CMD` probe is impractical. Instead, drive liveness from the
+orchestration layer with a TCP connect check against a listening port — for
+example the operator HTTP listener on `127.0.0.1:7080` or the metrics listener
+on `127.0.0.1:7081` — or an external probe. In Compose this means a `healthcheck`
+that runs a TCP check from a sidecar or relies on your orchestrator's native
+probes rather than an in-image `CMD`.
 
 ## Networking notes
 

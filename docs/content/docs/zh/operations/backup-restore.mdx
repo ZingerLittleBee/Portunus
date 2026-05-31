@@ -16,7 +16,8 @@ portunus-server backup --out ~/portunus-backup-$(date +%F).db
 走 SQLite Online Backup API（`rusqlite::backup::Backup`）。备份 **兼顾 WAL**
 且无须暂停写入即可一致 —— 在线服务期间运行也安全。
 
-会拒绝覆写已存在目标 —— 选择唯一路径（按日期命名是惯例）。
+会拒绝覆写已存在目标 —— 请选择唯一路径（按日期命名是惯例）。若 `--out`
+指向一个已存在的目录，备份会写成该目录下的 `portunus-state-<RFC3339>.db`。
 
 校验：
 
@@ -58,8 +59,11 @@ sudo systemctl start portunus-server
 `restore`：
 
 - 拷贝前先校验 SQLite header 魔数。
-- 缺少 `--force` 时拒绝覆写非空 data-dir。
+- 缺少 `--force` 时拒绝覆写非空 data-dir。带 `--force` 时会先删除
+  `state.db` 及 `-wal` / `-shm` / `.lock` 边车，再拷入备份。
 - 备份的 schema 比当前二进制旧时，自动跑 schema 迁移。
+- 迁移或打开失败时，回滚已写一半的 `state.db`（及其边车），避免下次
+  启动读到损坏文件。
 - 备份的 schema **比当前二进制还新** 时 **拒绝** 并以 `78` 退出，事件
   `startup.schema_version_too_new`。要么保留旧备份，要么用对应版本的二进制
   来恢复。
@@ -74,11 +78,12 @@ portunus-server reset
 portunus-server reset --confirm
 ```
 
-清除 `state.db` 与边车 `state.db-wal`、`state.db-shm`。
+清除 `state.db` 与边车 `state.db-wal`、`state.db-shm`、`state.db.lock`。
 
 reset CLI **拒绝** 在前 16 字节不是 SQLite header 的路径上动作 —— 防止 typo
-错的 `--data-dir`。**不会** 清空同目录中的 server.crt / server.key /
-`server.toml`。
+错的 `--data-dir`。**不会** 清空同目录中的 TLS 材料（`server.crt` /
+`server.key`）或可选的 `server.toml`。对空 data-dir 执行 `reset` 是 no-op，
+退出码 0。
 
 ## 跨主机迁移
 

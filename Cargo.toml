@@ -5,10 +5,10 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/ZingerLittleBee/Portunus"
 authors = ["Portunus contributors"]
-version = "1.7.0"
+version = "1.8.0"
 
 [workspace.lints.rust]
 # `deny` (not `forbid`) so that `crates/portunus-client/src/forwarder/splice.rs`

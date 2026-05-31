@@ -1,7 +1,7 @@
 import { loader } from 'fumadocs-core/source';
 import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
 import { docs } from 'collections/server';
-import { docsRoute } from './shared';
+import { docsRoute, siteUrl } from './shared';
 import { i18n } from './i18n';
 
 export const source = loader({
@@ -39,10 +39,20 @@ export function getPageMarkdownUrl(slugs: string[], lang?: string) {
   return slugsToMarkdownPath(slugs, lang);
 }
 
+/** Prefix a root-relative app path with the production origin. */
+export function absoluteUrl(path: string) {
+  return path.startsWith('http') ? path : `${siteUrl}${path}`;
+}
+
+/** Rewrite root-relative markdown links (`](/...)`) to absolute production URLs. */
+export function absolutizeMarkdownLinks(text: string) {
+  return text.replace(/\]\((\/[^)]+)\)/g, (_m, p: string) => `](${siteUrl}${p})`);
+}
+
 export async function getLLMText(page: (typeof source)['$inferPage']) {
   const processed = await page.data.getText('processed');
 
-  return `# ${page.data.title} (${page.url})
+  return `# ${page.data.title} (${absoluteUrl(page.url)})
 
 ${processed}`;
 }

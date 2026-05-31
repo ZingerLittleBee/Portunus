@@ -5,7 +5,7 @@ icon: ChartColumn
 ---
 
 `portunus-server` 在 `metrics_listen`（默认 `127.0.0.1:7081`）暴露 Prometheus
-指标。该端点钉在 loopback —— 请用同主机的兄弟 Prometheus 或 sidecar 抓取。
+指标。该端点仅绑定 loopback —— 请用同主机的兄弟 Prometheus 或 sidecar 抓取。
 
 ```sh
 curl -s http://127.0.0.1:7081/metrics
@@ -20,7 +20,9 @@ curl -s http://127.0.0.1:7081/metrics
 逐端口与逐目标细节 **仅在请求中带 `?per_port=true` / `?per_target=true`
 时返回** —— 默认 `/metrics` 永不暴露。
 
-规则移除时对应的行随之回收。
+规则移除时，大多数 per-rule 行随之移除；累计字节计数器
+（`portunus_rule_bytes_in_total` / `portunus_rule_bytes_out_total`）按
+Prometheus 惯例保留。
 
 ## Server 级
 
@@ -29,10 +31,16 @@ portunus_clients_connected
 portunus_auth_failures_total{reason}
 portunus_operator_requests_total{outcome, reason}
 portunus_audit_buffer_drops_total
+portunus_audit_durable_writer_lag_seconds
+portunus_store_busy_total
 ```
 
 `outcome` ∈ `{allow, deny}`；`reason` 在 allow 时为 `"ok"`，在 deny 时为
 `RbacError::code()` 的静态字符串（标签集有界）。
+
+`portunus_audit_durable_writer_lag_seconds` 为持久审计交接队列中最旧条目的
+年龄（空闲时为 0）。`portunus_store_busy_total` 统计被映射为瞬时存储错误的
+`SQLITE_BUSY` 次数，正常应接近 0。
 
 ## 每条规则 TCP
 
@@ -41,8 +49,11 @@ portunus_rule_bytes_in_total{client, rule, owner}
 portunus_rule_bytes_out_total{client, rule, owner}
 portunus_rule_active_connections{client, rule, owner}
 portunus_rule_dns_failures_total{client, rule, owner}
-portunus_rule_target_failovers_total{client, rule}
+portunus_rule_target_failovers_total{client, rule, owner}
 ```
+
+`portunus_rule_target_failovers_total` 仅对多目标规则每条一行（统计
+Healthy↔Failed 切换次数）；单目标规则永不出现该行。
 
 ## 每条规则 UDP
 
@@ -62,7 +73,9 @@ portunus_tls_sni_listener_parse_failures_total{client, port}
 portunus_tls_sni_routes_active
 ```
 
-`result` ∈ `{exact, wildcard, fallback, no_match}`。
+`result` ∈ `{exact, wildcard, fallback}`。SNI 不匹配任何规则（且无 fallback）
+的连接计入 `portunus_tls_sni_listener_miss_total`，不计入
+`tls_sni_route_total`。
 
 ## SNI peek 直方图（v0.10+）
 
@@ -86,7 +99,27 @@ portunus_rate_limit_active_connections{client, rule, owner}
 拒绝原因：`conn_concurrent`、`conn_rate`、`udp_flow_rate`、
 `owner_concurrent`、`owner_conn_rate`、`owner_udp_flow_rate`。
 
-每条规则拒绝时 `owner` 标签 **为空**；每个所有者拒绝时该标签 **被填充**。
+每条规则的行在 `rule` 中带规则 id、`owner` 中带所有者。所有者聚合行（某所有者
+的跨规则汇总）将 `rule` 置为空（`rule=""`）、`owner` 仍填充。三个 collector 都
+是如此，包括 `portunus_rate_limit_active_connections` —— 它同样会发出
+`rule=""` 的所有者聚合行。用 `{rule!=""}` 筛选逐规则行，用 `{rule=""}` 筛选
+所有者聚合行。
+
+## 流量配额（v0.13+）
+
+```
+portunus_traffic_quota_bytes_used{user, client}
+portunus_traffic_quota_bytes_limit{user, client}
+portunus_traffic_quota_exhausted{user, client}
+portunus_traffic_quota_period_resets_total{user, client}
+portunus_traffic_quota_exhausted_total{user, client}
+```
+
+这些指标以 `{user, client}` 为键 —— 不是 `owner` —— 用于跟踪按 (user, client)
+维度的月度字节预算。`bytes_used` 是当期已消耗的累计字节，`bytes_limit` 是预算。
+`portunus_traffic_quota_exhausted` 是 gauge（配额当前耗尽时为 `1`，否则为
+`0`）。`period_resets_total` 统计周期边界翻滚次数，`exhausted_total` 统计首次
+当期耗尽次数。
 
 ## 常用查询
 

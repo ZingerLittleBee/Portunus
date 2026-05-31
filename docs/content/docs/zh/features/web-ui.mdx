@@ -53,9 +53,13 @@ Token（`PORTUNUS_OPERATOR_TOKEN`）；浏览器使用密码登录。
 
 ## 逐规则实时统计
 
-规则详情页订阅 `GET /v1/rules/{id}/stats/stream` —— 一个每 5 秒推送一个
-`RuleStatsSnapshot` 的 SSE 通道。订阅成本是 `O(规则数)` 而非
-`O(规则 × 订阅者)`。慢消费者会收到 `Lagged`，每条规则每分钟最多打印一次。
+规则详情页订阅 `GET /v1/rules/{id}/stats/stream` —— 一个 SSE 通道，每个
+统计上报周期（默认 5 秒，`stats_report_interval_secs`）推送一个
+`RuleStatsSnapshot`。新订阅者会立即拿到缓存里的当前快照，随后接收来自
+per-rule `tokio::sync::broadcast` 的实时 fan-out，因此成本是 `O(规则数)`
+而非 `O(规则 × 订阅者)`。每 30 秒一个 keep-alive 注释帧维持连接穿过中间设备。
+跟不上 broadcast 缓冲的慢消费者会丢快照（`Lagged`），并打印一条
+`stats_stream.lagged` 警告。
 
 ## 多目标规则
 

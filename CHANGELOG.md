@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-05-31
+
+### Changed
+- **License changed from `MIT OR Apache-2.0` to `AGPL-3.0-only`.** Releases
+  up to and including v1.7.0 remain available under their original
+  MIT/Apache-2.0 terms; this and later releases are AGPL-3.0.
+- **Linux release binaries are now static `musl`**
+  (`x86_64`/`aarch64-unknown-linux-musl`) instead of glibc (`-gnu`). One
+  static binary runs on every Linux distro — glibc (Debian/Ubuntu/RHEL…),
+  musl (Alpine), and busybox — with no libc dependency. Built natively
+  per-arch with `musl-tools` (no cross-compilation); `install.sh`
+  downloads the musl artifact.
+- Docker runtime images rebased from `distroless/cc` to `distroless/static`
+  (smaller, fewer CVEs) now that the binaries are fully static.
+- Rewrote `README.md` / `README.zh-CN.md` with a concise install flow,
+  status badges, and documentation links pointing at the hosted docs site
+  (`portunus.bybee.dev`).
+
+### Fixed
+- `portunus-forwarder` — UDP batch path now compiles on musl: the
+  `recvmmsg`/`sendmmsg` flags arg is `u32` on musl but `c_int` on glibc, so
+  `MSG_DONTWAIT` is cast with `as _` to stay portable across both.
+- Documentation corrections across the CLI, deployment, observability, and
+  configuration pages.
+
 ## [1.7.0] — 2026-05-30
 
 ### Added

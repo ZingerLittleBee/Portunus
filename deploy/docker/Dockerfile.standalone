@@ -23,7 +23,7 @@ RUN /usr/local/bin/portunus-standalone --version \
  && chown 65532:65532 /tmp/run-portunus \
  && chmod 0755 /tmp/run-portunus
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot
 
 ARG TARGETARCH
 COPY --from=abi-check /usr/local/bin/portunus-standalone /usr/local/bin/portunus-standalone
