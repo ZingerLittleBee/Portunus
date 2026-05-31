@@ -57,18 +57,6 @@ The one-line script is POSIX `sh` (runs under `dash`/busybox `ash` — no `bash`
 **Standalone** — one host, one TOML file. The installer never seeds a config, so create it first. Where it goes depends on the path:
 
 ```sh
-# Binary + service (systemd / OpenRC): config lives at /etc/portunus/standalone.toml
-sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
-[[rule]]
-name        = "ssh"
-protocol    = "tcp"
-listen_port = 2222
-target      = "10.0.0.5:22"
-EOF
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
-```
-
-```sh
 # Docker Compose: config is ./portunus.toml in the current directory (bind-mounted)
 cat > portunus.toml <<'EOF'
 [[rule]]
@@ -78,6 +66,18 @@ listen_port = 2222
 target      = "10.0.0.5:22"
 EOF
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
+```
+
+```sh
+# Binary + service (systemd / OpenRC): config lives at /etc/portunus/standalone.toml
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
 **Control plane** — a central server plus any number of edge clients:
