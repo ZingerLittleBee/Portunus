@@ -10,27 +10,30 @@
 
 > **用 Rust 写的高性能 TCP/UDP 端口转发。** 单个静态二进制，不依赖任何运行时。既可以一份 TOML 文件单机跑，也可以做控制面，把规则下发到一批边缘节点。
 
-三行配置转发一个端口，不用 Server、不用数据库：
+转发一个端口，不用 Server、不用数据库：
 
-```toml
-# portunus.toml
+```sh
+# 安装 standalone 二进制
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --no-service
+
+# 写一条转发规则
+cat > portunus.toml <<'EOF'
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
-```
+EOF
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
-portunus-standalone --config portunus.toml   # :2222 → 10.0.0.5:22，TCP 与 UDP
+# 运行 —— :2222 → 10.0.0.5:22，TCP 与 UDP
+portunus-standalone --config portunus.toml
 ```
 
 ## 为什么选 Portunus
 
 - **快，而且不会越用越慢。** Linux `splice(2)` 零拷贝让单流 TCP 从 9.9 Gbps 跑到 21.9 Gbps（2.2 倍）。UDP 走 `recvmmsg`/`sendmmsg` 批量收发，系统调用比逐包少了约 12 倍；1000 条并发 UDP 流只占用固定的 64 KiB 接收缓冲，而不是 64 MiB。CI 里有一道性能基准关卡，谁的改动拖慢了数据面就会被挡回去，性能不会随着版本迭代悄悄退化。
 - **单机起步，也能扩成机群。** 在一台 VPS 上放一份配置，它就是个转发器；把边缘节点接到 `portunus-server`，同一个程序又成了控制面：集中下发规则，还带 Web UI、RBAC、流量配额和审计日志。两种用法底层是同一套数据面代码，行为不会有出入。
-- **一个静态二进制，没有依赖。** Linux 版本是静态 `musl` 二进制，一个文件就能在各种发行版上跑（glibc、Alpine/musl、busybox 都行）。Docker 镜像基于 `distroless/static`；安装只要跑一个脚本，自带校验和核对，外加一份加固过的 systemd 配置。
+- **一个静态二进制，没有依赖。** Linux 版本是静态 `musl` 二进制，一个文件就能在各种发行版上跑（glibc、Alpine/musl、busybox 都行）。Docker 镜像基于 `distroless/static`；安装只要跑一个 POSIX-sh 脚本（dash/busybox ash 均可），自带校验和核对，外加一份加固过的 systemd 或 OpenRC 服务。
 
 ## 特性
 

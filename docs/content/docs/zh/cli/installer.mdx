@@ -1,36 +1,39 @@
 ---
 title: install.sh 管理器
-description: 自包含的 bash 全生命周期管理脚本——为二进制+systemd 与 Docker Compose 两种部署形态提供安装、升级、状态、服务控制、配置、环境变量与卸载。
+description: 自包含的 POSIX-sh 全生命周期管理脚本——为二进制部署（systemd 或 OpenRC）与 Docker Compose 提供安装、升级、状态、服务控制、配置、环境变量与卸载。
 icon: Terminal
 ---
 
-`scripts/install.sh` 是一个自包含的 **bash 4+** 脚本，覆盖 Portunus 节点的
+`scripts/install.sh` 是一个自包含的 **POSIX sh** 脚本，覆盖 Portunus 节点的
 完整生命周期：
 
 ```
 install · uninstall · upgrade · status · service · config · env
 ```
 
-它支持 `server`、`client`、`standalone` 三种角色，并同时管理两种部署形态——
-**release 二进制 + systemd unit** 与 **Docker Compose** ，界面支持中英双语
-（English / 中文）。对于 server，它还能为 Web UI 配置一个带自动 Let's
-Encrypt HTTPS 的 **Caddy** 反向代理。CI、自动化以及文档中 `curl … | bash`
-一行命令所依赖的非交互 flag 接口保持不变；交互式菜单只是新增的能力。
+它支持 `server`、`client`、`standalone` 三种角色,并同时管理两种部署形态——
+**release 二进制 + 服务 unit** 与 **Docker Compose** ,界面支持中英双语
+（English / 中文）。默认安装会同时**启动**服务;加 `--no-service` 则只放置
+二进制。二进制形态下,脚本会按主机的 init 系统选择 —— **systemd** 或
+**OpenRC**（Alpine）;两者都没有的主机仍会装好二进制并打印手动启动说明。
+安装器**不会**替你写配置——配置由你自行创建（见 standalone 指南）,配置缺失
+时服务会直接退出。对于 server,它还能为 Web UI 配置一个带自动 Let's Encrypt HTTPS
+的 **Caddy** 反向代理。CI、自动化以及文档中 `curl … | sh` 一行命令所依赖的
+非交互 flag 接口保持不变;交互式菜单只是新增的能力。
 
 同一个脚本有两种使用方式：
 
 ```sh
 # 始终最新的副本，管道方式（交互菜单或非交互 verb）：
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh
 
 # 已 checkout / 下载的本地副本，直接运行：
-bash scripts/install.sh <verb> [flags]
+sh scripts/install.sh <verb> [flags]
 ```
 
 <Callout type="info">
-需要 **bash 4.0+**。版本过低时脚本会直接报错退出。macOS 自带 bash 3.2 ，
-请先 `brew install bash` ，并用该解释器运行（管道 `curl … | bash` 形式会使用
-`PATH` 中找到的第一个 `bash`）。
+纯 **POSIX sh** —— 可在 `dash` 与 busybox `ash` 下运行,无需 `bash`。
+`curl … | sh` 在任意发行版（含 Alpine/musl）都能用。
 </Callout>
 
 ## 两种模式
@@ -51,7 +54,7 @@ Portunus Manager
 Select [0-7]:
 ```
 
-因为即使被管道调用也能从 `/dev/tty` 读取，所以 `curl … | bash` 同样能进入菜单。选 `1`
+因为即使被管道调用也能从 `/dev/tty` 读取，所以 `curl … | sh` 同样能进入菜单。选 `1`
 进入引导式安装向导：角色（`server` / `client` / `standalone`）→ 部署形态
 →（仅 server）HTTPS 域名 → 通告地址 → 计划预览 → 确认。
 
@@ -67,8 +70,9 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
            [--operator-http-listen ADDR]
+           [--config PATH] [--no-service]
            [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
-           [--systemd] [--lang en|zh] [--reset-lang]
+           [--lang en|zh] [--reset-lang]
            [--yes] [--purge] [--dry-run]
 ```
 
@@ -79,11 +83,11 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
 
 | Verb | 作用 |
 | --- | --- |
-| `install <client\|server\|standalone>` | 引导式或 flag 驱动安装。默认部署形态为 `binary`。 |
-| `uninstall [client\|server\|standalone]` | 删除二进制 + unit + drop-in，或 `docker compose down`。会先确认。 |
+| `install <client\|server\|standalone>` | 引导式或 flag 驱动安装。默认部署形态为 `binary`,且默认会启动服务（除非 `--no-service`）。 |
+| `uninstall [client\|server\|standalone]` | 删除二进制 + 服务 unit（systemd unit/drop-in 或 OpenRC init.d/conf.d），或 `docker compose down`。会先确认。 |
 | `upgrade [client\|server\|standalone]` | 解析最新版本，与记录版本比较，复用记录的配置。已是最新则空操作。 |
-| `status` | 记录的元数据 + 实时探测（`systemctl is-active` / `docker compose ps`）。只读。 |
-| `service <start\|stop\|restart>` | 按记录的部署形态分发到 `systemctl` 或 `docker compose`。 |
+| `status` | 记录的元数据 + 实时探测（`systemctl is-active` / `rc-service status` / `docker compose ps`）。只读。 |
+| `service <start\|stop\|restart>` | 按记录的 init / 部署形态分发到 `systemctl`、`rc-service` 或 `docker compose`。 |
 | `config <get\|set> <key> [value]` | 读写单个限定键（见下）。 |
 | `env` | 打印全部限定键及其持久化值。 |
 | `domain <fqdn>` | 仅 server。为已有安装配置 / 刷新 Caddy HTTPS 前端（见 [域名与 HTTPS](#域名与-https)）。 |
@@ -99,43 +103,54 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
 | `--advertised-endpoint <HOST:PORT>` | server 通告地址（见下）。留空 ⇒ 运行时自动。 |
 | `--data-dir <DIR>` | server 数据目录（默认 `/var/lib/portunus`）。 |
 | `--operator-http-listen <ADDR>` | Operator HTTP 监听地址覆写。 |
+| `--config <PATH>` | **仅 standalone。** 服务读取的配置文件（默认 `/etc/portunus/standalone.toml`）。让 unit/conf.d 指向 `PATH` 并修正其权限——**文件由你创建**（缺失时服务直接退出）。对 `client` / `server` 传入会直接报错——它们用 `--bundle` / `--data-dir`。 |
+| `--no-service` | 安装二进制（及服务 unit）但**不**启用/启动,并打印手动启动命令。 |
 | `--domain <FQDN>` | 仅 server。为 Web UI 配置 Caddy HTTPS 前端；当未设置 `--advertised-endpoint` 时，还会把通告地址推导为 `<FQDN>:7443`。 |
 | `--acme-email <ADDR>` | Caddy 域名的 ACME / Let's Encrypt 联系邮箱。 |
 | `--skip-dns-check` | 跳过域名 DNS 是否解析到本机的预检查。 |
-| `--systemd` | 同时安装加固 systemd unit（仅 Linux）。 |
+| `--systemd` | 已废弃的空操作,为向后兼容保留——现在服务默认就会安装。 |
 | `--lang <en\|zh>` | 强制界面语言（也可用 `PORTUNUS_LANG`）。 |
 | `--reset-lang` | 清除缓存的语言偏好并退出；下次交互运行会重新询问。 |
 | `--yes` | 普通确认默认为是。**不会**绕过 `--purge` 的输入令牌。 |
 | `--purge` | 配合 `uninstall`，额外删除数据目录 / compose 卷。需键入确认令牌。 |
 | `--dry-run` | 打印计划；**不**联网、**不**写文件。 |
 
-`--version`、`--bin-dir`、`--systemd`、`--yes`、`--dry-run` 以及裸
-`client` / `server` 形式是原下载器接口，行为与之前完全一致。
+`--version`、`--bin-dir`、`--yes`、`--dry-run` 以及裸
+`client` / `server` 形式是原下载器接口，行为与之前完全一致。`--systemd`
+仍被接受,但已不再需要。
 
 ## 部署形态
 
-### 二进制 + systemd
+### 二进制 + 服务（systemd / OpenRC）
 
 ```sh
-# 仅二进制
-curl -fsSL .../scripts/install.sh | bash -s -- server --version 1.4.2
-# 二进制 + 加固 unit + 服务用户 + drop-in
-curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
+# 二进制 + 服务,并启动（默认）
+curl -fsSL .../scripts/install.sh | sudo sh -s -- server \
   --advertised-endpoint host.example:7443
+# 仅二进制,不启动
+curl -fsSL .../scripts/install.sh | sudo sh -s -- server --no-service --version 1.4.2
 ```
 
-下载 release 归档，校验其 SHA-256，并将 `portunus-<role>` 安装到
-`--bin-dir`。带 `--systemd` 时会拉取加固 unit，创建
-`portunus-server` / `portunus-client` 服务用户与目录，并（对 server）在
-`/etc/systemd/system/portunus-server.service.d/10-portunus.conf` 写入
-含通告地址的 systemd **drop-in**。出厂 unit 不会被改写，所有 server
-配置都走 drop-in。
+下载 release 归档,校验其 SHA-256,并将 `portunus-<role>` 安装到
+`--bin-dir`。随后探测主机 init 并安装服务:在 **systemd** 上是加固 unit
+（对 server 还会在 `/etc/systemd/system/portunus-server.service.d/10-portunus.conf`
+写入含通告地址的 **drop-in**）;在 **OpenRC** 上是 `/etc/init.d` 里的
+`supervise-daemon` 脚本,其参数放在 `/etc/conf.d`。两种情况都会创建
+`portunus` / `portunus-server` / `portunus-client` 服务用户与目录,然后
+启用并启动服务——除非带 `--no-service`,此时放置好 unit 后即停止。两者都
+没有的主机会装好二进制并打印手动启动说明。出厂 unit 不会被改写,server
+配置走 drop-in / conf.d。
+
+对 **standalone**,安装器不会替你写配置;请先创建它（默认
+`/etc/portunus/standalone.toml`,或 `--config` 指定的路径）。只有该文件存在
+时服务才会自动启动——若裸装且没有配置,则只放置 unit 并打印如何创建配置、
+如何启动。无配置时直接启动,二进制会以退出码 2 退出。
 
 ### Docker Compose
 
 ```sh
 mkdir -p ~/portunus && cd ~/portunus
-curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
+curl -fsSL .../scripts/install.sh | sh -s -- server --deploy docker \
   --compose-dir ~/portunus --advertised-endpoint host.example:7443
 ```
 
@@ -155,8 +170,10 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 | 二进制 client / standalone | `/etc/portunus/.install-meta` |
 | docker | `<compose-dir>/.install-meta` |
 
-字段包括 `role`、`deploy`、`version`、`lang`、
-`advertised_endpoint_set`、`domain`、`installed_at`、`installer_version`。
+字段包括 `role`、`deploy`、`version`、`lang`、`init`
+（`systemd` / `openrc` / `none`）、`advertised_endpoint_set`、`domain`、
+`installed_at`、`installer_version`。生命周期 verb 会读回 `init` 以选择
+正确的服务管理器。
 
 生命周期 verb 按此顺序解析元数据：显式 `--compose-dir`、然后**当前
 目录**、然后 `/var/lib/portunus`、最后 `/etc/portunus`。对 Docker
@@ -165,8 +182,9 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 
 ## 限定 config 与 env
 
-`config get/set` 不适用于 `standalone` 角色，请直接编辑
-`/etc/portunus/standalone.toml`。对 `server` 与 `client`，`config` 与
+`config get/set` 不适用于 `standalone` 角色,请直接编辑其配置文件
+（默认 `/etc/portunus/standalone.toml`,或 `--config` 指定的路径）。
+对 `server` 与 `client`，`config` 与
 `env` 仅接受以下四个键（传入其它键会直接报错）：
 
 | 键 | 映射的环境变量 |
@@ -182,14 +200,14 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 
 ```sh
 # 二进制 server（任意目录运行——meta 在 /var/lib/portunus）
-sudo bash install.sh config set advertised-endpoint host.example:7443
-bash install.sh config get advertised-endpoint
-bash install.sh env
+sudo sh install.sh config set advertised-endpoint host.example:7443
+sh install.sh config get advertised-endpoint
+sh install.sh env
 
 # docker（在 compose 目录中运行，或传 --compose-dir）
 cd ~/portunus
-bash install.sh config set operator-http-listen 0.0.0.0:7080
-bash install.sh env
+sh install.sh config set operator-http-listen 0.0.0.0:7080
+sh install.sh env
 ```
 
 ## server 通告地址
@@ -207,11 +225,11 @@ bash install.sh env
 
 ```sh
 # 安装时
-curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
+curl -fsSL .../scripts/install.sh | sudo sh -s -- server \
   --domain portunus.example.com --acme-email admin@example.com
 
 # 或为已有的 server 安装附加 / 刷新 HTTPS
-sudo bash install.sh domain portunus.example.com
+sudo sh install.sh domain portunus.example.com
 ```
 
 它的行为：
@@ -235,20 +253,20 @@ sudo bash install.sh domain portunus.example.com
 
 ```sh
 # 状态（只读）：记录的 meta + 实时探测
-bash install.sh status
+sh install.sh status
 
 # 服务控制（分发到 systemctl 或 docker compose）
-sudo bash install.sh service restart
-bash install.sh service stop
+sudo sh install.sh service restart
+sh install.sh service stop
 
 # 原地升级，复用记录的配置（已是最新则空操作）
-sudo bash install.sh upgrade
+sudo sh install.sh upgrade
 
 # 卸载（保留数据）——会先确认
-sudo bash install.sh uninstall
+sudo sh install.sh uninstall
 
 # 卸载并删除数据——需键入令牌 'purge'
-sudo bash install.sh uninstall --purge
+sudo sh install.sh uninstall --purge
 ```
 
 ## 语言
@@ -258,8 +276,8 @@ sudo bash install.sh uninstall --purge
 会存入 `.install-meta`，供后续子命令复用。
 
 ```sh
-PORTUNUS_LANG=zh curl -fsSL .../scripts/install.sh | bash
-bash install.sh --lang en status
+PORTUNUS_LANG=zh curl -fsSL .../scripts/install.sh | sh
+sh install.sh --lang en status
 ```
 
 ## 安全

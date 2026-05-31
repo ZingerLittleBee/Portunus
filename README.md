@@ -10,27 +10,30 @@
 
 > **Fast TCP/UDP port forwarding in Rust.** One static binary, no runtime dependencies. Run it standalone from a single TOML file, or as a control plane that pushes rules to a fleet of edge nodes.
 
-Forward a port in three lines — no server, no database:
+Forward a port with no server and no database:
 
-```toml
-# portunus.toml
+```sh
+# install the standalone binary
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --no-service
+
+# write a forwarding rule
+cat > portunus.toml <<'EOF'
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
-```
+EOF
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
-portunus-standalone --config portunus.toml   # :2222 → 10.0.0.5:22, TCP and UDP
+# run it — :2222 → 10.0.0.5:22, TCP and UDP
+portunus-standalone --config portunus.toml
 ```
 
 ## Why Portunus
 
 - **Fast, and it stays fast.** Linux `splice(2)` zero-copy lifts single-stream TCP from 9.9 to 21.9 Gbps (2.2×). UDP batches syscalls with `recvmmsg`/`sendmmsg` — ~12× fewer than per-packet — and 1,000 concurrent UDP flows hold a fixed 64 KiB receive buffer, not 64 MiB. A CI benchmark gate fails any PR that regresses the data plane, so the numbers don't quietly rot.
 - **Starts as one TOML, grows into a fleet.** Drop a config on a VPS and you have a forwarder. Point edge nodes at a `portunus-server` and the same tool becomes a control plane — central rule push, Web UI, RBAC, traffic quotas, audit log. One data-plane codebase backs both, so behavior never diverges.
-- **One static binary, no dependencies.** Linux builds are static `musl` — one file runs on any distro (glibc, Alpine/musl, busybox). Docker images are `distroless/static`; install is a single script with checksum verification and a hardened systemd unit.
+- **One static binary, no dependencies.** Linux builds are static `musl` — one file runs on any distro (glibc, Alpine/musl, busybox). Docker images are `distroless/static`; install is a single POSIX-sh script (runs under dash/busybox ash) with checksum verification and a hardened systemd or OpenRC service.
 
 ## Features
 

@@ -17,6 +17,12 @@ role is now a hard error. See §0 of the spec for the full rationale. Wherever a
 task below says "per-role config", read it as "standalone config; client/server
 carry their native `bundle=` / `datadir=`+`server_args=` knobs instead".
 
+**Post-merge revision:** the installer no longer **seeds** the standalone
+config — tasks below that copy/curl `portunus.example.toml` into place are
+superseded. The operator creates `portunus.toml` first (the binary exits if it
+is missing); standalone auto-start is config-gated via `service_should_start`.
+See the spec §0 follow-up.
+
 ---
 
 ## File Structure

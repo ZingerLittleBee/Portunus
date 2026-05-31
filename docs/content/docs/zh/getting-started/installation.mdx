@@ -55,12 +55,12 @@ sudo curl -fsSL https://get.docker.com | sh
 最快的路径是一行安装脚本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
 ```
 
 脚本会检测操作系统和架构，下载对应的 release 二进制，校验其 SHA-256，
 并将 `portunus-server` 安装到 `/usr/local/bin`。详见
-[install.sh 标志](/zh/docs/configuration/client#安装二进制)；标志表（`--version`、`--bin-dir`、`--systemd`）对两个角色均适用。
+[install.sh 标志](/zh/docs/configuration/client#安装二进制)；标志表（`--version`、`--bin-dir`、`--no-service`）对两个角色均适用。
 
 Docker Compose 是推荐的生产部署路径。
 
@@ -176,7 +176,7 @@ portunus-server --version
 最快的路径是一行安装脚本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
 生产环境推荐以容器方式运行 Client——参见下方 Docker 小节。
@@ -294,20 +294,31 @@ docker run -d --network host \
 `chmod 0644 portunus.toml` 是最简单的修复方式。生产环境请固定版本 tag
 （`:vX.Y.Z`）而非 `:latest`。
 
-### 一键安装脚本（二进制 + systemd）
+### 一键安装脚本（二进制 + 服务）
+
+standalone 需要你自己编写配置——安装器**不会**替你写,且配置缺失时二进制会
+直接退出。所以请**先创建配置**,再安装:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+# 1. 写入你的转发规则
+sudo mkdir -p /etc/portunus
+cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. 安装并启动（自动探测 systemd 或 OpenRC,读取上面的配置）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
-脚本会安装二进制、创建 `portunus` 系统用户、写入起步配置
-`/etc/portunus/standalone.toml`，并安装一个加固过的 systemd unit。服务**不会**自动
-启动——随附的配置只是模板。请先编辑，再启用：
-
-```sh
-sudo ${EDITOR:-vi} /etc/portunus/standalone.toml
-sudo systemctl enable --now portunus-standalone
-```
+脚本会安装二进制、创建 `portunus` 系统用户、安装一个加固过的服务 unit
+（systemd,或 Alpine 上的 OpenRC）,并——因为配置已存在——启用并启动服务。
+若你在创建配置**之前**就安装,安装器只放置 unit 而不启动,并打印如何创建
+配置、如何启动;加 `--no-service` 可始终跳过启动。用
+`--config /path/to/your.toml` 可指向其它配置文件。
 
 不启动服务即可校验任意配置（成功时打印 `ok` 并 exit 0）：
 
@@ -354,16 +365,19 @@ sudo install -m 0755 portunus-<version>-<target>/portunus-server /usr/local/bin/
 sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 ```
 
-## systemd
+## 服务（systemd / OpenRC）
 
-一步完成二进制安装和加固 systemd unit 的安装：
+一步完成二进制安装和加固服务 unit 的安装——默认还会启动它：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- server --systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- client --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client
 ```
 
-这会创建服务用户和目录，并安装加固过的 unit（仅 Linux）。如果从源码 checkout 安装，
+安装器会探测主机的 init 系统:加固过的 **systemd** unit,或 Alpine 上的
+**OpenRC** `supervise-daemon` 服务。它会创建服务用户和目录,然后启用并启动
+服务。加 `--no-service` 可只放置二进制和 unit 而不启动;systemd 与 OpenRC
+都没有的主机会装好二进制并打印手动启动说明。如果从源码 checkout 安装,
 请改用 `cd deploy/systemd && sudo ./install.sh server client`（二进制必须已在
 `/usr/local/bin`）。
 
@@ -387,13 +401,14 @@ sudo systemctl enable --now portunus-client
 无参数运行安装脚本进入向导菜单（管道方式也可用）：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh
 ```
 
 提供 **安装 / 卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量** 等操作，覆盖
-二进制 + systemd 与 Docker Compose 两种形态；server 安装时会提示填写通告地址
+二进制（systemd / OpenRC）与 Docker Compose 两种形态；server 安装时会提示填写通告地址
 （并持久化到 systemd drop-in 或 compose `.env`）。非交互 flag 保持不变，供 CI /
-自动化使用；`--dry-run` 仍然不联网、不写文件。需要 bash 4+。
+自动化使用；`--dry-run` 仍然不联网、不写文件。纯 POSIX sh——可在 dash /
+busybox ash 下运行,无需 bash。
 
 完整的 verb/flag 列表、部署形态细节、限定 config 键、生命周期示例与安全
 语义，参见 [install.sh 管理器参考](/zh/docs/cli/installer)。
