@@ -380,6 +380,20 @@ This creates the service user and directories and installs the hardened unit
 `cd deploy/systemd && sudo ./install.sh server client` instead (the binaries must already be
 in `/usr/local/bin`).
 
+<Callout type="warn">
+The `portunus-client` unit runs as the unprivileged `portunus-client` service
+user, which **cannot** read a root-owned `0600` bundle (the unit boot-loops
+with `bundle_load_failed … Permission denied`). After enrolling, place the
+bundle with the service-user group instead of copying it as root:
+
+```sh
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
+sudo systemctl enable --now portunus-client
+```
+
+</Callout>
+
 See [Deploying with systemd](/en/docs/deployment/systemd) for the full unit
 breakdown and hardening notes.
 

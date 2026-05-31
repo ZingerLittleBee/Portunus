@@ -367,6 +367,19 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 改用 `cd deploy/systemd && sudo ./install.sh server client`（二进制必须已在
 `/usr/local/bin`）。
 
+<Callout type="warn">
+`portunus-client` unit 以非特权的 `portunus-client` 服务用户运行，**无法**读取
+属主为 root 的 `0600` bundle（unit 会以 `bundle_load_failed … Permission denied`
+不断重启）。enroll 之后，请用服务用户所属组放置 bundle，而不要以 root 拷贝：
+
+```sh
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
+sudo systemctl enable --now portunus-client
+```
+
+</Callout>
+
 详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
 
 ## 交互式管理器
