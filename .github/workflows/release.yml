@@ -138,17 +138,12 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates curl xz-utils
+          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates musl-tools musl-dev cmake
           rm -rf /var/lib/apt/lists/*
 
       - name: Install Rust target
         shell: bash
         run: rustup target add "${{ matrix.target }}"
-
-      - name: Install zig and cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        with:
-          tool: zig,cargo-zigbuild
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -160,9 +155,15 @@ jobs:
           name: webui-dist
           path: webui/dist
 
-      - name: cargo zigbuild --release (static musl)
+      - name: cargo build --release (static musl)
         shell: bash
-        run: cargo zigbuild --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
+        # Native build on each arch's own runner (no cross-compilation).
+        # aws-lc-sys (tonic TLS) compiles C via cmake; point it at musl-gcc
+        # so its objects match the static-musl target ABI.
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Package binaries
         shell: bash

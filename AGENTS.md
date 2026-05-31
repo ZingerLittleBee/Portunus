@@ -110,8 +110,9 @@ pnpm build        # tsc -b && vite build && size-limit (≤ 500 KB gz)
   invariant).
 - **Linux release artifacts are static `musl` binaries**, not glibc.
   `.github/workflows/release.yml` builds `x86_64`/`aarch64-unknown-linux-musl`
-  via `cargo zigbuild` (zig links musl statically and compiles C deps
-  like `aws-lc-sys`). One binary runs on every Linux distro — glibc,
+  natively (each runner builds its own arch — no cross-compilation) with
+  `musl-tools`; aws-lc-sys's cmake C build uses `CC_<target>=musl-gcc`.
+  One binary runs on every Linux distro — glibc,
   Alpine/musl, busybox — and `install.sh` downloads the musl artifact.
   Docker images base on `distroless/static`. macOS stays native `cargo
   build`. Caveat: `recvmmsg`/`sendmmsg` flags are `c_int` on glibc but
