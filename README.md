@@ -31,15 +31,15 @@ Portunus forwards TCP and UDP traffic from a listen port to any `host:port` targ
 
 ## Quick Start
 
-### Standalone (simplest)
+Forward a port in three steps — no server, no database:
 
 ```sh
+# 1. Install the standalone forwarder
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
 ```
 
-Write a `portunus.toml`:
-
 ```toml
+# 2. Write portunus.toml
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -48,49 +48,43 @@ target      = "10.0.0.5:22"
 ```
 
 ```sh
-portunus-standalone --check --config portunus.toml   # validate (exits 0 if valid)
-portunus-standalone --config portunus.toml           # run
-portunus-standalone stats                            # live TUI dashboard
+# 3. Run it — TCP :2222 now forwards to 10.0.0.5:22
+portunus-standalone --config portunus.toml
 ```
 
-### Control plane (server + edge clients)
-
-```sh
-# On the control host — bootstrap an operator (prints a bearer token ONCE), then serve.
-portunus-server --data-dir ./srv bootstrap-superadmin --name ops
-portunus-server --data-dir ./srv serve               # Web UI + gRPC + metrics
-
-# Enroll an edge node (one-time URI, with a TTL).
-portunus-server --data-dir ./srv enroll-client edge-01 --ttl-secs 600
-# → portunus-client enroll 'portunus://host:7443/enroll?...'
-
-# On the edge host — redeem the URI, then run.
-portunus-client enroll 'portunus://host:7443/enroll?...' --out ./client.bundle.json
-portunus-client --bundle ./client.bundle.json
-
-# Push a rule: port 8080 on edge-01 → example.com:80
-export PORTUNUS_OPERATOR_TOKEN=<token-from-bootstrap>
-portunus-server push-rule edge-01 8080 example.com:80
-```
-
-Open the Web UI at `http://127.0.0.1:7080` (loopback by default — SSH-tunnel or reverse-proxy for remote access).
+- UDP, port ranges, failover, PROXY protocol, the stats TUI → [standalone guide](https://portunus.bybee.dev/en/docs/configuration/standalone)
+- A fleet of edge nodes with central rule push, a Web UI, and RBAC → [control-plane setup](https://portunus.bybee.dev/en/docs/getting-started/installation)
 
 ## Installation
 
-**Install script** (detects OS/arch, verifies release checksums). Requires `bash` 4+:
+The one-line script detects OS/arch and verifies release checksums (needs `bash` 4+). Add `--deploy docker` to any role to run it via Docker Compose instead of a system binary.
+
+**Standalone** — one host, one TOML file:
 
 ```sh
-# role is one of: standalone | server | client
+## Docker Compose
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone --deploy docker
+## binary + systemd
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
 ```
 
-**Docker** (GHCR — pin a tag like `:1.7.0` for reproducible deploys):
+**Control plane** — a central server plus any number of edge clients:
 
 ```sh
-docker pull ghcr.io/zingerlittlebee/portunus-server:latest
-docker pull ghcr.io/zingerlittlebee/portunus-client:latest
-docker pull ghcr.io/zingerlittlebee/portunus-standalone:latest
+# control host
+## Docker Compose
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server --deploy docker
+## binary + systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server
+
+# each edge host
+## Docker Compose
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client --deploy docker
+## binary + systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
 ```
+
+The script installs a systemd service (binary mode) or writes a `compose.yaml` (Docker mode), and records the deploy so later `upgrade` / `status` / `uninstall` work too. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
 
 **From source** (Rust 1.88+ stable; `protoc` is vendored via `prost-build`):
 
@@ -100,12 +94,14 @@ cargo build --release -p portunus-server -p portunus-client -p portunus-standalo
 
 Prebuilt binaries for Linux and macOS (x86_64 + aarch64) are on the [releases page](https://github.com/ZingerLittleBee/Portunus/releases).
 
+More configuration — CLI flags, `server.toml` / `standalone.toml`, systemd hardening, advertised endpoints → [installation guide](https://portunus.bybee.dev/en/docs/getting-started/installation) and the [configuration reference](https://portunus.bybee.dev/en/docs/configuration/server).
+
 ## Documentation
 
-- 📖 [Standalone configuration reference](docs/content/docs/configuration/standalone.mdx) — multi-target failover, PROXY protocol, rate limiting, systemd.
-- 🐳 [Docker deployment](docs/content/docs/deployment/docker.mdx)
-- 🛠️ [Operations runbook](docs/runbook.md) — day-1 install, day-2 ops, troubleshooting.
-- 🔌 [Operator API](specs/001-tcp-forward-mvp/contracts/operator-api.md) — CLI subcommands + loopback HTTP API.
+- 📖 [Standalone configuration reference](https://portunus.bybee.dev/en/docs/configuration/standalone) — multi-target failover, PROXY protocol, rate limiting, systemd.
+- 🐳 [Docker deployment](https://portunus.bybee.dev/en/docs/deployment/docker)
+- 🛠️ [Operations & troubleshooting](https://portunus.bybee.dev/en/docs/operations/troubleshooting) — day-2 ops, backup/restore, upgrades.
+- 🔌 [Operator HTTP API](https://portunus.bybee.dev/en/docs/api/operator-http) — operator endpoints and CLI reference.
 - 📝 [CHANGELOG](CHANGELOG.md)
 
 ## Architecture
