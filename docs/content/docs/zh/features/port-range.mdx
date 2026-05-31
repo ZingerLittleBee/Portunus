@@ -47,7 +47,7 @@ range_rule_max_ports = 1024
 
 <Callout type="warn">
   将该值调高的同时，必须在 Client 的 systemd unit 中相应调高 `LimitNOFILE`。
-  这条上限的存在就是为了防止操作员手抖把 Client 的 RLIMIT_NOFILE 撑爆。
+  这条上限的存在，正是为了防止操作员误操作而耗尽 Client 的 RLIMIT_NOFILE。
 </Callout>
 
 ## 逐端口统计

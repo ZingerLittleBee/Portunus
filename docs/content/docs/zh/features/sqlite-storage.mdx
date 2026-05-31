@@ -4,21 +4,21 @@ description: 嵌入式统一 SQLite 存储。bundled、WAL 模式、refinery 管
 icon: Database
 ---
 
-v0.8.0 起支持。把 Server 端所有持久 JSON 文件
-（`tokens.json`、`identity.json`、`rules.json`）以及内存审计环形缓冲，
-统一收纳到一个嵌入式 SQLite 库 `<data-dir>/state.db`。
+v0.8.0 起支持。将 Server 端所有持久化 JSON 文件
+（`tokens.json`、`identity.json`、`rules.json`）以及内存审计环形缓冲区，
+统一收纳进一个嵌入式 SQLite 库 `<data-dir>/state.db`。
 
 ## 为什么选 SQLite
 
-- **保留单二进制部署** —— `rusqlite` 通过 `bundled` 特性静态链接固定版本的
-  SQLite，不依赖系统 libsqlite3。
+- **保持单二进制部署** —— `rusqlite` 通过 `bundled` 特性静态链接固定版本的
+  SQLite，不依赖系统的 libsqlite3。
 - **崩溃安全** —— WAL 模式 + `BEGIN IMMEDIATE` 写事务。
 - **迁移** —— 由 `refinery` 管理；schema 位于
   `crates/portunus-server/src/store/migrations/`。
 
 ## 表
 
-代表性的表（schema 通过 migration 演进，见
+代表性的表（schema 随 migration 演进，详见
 `crates/portunus-server/src/store/migrations/`）：
 
 | 表 | 用途 |
@@ -28,7 +28,7 @@ v0.8.0 起支持。把 Server 端所有持久 JSON 文件
 | `grants` | 用户级 `(client, listen-port range, protocols)` 三元组 |
 | `rules` | 已推送的规则（v0.11 增加可空的 cap 列） |
 | `rule_targets` | 多目标规则条目（v0.7+） |
-| `audit` | 持久审计日志（取代 v0.6 的内存 ring） |
+| `audit` | 持久化审计日志（取代 v0.6 的内存 ring buffer） |
 | `rate_limit_owner` | 每个所有者的信封（v0.11+） |
 | `traffic_quotas`、`traffic_samples_*` | 每个 `(user, client)` 的月度用量与历史（v0.13+） |
 | `web_sessions`、`login_attempts`、`onboarding_setup` | 本地密码登录与首次启动 setup token（v1.1+） |
@@ -52,21 +52,21 @@ $XDG_STATE_HOME/portunus/    （或 ~/.local/state/portunus/）
 
 ## 文件系统检查
 
-如果 `--data-dir` 落在 NFS、tmpfs、ramfs 上，Server 会以
-`event=startup.unsupported_filesystem` 拒绝启动。请改到本地可写文件系统。
+如果 `--data-dir` 位于 NFS、tmpfs、ramfs 上，Server 会以
+`event=startup.unsupported_filesystem` 拒绝启动。请改用本地可写的文件系统。
 
-两个 `portunus-server serve` 同时打开同一个 data-dir 时，第二个会以
-`event=startup.store_in_use`（退出 75）退出 —— clustering 不在 v0.8 范围。
+当两个 `portunus-server serve` 同时打开同一个 data-dir 时，后启动的一个会以
+`event=startup.store_in_use`（退出码 75）退出 —— 集群（clustering）不在 v0.8 的范围内。
 
 ## 备份
 
-通过 `rusqlite::backup::Backup` 实现的在线备份 —— 兼顾 WAL，无须暂停写入：
+基于 `rusqlite::backup::Backup` 的在线备份 —— 妥善处理 WAL，无需暂停写入：
 
 ```sh
 portunus-server backup --out ~/portunus-backup-$(date +%F).db
 ```
 
-会拒绝覆写已存在的目标。
+该命令会拒绝覆写已存在的目标文件。
 
 ## 恢复
 
@@ -76,10 +76,10 @@ portunus-server restore --in ~/portunus-backup-2026-05-08.db
 portunus-server serve               # 自动跑 schema 迁移
 ```
 
-`restore` 会校验 SQLite header 魔数；非空 data-dir 缺少 `--force` 时拒绝
-覆写。备份的 schema **比当前二进制还新** 时退出 `78`，事件
-`startup.schema_version_too_new` —— 要么保留旧备份，要么用对应版本的
-二进制做恢复。
+`restore` 会校验 SQLite header 魔数；当 data-dir 非空且未带 `--force` 时拒绝
+覆写。若备份的 schema **比当前二进制更新**，则以退出码 `78` 退出，事件为
+`startup.schema_version_too_new` —— 此时要么沿用旧备份，要么改用对应版本的
+二进制执行恢复。
 
 ## Reset
 
@@ -89,13 +89,13 @@ portunus-server reset --confirm
 # 拒绝处理任何前 16 字节不是 SQLite header 的路径
 ```
 
-header 检查可防止 typo 错的 `--data-dir`。`reset` **不会** 动同目录中的
-`server.crt` / `server.key` / `server.toml`。不带 `--confirm` 时它只是干跑，
+header 检查可防止误删拼写错误的 `--data-dir`。`reset` **不会** 触碰同目录中的
+`server.crt` / `server.key` / `server.toml`。不带 `--confirm` 时它仅做干跑，
 打印将要删除的路径。
 
 ## 审计 prune
 
-审计表是持久化的，不是 ring buffer。其大小由 prune CLI 约束：
+审计表是持久化的，并非 ring buffer。其大小由 prune CLI 控制：
 
 ```sh
 # 干跑 —— 仅统计不删除
@@ -105,15 +105,15 @@ portunus-server audit prune --before 2026-05-01T00:00:00Z --dry-run
 portunus-server audit prune --before 2026-05-01T00:00:00Z
 ```
 
-放进 cron（每日 / 每周）即可让数据库保持有界。
+将其加入 cron（每日 / 每周执行）即可让数据库大小保持有界。
 
 ## 审计信封模式
 
 `GET /v1/audit?since=<RFC3339>&until=<RFC3339>&cursor=<base64>&limit=N`
 返回 `{ entries, next_cursor?, count }`，取代 v0.7 的数组根，支持基于
-cursor 的历史回滚。
+cursor 的历史回溯。
 
-不带 `since` / `until` / `cursor` 的 v0.7 调用方仍然得到数组根 —— 字节稳定。
+不带 `since` / `until` / `cursor` 的 v0.7 调用方仍会得到数组根 —— 输出字节级别稳定不变。
 
 ## `portunus-client --bundle` 解析
 
@@ -124,4 +124,4 @@ cursor 的历史回滚。
 3. `$HOME/.config/portunus/client.bundle.json`
 4. `./client.bundle.json`
 
-全部失败时退出 `1` 并把尝试过的全部路径打印出来。
+全部查找失败时，以退出码 `1` 退出，并打印出尝试过的所有路径。

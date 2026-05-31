@@ -4,17 +4,17 @@ description: 用户、本地 Web 密码、API 凭据，以及限定到 Client、
 icon: Users
 ---
 
-v0.5.0 起支持。在保持数据面不变的基础上，操作员侧引入了正式的 RBAC 层。
+v0.5.0 起支持。在保持数据面不变的前提下，操作员侧引入了一套正式的 RBAC 层。
 
 ## 概念
 
 - **User** —— id（lower-snake `[a-z][a-z0-9_-]{0,31}`）、role
-  （`superadmin` / `user`）、显示名、可选的 `disabled` 标志。下划线开头的
-  id 通过公共构造器会被拒绝。
+  （`superadmin` / `user`）、显示名、可选的 `disabled` 标志。以下划线开头的
+  id 会被公共构造器拒绝。
 - **Password** —— v1.1.0 起，Web UI 登录使用本地密码；密码以 PHC/Argon2id
-  格式哈希保存。用户由管理员手动创建，并可要求首次登录后修改密码。
-- **Credential** —— 绑定到某个 User 的 Bearer API Token。在静止存储中以
-  `blake3` 哈希；原始 Token 仅在签发 / 旋转时可见。携带可选 label、
+  格式哈希保存。用户由管理员手动创建，并可要求其首次登录后修改密码。
+- **Credential** —— 绑定到某个 User 的 Bearer API Token。在静态存储中以
+  `blake3` 哈希保存；原始 Token 仅在签发 / 旋转时可见。携带可选的 label、
   status（`active` / `revoked`）和 `last_used_at`。
 - **Grant** —— 每个用户的授权三元组 `{client, listen-port range, protocol set}`。
   `client` 可以是具名 ClientName 或通配符 `"*"`。
@@ -27,11 +27,11 @@ v1.1.0 起，空 store 通过 Web UI 初始化：
 2. 从 server 日志 / stderr 读取一次性 setup token。
 3. 打开 Web UI，创建第一个带本地密码的 `superadmin`。
 
-setup token 30 分钟后过期。如果 onboarding 没完成，每次 server 进程启动都会
-轮换 token，并让旧 token 失效。第一个启用的 `superadmin` 创建后，onboarding
-会永久关闭。
+setup token 在 30 分钟后过期。若 onboarding 尚未完成，每次 server 进程启动都会
+轮换 token 并使旧 token 失效。第一个启用的 `superadmin` 创建后，onboarding
+将永久关闭。
 
-旧的 Bearer bootstrap 路径仍保留给自动化和升级兼容。
+旧的 Bearer bootstrap 路径仍予以保留，用于自动化和升级兼容。
 
 ### 路径 A —— `bootstrap-superadmin`
 
@@ -40,7 +40,7 @@ portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 # → superadmin user_id=_superadmin token=<paste-into-PORTUNUS_OPERATOR_TOKEN>
 ```
 
-Bearer Token **只输出一次**。幂等 —— 二次执行会非零退出。
+Bearer Token **只输出一次**。该命令幂等 —— 再次执行会以非零状态码退出。
 
 ### 路径 B —— server.toml 捷径
 
@@ -48,8 +48,8 @@ Bearer Token **只输出一次**。幂等 —— 二次执行会非零退出。
 operator_token = "<43-char URL-safe-base64 token>"
 ```
 
-如果首次启动时身份存储里还没有任何超管，Server 会用该 Token 自动签出一个
-保留账号 `_legacy` 超管。该选项幂等 —— 即使保留它跨重启也安全。
+如果首次启动时身份存储中还没有任何超管，Server 会用该 Token 自动创建一个
+保留账号 `_legacy` 超管。该选项幂等 —— 即使保留它，跨重启也是安全的。
 
 带外生成 Token：
 
@@ -58,7 +58,7 @@ portunus-server gen-token
 # → 43 字符 URL-safe-base64
 ```
 
-这些路径创建的是 API Token 访问，不是浏览器密码。Web UI 推荐走 onboarding。
+这些路径创建的是 API Token 访问凭据，而非浏览器密码。Web UI 推荐使用 onboarding 流程。
 
 ## 添加受限租户
 
@@ -72,27 +72,27 @@ portunus-server grant-add --user-id alice --client edge-01 \
   --protocols tcp,udp
 ```
 
-至此 alice 仅能在 `edge-01` 上、且仅在端口 `30000..=30050`、且仅在 TCP / UDP
-里 push-rule。
+至此，alice 只能在 `edge-01` 上、且仅限端口 `30000..=30050`、且仅限 TCP / UDP
+协议执行 push-rule。
 
-在 Web UI 中，`superadmin` 可以创建同样的用户、设置初始密码，并要求首次登录后
-修改密码。不支持公开自助注册，因为 Grant 本来就需要操作员分配。
+在 Web UI 中，`superadmin` 可以创建同样的用户、设置初始密码，并要求其首次登录后
+修改密码。不支持公开自助注册，因为 Grant 本就需要由操作员分配。
 
 ## 闭集匹配
 
-单个 Grant 必须 **完整覆盖** 请求的端口范围 —— 跨两个 Grant 拼出来的范围
-会被拒绝。超出信封时 alice 会得到 HTTP 403 与三种码之一：
+单个 Grant 必须 **完整覆盖** 请求的端口范围 —— 跨两个 Grant 拼凑出的范围
+会被拒绝。超出信封时，alice 会收到 HTTP 403 以及以下三种错误码之一：
 
 - `client_not_granted`
 - `port_outside_grant`
 - `protocol_not_granted`
 
-`--client *` 通配匹配任意 Client；`--listen-port-end` 等于
-`--listen-port-start` 的 Grant 即单端口 Grant。
+`--client *` 通配符匹配任意 Client；`--listen-port-end` 等于
+`--listen-port-start` 的 Grant 即为单端口 Grant。
 
 ## API Token 旋转
 
-用户无须超管即可旋转自己的凭据：
+用户无需超管参与即可旋转自己的凭据：
 
 ```sh
 PORTUNUS_OPERATOR_TOKEN=<alice 的旧 Token> \
@@ -102,29 +102,29 @@ PORTUNUS_OPERATOR_TOKEN=<alice 的旧 Token> \
 
 ## 读侧过滤
 
-非超管调用 `GET /v1/rules` 时，结果只投影出该用户拥有的规则。超管可以加
-`?owner=<user_id>` 过滤。每条规则响应都携带 push 时盖上的 `owner` 字段。
+非超管调用 `GET /v1/rules` 时，结果只包含该用户拥有的规则。超管可以追加
+`?owner=<user_id>` 进行过滤。每条规则的响应都会携带 push 时写入的 `owner` 字段。
 
 ## 审计日志
 
-每条操作员请求都会发出一条结构化事件：成功是 `event = "operator.allow"`
-（INFO），RBAC 拒绝是 `"operator.deny"`（WARN）。事件携带 `actor`、
-`method`、`path`、`outcome`，拒绝时还包含 `RbacError::code()` 原因。
+每条操作员请求都会发出一条结构化事件：成功为 `event = "operator.allow"`
+（INFO），RBAC 拒绝为 `"operator.deny"`（WARN）。事件携带 `actor`、
+`method`、`path`、`outcome`，拒绝时还附带 `RbacError::code()` 给出的原因。
 
-**原始 Bearer Token 永远不会进入审计代码路径** —— 审计 emitter 只看到
-verify 之后的 `OperatorIdentity`。
+**原始 Bearer Token 永远不会进入审计代码路径** —— 审计 emitter 只能看到
+校验之后的 `OperatorIdentity`。
 
 密码重置审计使用 `action = "operator.password_reset"`，记录 actor、目标用户、
-outcome，以及是否撤销 Web 会话 / API Token。原始密码、临时密码、setup token
+操作结果，以及是否撤销了 Web 会话 / API Token。原始密码、临时密码、setup token
 和 Bearer Token 都不会写入审计。
 
 ## 密码恢复
 
-普通用户没有公开的 "forgot password" 自助入口。由 `superadmin` 在 Web UI
-重置密码。重置会撤销 Web 会话，并默认撤销 API Token，除非管理员明确选择保留。
+普通用户没有公开的 "forgot password" 自助入口，需由 `superadmin` 在 Web UI
+中重置密码。重置会撤销 Web 会话，并默认撤销 API Token，除非管理员明确选择保留。
 
-如果最后一个 `superadmin` 忘记密码，需要先停止 server，然后在拥有 data dir
-的主机上运行本地 break-glass 命令。这里要使用真实的超管用户 ID：
+如果最后一个 `superadmin` 忘记密码，需要先停止 server，再在持有 data dir
+的主机上运行本地的 break-glass 命令。此时须使用真实的超管用户 ID：
 `bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的是初始化时
 选择的 ID，例如 `admin`。
 
@@ -133,7 +133,7 @@ portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
 ```
 
 该命令只打印一次临时密码，并要求下次 Web 登录后修改密码。它不会创建新的
-`superadmin`，也没有远程重置后门。
+`superadmin`，也不存在远程重置后门。
 
 ## CLI 一览
 
@@ -148,12 +148,12 @@ portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
 
 ## SIGHUP reload
 
-`SIGHUP` 时操作员存储会从磁盘重载 `identity.json`（v0.8 起改为 SQLite）。
-校验失败时保留之前的内存快照；任意结果都会输出一行结构化日志。
+收到 `SIGHUP` 时，操作员存储会从磁盘重新加载 `identity.json`（v0.8 起改为
+SQLite）。校验失败则保留此前的内存快照；无论结果如何，都会输出一行结构化日志。
 
 ## 级联顺序
 
-User 删除或 Grant 撤销时，先 **flush 身份存储**，再删除依赖的规则。即使
-中途崩溃，身份状态依然连贯。
+删除 User 或撤销 Grant 时，先 **刷新身份存储**，再删除依赖于它的规则。即使
+中途崩溃，身份状态也保持一致。
 
-**最后一名超管保护** 会拒绝那个会让集群无主的删除操作。
+**最后一名超管保护** 会拒绝任何会使集群失去管理员的删除操作。
