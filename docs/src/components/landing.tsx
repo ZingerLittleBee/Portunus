@@ -66,7 +66,7 @@ const copy = {
     statusActive: "ACTIVE",
     rangesTitle: "Performance you can plan around.",
     rangesIntro:
-      "On Linux, plain TCP rules with no bandwidth cap use a kernel splice fast path. On the bench host, single-flow throughput doubles from 9.9 Gbit/s to 21.9 Gbit/s, and the offered-load sweep tracks both direct iperf3 and iptables REDIRECT to 95-109 % through 20 Gbit/s — the v0.11 saturation point disappears for uncapped TCP.",
+      "On Linux, plain TCP rules with no bandwidth cap use a kernel splice fast path. On the bench host, single-flow throughput doubles from 9.9 Gbit/s to 21.9 Gbit/s, and across the offered-load sweep the proxied flow stays within 95-109 % of both direct iperf3 and iptables REDIRECT through 20 Gbit/s — the v0.11 saturation point disappears for uncapped TCP.",
     ranges: [
       [
         "100M – 10G",
@@ -158,38 +158,38 @@ const copy = {
     ],
     statusOk: "OK",
     statusActive: "运行中",
-    rangesTitle: "可以照着规划的性能。",
+    rangesTitle: "性能可预期，便于容量规划。",
     rangesIntro:
-      "Linux 上无带宽限制的 TCP 规则会走内核 splice 快路径。在测试机上，单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；同一份 offered-load sweep 在 100 Mbit/s 到 20 Gbit/s 区间内紧贴 direct iperf3 与 iptables REDIRECT（95-109 %）——v0.11 报告里的早期饱和拐点在无带宽限制 TCP 上消失了。",
+      "Linux 上不限带宽的 TCP 规则会走内核 splice 快路径。测试机上单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；在 100 Mbit/s 到 20 Gbit/s 的压测区间内，代理路径始终保持在 direct iperf3 和 iptables REDIRECT 的 95-109 %——v0.11 报告里的早期饱和拐点，对不限带宽的 TCP 已不复存在。",
     ranges: [
-      ["100M – 10G", "端到端跑满 offered 速率，与 direct iperf3 实测没有可感知的差距。"],
+      ["100M – 10G", "端到端跑满目标速率，和 direct iperf3 实测几乎没有差距。"],
       [
         "12.5G – 20G",
-        "开启 splice 快路径后，proxy 路径与 direct loopback、iptables REDIRECT 仅相差测量噪声。",
+        "开启 splice 快路径后，代理路径与 direct loopback、iptables REDIRECT 的差距只在测量噪声范围内。",
       ],
       [
         "带限速的规则",
-        "限带宽规则仍走 userspace 通道——指标、计数器、审计字节级一致。",
+        "限带宽的规则仍走用户态通道——指标、计数器、审计都做到字节级一致。",
       ],
     ],
-    capabilitiesTitle: "不只是转发规则，还有团队真正会用到的一切。",
+    capabilitiesTitle: "不只是转发规则，还有团队真正用得上的一切。",
     capabilitiesIntro:
-      "规则下发、权限、限速、指标、审计——全都是 Server 的一等公民，不需要你自己拼。",
+      "规则下发、权限、限速、指标、审计，在 Server 上都是原生能力，不用你自己东拼西凑。",
     capabilities: [
       {
         icon: Network,
         title: "规则",
-        text: "转发 TCP 或 UDP，支持单端口、端口段、IP 或 DNS 目标。HTTPS 可以按域名分流，但不会解密连接。",
+        text: "转发 TCP 或 UDP，支持单端口、端口范围、IP 或 DNS 目标。HTTPS 可按域名分流，全程不解密连接。",
       },
       {
         icon: ShieldCheck,
         title: "权限",
-        text: "每个用户可以被限制到指定的 Client、协议、端口范围。规则有归属，归属由 Server 强制执行。",
+        text: "可以把每个用户限制在指定的 Client、协议和端口范围内。规则归属明确，并由 Server 强制校验。",
       },
       {
         icon: SlidersHorizontal,
         title: "限额",
-        text: "按规则或按用户限制带宽、新连接速率、并发连接数，让一台边缘机可以安全共享。",
+        text: "按规则或按用户限制带宽、新连接速率和并发连接数，让一台边缘机能被多方安全共享。",
       },
       {
         icon: Activity,
@@ -209,10 +209,10 @@ const copy = {
     edgeData: "业务流量",
     workflowTitle: "从安装到上线，只需四步。",
     workflow: [
-      "在 Server 上生成一份签名过的 Client 包。",
+      "在 Server 上生成一次性的 Client 注册命令。",
       "在拥有公网端口的机器上运行 Client。",
       "通过 CLI、HTTP API 或 Web UI 添加转发规则。",
-      "实时查看流量、配额和拒绝事件——不触碰用户数据。",
+      "实时查看流量、配额和拒绝事件——全程不触碰用户数据。",
     ],
     finalTitle: "看文档，跑实测，再决定。",
     finalText:
