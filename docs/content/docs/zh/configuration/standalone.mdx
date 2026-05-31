@@ -43,7 +43,7 @@ docker run -d --network host \
 
 注意事项：
 
-- 生产环境固定到具体版本（`:1.7.0` 而非 `:latest`）。
+- 生产环境固定到具体版本（`:1.8.0` 而非 `:latest`）。
 - 容器以 **UID 65532**（`nonroot`）运行，宿主机文件必须对该 UID 可读 ——
   `chmod 0644 portunus.toml` 是最简单的做法。如果看到
   `error: io error: Permission denied (os error 13)` 就是这个原因。
@@ -436,7 +436,7 @@ TUI 客户端按平台选默认 socket：
 如果用 **一键脚本** 安装：
 
 ```sh
-# 升级到最新 release（或固定 --version v1.7.0）：
+# 升级到最新 release（或固定 --version v1.8.0）：
 bash install.sh upgrade standalone
 
 # 状态（二进制版本、服务是否 active、部署形态）：
