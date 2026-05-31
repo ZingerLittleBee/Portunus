@@ -43,7 +43,7 @@ portunus-server revoke edge-01
 
 ```sh
 portunus-server push-rule edge-01 18080 10.0.0.5:8080
-# exit 6: activation_failed: port_in_use
+# exit 5: port_in_use: port 18080 already in use
 ```
 
 client 上有别的东西（另一条规则、无关进程）占用了监听端口。

@@ -47,7 +47,7 @@ Check `control_listen` on the server matches what the bundle's
 
 ```sh
 portunus-server push-rule edge-01 18080 10.0.0.5:8080
-# exit 6: activation_failed: port_in_use
+# exit 5: port_in_use: port 18080 already in use
 ```
 
 Something on the client (another rule, an unrelated process) holds the
