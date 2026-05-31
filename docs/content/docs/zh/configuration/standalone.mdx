@@ -65,8 +65,7 @@ docker run -d --network host \
 
 ```sh
 # 1. 写入你的转发规则
-sudo mkdir -p /etc/portunus
-cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"

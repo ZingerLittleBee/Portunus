@@ -14,8 +14,7 @@
 
 ```sh
 # 1. 把转发规则写到默认配置路径
-sudo mkdir -p /etc/portunus
-cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"

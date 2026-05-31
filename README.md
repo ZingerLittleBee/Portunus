@@ -14,8 +14,7 @@ Forward a port with no server and no database — write a config, then install i
 
 ```sh
 # 1. write your forwarding rules to the default config path
-sudo mkdir -p /etc/portunus
-cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
