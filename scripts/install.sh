@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -32,7 +32,10 @@ DEPLOY=""         # binary|docker
 VERSION=""        # user-supplied version (may have leading v)
 BIN_DIR="$DEFAULT_BIN_DIR"
 COMPOSE_DIR=""
-WANT_SYSTEMD="no"
+NO_SERVICE="no"   # --no-service: install but do not enable/start
+CONFIG_PATH=""    # --config PATH (standalone only): file the service reads
+INIT=""           # systemd|openrc|none — set by detect_init()
+SUDO=""           # set in main(): "" when root, "sudo" otherwise
 ADVERTISED=""     # advertised endpoint host:port ("" = unset/auto)
 DATA_DIR=""
 OP_HTTP_LISTEN=""
@@ -96,9 +99,9 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:menu_select) _f="请选择 [0-7]: " ;;
     zh:lang_prompt) _f="请选择语言\n  [1] English\n  [2] 中文" ;;
     zh:ask_role) _f="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）" ;;
-    zh:ask_deploy_server) _f="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + systemd" ;;
-    zh:ask_deploy_client) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose" ;;
-    zh:ask_deploy_standalone) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose" ;;
+    zh:ask_deploy_server) _f="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + 服务（systemd/OpenRC）" ;;
+    zh:ask_deploy_client) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + 服务（systemd/OpenRC）  （推荐）\n  [2] docker compose" ;;
+    zh:ask_deploy_standalone) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + 服务（systemd/OpenRC）  （推荐）\n  [2] docker compose" ;;
     zh:ask_version) _f="版本号（留空则使用最新版）: " ;;
     zh:ask_bindir) _f="程序安装目录 [%s]: " ;;
     zh:ask_datadir) _f="服务端数据目录（留空则使用默认值）: " ;;
@@ -138,7 +141,7 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:prov_loopback) _f="（回环地址，仅本机可用）" ;;
     zh:prov_user) _f="（手动输入）" ;;
     zh:val_latest) _f="最新版（运行时解析）" ;;
-    zh:val_binary) _f="二进制 + systemd" ;;
+    zh:val_binary) _f="二进制 + 服务" ;;
     zh:val_docker) _f="docker compose" ;;
     zh:ask_domain) _f="Web UI 的 HTTPS 域名（留空则跳过 Caddy/HTTPS）: " ;;
     zh:sum_domain) _f="  HTTPS 域名：%s" ;;
@@ -167,9 +170,9 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:menu_select) _f="Select [0-7]: " ;;
     *:lang_prompt) _f="Select language\n  [1] English\n  [2] 中文" ;;
     *:ask_role) _f="Install which role?\n  [1] server\n  [2] client\n  [3] standalone" ;;
-    *:ask_deploy_server) _f="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + systemd" ;;
-    *:ask_deploy_client) _f="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose" ;;
-    *:ask_deploy_standalone) _f="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose" ;;
+    *:ask_deploy_server) _f="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + service (systemd/OpenRC)" ;;
+    *:ask_deploy_client) _f="Deploy form? (Enter = recommended)\n  [1] binary + service (systemd/OpenRC)  (recommended)\n  [2] docker compose" ;;
+    *:ask_deploy_standalone) _f="Deploy form? (Enter = recommended)\n  [1] binary + service (systemd/OpenRC)  (recommended)\n  [2] docker compose" ;;
     *:ask_version) _f="Version (blank = latest): " ;;
     *:ask_bindir) _f="Install dir [%s]: " ;;
     *:ask_datadir) _f="Server data dir (blank = default): " ;;
@@ -209,7 +212,7 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:prov_loopback) _f="(loopback — local only)" ;;
     *:prov_user) _f="(you entered)" ;;
     *:val_latest) _f="latest (resolved at run time)" ;;
-    *:val_binary) _f="binary + systemd" ;;
+    *:val_binary) _f="binary + service" ;;
     *:val_docker) _f="docker compose" ;;
     *:ask_domain) _f="HTTPS domain for the web UI (blank = skip Caddy/HTTPS): " ;;
     *:sum_domain) _f="  https domain:         %s" ;;
@@ -226,6 +229,10 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
     *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
     *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
+    zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default \&\& sudo rc-service portunus-%s start" ;;
+    *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default \&\& sudo rc-service portunus-%s start" ;;
+    zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>\&1 \&" ;;
+    *:next_manual) _f="  no supported init system; run it in the background manually:\n  nohup %s --config %s > /var/log/portunus.log 2>\&1 \&" ;;
     *) _f="$_k" ;;
   esac
   # shellcheck disable=SC2059
@@ -311,9 +318,149 @@ resolve_version_static() {
 
 rel() { echo "https://github.com/${REPO}/releases/download/${tag}/$1"; }
 
+# ─── Init-system abstraction (per-init driver groups behind svc) ──────
+detect_init() {
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then INIT=systemd
+  elif command -v rc-service >/dev/null 2>&1 || command -v openrc >/dev/null 2>&1; then INIT=openrc
+  else INIT=none; fi
+}
+svc() { _op="$1"; shift 2>/dev/null || true; "${INIT}_${_op}" "$@"; }
+
+svc_user_for() { case "$1" in standalone) echo portunus ;; client) echo portunus-client ;; server) echo portunus-server ;; esac; }
+config_default_for() { case "$1" in standalone) echo /etc/portunus/standalone.toml ;; *) echo "" ;; esac; }
+
+server_extra_args() {
+  _a=""
+  [ -n "${OP_HTTP_LISTEN:-}" ] && _a="$_a --operator-http-listen $OP_HTTP_LISTEN"
+  [ -n "${ADVERTISED:-}" ] && _a="$_a --advertised-endpoint $ADVERTISED"
+  printf '%s' "${_a# }"
+}
+
+# Create the per-role system user + base dirs (idempotent; useradd or busybox adduser).
+ensure_svc_user() {
+  _r="$1"; _u="$(svc_user_for "$_r")"
+  if ! id "$_u" >/dev/null 2>&1; then
+    ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin "$_u" 2>/dev/null \
+      || ${SUDO:-} adduser -S -D -H -s /sbin/nologin "$_u" 2>/dev/null \
+      || die "failed to create system user $_u"
+  fi
+  case "$_r" in
+    server) ${SUDO:-} install -d -o "$_u" -g "$_u" -m 0750 "${DATA_DIR:-/var/lib/portunus}" 2>/dev/null \
+              || ${SUDO:-} mkdir -p "${DATA_DIR:-/var/lib/portunus}" ;;
+    *)      ${SUDO:-} install -d -o root -g "$_u" -m 0750 /etc/portunus 2>/dev/null \
+              || ${SUDO:-} mkdir -p /etc/portunus ;;
+  esac
+}
+
+# Seed the standalone config at CONFIG_PATH if absent; fix perms; warn if unreadable by the svc user.
+apply_config_path() {
+  _r="$1"; _p="$2"; _u="$3"
+  [ -z "$_p" ] && return 0
+  ${SUDO:-} mkdir -p "$(dirname "$_p")"
+  if [ ! -f "$_p" ] && [ "$_r" = standalone ]; then
+    _ex=""
+    [ -n "${SELF_SCRIPT:-}" ] && _ex="$(dirname "$SELF_SCRIPT")/../crates/portunus-standalone/contrib/portunus.example.toml"
+    if [ -n "$_ex" ] && [ -r "$_ex" ]; then ${SUDO:-} cp "$_ex" "$_p"
+    else ${SUDO:-} curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o "$_p" || die "failed to seed config at $_p"; fi
+  fi
+  if [ -f "$_p" ]; then
+    ${SUDO:-} chown "root:$_u" "$_p" 2>/dev/null || true
+    ${SUDO:-} chmod 0640 "$_p" 2>/dev/null || true
+    ${SUDO:-} su -s /bin/sh "$_u" -c "test -r '$_p'" 2>/dev/null \
+      || echo "warning: $_u may not be able to read $_p (check directory permissions)" >&2
+  fi
+}
+
+# systemd drop-in body for a custom standalone config path (empty otherwise).
+render_config_dropin() {
+  _r="$1"; _p="$2"
+  [ "$_r" = standalone ] || return 0
+  [ "$_p" = "$(config_default_for "$_r")" ] && return 0
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/bin/portunus-standalone --config %s\n' "$_p"
+}
+
+# OpenRC /etc/conf.d body per role.
+render_confd() {
+  case "$1" in
+    standalone) printf 'cfgfile="%s"\n' "${2:-/etc/portunus/standalone.toml}" ;;
+    client)     printf 'bundle="%s"\n' "/etc/portunus/client.bundle.json" ;;
+    server)     printf 'datadir="%s"\nserver_args="%s"\n' "${DATA_DIR:-/var/lib/portunus}" "$(server_extra_args)" ;;
+  esac
+}
+
+openrc_url() {
+  case "$1" in
+    standalone) printf '%s\n' "${RAW_BASE}/crates/portunus-standalone/contrib/portunus-standalone.openrc" ;;
+    *)          printf '%s\n' "${RAW_BASE}/deploy/openrc/portunus-$1.openrc" ;;
+  esac
+}
+render_openrc() {  # role -> init.d script (local template else curl)
+  _lp=""
+  if [ -n "${SELF_SCRIPT:-}" ]; then
+    case "$1" in
+      standalone) _lp="$(dirname "$SELF_SCRIPT")/../crates/portunus-standalone/contrib/portunus-standalone.openrc" ;;
+      *)          _lp="$(dirname "$SELF_SCRIPT")/../deploy/openrc/portunus-$1.openrc" ;;
+    esac
+  fi
+  if [ -n "$_lp" ] && [ -r "$_lp" ]; then cat "$_lp"
+  else curl -fsSL "$(openrc_url "$1")" || die "failed to fetch OpenRC service for $1"; fi
+}
+
+# ── systemd driver ──
+systemd_install() {
+  ensure_svc_user "$1"
+  install_systemd_unit "$1"
+  apply_config_path "$1" "$2" "$(svc_user_for "$1")"
+  _dp="$(render_config_dropin "$1" "$2")"
+  if [ -n "$_dp" ]; then
+    ${SUDO:-} mkdir -p "/etc/systemd/system/portunus-$1.service.d"
+    printf '%s' "$_dp" | ${SUDO:-} tee "/etc/systemd/system/portunus-$1.service.d/10-config.conf" >/dev/null
+    ${SUDO:-} systemctl daemon-reload || true
+  fi
+}
+systemd_enable_start() { ${SUDO:-} systemctl enable --now "portunus-$1.service"; }
+systemd_start()   { ${SUDO:-} systemctl start "portunus-$1.service"; }
+systemd_stop()    { ${SUDO:-} systemctl stop "portunus-$1.service" 2>/dev/null || true; }
+systemd_disable() { ${SUDO:-} systemctl disable "portunus-$1.service" 2>/dev/null || true; }
+systemd_restart() { ${SUDO:-} systemctl restart "portunus-$1.service"; }
+systemd_status()  { ${SUDO:-} systemctl --no-pager status "portunus-$1.service" 2>/dev/null || ${SUDO:-} systemctl is-active "portunus-$1.service" 2>/dev/null || true; }
+systemd_remove()  {
+  ${SUDO:-} rm -f "/etc/systemd/system/portunus-$1.service"
+  ${SUDO:-} rm -rf "/etc/systemd/system/portunus-$1.service.d"
+  ${SUDO:-} systemctl daemon-reload 2>/dev/null || true
+}
+
+# ── openrc driver ──
+openrc_install() {
+  command -v rc-service >/dev/null 2>&1 || command -v rc-update >/dev/null 2>&1 || die "OpenRC tools (rc-service/rc-update) missing"
+  ensure_svc_user "$1"
+  render_openrc "$1" | ${SUDO:-} tee "/etc/init.d/portunus-$1" >/dev/null
+  ${SUDO:-} chmod 0755 "/etc/init.d/portunus-$1"
+  apply_config_path "$1" "$2" "$(svc_user_for "$1")"
+  render_confd "$1" "$2" | ${SUDO:-} tee "/etc/conf.d/portunus-$1" >/dev/null
+}
+openrc_enable_start() { ${SUDO:-} rc-update add "portunus-$1" default 2>/dev/null || true; ${SUDO:-} rc-service "portunus-$1" start; }
+openrc_start()   { ${SUDO:-} rc-service "portunus-$1" start; }
+openrc_stop()    { ${SUDO:-} rc-service "portunus-$1" stop 2>/dev/null || true; }
+openrc_disable() { ${SUDO:-} rc-update del "portunus-$1" default 2>/dev/null || true; }
+openrc_restart() { ${SUDO:-} rc-service "portunus-$1" restart; }
+openrc_status()  { ${SUDO:-} rc-service "portunus-$1" status 2>/dev/null || true; }
+openrc_remove()  { ${SUDO:-} rm -f "/etc/init.d/portunus-$1" "/etc/conf.d/portunus-$1"; }
+
+# ── none driver (no supported init: binary + config only) ──
+none_install()      { ensure_svc_user "$1" 2>/dev/null || true; apply_config_path "$1" "$2" "$(svc_user_for "$1")" 2>/dev/null || true; }
+none_enable_start() { t next_manual "/usr/local/bin/portunus-$1" "${2:-$(config_default_for "$1")}"; echo; }
+none_start()   { :; }
+none_stop()    { :; }
+none_disable() { :; }
+none_restart() { :; }
+none_status()  { echo "no service manager detected (init=none); not managed"; }
+none_remove()  { :; }
+
 # ─── Plan / dry-run ───────────────────────────────────────────────────
 print_plan() {
   local asset checksums
+  detect_init
   asset="portunus-${artifact_version:-<latest>}-${target}.tar.gz"
   checksums="portunus-${artifact_version:-<latest>}-checksums.txt"
   echo "portunus install (dry-run)"
@@ -336,14 +483,15 @@ print_plan() {
     echo "env_file:         ${COMPOSE_DIR:-$PWD}/.env"
   fi
   echo "bin_dir:          ${BIN_DIR}"
-  echo "systemd:          ${WANT_SYSTEMD}"
+  echo "init:             ${INIT:-?}"
+  echo "service:          $([ "$NO_SERVICE" = yes ] && echo 'install only (--no-service)' || echo 'install + start')"
   echo "advertised:       ${ADVERTISED:-<unset, runtime auto>}"
   if [ "$ROLE" = "server" ] && [ "${DEPLOY:-binary}" != "docker" ]; then
     echo "drop-in:          /etc/systemd/system/portunus-server.service.d/10-portunus.conf"
     echo "data_dir:         ${DATA_DIR:-/var/lib/portunus}"
     echo "op_http_listen:   ${OP_HTTP_LISTEN:-<default>}"
   fi
-  echo "actions:          download+verify+install portunus-${ROLE} -> ${BIN_DIR}$( [ "$WANT_SYSTEMD" = yes ] && echo ' + systemd unit' )"
+  echo "actions:          download+verify+install portunus-${ROLE} -> ${BIN_DIR}$([ "$NO_SERVICE" != yes ] && [ "$INIT" != none ] && echo " + ${INIT} service")"
 }
 
 # ─── Download / install (binary) ──────────────────────────────────────
@@ -379,65 +527,29 @@ install_binary() {
   maybe_sudo "$BIN_DIR"
   echo "→ installing portunus-${ROLE} to ${BIN_DIR}"
   ${SUDO:-} install -m 0755 "$src" "${BIN_DIR}/portunus-${ROLE}"
-
-  if [ "$ROLE" = "standalone" ]; then
-    # Create the system user (idempotent) and seed the config dir.
-    if ! id -u portunus >/dev/null 2>&1; then
-      ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus \
-        || die "failed to create portunus user"
-    fi
-    ${SUDO:-} mkdir -p /etc/portunus
-    if [ ! -f /etc/portunus/standalone.toml ]; then
-      local self_dir2=""
-      if [ -n "${SELF_SCRIPT:-}" ]; then
-        self_dir2="$(dirname "$SELF_SCRIPT")"
-      fi
-      if [ -n "$self_dir2" ] && [ -r "$self_dir2/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
-        ${SUDO:-} cp "$self_dir2/../crates/portunus-standalone/contrib/portunus.example.toml" /etc/portunus/standalone.toml
-      else
-        ${SUDO:-} curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o /etc/portunus/standalone.toml \
-          || die "failed to fetch starter standalone.toml"
-      fi
-      ${SUDO:-} chown root:portunus /etc/portunus/standalone.toml
-      ${SUDO:-} chmod 0640 /etc/portunus/standalone.toml
-    fi
-  fi
+  # User creation + config seeding are handled by the init driver
+  # (ensure_svc_user / apply_config_path) so systemd and OpenRC share one path.
 }
 
 # ─── Systemd ──────────────────────────────────────────────────────────
-install_systemd_unit() {
+install_systemd_unit() {  # install_systemd_unit <role> — place the unit only
+  _role="$1"
   if [ "$os" != "linux" ] || ! command -v systemctl >/dev/null 2>&1; then
-    echo "warning: --systemd ignored (not Linux or systemctl missing)" >&2; return 0
+    echo "warning: systemd unit skipped (not Linux or systemctl missing)" >&2; return 0
   fi
   maybe_sudo "/etc/systemd/system"
-  local unit tmp; unit="portunus-${ROLE}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
-  if [ "$ROLE" = "standalone" ]; then
-    # Use the hardened contrib unit verbatim; user edits live in
-    # /etc/portunus/standalone.toml, not in the unit file.
+  local unit tmp; unit="portunus-${_role}.service"; tmp="$(mktemp -d)"; track_tmp "$tmp"
+  if [ "$_role" = "standalone" ]; then
     local self_dir=""
-    if [ -n "${SELF_SCRIPT:-}" ]; then
-      self_dir="$(dirname "$SELF_SCRIPT")"
-    fi
+    [ -n "${SELF_SCRIPT:-}" ] && self_dir="$(dirname "$SELF_SCRIPT")"
     if [ -n "$self_dir" ] && [ -r "$self_dir/../crates/portunus-standalone/contrib/portunus-standalone.service" ]; then
       cp "$self_dir/../crates/portunus-standalone/contrib/portunus-standalone.service" "$tmp/$unit"
     else
-      # Network-resolved (curl|bash) invocation: fetch the unit from the repo.
       curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus-standalone.service" -o "$tmp/$unit" \
         || die "failed to fetch portunus-standalone.service"
     fi
   else
     curl -fsSL "${RAW_BASE}/deploy/systemd/${unit}" -o "$tmp/$unit" || die "unit download failed"
-  fi
-  if [ "$ROLE" = "client" ]; then
-    id portunus-client >/dev/null 2>&1 || ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus-client
-    ${SUDO:-} install -d -o root -g portunus-client -m 0750 /etc/portunus
-  elif [ "$ROLE" = "standalone" ]; then
-    # User and /etc/portunus already handled in install_binary(); only
-    # the systemd unit file remains here.
-    :
-  else
-    id portunus-server >/dev/null 2>&1 || ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin portunus-server
-    ${SUDO:-} install -d -o portunus-server -g portunus-server -m 0750 "${DATA_DIR:-/var/lib/portunus}"
   fi
   ${SUDO:-} install -m 0644 "$tmp/$unit" "/etc/systemd/system/$unit"
   ${SUDO:-} systemctl daemon-reload || true
@@ -474,7 +586,15 @@ print_next_steps() {
     t next_docker "${COMPOSE_DIR:-$PWD}"; echo
   else
     [ "$ROLE" = "standalone" ] && { t next_standalone_config; echo; }
-    t next_systemd "$ROLE"; echo
+    if [ "$NO_SERVICE" = yes ]; then
+      case "${INIT:-}" in
+        openrc) t next_openrc "$ROLE" "$ROLE"; echo ;;
+        none)   none_enable_start "$ROLE" "$CONFIG_PATH" ;;
+        *)      t next_systemd "$ROLE"; echo ;;
+      esac
+    elif [ "${INIT:-}" = none ]; then
+      none_enable_start "$ROLE" "$CONFIG_PATH"
+    fi
   fi
   t next_status; echo
 }
@@ -582,13 +702,15 @@ parse_args() {
       --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
       --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
       --lang) shift; [ $# -gt 0 ] || die "--lang needs a value"; LANG_CODE="$1" ;;
-      --systemd) WANT_SYSTEMD="yes" ;;
+      --systemd) : ;;  # back-compat no-op: the service is installed by default now
+      --no-service) NO_SERVICE="yes" ;;
+      --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
       --yes) ASSUME_YES="yes" ;;
       --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--systemd] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
@@ -597,6 +719,10 @@ parse_args() {
       --valid-fqdn) shift; valid_fqdn "${1:-}" && exit 0 || exit 1 ;;
       --render-caddy) shift; DOMAIN="${1:-}"; render_caddy_block "${2:-7080}"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
+      --detect-init) detect_init; printf '%s\n' "$INIT"; exit 0 ;;
+      --render-openrc) shift 2>/dev/null || true; render_openrc "${1:-standalone}"; exit 0 ;;
+      --render-confd) shift 2>/dev/null || true; render_confd "${1:-standalone}" "${2:-/etc/portunus/standalone.toml}"; exit 0 ;;
+      --render-config-dropin) shift 2>/dev/null || true; render_config_dropin "${1:-standalone}" "${2:-/etc/portunus/standalone.toml}"; exit 0 ;;
       --effective-advertised) PRINT_EFF=yes ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
@@ -626,6 +752,7 @@ main() {
     die "no command given and no terminal; run 'install.sh -h' or pass a role"
   fi
   [ -n "$VERB" ] || VERB="install"
+  [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
   detect_platform
   resolve_version_static
   [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
@@ -880,13 +1007,13 @@ apply_advertised_default() {
 apply_install_defaults() {
   [ "${VERB:-install}" = "install" ] || return 0
   [ -n "${ROLE:-}" ] || return 0
+  if [ -n "$CONFIG_PATH" ] && [ "$ROLE" != standalone ]; then
+    die "--config is only valid for the standalone role (client uses --bundle, server uses --data-dir)"
+  fi
+  [ -z "$CONFIG_PATH" ] && [ "$ROLE" = standalone ] && CONFIG_PATH="/etc/portunus/standalone.toml"
   if [ -z "${DEPLOY:-}" ]; then
     DEPLOY="binary"
-    [ "$ROLE" = "standalone" ] && WANT_SYSTEMD="yes"
     return 0
-  fi
-  if [ "$ROLE" = "standalone" ] && [ "$DEPLOY" = "binary" ]; then
-    WANT_SYSTEMD="yes"
   fi
 }
 
@@ -897,13 +1024,13 @@ wizard_install() {
   # client ⇒ binary. Enter (empty) accepts the recommended one.
   if [ "$ROLE" = server ]; then
     a="$(ask ask_deploy_server)"
-    case "$a" in 2|binary) DEPLOY=binary; WANT_SYSTEMD=yes ;; *) DEPLOY=docker ;; esac
+    case "$a" in 2|binary) DEPLOY=binary ;; *) DEPLOY=docker ;; esac
   elif [ "$ROLE" = standalone ]; then
     a="$(ask ask_deploy_standalone)"
-    case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
+    case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
   else
     a="$(ask ask_deploy_client)"
-    case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary; WANT_SYSTEMD=yes ;; esac
+    case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
   fi
   if [ "$ROLE" = server ]; then
     while :; do
@@ -938,7 +1065,7 @@ MENU_COMPOSE_DIR=""
 reset_menu_state() {
   ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"
   COMPOSE_DIR="$MENU_COMPOSE_DIR"
-  WANT_SYSTEMD="no"; ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
+  ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
   SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
 }
 
@@ -1030,9 +1157,11 @@ dispatch_verb() {
         install_docker          # writes its own .install-meta pre-up
       else
         install_binary
-        [ "$WANT_SYSTEMD" = yes ] && install_systemd_unit
-        [ "$ROLE" = "server" ] && [ "$WANT_SYSTEMD" = yes ] && write_server_dropin
-        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+        detect_init
+        svc install "$ROLE" "$CONFIG_PATH"
+        [ "$ROLE" = "server" ] && [ "$INIT" = systemd ] && write_server_dropin
+        if [ "$NO_SERVICE" != yes ] && [ "$INIT" != none ]; then svc enable_start "$ROLE"; fi
+        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
       fi
       if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" "domain=$DOMAIN"
@@ -1085,7 +1214,10 @@ lifecycle_status() {
   echo "version: $(meta_read "$mf" version || echo '?')"
   echo "advertised_endpoint_set: $(meta_read "$mf" advertised_endpoint_set || echo '?')"
   if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) ps ) 2>/dev/null || true
-  else systemctl is-active "portunus-$(meta_read "$mf" role || echo server)" 2>/dev/null || true; fi
+  else
+    _i="$(meta_read "$mf" init 2>/dev/null || true)"; case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
+    svc status "$(meta_read "$mf" role || echo server)" 2>/dev/null || true
+  fi
 }
 
 lifecycle_service() {
@@ -1094,7 +1226,11 @@ lifecycle_service() {
   d="$(meta_read "$mf" deploy || echo binary)"; r="$(meta_read "$mf" role || echo server)"
   if [ "$d" = docker ]; then
     ( cd "$(dirname "$mf")" && case "$SERVICE_ACTION" in start) $(compose_cmd) up -d ;; stop) $(compose_cmd) stop ;; restart) $(compose_cmd) restart ;; esac )
-  else sudo systemctl "$SERVICE_ACTION" "portunus-$r"; fi
+  else
+    [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
+    _i="$(meta_read "$mf" init 2>/dev/null || true)"; case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
+    case "$SERVICE_ACTION" in start) svc start "$r" ;; stop) svc stop "$r" ;; restart) svc restart "$r" ;; esac
+  fi
 }
 
 lifecycle_upgrade() {
@@ -1105,10 +1241,13 @@ lifecycle_upgrade() {
   if [ "$cur" = "$artifact_version" ]; then echo "$(t upgrade_current "$cur")"; return 0; fi
   confirm "$(t confirm_proceed)" || return 0
   if [ "$DEPLOY" = docker ]; then COMPOSE_DIR="$(dirname "$mf")"; install_docker
-  else install_binary; lifecycle_service_restart_quiet; fi
-  meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" "version=$artifact_version" "lang=${LANG_CODE:-en}"
+  else
+    [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
+    _i="$(meta_read "$mf" init 2>/dev/null || true)"; case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
+    install_binary; svc restart "$ROLE" 2>/dev/null || true
+  fi
+  meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" "version=$artifact_version" "lang=${LANG_CODE:-en}" "init=$INIT"
 }
-lifecycle_service_restart_quiet() { systemctl restart "portunus-${ROLE}" 2>/dev/null || true; }
 
 lifecycle_uninstall() {
   local mf r d; mf="$(current_meta_file)" || die "$(t no_install_found)"
@@ -1116,10 +1255,14 @@ lifecycle_uninstall() {
   if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" no || return 0; fi
   if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
   else
-    command -v systemctl >/dev/null 2>&1 && sudo systemctl disable --now "portunus-$r" 2>/dev/null || true
-    sudo rm -f "/usr/local/bin/portunus-$r" "/etc/systemd/system/portunus-$r.service"
-    sudo rm -f "/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
-    sudo systemctl daemon-reload 2>/dev/null || true
+    [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
+    _i="$(meta_read "$mf" init 2>/dev/null || true)"; case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
+    svc stop "$r" 2>/dev/null || true
+    svc disable "$r" 2>/dev/null || true
+    svc remove "$r" 2>/dev/null || true
+    ${SUDO:-} rm -f "/usr/local/bin/portunus-$r"
+    ${SUDO:-} rm -f "/etc/systemd/system/portunus-server.service.d/10-portunus.conf" 2>/dev/null || true
+    command -v systemctl >/dev/null 2>&1 && ${SUDO:-} systemctl daemon-reload 2>/dev/null || true
   fi
   if [ -f "$CADDYFILE" ] && grep -q '^# >>> portunus >>>$' "$CADDYFILE" 2>/dev/null; then
     sudo cp "$CADDYFILE" "${CADDYFILE}.portunus.$(date +%Y%m%d%H%M%S).bak"

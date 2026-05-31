@@ -155,7 +155,7 @@ so="$(printf '1\n\n\n-\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH 
 printf '%s\n' "$so" | grep -Eq 'deploy: +docker' || fail "server Enter must default to docker (recommended)"
 printf '%s\n' "$so" | grep -q 'compose dir:' || fail "server docker default missing compose dir line"
 ro="$(printf '1\n2\n\nn\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --menu-stdin 2>&1)" || true
-printf '%s\n' "$ro" | grep -Eq 'deploy: +binary \+ systemd' || fail "client Enter must default to binary (recommended)"
+printf '%s\n' "$ro" | grep -Eq 'deploy: +binary \+ service' || fail "client Enter must default to binary (recommended)"
 
 # --- --reset-lang clears the cached language preference ---
 fakehome="$(mktemp -d)"
@@ -209,8 +209,45 @@ if echo "$dm" | grep -q -- '--advertised-endpoint'; then fail "minimal drop-in m
 # --- standalone role: dry-run plan accepted, artifact name correct ---
 out_sa="$($SH "$script" standalone --version 1.4.1 --dry-run)" || fail "standalone dry-run exit non-zero"
 echo "$out_sa" | grep -q '^role:[[:space:]]*standalone$' || fail "standalone: role line missing"
-echo "$out_sa" | grep -q '^systemd:[[:space:]]*yes$' || fail "standalone: default binary install must include systemd"
+echo "$out_sa" | grep -Eq '^service:[[:space:]]*install \+ start' || fail "standalone: default install must start the service"
+echo "$out_sa" | grep -Eq '^init:[[:space:]]*(systemd|openrc|none)$' || fail "standalone: plan must report detected init"
 echo "$out_sa" | grep -q 'portunus-standalone' || fail "standalone: portunus-standalone not in plan"
+
+# --- --no-service flips the plan to install-only ---
+out_ns="$($SH "$script" standalone --version 1.4.1 --no-service --dry-run)" || fail "--no-service dry-run exit"
+echo "$out_ns" | grep -Eq '^service:[[:space:]]*install only' || fail "--no-service: plan must say install only"
+
+# --- --systemd is accepted as a back-compat no-op ---
+$SH "$script" standalone --version 1.4.1 --systemd --dry-run >/dev/null 2>&1 || fail "--systemd back-compat no-op rejected"
+
+# --- --config is standalone-only; rejected for client/server ---
+$SH "$script" standalone --version 1.4.1 --config /etc/portunus/my.toml --dry-run >/dev/null 2>&1 || fail "standalone --config rejected"
+if $SH "$script" server --config /etc/portunus/x.toml --dry-run >/dev/null 2>&1; then fail "server --config must error"; fi
+if $SH "$script" client --config /etc/portunus/x.toml --dry-run >/dev/null 2>&1; then fail "client --config must error"; fi
+
+# --- --detect-init prints one of the known init systems ---
+oi="$($SH "$script" --detect-init)" || fail "--detect-init exit"
+case "$oi" in systemd|openrc|none) : ;; *) fail "--detect-init bad value '$oi'" ;; esac
+
+# --- --render-openrc emits a valid openrc-run service for each role ---
+for role in standalone client server; do
+  orc="$($SH "$script" --render-openrc "$role")" || fail "--render-openrc $role exit"
+  printf '%s\n' "$orc" | grep -q '^#!/sbin/openrc-run' || fail "openrc $role: missing shebang"
+  printf '%s\n' "$orc" | grep -q "^command=\"/usr/local/bin/portunus-$role\"" || fail "openrc $role: command line"
+  printf '%s\n' "$orc" | grep -q '^supervisor=supervise-daemon' || fail "openrc $role: supervisor"
+done
+
+# --- --render-confd reflects the role's config knob ---
+cf_sa="$($SH "$script" --render-confd standalone /etc/portunus/custom.toml)" || fail "--render-confd standalone exit"
+printf '%s\n' "$cf_sa" | grep -q 'cfgfile="/etc/portunus/custom.toml"' || fail "confd standalone: cfgfile not honored"
+cf_cl="$($SH "$script" --render-confd client)" || fail "--render-confd client exit"
+printf '%s\n' "$cf_cl" | grep -q '^bundle=' || fail "confd client: bundle knob missing"
+cf_sv="$($SH "$script" --render-confd server)" || fail "--render-confd server exit"
+printf '%s\n' "$cf_sv" | grep -q '^datadir=' || fail "confd server: datadir knob missing"
+
+# --- --render-config-dropin (systemd custom config path) for standalone ---
+cd_sa="$($SH "$script" --render-config-dropin standalone /etc/portunus/custom.toml)" || fail "--render-config-dropin exit"
+printf '%s\n' "$cd_sa" | grep -q '/etc/portunus/custom.toml' || fail "config drop-in: custom path missing"
 
 # --- standalone role: explicit install verb ---
 $SH "$script" install standalone --version 1.0.0 --dry-run >/dev/null 2>&1 || fail "standalone: install verb rejected"
