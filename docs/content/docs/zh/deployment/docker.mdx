@@ -122,11 +122,24 @@ docker compose run --rm \
 **store-direct 命令**（`enroll-client`、`revoke`、`list-clients`、
 `reset-password`、`onboarding-token`）会直接打开 SQLite store 并取排他锁。它们
 **不**读取 `PORTUNUS_OPERATOR_TOKEN`，而且无法在 `server` 持有 store 时运行——
-此时它们会以 `store_in_use`（退出码 75）退出。请先停止 `server`：
+此时它们会以 `store_in_use`（退出码 75）退出。
+
+<Callout type="warn">
+**不要**通过 `operator` compose 服务运行 store-direct 命令。该服务共享 Server
+的网络命名空间（`network_mode: "service:server"`），所以 `docker compose run operator …`
+会把你刚停掉的 `server` 透明地**重新启动**——它会重新拿到 store 锁，再次复现
+`store_in_use`。`--no-deps` 也救不了（此时会报 *"cannot join network of a non
+running container"*）。
+</Callout>
+
+请先停止 `server`，并在一个只挂数据卷的一次性容器里运行命令——不走 compose
+服务，也不进网络命名空间：
 
 ```sh
 docker compose stop server
-docker compose run --rm operator enroll-client edge-01
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus enroll-client edge-01
 docker compose up -d server
 ```
 
@@ -134,11 +147,13 @@ docker compose up -d server
 
 `onboarding-token` 主要用于离线维护；后续启动 `serve` 时还会再次轮换 setup
 token，所以浏览器 onboarding 通常使用 `server` 日志里打印的 token。
-`reset-password` 同样遵循先停 `server` 的流程：
+`reset-password` 同样遵循先停 `server` + 一次性容器的流程：
 
 ```sh
 docker compose stop server
-docker compose run --rm operator reset-password admin --temporary
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus reset-password admin --temporary
 docker compose up -d server
 ```
 
