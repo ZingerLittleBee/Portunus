@@ -50,6 +50,23 @@ html > body[data-scroll-locked] {
   font-feature-settings: "ss01", "cv11";
 }
 
+/* zh: CJK text reads better with looser line spacing than the Latin
+   defaults baked into the Tailwind leading-* utilities. Scoped to the
+   Chinese landing only; English keeps its tighter rhythm. */
+.fr-landing.fr-zh p,
+.fr-landing.fr-zh li {
+  line-height: 1.9;
+}
+
+.fr-landing.fr-zh h1 {
+  line-height: 1.15;
+}
+
+.fr-landing.fr-zh h2,
+.fr-landing.fr-zh h3 {
+  line-height: 1.4;
+}
+
 body:has(.fr-landing) {
   --color-fd-background: #000000;
   --color-fd-foreground: #ffffff;

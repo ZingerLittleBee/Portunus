@@ -220,7 +220,9 @@ export function LandingPage({ locale }: { locale: Locale }) {
 
   return (
     <HomeLayout {...baseOptions(locale)}>
-      <main className="fr-landing min-h-screen overflow-hidden antialiased">
+      <main
+        className={`fr-landing min-h-screen overflow-hidden antialiased${locale === "zh" ? " fr-zh" : ""}`}
+      >
         {/* ──────────────────────────  HERO  ────────────────────────── */}
         <section className="fr-hero relative isolate border-b border-white/10">
           {/* dot-grid + radial glow background */}
