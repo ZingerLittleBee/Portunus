@@ -112,7 +112,7 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:need_role) _f="请指定角色：client、server 或 standalone" ;;
     zh:no_install_found) _f="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。" ;;
     zh:done_next) _f="安装完成，后续步骤：" ;;
-    zh:next_standalone_config) _f="  编辑配置：sudoedit /etc/portunus/standalone.toml" ;;
+    zh:next_standalone_config) _f="  编辑配置：sudoedit %s" ;;
     zh:next_systemd) _f="  启动服务：sudo systemctl enable --now portunus-%s" ;;
     zh:next_docker) _f="  查看容器：cd %s && docker compose ps" ;;
     zh:next_status) _f="  查看状态：install.sh status" ;;
@@ -183,7 +183,7 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:need_role) _f="role required: client, server, or standalone" ;;
     *:no_install_found) _f="No Portunus install detected (no .install-meta and no probe match)." ;;
     *:done_next) _f="Done. Next steps:" ;;
-    *:next_standalone_config) _f="  edit:    sudoedit /etc/portunus/standalone.toml" ;;
+    *:next_standalone_config) _f="  edit:    sudoedit %s" ;;
     *:next_systemd) _f="  start:   sudo systemctl enable --now portunus-%s" ;;
     *:next_docker) _f="  manage:  (cd %s && docker compose ps)" ;;
     *:next_status) _f="  status:  install.sh status" ;;
@@ -585,7 +585,7 @@ print_next_steps() {
   if [ "${DEPLOY:-binary}" = "docker" ]; then
     t next_docker "${COMPOSE_DIR:-$PWD}"; echo
   else
-    [ "$ROLE" = "standalone" ] && { t next_standalone_config; echo; }
+    [ "$ROLE" = "standalone" ] && { t next_standalone_config "${CONFIG_PATH:-/etc/portunus/standalone.toml}"; echo; }
     if [ "$NO_SERVICE" = yes ]; then
       case "${INIT:-}" in
         openrc) t next_openrc "$ROLE" "$ROLE"; echo ;;
