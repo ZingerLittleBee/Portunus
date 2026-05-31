@@ -16,7 +16,7 @@ icon: Cpu
 
 ## 安装
 
-只有两种受支持的安装方式：容器宿主选 **Docker**，普通 Linux + systemd 选
+只有两种受支持的安装方式：容器宿主选 **Docker**，普通 Linux（systemd / OpenRC）选
 **一键脚本**。
 
 ### Docker
@@ -26,12 +26,15 @@ icon: Cpu
 （支持 `linux/amd64`、`linux/arm64`）。
 
 ```sh
-# 1. 在工作目录放一份起步配置并编辑：
-curl -fsSL -o portunus.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-chmod 0644 portunus.toml
-# 用任意编辑器修改 portunus.toml（vi、nano 等）。
-${EDITOR:-vi} portunus.toml
+# 1. 写入你的转发规则（容器会只读挂载这个文件）：
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # 容器以 UID 65532 运行,必须能读到它
 
 # 2. 启动容器：
 docker run -d --network host \
@@ -55,13 +58,23 @@ docker run -d --network host \
 - `docker compose` 和 Kubernetes manifests 见
   [`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib)。
 
-### 一键脚本（二进制 + systemd）
+### 一键脚本（二进制 + 服务）
 
-不用 Docker 的 Linux 服务器走这条。脚本会安装二进制、创建系统用户、写入
-起步配置，以及一份加固版 systemd unit。
+不用 Docker 的 Linux 服务器走这条。安装器**不会**替你写配置——配置缺失时
+二进制会直接退出——所以请**先创建配置**,再安装,它就会自动启动:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
+# 1. 写入你的转发规则
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. 安装并启动
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
 它依次做这些事：
@@ -69,23 +82,26 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 1. 检测 OS / 架构，下载最新 release 产物并校验 SHA-256。
 2. 把二进制安装到 `/usr/local/bin/portunus-standalone`（mode `0755`）。
 3. 若不存在，创建 `portunus` 系统用户/组。
-4. 在 `/etc/portunus/standalone.toml` 写入起步配置（mode `0640`，
-   属主 `root:portunus`），内容来自
-   [`contrib/portunus.example.toml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/portunus.example.toml)。
-5. 在 `/etc/systemd/system/portunus-standalone.service` 写入加固版
-   unit（`LimitNOFILE=65535`、`AmbientCapabilities=CAP_NET_BIND_SERVICE`、
-   `ProtectSystem=strict`、`NoNewPrivileges=true`）。
-6. 重新加载 systemd。**不会**自动启动 —— 初始配置是带示例上游的模板。
+4. 修正你的 `/etc/portunus/standalone.toml` 的属主/权限（mode `0640`，
+   属主 `root:portunus`）,使服务用户能读取它。它**不会**创建该文件——
+   配置由你自行编写。用 `--config /path/to/your.toml` 可指向其它文件。
+5. 安装加固版服务 unit——systemd 上位于
+   `/etc/systemd/system/portunus-standalone.service`
+   （`LimitNOFILE=65535`、`AmbientCapabilities=CAP_NET_BIND_SERVICE`、
+   `ProtectSystem=strict`、`NoNewPrivileges=true`）;Alpine 上是 `/etc/init.d`
+   里的 OpenRC `supervise-daemon` 脚本。
+6. 启用并启动服务——因为配置已存在。若你在创建配置前就安装,它只放置 unit
+   而不启动,并打印如何创建配置、如何启动;`--no-service` 则始终跳过启动。
 
-编辑配置后启动：
+之后校验或管理：
 
 ```sh
-sudo ${EDITOR:-vi} /etc/portunus/standalone.toml
-sudo systemctl enable --now portunus-standalone
+portunus-standalone --check --config /etc/portunus/standalone.toml
+sudo systemctl restart portunus-standalone   # 编辑配置后
 sudo systemctl status portunus-standalone --no-pager
 ```
 
-不带参数运行 `bash install.sh` 进入交互菜单，选 `3` 即 standalone。
+不带参数运行 `sh install.sh` 进入交互菜单，选 `3` 即 standalone。
 
 ## 配置 schema
 
@@ -437,19 +453,19 @@ TUI 客户端按平台选默认 socket：
 
 ```sh
 # 升级到最新 release（或固定 --version v1.8.0）：
-bash install.sh upgrade standalone
+sh install.sh upgrade standalone
 
 # 状态（二进制版本、服务是否 active、部署形态）：
-bash install.sh status standalone
+sh install.sh status standalone
 
 # 服务控制透传：
-bash install.sh service standalone restart
+sh install.sh service standalone restart
 
 # 卸载（默认保留 /etc/portunus）：
-bash install.sh uninstall standalone
+sh install.sh uninstall standalone
 
 # Purge：连 /etc/portunus 和 portunus 用户一起清掉：
-bash install.sh uninstall standalone --purge
+sh install.sh uninstall standalone --purge
 ```
 
 如果用 **Docker** 安装：

@@ -58,13 +58,13 @@ sudo curl -fsSL https://get.docker.com | sh
 The fastest path is the one-line installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
 ```
 
 This detects your OS/arch, downloads the matching release binary, verifies its
 SHA-256 against the published checksums, and installs `portunus-server` to
 `/usr/local/bin`. See [install.sh flags](/en/docs/configuration/client#install-the-binary)
-— the flag table (`--version`, `--bin-dir`, `--systemd`) applies to both roles.
+— the flag table (`--version`, `--bin-dir`, `--no-service`) applies to both roles.
 
 Docker Compose is the recommended path for production.
 
@@ -181,7 +181,7 @@ portunus-server --version
 The fastest path is the one-line installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
 For production, running the client as a container is recommended — see Docker below.
@@ -280,44 +280,62 @@ portunus-client --version
 
 `portunus-standalone` reads all of its rules from a TOML file and needs no
 server, no enrollment, and no gRPC. Two install paths — **Docker** for container
-hosts, the **one-click installer** for plain Linux + systemd.
+hosts, the **one-click installer** for plain Linux (systemd or OpenRC).
 
 ### Docker
 
-```sh
-# 1. Grab a starter config and edit it:
-curl -fsSL -o portunus.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-chmod 0644 portunus.toml
-${EDITOR:-vi} portunus.toml
+The installer never writes a config. For the Docker path the config is
+`./portunus.toml` in your current directory, which the generated Compose file
+bind-mounts read-only — so **create it first**, then install:
 
-# 2. Run it (host networking so port-range rules bind directly):
-docker run -d --network host \
-  --name portunus-standalone \
-  --restart unless-stopped \
-  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
-  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```sh
+# 1. write your forwarding rules (Compose mounts ./portunus.toml read-only)
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # the container runs as UID 65532 and must read it
+
+# 2. install + start via Docker Compose
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
 ```
 
 The container runs as UID 65532 (`nonroot`), so the host config must be readable
-by that UID — `chmod 0644 portunus.toml` is the simplest fix. Pin a version tag
-(`:vX.Y.Z`) in production instead of `:latest`.
+by that UID — `chmod 0644 portunus.toml` is the simplest fix. The installer
+writes a `compose.yaml` and starts the service; later `upgrade` / `status` /
+`uninstall` reuse it. Prefer a raw `docker run` or a hand-written Compose file?
+See [Standalone Forwarder](/en/docs/configuration/standalone#docker).
 
-### One-click installer (binary + systemd)
+### One-click installer (binary + service)
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- standalone
-```
-
-This installs the binary, creates the `portunus` system user, writes a starter
-`/etc/portunus/standalone.toml`, and installs a hardened systemd unit. The
-service is **not** auto-started — the shipped config is a template. Edit it
-first, then enable:
+Standalone needs a config you author — the installer never writes one, and
+the binary exits if it is missing. So **create the config first**, then
+install:
 
 ```sh
-sudo ${EDITOR:-vi} /etc/portunus/standalone.toml
-sudo systemctl enable --now portunus-standalone
+# 1. write your forwarding rules
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. install + start (detects systemd or OpenRC, reads the config above)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
+
+This installs the binary, creates the `portunus` system user, installs a
+hardened service unit (systemd, or OpenRC on Alpine), and — because the
+config now exists — enables and starts the service. If you install **before**
+creating the config, the installer lays down the unit but does not start it
+and prints how to create the config and start; add `--no-service` to always
+skip the start. Point the service at a different file with
+`--config /path/to/your.toml`.
 
 Validate any config without starting the service (`ok` + exit 0 on success):
 
@@ -366,17 +384,22 @@ sudo install -m 0755 portunus-<version>-<target>/portunus-server /usr/local/bin/
 sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 ```
 
-## systemd
+## Service (systemd / OpenRC)
 
-Install the binary and the hardened systemd unit in one step:
+Install the binary and a hardened service unit in one step — by default the
+installer also starts it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- server --systemd
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- client --systemd
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client
 ```
 
-This creates the service user and directories and installs the hardened unit
-(Linux only). For a source-checkout install, use
+The installer detects the host init: a hardened **systemd** unit, or an
+**OpenRC** `supervise-daemon` service on Alpine. It creates the service user
+and directories, then enables and starts the service. Pass `--no-service` to
+lay down the binary and unit without starting it; a host with neither systemd
+nor OpenRC gets the binary plus printed run instructions.
+For a source-checkout install, use
 `cd deploy/systemd && sudo ./install.sh server client` instead (the binaries must already be
 in `/usr/local/bin`).
 
@@ -402,15 +425,15 @@ breakdown and hardening notes.
 Run the installer with no arguments for a guided menu (works piped too):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh
 ```
 
 It offers **Install / Uninstall / Upgrade / Status / Service / Config /
-Env** for both binary+systemd and Docker Compose deployments, and the
-server install prompts for the advertised endpoint (persisted to a
+Env** for both binary (systemd / OpenRC) and Docker Compose deployments, and
+the server install prompts for the advertised endpoint (persisted to a
 systemd drop-in or compose `.env`). Non-interactive flags are unchanged
-for CI/automation; `--dry-run` still performs no network or writes.
-Requires bash 4+.
+for CI/automation; `--dry-run` still performs no network or writes. Pure
+POSIX sh — runs under dash / busybox ash, no bash required.
 
 For the full verb/flag surface, deploy-form details, scoped config keys,
 lifecycle examples, and safety semantics, see the

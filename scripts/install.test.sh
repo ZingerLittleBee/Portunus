@@ -212,6 +212,11 @@ echo "$out_sa" | grep -q '^role:[[:space:]]*standalone$' || fail "standalone: ro
 echo "$out_sa" | grep -Eq '^service:[[:space:]]*install \+ start' || fail "standalone: default install must start the service"
 echo "$out_sa" | grep -Eq '^init:[[:space:]]*(systemd|openrc|none)$' || fail "standalone: plan must report detected init"
 echo "$out_sa" | grep -q 'portunus-standalone' || fail "standalone: portunus-standalone not in plan"
+echo "$out_sa" | grep -q '^config:' || fail "standalone: plan must show the config line"
+
+# --- standalone --config: a relative path is absolutized in the plan ---
+oc="$(cd /tmp && $SH "$script" standalone --version 1.4.1 --config rel.toml --dry-run)" || fail "relative --config dry-run"
+printf '%s\n' "$oc" | grep -Eq '^config:[[:space:]]*/' || fail "relative --config must absolutize to an absolute path"
 
 # --- --no-service flips the plan to install-only ---
 out_ns="$($SH "$script" standalone --version 1.4.1 --no-service --dry-run)" || fail "--no-service dry-run exit"

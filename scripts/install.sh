@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -113,6 +113,7 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:no_install_found) _f="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。" ;;
     zh:done_next) _f="安装完成，后续步骤：" ;;
     zh:next_standalone_config) _f="  编辑配置：sudoedit %s" ;;
+    zh:next_standalone_create) _f="  先创建配置：把转发规则写入 %s（没有它服务会直接退出，不会启动）" ;;
     zh:next_systemd) _f="  启动服务：sudo systemctl enable --now portunus-%s" ;;
     zh:next_docker) _f="  查看容器：cd %s && docker compose ps" ;;
     zh:next_status) _f="  查看状态：install.sh status" ;;
@@ -184,6 +185,7 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:no_install_found) _f="No Portunus install detected (no .install-meta and no probe match)." ;;
     *:done_next) _f="Done. Next steps:" ;;
     *:next_standalone_config) _f="  edit:    sudoedit %s" ;;
+    *:next_standalone_create) _f="  create config first: write your forwarding rules to %s (the service exits and won't start without it)" ;;
     *:next_systemd) _f="  start:   sudo systemctl enable --now portunus-%s" ;;
     *:next_docker) _f="  manage:  (cd %s && docker compose ps)" ;;
     *:next_status) _f="  status:  install.sh status" ;;
@@ -357,17 +359,14 @@ ensure_svc_user() {
   esac
 }
 
-# Seed the standalone config at CONFIG_PATH if absent; fix perms; warn if unreadable by the svc user.
+# Prepare the config dir and fix perms on a user-authored config — never
+# seed one. The standalone binary exits (code 2) if the file is absent, so
+# the operator must create it first (see the docs); we only make sure the
+# service user can read whatever they wrote.
 apply_config_path() {
   _r="$1"; _p="$2"; _u="$3"
   [ -z "$_p" ] && return 0
   ${SUDO:-} mkdir -p "$(dirname "$_p")"
-  if [ ! -f "$_p" ] && [ "$_r" = standalone ]; then
-    _ex=""
-    [ -n "${SELF_SCRIPT:-}" ] && _ex="$(dirname "$SELF_SCRIPT")/../crates/portunus-standalone/contrib/portunus.example.toml"
-    if [ -n "$_ex" ] && [ -r "$_ex" ]; then ${SUDO:-} cp "$_ex" "$_p"
-    else ${SUDO:-} curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o "$_p" || die "failed to seed config at $_p"; fi
-  fi
   if [ -f "$_p" ]; then
     ${SUDO:-} chown "root:$_u" "$_p" 2>/dev/null || true
     ${SUDO:-} chmod 0640 "$_p" 2>/dev/null || true
@@ -462,6 +461,17 @@ none_restart() { :; }
 none_status()  { echo "no service manager detected (init=none); not managed"; }
 none_remove()  { :; }
 
+# Decide whether `install` should enable+start the service now. Standalone
+# needs an operator-authored config — the binary exits (code 2) without one,
+# so we don't auto-start it until the file exists (the docs guide creating it
+# first). server/client always start unless --no-service / no init manager.
+service_should_start() {
+  [ "$NO_SERVICE" = yes ] && return 1
+  [ "$INIT" = none ] && return 1
+  [ "$ROLE" = standalone ] && [ ! -f "${CONFIG_PATH:-/etc/portunus/standalone.toml}" ] && return 1
+  return 0
+}
+
 # ─── Plan / dry-run ───────────────────────────────────────────────────
 print_plan() {
   local asset checksums
@@ -488,6 +498,7 @@ print_plan() {
     echo "env_file:         ${COMPOSE_DIR:-$PWD}/.env"
   fi
   echo "bin_dir:          ${BIN_DIR}"
+  [ "$ROLE" = "standalone" ] && [ "${DEPLOY:-binary}" != "docker" ] && echo "config:           ${CONFIG_PATH:-/etc/portunus/standalone.toml} (you create it; service exits if absent)"
   echo "init:             ${INIT:-?}"
   echo "service:          $([ "$NO_SERVICE" = yes ] && echo 'install only (--no-service)' || echo 'install + start')"
   echo "advertised:       ${ADVERTISED:-<unset, runtime auto>}"
@@ -584,21 +595,26 @@ write_server_dropin() {
   echo "→ wrote $f"
 }
 
-# Actionable post-install hints (the installer never auto-starts).
+# Actionable post-install hints. The service is started by default; these
+# cover the cases where it was NOT (--no-service, no init manager, or a
+# standalone install whose config the operator still has to create).
 print_next_steps() {
   echo "$(t done_next)"
   if [ "${DEPLOY:-binary}" = "docker" ]; then
     t next_docker "${COMPOSE_DIR:-$PWD}"; echo
   else
-    [ "$ROLE" = "standalone" ] && { t next_standalone_config "${CONFIG_PATH:-/etc/portunus/standalone.toml}"; echo; }
-    if [ "$NO_SERVICE" = yes ]; then
+    _cfg="${CONFIG_PATH:-/etc/portunus/standalone.toml}"
+    if [ "$ROLE" = "standalone" ]; then
+      if [ -f "$_cfg" ]; then t next_standalone_config "$_cfg"; echo
+      else t next_standalone_create "$_cfg"; echo; fi
+    fi
+    # If we did not start the service, show how to start it.
+    if ! service_should_start; then
       case "${INIT:-}" in
         openrc) t next_openrc "$ROLE" "$ROLE"; echo ;;
-        none)   none_enable_start "$ROLE" "$CONFIG_PATH" ;;
+        none)   none_enable_start "$ROLE" "$_cfg" ;;
         *)      t next_systemd "$ROLE"; echo ;;
       esac
-    elif [ "${INIT:-}" = none ]; then
-      none_enable_start "$ROLE" "$CONFIG_PATH"
     fi
   fi
   t next_status; echo
@@ -624,6 +640,13 @@ write_compose_file() {
   local dir="$1" f="$1/compose.yml" port; port="$(op_http_port)"
   mkdir -p "$dir"
   if [ "$ROLE" = "standalone" ]; then
+    # The compose file bind-mounts ./portunus.toml read-only into the
+    # container. We never seed it — a missing source would make Docker
+    # create a bogus *directory* at that path. Require the operator to
+    # author it first (see the standalone docs).
+    if [ ! -f "$dir/portunus.toml" ]; then
+      die "create ${dir}/portunus.toml first — docker mounts it at /etc/portunus/standalone.toml (example: ${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml)"
+    fi
     # No GHCR image is published for standalone — copy the reference
     # compose file from contrib/ and the user builds locally.
     local self_dir3=""
@@ -635,14 +658,6 @@ write_compose_file() {
     else
       curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/docker-compose.yml" -o "$dir/docker-compose.yml" \
         || die "failed to fetch contrib/docker-compose.yml"
-    fi
-    if [ ! -f "$dir/portunus.toml" ]; then
-      if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
-        cp "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" "$dir/portunus.toml"
-      else
-        curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o "$dir/portunus.toml" \
-          || die "failed to fetch contrib/portunus.example.toml"
-      fi
     fi
     return 0
   fi
@@ -1016,6 +1031,12 @@ apply_install_defaults() {
     die "--config is only valid for the standalone role (client uses --bundle, server uses --data-dir)"
   fi
   [ -z "$CONFIG_PATH" ] && [ "$ROLE" = standalone ] && CONFIG_PATH="/etc/portunus/standalone.toml"
+  # A service unit embeds this path, so it must be absolute — resolve a
+  # relative --config against the invoking cwd.
+  case "$CONFIG_PATH" in
+    ""|/*) : ;;
+    *) CONFIG_PATH="$(pwd)/$CONFIG_PATH" ;;
+  esac
   if [ -z "${DEPLOY:-}" ]; then
     DEPLOY="binary"
     return 0
@@ -1169,7 +1190,7 @@ dispatch_verb() {
         # and config are already on disk, so even if enable/start fails the
         # deploy is recoverable via uninstall/upgrade/status.
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
-        if [ "$NO_SERVICE" != yes ] && [ "$INIT" != none ]; then svc enable_start "$ROLE"; fi
+        if service_should_start; then svc enable_start "$ROLE"; fi
       fi
       if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" "domain=$DOMAIN"

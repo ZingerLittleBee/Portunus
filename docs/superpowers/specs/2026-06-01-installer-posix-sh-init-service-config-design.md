@@ -24,6 +24,33 @@ honor. The flag is therefore **scoped to the `standalone` role only**:
 
 References to "per-role config path" below should be read with this scope.
 
+### Follow-up: standalone is no longer seeded (post-merge revision)
+
+The original design (§5.4, D3) had the installer **seed** the standalone
+config from `contrib/portunus.example.toml` when absent. This was reversed
+after merge per operator feedback:
+
+- The installer **never writes a config**. `apply_config_path` only prepares
+  the directory and fixes ownership/permissions on a file the operator
+  already created.
+- The docs guide the user to **create `portunus.toml` first** (heredoc), then
+  install.
+- The `portunus-standalone` binary already **exits with code 2** when the
+  config is missing (`main.rs`), so a bogus/example-rule run is impossible.
+- Auto-start is now **config-gated for standalone**: `service_should_start`
+  returns false when the standalone config does not yet exist, so a bare
+  install lays down the unit, skips the start, and prints how to create the
+  config and start (`next_standalone_create`). server/client are unaffected
+  and always start unless `--no-service` / no init manager. This avoids a
+  failed unit on first install while preserving "install starts the service"
+  for the documented create-first flow.
+- The **docker** path (`--deploy docker`) is consistent: `write_compose_file`
+  no longer copies the example to `<compose-dir>/portunus.toml`. The compose
+  bind-mounts that file read-only, so a missing source would make Docker
+  create a bogus *directory* — the installer now `die`s with a create-first
+  message instead. Docs guide writing `portunus.toml` via a heredoc before
+  `--deploy docker`.
+
 ## 1. Problem
 
 `scripts/install.sh` is a 1224-line **bash 4+** lifecycle manager. Three

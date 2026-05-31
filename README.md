@@ -10,27 +10,29 @@
 
 > **Fast TCP/UDP port forwarding in Rust.** One static binary, no runtime dependencies. Run it standalone from a single TOML file, or as a control plane that pushes rules to a fleet of edge nodes.
 
-Forward a port in three lines — no server, no database:
+Forward a port with no server and no database — write a config, then install it as a service:
 
-```toml
-# portunus.toml
+```sh
+# 1. write your forwarding rules to the default config path
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
 listen_port = 2222
 target      = "10.0.0.5:22"
+EOF
+
+# 2. install + start (detects systemd/OpenRC; reads /etc/portunus/standalone.toml)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
-portunus-standalone --config portunus.toml   # :2222 → 10.0.0.5:22, TCP and UDP
-```
+`:2222 → 10.0.0.5:22`, TCP and UDP, surviving reboots and SSH logout. Point at a different file with `--config /path/to/your.toml`. Just trying it out? Drop `sudo` and the service and run it in the foreground: `portunus-standalone --config portunus.toml`.
 
 ## Why Portunus
 
 - **Fast, and it stays fast.** Linux `splice(2)` zero-copy lifts single-stream TCP from 9.9 to 21.9 Gbps (2.2×). UDP batches syscalls with `recvmmsg`/`sendmmsg` — ~12× fewer than per-packet — and 1,000 concurrent UDP flows hold a fixed 64 KiB receive buffer, not 64 MiB. A CI benchmark gate fails any PR that regresses the data plane, so the numbers don't quietly rot.
 - **Starts as one TOML, grows into a fleet.** Drop a config on a VPS and you have a forwarder. Point edge nodes at a `portunus-server` and the same tool becomes a control plane — central rule push, Web UI, RBAC, traffic quotas, audit log. One data-plane codebase backs both, so behavior never diverges.
-- **One static binary, no dependencies.** Linux builds are static `musl` — one file runs on any distro (glibc, Alpine/musl, busybox). Docker images are `distroless/static`; install is a single script with checksum verification and a hardened systemd unit.
+- **One static binary, no dependencies.** Linux builds are static `musl` — one file runs on any distro (glibc, Alpine/musl, busybox). Docker images are `distroless/static`; install is a single POSIX-sh script (runs under dash/busybox ash) with checksum verification and a hardened systemd or OpenRC service.
 
 ## Features
 
@@ -52,13 +54,30 @@ For UDP, port ranges, failover, PROXY protocol, and the stats TUI, see the [stan
 
 The one-line script is POSIX `sh` (runs under `dash`/busybox `ash` — no `bash` required), detects OS/arch, and verifies release checksums. By default it installs **and starts** a service; pass `--no-service` to install the binary only. Add `--deploy docker` to any role to run it via Docker Compose instead.
 
-**Standalone** — one host, one TOML file:
+**Standalone** — one host, one TOML file. The installer never seeds a config, so create it first. Where it goes depends on the path:
 
 ```sh
-## Docker Compose
+# Docker Compose: config is ./portunus.toml in the current directory (bind-mounted)
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
-## binary + service (systemd / OpenRC)
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
+```
+
+```sh
+# Binary + service (systemd / OpenRC): config lives at /etc/portunus/standalone.toml
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
 
 **Control plane** — a central server plus any number of edge clients:
@@ -77,7 +96,7 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
-In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus a seeded config and printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone installs accept `--config PATH` to point the service at a specific TOML file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
+In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone never seeds a config — you create it (the binary exits without one); `--config PATH` points the service at a specific file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
 
 **From source** (Rust 1.88+ stable; `protoc` is vendored via `prost-build`):
 
