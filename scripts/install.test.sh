@@ -273,7 +273,7 @@ rm -rf "$sa_tmp"
 
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -s bash -S warning "$script" || fail "shellcheck warnings"
+  shellcheck -s sh -S warning "$script" || fail "shellcheck warnings"
 else
   echo "note: shellcheck not installed; skipping lint gate" >&2
 fi

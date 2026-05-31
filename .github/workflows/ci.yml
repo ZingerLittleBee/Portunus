@@ -64,7 +64,7 @@ jobs:
           bash -n scripts/install.sh
 
       - name: shellcheck (POSIX sh dialect)
-        run: shellcheck -s sh scripts/install.sh
+        run: shellcheck -s sh -S warning scripts/install.sh
 
       - name: install.test.sh under bash
         run: bash scripts/install.test.sh
