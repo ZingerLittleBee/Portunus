@@ -37,8 +37,8 @@ const meterSegments = [
 const copy = {
   en: {
     title: "Portunus",
-    headlineLead: "Forward ports,",
-    headlineAccent: "without giving up control.",
+    headlineLead: "High-performance TCP/UDP forwarding,",
+    headlineAccent: "with a control plane to match.",
     hero: "Run lightweight clients on the hosts that own your public ports, and push TCP and UDP forwarding rules from one server. Permissions, rate limits, metrics, and audit come built in — without ever reading, modifying, or decrypting the bytes that flow through.",
     primary: "Read the docs",
     secondary: "Performance report",
@@ -131,8 +131,8 @@ const copy = {
   },
   zh: {
     title: "Portunus",
-    headlineLead: "转发端口——",
-    headlineAccent: "但不放弃控制。",
+    headlineLead: "高性能 TCP/UDP 转发，",
+    headlineAccent: "还能集中管控。",
     hero: "在拥有公网端口的主机上运行轻量 Client，由一台 Server 统一下发 TCP / UDP 转发规则。权限、限速、指标、审计开箱即用——而业务流量不被读、不被改、不被解密。",
     primary: "阅读文档",
     secondary: "性能报告",
