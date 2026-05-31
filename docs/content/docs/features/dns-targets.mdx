@@ -12,6 +12,9 @@ name (e.g. `api.example.com:443`) instead of an IP literal.
 - Resolution happens **lazily on first connect** through `hickory-resolver`
   reading `/etc/resolv.conf`.
 - Results cache per the resolver-reported TTL clamped to **`[5 s, 5 min]`**.
+  The cache is **bounded** (default 8192 entries) so high name-cardinality
+  workloads can't grow it without limit; expired entries are evicted first,
+  then the live entries closest to expiry if still over the cap.
 - On refresh failure the rule stays `Active` and the last-known answer
   continues serving for **30 s of grace** (RFC 8767 stale-while-error).
   After grace expiry, a fresh attempt is allowed every 3 s.
@@ -33,8 +36,11 @@ portunus-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
 
 ## Hot path
 
-IP-literal targets are byte-identical to v0.2.0: `IpAddr::from_str`
-short-circuits the resolver and goes straight to `TcpStream::connect`.
+IP-literal targets skip the resolver entirely: `IpAddr::from_str`
+short-circuits straight to the dial. The dial itself is **time-boxed**
+by the per-attempt timeout (3 s), so a SYN-blackhole target (a firewall
+that drops rather than refuses) fails fast instead of wedging a task in
+kernel SYN-retransmit for ~75–127 s.
 
 DNS-target hot path performance:
 
@@ -54,7 +60,7 @@ portunus-server rule-stats <id>
 
 # Prometheus
 curl -s 127.0.0.1:7081/metrics | grep dns_failures
-# portunus_rule_dns_failures_total{client="edge-01",rule="2"} 3
+# portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="2"} 3
 ```
 
 The collector is one row per rule (not one per failure), preserving
@@ -75,3 +81,4 @@ visibility; a future release may surface them under `[resolver]` in
 | `attempt_timeout` | 3 s |
 | `negative_cache_retry` | 3 s |
 | `max_concurrent_resolves` | 64 |
+| `max_cache_entries` | 8192 |

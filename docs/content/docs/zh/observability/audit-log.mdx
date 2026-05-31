@@ -70,9 +70,11 @@ portunus-server audit prune --before 2026-05-01T00:00:00Z
 
 ## 缓冲区溢出信号
 
-v0.6 路径的内存缓冲区溢出时会让计数器
-`portunus_audit_buffer_drops_total` 累加。该指标仍保留以反映 v0.6 路径；在
-v0.8+ 持久存储下，正常运行不应出现 drop。
+只要有审计条目因背压丢失，`portunus_audit_buffer_drops_total` 就会累加：
+内存 ring（容量 1000）的驱逐，或持久写入器有界交接队列的溢出 —— 二者语义
+都是"丢失了一条审计条目"，共用这一个计数器。正常运行应保持为 0；持续增长说明
+持久写入器跟不上写入速率。`portunus_audit_durable_writer_lag_seconds` 是先行
+指标 —— 它会在开始 drop 之前先上升。
 
 ## 不会被审计的内容
 

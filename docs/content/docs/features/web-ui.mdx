@@ -58,10 +58,15 @@ the browser.
 ## Per-rule live stats
 
 The rule detail page subscribes to
-`GET /v1/rules/{id}/stats/stream` — an SSE channel pushing one
-`RuleStatsSnapshot` event every 5 seconds. Subscribers cost
-`O(rules)`, not `O(rules × subscribers)`. Slow consumers receive
-`Lagged` and are logged once per minute per rule.
+`GET /v1/rules/{id}/stats/stream` — an SSE channel that pushes one
+`RuleStatsSnapshot` per stats-report tick (default 5 s,
+`stats_report_interval_secs`). A fresh subscriber gets the cache's
+current snapshot immediately, then live fan-out from a per-rule
+`tokio::sync::broadcast`, so cost is `O(rules)`, not
+`O(rules × subscribers)`. A 30 s keep-alive comment holds the
+connection open through middleboxes. Slow consumers that fall behind the
+broadcast buffer drop snapshots (`Lagged`) and a `stats_stream.lagged`
+warning is logged.
 
 ## Multi-target rules
 

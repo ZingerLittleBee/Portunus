@@ -10,8 +10,24 @@ icon: Terminal
 ## 用法
 
 ```sh
-portunus-client [--bundle <PATH>] [--shutdown-drain-timeout-secs <N>]
+# 守护进程模式（无子命令）：连接、接收规则下发、转发。
+portunus-client [--bundle <PATH>] [--reconnect-initial-delay-ms <N>]
+                [--reconnect-max-delay-secs <N>] [--shutdown-drain-timeout-secs <N>]
+                [--stats-report-interval-secs <N>]
+
+# enroll：兑换一次性 URI 并写入 bundle，然后退出。
+portunus-client enroll <URI> [--out <PATH>]
 ```
+
+## enroll
+
+```sh
+portunus-client enroll 'portunus://...' --out ./edge-01.bundle.json
+```
+
+兑换一次性配发 URI（由 `portunus-server enroll-client` 生成），校验固定的
+server 证书，并以 `0600` 权限写入凭据 bundle。`--out` 默认为常规 client
+bundle 位置。成功时把 bundle 路径打印到 stdout；失败时退出 `1`。
 
 ## Bundle 解析
 
@@ -26,10 +42,15 @@ portunus-client [--bundle <PATH>] [--shutdown-drain-timeout-secs <N>]
 
 ## 标志
 
+守护进程模式标志（无子命令）：
+
 | 标志 | 默认 | 用途 |
 | --- | --- | --- |
 | `--bundle <PATH>` | （解析链） | 显式 bundle 路径 |
+| `--reconnect-initial-delay-ms <N>` | 500 | 初始重连延迟；全抖动指数退避的基数 |
+| `--reconnect-max-delay-secs <N>` | 30 | 重连退避上限 |
 | `--shutdown-drain-timeout-secs <N>` | 30 | SIGTERM/SIGINT 时的 drain 预算 |
+| `--stats-report-interval-secs <N>` | 5 | 统计上报间隔 |
 
 `portunus-client --help` 给出当前权威的标志一览。
 
@@ -51,7 +72,7 @@ portunus-client [--bundle <PATH>] [--shutdown-drain-timeout-secs <N>]
    - 分配 listener（TCP `bind` 或 UDP `bind`）。
    - 激活转发循环。
    - 回复 `Active`（或 `Failed(<reason>)`）。
-7. 每 5 秒推送一次 `StatsReport`。
+7. 每 `--stats-report-interval-secs`（默认 5 秒）推送一次 `StatsReport`。
 
 ## Shutdown drain
 

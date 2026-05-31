@@ -83,10 +83,15 @@ host installer
 
 ## Notes
 
-- Railway's HTTP domain should be used only for the Web UI and `/v1/*`
-  operator API.
+- Railway's HTTP domain serves only the Web UI and `/v1/*` operator API.
 - `portunus-client` must dial the TCP Proxy endpoint, not the HTTP
   domain.
+- The Prometheus metrics listener stays on `127.0.0.1:7081`; Railway does
+  not expose it.
+- Set `PORTUNUS_CONTROL_LISTEN` only if you change the TCP Proxy
+  application port; the default is `0.0.0.0:7443`.
+- For a custom domain, set
+  `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN=https://your.custom.domain`.
 
 > On Railway the gRPC host differs from the local bind; set the
 > advertised endpoint during install (the interactive wizard prompts for

@@ -41,7 +41,7 @@ portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
 
 ```toml
 # 一条端口范围规则最多可跨多少个端口。
-# 每个端口在 Client 上消耗一个 TCP listener（即一个 fd）。
+# 每个端口在 Client 上消耗一个 socket（即一个 fd）。
 range_rule_max_ports = 1024
 ```
 
@@ -61,8 +61,8 @@ curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
 ```
 
-逐端口字节计数仅在按需查询时返回。无论范围多大，Prometheus 指标基数预算
-仍是每条规则一行。
+逐端口字节计数仅在通过 API/CLI 按需查询时返回，**不会**导出为独立的
+Prometheus series。无论范围多大，Prometheus 指标基数预算仍是每条规则一行。
 
 ## 冲突处理
 

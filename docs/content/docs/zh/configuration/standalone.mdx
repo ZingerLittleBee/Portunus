@@ -43,7 +43,7 @@ docker run -d --network host \
 
 注意事项：
 
-- 生产环境固定到具体版本（`:1.5.0` 而非 `:latest`）。
+- 生产环境固定到具体版本（`:1.7.0` 而非 `:latest`）。
 - 容器以 **UID 65532**（`nonroot`）运行，宿主机文件必须对该 UID 可读 ——
   `chmod 0644 portunus.toml` 是最简单的做法。如果看到
   `error: io error: Permission denied (os error 13)` 就是这个原因。
@@ -163,6 +163,10 @@ targets = [
 | `--check` | false | 仅验证配置后退出（0 = 合法，2 = 非法）|
 | `--log-level <LEVEL>` | 取自配置 | 覆盖日志级别 |
 | `--log-format <FMT>` | 取自配置 | 覆盖日志格式（`json` 或 `pretty`）|
+| `--no-stats` | false | 关闭 `[stats]` UDS 服务（仅 daemon）|
+| `--stats-socket <PATH>` | 取自配置 | 覆盖 `[stats].socket_path`（仅 daemon）|
+
+`stats` 子命令有自己的标志，参见 [实时流量面板](#实时流量面板)。
 
 不传 `--config` 时，按顺序搜索 `$PORTUNUS_STANDALONE_CONFIG`、
 `./portunus.toml`，都不存在时以 2 退出。
@@ -361,7 +365,9 @@ socket_path = "/run/portunus/standalone.sock"     # Linux 默认
 refresh_ms  = 1000                                # 250..=5000
 ```
 
-daemon CLI 覆盖：`--no-stats`、`--stats-socket <PATH>`。
+daemon 侧覆盖：`--no-stats`、`--stats-socket <PATH>`。
+`stats` 子命令的标志：`--socket <PATH>`（覆盖客户端连接的 socket）、
+`--once`（打印一次 JSON 快照后退出）。
 
 TUI 客户端按平台选默认 socket：
 
@@ -431,7 +437,7 @@ TUI 客户端按平台选默认 socket：
 如果用 **一键脚本** 安装：
 
 ```sh
-# 升级到最新 release（或固定 --version v1.5.0）：
+# 升级到最新 release（或固定 --version v1.7.0）：
 bash install.sh upgrade standalone
 
 # 状态（二进制版本、服务是否 active、部署形态）：

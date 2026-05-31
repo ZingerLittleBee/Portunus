@@ -4,12 +4,12 @@ description: The core forwarding primitive — bind a TCP listener on the edge c
 icon: ArrowRightLeft
 ---
 
-TCP forwarding is the project's bread-and-butter. Every other feature
-(UDP, port ranges, SNI routing, rate limiting…) layers on top of it.
+TCP forwarding is the core primitive. Every other feature (UDP, port
+ranges, SNI routing, rate limiting) layers on top of it.
 
 ## How it works
 
-Each TCP rule activates a single `accept` loop on the client. For every
+Each TCP rule runs a single `accept` loop on the client. For every
 accepted connection the client opens one upstream `TcpStream::connect`
 to the configured target and runs a bidirectional byte copy until either
 side closes.
@@ -17,6 +17,13 @@ side closes.
 There is **no userspace buffering** beyond the kernel's send/recv
 windows. The forwarder is a pure L4 byte passthrough — TLS sessions,
 HTTP requests, and arbitrary protocols pass through unmodified.
+
+On Linux, connections without a bandwidth cap take the `splice(2)`
+fast path (zero-copy through the kernel). Rate-limited connections fall
+back to a userspace copy loop. The listener binds with `SO_REUSEADDR`,
+so a fast process restart (e.g. `docker restart`) rebinds immediately
+instead of failing with `port_in_use` while a prior socket sits in
+`TIME_WAIT`.
 
 ## Push a rule
 
@@ -74,6 +81,11 @@ Per-rule collectors (one row per live rule, labels `{client, rule, owner}`):
 - `portunus_rule_bytes_in_total`
 - `portunus_rule_bytes_out_total`
 - `portunus_rule_active_connections`
+
+Byte counters update incrementally (every 64 KiB) even on the `splice`
+fast path, so long-lived connections (SSH, gRPC streams, WebSockets)
+report live throughput instead of staying frozen until the connection
+closes.
 
 See [Metrics](/en/docs/observability/metrics) for the full collector list.
 

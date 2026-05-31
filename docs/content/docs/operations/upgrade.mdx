@@ -4,9 +4,13 @@ description: Wire-format invariants, capability gates, and the v0.7 → v0.8 fre
 icon: ArrowUp
 ---
 
-Portunus has shipped 11 minor releases (v0.1 → v0.11). Wire-format
-changes are **additive only** — newer fields use proto3
-default-stripping so cross-version pairs degrade gracefully.
+Wire-format changes are **additive only** — newer fields use proto3
+default-stripping so cross-version pairs degrade gracefully. The only
+breaking step in the project's history is v0.7 → v0.8 (the JSON →
+SQLite cutover, documented below); v0.7 never reached production.
+
+Since v1.0 no upgrade requires a manual SQLite schema migration — the
+server runs embedded migrations forward automatically at startup.
 
 ## Compatibility matrix
 
@@ -85,6 +89,39 @@ continue to work for CLI and automation. Existing users are not assigned
 passwords automatically; a `superadmin` should create or reset local passwords
 from the Web UI, or use local `reset-password` while the server is stopped.
 
+## v1.x data-plane releases
+
+All v1.x upgrades are drop-in: no manual SQLite migration, no wire
+break, no operator-surface removal. Upgrade the binary and restart.
+Highlights operators may notice:
+
+- **v1.3 (Linux `splice(2)` fast path)** — TCP throughput roughly
+  doubles on Linux for rules with no bandwidth caps. Operator-invisible;
+  see [Troubleshooting → Disabling the Linux fast path](/en/docs/operations/troubleshooting#disabling-the-linux-fast-path-for-triage).
+- **v1.4 (traffic quotas)** — adds SQLite migration `V008`
+  (`traffic_quotas` + history tables) applied automatically. No backfill,
+  no default rows; unconfigured pairs forward exactly as before. See the
+  [Traffic Quotas runbook](/en/docs/operations/runbook-traffic-quotas).
+- **v1.5 — UDP per-rule flow cap correction.** `udp_max_flows_per_rule`
+  is now enforced once across the whole rule instead of per listen port.
+  A **range** UDP rule's effective capacity drops by a factor of
+  `range_size`. If you relied on the old inflated capacity, raise
+  `udp_max_flows_per_rule` proportionally or split the range; the field
+  is capped at `65535`, so if `cap × range_size` previously exceeded
+  that you **must** split the rule. Single-port UDP rules are unchanged.
+- **v1.6 — standalone stats TUI** (`portunus-standalone stats`); no
+  control-plane change.
+- **v1.6.1 — `SO_REUSEADDR` on TCP listeners.** Fixes spurious
+  `port_in_use` after `docker restart` / fast process recycles while
+  `accept()`-ed child sockets linger in `TIME_WAIT`. Splice byte
+  counters (`bytes_in` / `bytes_out`) now update incrementally on
+  long-lived flows instead of only at connection close.
+- **v1.7 — forwarder hardening.** UDP head-of-line-blocking fix,
+  accept-loop backoff, time-boxed PROXY-protocol prelude and IP-target
+  dials, bounded DNS cache, splice + byte counters on the multi-target
+  failover path, and a fix for the per-rule rate limiter leaking on rule
+  removal. All internal; no operator action.
+
 ## Downgrade caveats
 
 - **v0.5 → v0.4**: `identity.json` becomes inert; `operator_token` is
@@ -96,14 +133,28 @@ from the Web UI, or use local `reset-password` while the server is stopped.
 
 ## Checking the schema version
 
+The query returns the single highest applied migration number (refinery
+stores one integer per migration in `schema_migrations`):
+
 ```sh
 sqlite3 /var/lib/portunus/state.db \
-    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;'
+    'SELECT MAX(version) FROM schema_migrations;'
 ```
 
-| Version range | Binary range |
-| --- | --- |
-| `[1, 1]` | v0.8 |
-| `[1, 2]` | v0.9 (TLS SNI routing) |
-| `[1, 3]` | v0.10 (PROXY protocol) |
-| `[1, 4]` | v0.11 (rate limiting) |
+| Version | First shipped in | Migration(s) |
+| --- | --- | --- |
+| `1` | v0.8 | initial schema |
+| `2` | v0.9 | TLS SNI routing |
+| `4` | v0.10 | PROXY protocol + rule runtime columns |
+| `5` | v0.11 | rate limiting |
+| `6` | v1.1 | local password auth |
+| `7` | v1.3.1 | per-client entry address |
+| `8` | v1.4 | traffic quotas + history |
+| `9` | v1.4.2 | client enrollments |
+| `10` | v1.4.3 | runtime advertised endpoint |
+
+v1.5 – v1.7 add no SQLite migrations; the head stays at `10`.
+
+A newer binary auto-applies any missing migrations on startup. A binary
+older than the on-disk schema refuses to start with exit 78
+(`startup.schema_version_too_new`).

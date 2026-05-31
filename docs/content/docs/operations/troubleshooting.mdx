@@ -50,12 +50,23 @@ portunus-server push-rule edge-01 18080 10.0.0.5:8080
 # exit 6: activation_failed: port_in_use
 ```
 
-Something on the client (another rule, an unrelated process, a kernel
-TIME_WAIT lingering on a low port) holds the listen port.
+Something on the client (another rule, an unrelated process) holds the
+listen port.
 
 **Fix**: pick a free port, or `remove-rule` the holder + retry. There
 is **no auto-retry** — failed rules block port reuse until removed
 (deliberate Q4 lifecycle decision).
+
+<Callout type="info">
+  Since **v1.6.1** the TCP listener binds with `SO_REUSEADDR`, so a
+  `docker restart` or fast process recycle no longer hits a spurious
+  `port_in_use` while `accept()`-ed child sockets from the dead process
+  linger in `TIME_WAIT` (previously held the port for ~`tcp_fin_timeout`,
+  60 s default). `SO_REUSEADDR` only relaxes the `TIME_WAIT` bind — two
+  live `LISTEN` sockets on the same port still conflict, so duplicate
+  rules are still rejected with `port_in_use`. If you see `port_in_use`
+  on a fresh start, the port is genuinely held by another process or rule.
+</Callout>
 
 ### `client_not_connected`
 
@@ -70,6 +81,36 @@ re-pushes on reconnect. Confirm with:
 ```sh
 portunus-server list-clients
 ```
+
+## Target resolution (DNS)
+
+Rules with a DNS-name target resolve lazily on each new connection /
+flow. A resolution failure does **not** fail the rule — it drops the
+individual connection (TCP) or first packet (UDP) and emits a structured
+event:
+
+```json
+{"event":"rule.dns_failed","rule":"…","host":"…","reason":"…"}
+```
+
+UDP uses `rule.udp_dns_failed`. Each failure also bumps the per-rule
+Prometheus counter:
+
+```text
+portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="42"}
+```
+
+**Fix**: confirm the target hostname resolves from the client host
+(`dig`, `getent hosts`), and that the client's resolver / `/etc/resolv.conf`
+is reachable. Transient upstream-DNS outages surface as a rising counter
+that flattens once resolution recovers; the resolver caches successful
+answers (honouring TTL) and briefly serves stale entries across a failed
+refresh, so a flapping resolver does not necessarily drop every connection.
+
+The resolver cache is **bounded** (memory-leak guard, since v1.7): under
+a high-cardinality target workload it evicts the entries closest to
+expiry rather than growing without limit. It is an internal safeguard —
+there is no operator knob.
 
 ## RBAC denials
 
@@ -179,6 +220,19 @@ bisect with `git bisect run cargo bench …`.
 Check `portunus_rule_flows_dropped_overflow_total`. If non-zero, raise
 `udp_max_flows_per_rule` in `server.toml` (and `LimitNOFILE` on the
 client systemd unit).
+
+Since **v1.5** the flow cap is enforced once **per rule**, not per listen
+port — a range rule with `udp_max_flows_per_rule = N` admits `N` flows
+total across all its ports (was `N × range_size`). If a range rule that
+worked on v1.4 now overflows, raise the cap proportionally or split the
+range; the field is capped at `65535`. See the
+[Upgrade Guide](/en/docs/operations/upgrade#v1x-data-plane-releases).
+
+Since **v1.7** the per-rule UDP listener loop is hardened against
+head-of-line blocking, so one slow upstream no longer stalls datagrams
+for other flows on the same rule. A single misbehaving flow may still be
+evicted early on a reflected ICMP error
+(`rule.udp_flow_evicted_icmp`) — the next datagram rebuilds it.
 
 ### "TLS handshakes seem slow on SNI-mode listeners"
 
@@ -359,6 +413,13 @@ The fast path is not active. Check, in order:
 4. Inspect `proxy.splice_selected` (info-level) — it fires once per
    rule when a rule first takes the fast path. Its absence indicates
    ineligibility.
+
+Since **v1.6.1**, `bytes_in` / `bytes_out` update incrementally on the
+splice path (one `Relaxed` add per 64 KiB batch per direction) instead
+of only at connection close — so long-lived flows (SSH, gRPC, WebSocket)
+no longer leave the rate display frozen at 0. Since **v1.7** the splice
+fast path and live byte counters also apply on the multi-target failover
+path.
 
 ### "`bytes_in` and bytes the upstream actually received do not match under RST"
 

@@ -42,27 +42,49 @@ PROXY-aware. TCP only; UDP paths are unaffected.
 </Callout>
 
 Per-target opt-in means a single rule can mix PROXY-aware and
-PROXY-unaware backends:
+PROXY-unaware backends. `proxy_protocol` is set per target in the
+`targets[]` array — via `--targets-json` (or `POST /v1/rules`), or in a
+standalone TOML target. The repeatable `--target host:port[@priority]`
+shorthand cannot carry it.
 
 ```sh
-portunus-server push-rule edge-01 443 \
-  --target backend-a.local:8080@1 --target-proxy-protocol a:v2 \
-  --target backend-b.local:8080@2
-# backend-a sees the v2 binary header; backend-b sees the legacy byte stream
+# backend-a gets the v2 binary header; backend-b gets the legacy byte stream
+portunus-server push-rule edge-01 443 --targets-json '[
+  {"host":"backend-a.local","port":8080,"priority":1,"proxy_protocol":"v2"},
+  {"host":"backend-b.local","port":8080,"priority":2}
+]'
 ```
 
-(Exact CLI flag syntax may vary — check `portunus-server push-rule --help`.)
+```toml
+# portunus-standalone: per-target in the rule's targets array
+[[rule]]
+name = "ha-https"
+protocol = "tcp"
+listen_port = 443
+targets = [
+  { host = "backend-a.local", port = 8080, priority = 1, proxy_protocol = "v2" },
+  { host = "backend-b.local", port = 8080, priority = 2 },
+]
+```
+
+UDP rules carrying `proxy_protocol` are rejected with
+`validation.proxy_protocol_on_unsupported_rule`. The accepted values are
+`"v1"` and `"v2"`; anything else fails `validation.proxy_protocol_invalid`.
 
 ## Modes
 
 | Mode | Description |
 | --- | --- |
-| `v1` | Human-readable text header (e.g. `PROXY TCP4 1.2.3.4 5.6.7.8 12345 80\r\n`) |
-| `v2` | 16-byte binary header per the PROXY-protocol v2 spec |
+| `v1` | Human-readable text header `PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>\r\n` (e.g. `PROXY TCP4 1.2.3.4 5.6.7.8 12345 80\r\n`; `TCP6` for IPv6) |
+| `v2` | Binary header — 16-byte signature/command prefix followed by the address block (28 bytes total for IPv4, 52 for IPv6) per the PROXY-protocol v2 spec |
 | absent (default) | No prelude — legacy byte stream |
 
 The choice is **per-target**, not per-rule, so multi-target rules can
 mix opt-in and opt-out backends.
+
+Since v1.7.0 the prelude write is **time-boxed**: a slow or stuck
+upstream can no longer hang connection setup while the header is being
+written.
 
 ## Peek-duration histogram (SNI-mode listeners only)
 

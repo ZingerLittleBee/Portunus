@@ -31,7 +31,9 @@ setup token 30 分钟后过期。如果 onboarding 没完成，每次 server 进
 轮换 token，并让旧 token 失效。第一个启用的 `superadmin` 创建后，onboarding
 会永久关闭。
 
-旧的 Bearer bootstrap 路径仍保留给自动化和升级兼容：
+旧的 Bearer bootstrap 路径仍保留给自动化和升级兼容。
+
+### 路径 A —— `bootstrap-superadmin`
 
 ```sh
 portunus-server --data-dir ./srv bootstrap-superadmin --name ops
@@ -40,7 +42,7 @@ portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 
 Bearer Token **只输出一次**。幂等 —— 二次执行会非零退出。
 
-### B —— server.toml 捷径
+### 路径 B —— server.toml 捷径
 
 ```toml
 operator_token = "<43-char URL-safe-base64 token>"

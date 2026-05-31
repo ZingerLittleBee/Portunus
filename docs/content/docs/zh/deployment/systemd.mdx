@@ -5,8 +5,8 @@ icon: Server
 ---
 
 `Portunus` 在 `deploy/systemd/` 目录下提供了拿来就能用的加固 unit。两份
-unit 都设置了 `User=`、`ProtectSystem=full`、`CapabilityBoundingSet=`、
-以及与负载相称的 `LimitNOFILE` 覆写。
+unit 都以专用系统用户运行，启用 `ProtectSystem=strict`、`@system-service`
+系统调用过滤、受限的地址族集合，以及与负载相称的 `LimitNOFILE`。
 
 ## 一键安装
 
@@ -19,8 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 该命令下载并校验 release 二进制、创建 `portunus-client` 服务用户、布置
 `/etc/portunus`（mode 0750），并安装加固的 `portunus-client.service`。对于
-server 端，使用 `… | sudo sh -s -- server --systemd`（创建 `portunus-server`、
-`/var/lib/portunus`）。二进制获取与标志说明统一记录在
+server 端，使用 `… | sudo sh -s -- server --systemd`（创建 `portunus-server`
+与 `/var/lib/portunus`，mode 0750）。二进制获取与标志说明统一记录在
 [Client 配置](/zh/docs/configuration/client#安装二进制)中。
 
 如果从源码 checkout 安装，也可以只安装 unit 文件：
@@ -30,62 +30,97 @@ server 端，使用 `… | sudo sh -s -- server --systemd`（创建 `portunus-se
 
 ```ini
 [Unit]
-Description=Portunus server
-After=network.target
+Description=Portunus control plane
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=exec
 User=portunus-server
 Group=portunus-server
-StateDirectory=portunus
-StateDirectoryMode=0700
-ExecStart=/usr/local/bin/portunus-server serve \
-    --data-dir /var/lib/portunus
+ExecStart=/usr/local/bin/portunus-server --data-dir /var/lib/portunus serve
 Restart=on-failure
-RestartSec=2
-TimeoutStopSec=35
-ProtectSystem=full
-ProtectHome=true
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=4096
+
+# Hardening
 NoNewPrivileges=true
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-LimitNOFILE=65535
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/portunus
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`StateDirectory=portunus` 是 systemd 原生写法：systemd 会用正确的属主
-自动创建 `/var/lib/portunus`，并把 `$STATE_DIRECTORY=/var/lib/portunus`
-注入进程。
-
-`TimeoutStopSec=35` 在配置的 drain（`shutdown_drain_timeout_secs = 30`）
-之上多留 5 秒余量。
+`TimeoutStopSec=60` 比配置的 drain（`shutdown_drain_timeout_secs`，默认
+30 秒）更大，确保 server 自身的 drain 在 `SIGKILL` 之前完成。server 不绑定
+转发端口（由 client 绑定），因此不需要 `CAP_NET_BIND_SERVICE`，
+`LimitNOFILE=4096` 足以覆盖 gRPC 流、operator HTTP、metrics 和持久化，可承载
+数百个 client。`ReadWritePaths=/var/lib/portunus` 是唯一可写路径：SQLite 状态、
+自动生成的 TLS 材料，以及可选的 `server.toml`。
 
 ## client.service
 
 ```ini
 [Unit]
-Description=Portunus client
-After=network.target
+Description=Portunus edge client
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=exec
 User=portunus-client
 Group=portunus-client
-ExecStart=/usr/local/bin/portunus-client \
-    --bundle /etc/portunus/client.bundle.json
+ExecStart=/usr/local/bin/portunus-client --bundle /etc/portunus/client.bundle.json
 Restart=on-failure
-RestartSec=2
-TimeoutStopSec=35
-ProtectSystem=full
-ProtectHome=true
-NoNewPrivileges=true
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=16384
+
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-LimitNOFILE=65535
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/portunus/client.bundle.json
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+client 绑定 operator 推送的规则所配置的 listen 端口，因此带有
+`CAP_NET_BIND_SERVICE` 以绑定特权端口（小于 1024）。`LimitNOFILE=16384`
+覆盖默认 1024 个端口的范围上限加上在途连接（每个端口占用一个 listener fd，
+每条连接占用两个 fd）。在 `server.toml` 中调高 `range_rule_max_ports` 的运维者
+必须按比例上调该值。bundle 以只读方式挂载。
 
 ## 首次启动流程
 
@@ -149,12 +184,13 @@ sudo systemctl start portunus-server
 
 ## 加固备注
 
-- **小于 1024 的端口** 需要 `CAP_NET_BIND_SERVICE`（unit 已包含）。
-  转发器只绑规则配置过的端口，能力面被严格收敛。
+- **小于 1024 的端口** 需要 `CAP_NET_BIND_SERVICE`，该能力位于 **client**
+  unit（client 绑定规则的 listen 端口，server 不绑定）。转发器只绑定规则
+  配置过的端口，能力面被严格收敛。
 - **`--data-dir` 落在 NFS / tmpfs / ramfs** 启动期会以
-  `event=startup.unsupported_filesystem` 拒绝。请改本地文件系统。
-- **两个 server 进程同时打开同一 data-dir** 第二个会以
-  `event=startup.store_in_use`（退出 75）退出。clustering 不在范围。
+  `event=startup.unsupported_filesystem` 拒绝。请改用本地文件系统。
+- **两个 server 进程同时打开同一 data-dir**：第二个会以
+  `event=startup.store_in_use`（退出码 75）退出。clustering 不在范围内。
 
 ## 备份 cron
 

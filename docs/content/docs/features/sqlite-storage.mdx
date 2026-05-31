@@ -20,6 +20,9 @@ audit ring buffer into one embedded SQLite database at
 
 ## Tables
 
+Representative tables (schema evolves via migration; see
+`crates/portunus-server/src/store/migrations/`):
+
 | Table | Holds |
 | --- | --- |
 | `users` | RBAC users (id, role, display name, disabled flag) |
@@ -29,6 +32,9 @@ audit ring buffer into one embedded SQLite database at
 | `rule_targets` | Multi-target rule entries (v0.7+) |
 | `audit` | Durable audit log (replaces the v0.6 in-memory ring) |
 | `rate_limit_owner` | Per-owner cap envelopes (v0.11+) |
+| `traffic_quotas`, `traffic_samples_*` | Per-`(user, client)` monthly usage + history (v0.13+) |
+| `web_sessions`, `login_attempts`, `onboarding_setup` | Local password auth + first-run setup token (v1.1+) |
+| `client_enrollments` | One-time client enrollment codes |
 
 ## Path layout
 
@@ -86,11 +92,14 @@ version, or upgrade.
 
 ```sh
 portunus-server reset --confirm
-# wipes state.db + state.db-wal + state.db-shm
+# wipes state.db + state.db-wal + state.db-shm (+ state.db.lock)
 # refuses any path whose first 16 bytes don't match the SQLite header
 ```
 
-The header check protects against typo'd `--data-dir`.
+The header check protects against a typo'd `--data-dir`. `reset` leaves
+`server.crt` / `server.key` / `server.toml` in the same directory
+untouched. Without `--confirm` it is a dry run that prints the path it
+would remove.
 
 ## Audit prune
 
@@ -101,10 +110,11 @@ prune CLI:
 # Dry run — count without deleting
 portunus-server audit prune --before 2026-05-01T00:00:00Z --dry-run
 
-# Real prune
+# Real prune — deletes under BEGIN IMMEDIATE, then PRAGMA incremental_vacuum
 portunus-server audit prune --before 2026-05-01T00:00:00Z
-# Deletes under BEGIN IMMEDIATE then runs PRAGMA incremental_vacuum.
 ```
+
+Run it from cron (daily / weekly) to keep the database bounded.
 
 ## Audit envelope mode
 

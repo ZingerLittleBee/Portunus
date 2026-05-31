@@ -18,6 +18,9 @@ v0.8.0 起支持。把 Server 端所有持久 JSON 文件
 
 ## 表
 
+代表性的表（schema 通过 migration 演进，见
+`crates/portunus-server/src/store/migrations/`）：
+
 | 表 | 用途 |
 | --- | --- |
 | `users` | RBAC 用户（id、role、显示名、disabled） |
@@ -27,6 +30,9 @@ v0.8.0 起支持。把 Server 端所有持久 JSON 文件
 | `rule_targets` | 多目标规则条目（v0.7+） |
 | `audit` | 持久审计日志（取代 v0.6 的内存 ring） |
 | `rate_limit_owner` | 每个所有者的信封（v0.11+） |
+| `traffic_quotas`、`traffic_samples_*` | 每个 `(user, client)` 的月度用量与历史（v0.13+） |
+| `web_sessions`、`login_attempts`、`onboarding_setup` | 本地密码登录与首次启动 setup token（v1.1+） |
+| `client_enrollments` | 一次性 Client 注册码 |
 
 ## 路径布局
 
@@ -79,27 +85,27 @@ portunus-server serve               # 自动跑 schema 迁移
 
 ```sh
 portunus-server reset --confirm
-# 清掉 state.db + state.db-wal + state.db-shm
+# 清掉 state.db + state.db-wal + state.db-shm（以及 state.db.lock）
 # 拒绝处理任何前 16 字节不是 SQLite header 的路径
 ```
 
-header 检查可保护 typo 错的 `--data-dir`。`reset` **不会** 清空同目录中的
-server.crt / server.key / server.toml。
+header 检查可防止 typo 错的 `--data-dir`。`reset` **不会** 动同目录中的
+`server.crt` / `server.key` / `server.toml`。不带 `--confirm` 时它只是干跑，
+打印将要删除的路径。
 
 ## 审计 prune
 
-审计表是持久化的，不再是 ring。其大小由 prune CLI 来约束，不再受固定
-ring 上限：
+审计表是持久化的，不是 ring buffer。其大小由 prune CLI 约束：
 
 ```sh
 # 干跑 —— 仅统计不删除
 portunus-server audit prune --before 2026-05-01T00:00:00Z --dry-run
 
-# 真正删除（BEGIN IMMEDIATE + PRAGMA incremental_vacuum）
+# 真正删除 —— 在 BEGIN IMMEDIATE 下删除，随后 PRAGMA incremental_vacuum
 portunus-server audit prune --before 2026-05-01T00:00:00Z
 ```
 
-建议放进 cron daily / weekly 来约束库大小。
+放进 cron（每日 / 每周）即可让数据库保持有界。
 
 ## 审计信封模式
 

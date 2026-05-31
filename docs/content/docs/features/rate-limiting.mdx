@@ -16,9 +16,11 @@ fields preserve v0.10 behaviour byte-for-byte.
 | `new_connections_per_sec` | TCP accept-then-RST or UDP first-packet drop. |
 | `concurrent_connections` | Atomic `fetch_add` then cap check on accept (TCP) / first-packet (UDP). RAII guard releases the slot on close. |
 
-Each cap has an optional sibling `*_burst` field. Absent → `burst = 1 ×
-rate`. Server validation clamps to `[rate / 100, rate × 60]` and rejects
-zero or negative rates.
+`bandwidth_in_bps`, `bandwidth_out_bps`, and `new_connections_per_sec`
+each accept an optional burst override; `concurrent_connections` does
+not (it has no token bucket). Absent → `burst = 1 × rate` (one second of
+tokens). Server validation clamps the burst to `[rate / 100, rate × 60]`
+and rejects zero or negative rates.
 
 <Callout type="info">
   **The rate limiter never closes existing connections** — including
@@ -62,8 +64,8 @@ Important consequences:
 - All cap metrics, audit fields, throttle counters, and reject behavior
   are unchanged by splice. See [Metrics](#metrics).
 
-The net effect: enabling splice never costs you a QoS feature. Capped
-rules simply skip the speedup; uncapped rules get it for free.
+Enabling splice never disables a QoS feature: capped rules skip the
+speedup, uncapped rules get it.
 
 ## Per-rule caps
 
@@ -73,8 +75,11 @@ portunus-server push-rule edge-01 443 backend.local:8080 \
   --bandwidth-out-bps 524288 \           # 512 KB/s out
   --new-connections-per-sec 100 \
   --concurrent-connections 1000 \
-  --bandwidth-in-bps-burst 2097152       # optional burst override
+  --bandwidth-in-burst 2097152           # optional burst override
 ```
+
+Burst flags are `--bandwidth-in-burst`, `--bandwidth-out-burst`, and
+`--new-connections-burst`.
 
 The `list-rules` human output gains a compact `CAPS` column showing
 the active caps per rule.
@@ -101,7 +106,8 @@ portunus-server owner-cap list edge-01
 portunus-server owner-cap delete edge-01 alice
 ```
 
-REST surface: `/v1/clients/{id}/owners/{owner_id}/rate-limit`.
+REST surface: `/v1/clients/{client_id}/owners/{owner_id}/rate-limit`
+(list owners at `/v1/clients/{client_id}/owners`).
 
 ## Reject reasons
 
@@ -126,6 +132,9 @@ Cap mutations swap the rule's `Arc<RuleRateLimiter>` while preserving
 - Lowering the cap doesn't strand the existing token pool.
 - Lowering the concurrent cap below the live count drains gracefully —
   no forcible close (FR Q4).
+
+Since v1.7.0, a rule's per-rule limiter is reclaimed when the rule is
+removed (previously it leaked).
 
 ## Capability gate
 

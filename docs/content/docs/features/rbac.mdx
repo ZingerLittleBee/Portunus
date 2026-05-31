@@ -35,7 +35,9 @@ server process start rotates the token and invalidates the previous one. After
 the first active `superadmin` exists, onboarding stays closed.
 
 The older bearer bootstrap paths remain available for automation and upgrade
-compatibility:
+compatibility.
+
+### Path A — `bootstrap-superadmin`
 
 ```sh
 portunus-server --data-dir ./srv bootstrap-superadmin --name ops
@@ -43,7 +45,7 @@ portunus-server --data-dir ./srv bootstrap-superadmin --name ops
 ```
 
 The bearer prints **exactly once**. Idempotent — refuses to bootstrap
-twice with non-zero exit.
+twice and exits non-zero.
 
 ### Path B — server.toml shortcut
 

@@ -79,17 +79,29 @@ portunus_tls_sni_listener_parse_failures_total{client,port}
 portunus_tls_sni_routes_active
 ```
 
-`result` ∈ `{exact, wildcard, fallback, no_match}`.
+- `portunus_tls_sni_route_total` — per-rule successful dispatches.
+  `result` ∈ `{exact, wildcard, fallback}` (one row per result kind).
+- `portunus_tls_sni_listener_miss_total` — per-listener connections
+  whose SNI matched no rule **and** had no fallback (i.e. dropped).
+- `portunus_tls_sni_listener_parse_failures_total` — per-listener peeks
+  that failed to parse as a ClientHello, timed out, or hit the size cap.
+- `portunus_tls_sni_routes_active` — global gauge of active rules with
+  an SNI selector.
+
+Legacy plain-TCP listeners never emit any of these series.
 
 ## Tracing events
 
-Five structured events with `target = "tls_sni"`:
+Structured events with `target = "tls_sni"`:
 
-- `client_hello_timeout`
-- `client_hello_parse_failure`
-- `no_sni_fallback`
-- `sni_no_match`
-- `sni_route_success`
+| `event` | When |
+| --- | --- |
+| `tls.sni_routed` | Connection dispatched to a matching rule |
+| `tls.no_sni` | ClientHello had no SNI extension |
+| `tls.sni_no_match` | SNI present but matched no rule (and no fallback) |
+| `tls.client_hello_timeout` | Peek timed out before a full ClientHello arrived |
+| `tls.parse_failed` | Peeked bytes failed to parse as a ClientHello |
+| `tls.sni_listener.started` / `.stopped` / `.accept_error` | Listener lifecycle |
 
 Per the audit-isolation invariant (D13), data-plane SNI events do **not**
 enter the SQLite operator audit ring.

@@ -10,12 +10,15 @@ an ordered list of up to 8.
 ## How it works
 
 - **Lower priority number = higher preference**. The client always
-  attempts the highest-preference healthy target first.
+  attempts the highest-preference healthy target first, then walks the
+  remaining targets in priority order on failure.
 - **Passive failure detection**: 3 consecutive connect failures within
   30 s flips a target to `Failed`; 2 consecutive successes flip it back.
 - **Active probes** (optional, per rule): set
   `health_check_interval_secs` (range `1..=3600`) to drive periodic
   TCP-connect probes from the client.
+- **All-failed fallback**: when every target is `Failed`, the client
+  still attempts the highest-priority target rather than giving up.
 - All health state is **client-side and ephemeral** — it does not
   survive a client restart.
 
@@ -50,7 +53,7 @@ Per-target byte counters surface **only on demand** to keep the
 Prometheus cardinality bounded:
 
 ```sh
-# CLI
+# CLI (single-target rules print a no-op note and exit 0)
 portunus-server rule-stats <id> --per-target
 
 # HTTP
@@ -68,11 +71,18 @@ counters that update on the existing 5-second SSE cadence.
 
 ## Default `/metrics`
 
-One always-on counter: `portunus_rule_target_failovers_total{client,rule}`
-captures Healthy↔Failed transitions per rule. Per-target byte counters
-are **never** in default `/metrics` series.
+One always-on counter:
+`portunus_rule_target_failovers_total{client,rule,owner}` captures
+Healthy↔Failed transitions per rule. Per-target byte counters are
+**never** in the default `/metrics` series.
 
 ## Capability gate
 
 Multi-target push to a v0.6.0-or-earlier client is rejected at the HTTP
 layer with `422 multi_target_unsupported_by_client`.
+
+## Performance
+
+Since v1.7.0 the live byte counters and the Linux `splice(2)` fast path
+also apply to the multi-target failover path; per-target accounting is
+reconciled centrally and closed correctly on error.

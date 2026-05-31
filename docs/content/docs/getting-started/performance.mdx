@@ -4,7 +4,7 @@ description: Benchmark methodology, current Portunus measurements, comparable fo
 icon: Gauge
 ---
 
-This report records the current **v1.6.1** performance posture. Read the
+This report captures the current **v1.6.1** performance. Read the
 numbers as **same-host evidence** — measurements taken on one specific
 machine — rather than as universal throughput claims. Forwarding speed is
 dominated by the kernel version, the CPU frequency policy, the network
@@ -12,8 +12,8 @@ path, socket buffer sizing, and whether traffic stays inside the kernel
 or has to cross into userspace (the application's own memory).
 
 For TCP, the v1.6.1 data plane is unchanged from v1.3.0, the release that
-introduced the splice fast path. This revision **re-measures on a fresh
-Linux host** and adds a direct **`portunus-standalone` vs
+introduced the splice fast path. This revision **re-measures the same host
+end-to-end** and adds a direct **`portunus-standalone` vs
 `portunus-client`** comparison, because both binaries ship the same
 `portunus-forwarder` data plane. The earlier v1.3.0 and v0.11 baselines
 are preserved on the
@@ -29,16 +29,18 @@ are preserved on the
 All v1.6.1 numbers below were captured on:
 
 ```text
-Linux ip-207-241-173-217 6.12.38+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.38-1 x86_64
+Linux host 6.12.38+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.38-1 x86_64
 AMD EPYC 7B13 (4 vCPU), 7.8 GiB RAM
 rustc 1.96.0 (ac68faa20 2026-05-25)
 iperf 3.18 (cJSON 1.7.15)
 ```
 
-This is a 4-vCPU Debian 13 / kernel 6.12 host — the same OS and kernel
-family as the [v0.11 / v1.3.0 bench host](/en/docs/getting-started/performance-history),
-but different hardware. **Absolute numbers therefore are not comparable
-between the two hosts** — only same-host deltas are meaningful.
+This is the **same 4-vCPU Debian 13 / kernel 6.12 machine** that produced
+the [v0.11 / v1.3.0 baselines](/en/docs/getting-started/performance-history).
+Read each result as a **same-machine, back-to-back delta** — `iperf3` vs
+`iptables` vs Portunus in one run — not as an absolute number to compare
+across reports, since the toolchain and kernel point release move between
+sessions.
 
 All tests run over the **loopback interface** (`lo` — traffic that never
 leaves the machine), so the network itself is never the bottleneck and we
@@ -54,7 +56,7 @@ measured back-to-back against the same `iperf3` target:
 Each forwarder is its own column, so you can compare them side by side
 against the `iptables` baseline:
 
-| | `iptables` REDIRECT (baseline) | `portunus-standalone` | `portunus-client` | Direct (no forwarder) |
+| | `iptables` REDIRECT (baseline) | `portunus-standalone` | `portunus-client` | `iperf3` |
 | --- | ---: | ---: | ---: | ---: |
 | Throughput | 26,987 Mbit/s | **31,936 Mbit/s** | **26,644 Mbit/s** | 30,890 Mbit/s |
 | vs `iptables` | 100.0% | **118.3%** | **98.7%** | 114.5% |
@@ -66,28 +68,28 @@ a forwarder can realistically be on this host. The **vs `iptables`** row
 is each column's throughput divided by that baseline — 100% means on par
 with kernel forwarding, above 100% means faster than it. So
 `portunus-standalone` runs at **118.3%** of kernel iptables and
-`portunus-client` at **98.7%** (on par). The `Direct` column — `iperf3`
-with no forwarder at all — is the raw ceiling, at 114.5%.
+`portunus-client` at **98.7%** (on par). The `iperf3` column — no forwarder
+at all — is the raw ceiling, at 114.5%.
 
 With the splice fast path, Portunus keeps pace with — and in some runs
 exceeds — kernel `iptables` forwarding. `splice` is a Linux system call that moves bytes from one
 socket to another **without copying them into the application** ("zero
 copy"); Portunus pairs it with an internal kernel `pipe` so a forwarded
-TCP connection never drags its payload through userspace. That avoids the
+TCP connection's data never passes through userspace. That avoids the
 `read → memcpy → write` round-trip that limits *every* ordinary userspace
 TCP program on this host — `iperf3` included. The proxied path also runs
 as three processes (iperf client → Portunus → iperf server), which spread
 across the 4 vCPUs better than the direct two-thread `iperf3` baseline
-can — which is why Portunus can edge slightly *above* 100%.
+can — which is why Portunus can come in slightly *above* 100%.
 
 A rate-limited client rule (`1,048,576 B/s` cap) landed at 8.388 Mbit/s
 against an 8.389 Mbit/s target — inside the +10% acceptance bound,
-confirming the bandwidth shaper is accurate.
+confirming the bandwidth cap is accurate.
 
 > The single-run uncapped maximum at ~30 Gbit/s is dominated by
 > **scheduler noise**: at these speeds the result depends on which core
 > the OS happens to place each process on, so it varies run to run. Read
-> the columns above as "all three are in the same band", not as a fixed
+> the columns above as "all three are in the same range", not as a fixed
 > ranking — see the [standalone vs client](#standalone-vs-client)
 > repeats below, where the order flips from one run to the next.
 
@@ -125,12 +127,12 @@ core-placement luck, not by which binary is under test.
 The clean, low-noise proof is the [offered-load sweep](#offered-load-sweep)
 below: at every fixed paced rate from 100 Mbit/s to 20 Gbit/s, standalone
 and client both deliver the requested rate within < 1% of each other and
-of the direct / iptables baselines.
+of the `iperf3` / iptables baselines.
 
 The only structural difference is that `portunus-client` also runs the
 gRPC control stream and reports stats periodically. On a CPU-saturated
-host that is marginal background overhead — below the noise floor of the
-data-plane measurement. **For raw forwarding throughput, pick the build
+host that is tiny background overhead — below the measurement noise of the
+data plane. **For raw forwarding throughput, pick the build
 that fits your deployment model (central control plane vs static TOML);
 it is not a performance decision.**
 
@@ -143,7 +145,7 @@ a fixed rate** — simulating a real WAN/VPS link of that speed — and check
 whether each path delivers it (`--seconds 5 --omit-seconds 1`). Same
 11-point sweep, all four paths back-to-back:
 
-| Offered load | Direct | iptables REDIRECT | `portunus-standalone` | `portunus-client` |
+| Offered load | `iperf3` | iptables REDIRECT | `portunus-standalone` | `portunus-client` |
 | ---: | ---: | ---: | ---: | ---: |
 | 100 Mbit/s | 100.02 | 100.02 | 100.02 | 100.02 |
 | 500 Mbit/s | 499.82 | 499.92 | 499.90 | 500.05 |
@@ -162,7 +164,7 @@ offered rate** within iperf3's short-run measurement noise. The splice
 fast path keeps both Portunus builds level with the in-kernel `iptables`
 REDIRECT baseline through the whole sweep — on this 4-vCPU host there is
 no link speed at which the richer control plane costs measurable
-throughput. The small wobble in the 18–20 Gbit/s rows (e.g. standalone
+throughput. The small variation in the 18–20 Gbit/s rows (e.g. standalone
 19,481 vs client 20,180 at 20 Gbit/s) is short-run pacing noise, not a
 ranking — the same noise that drives the uncapped-max swing above.
 
@@ -170,7 +172,7 @@ This is the band the pre-splice
 [v0.11 baseline](/en/docs/getting-started/performance-history)
 could not hold: there, Portunus dropped to ~33–49% of iptables above
 12.5 Gbit/s. The splice fast path (introduced in v1.3.0) closed that gap,
-and v1.6.1 confirms it on fresh hardware.
+and v1.6.1 re-confirms it on the same host.
 
 ## What does NOT change with splice
 
@@ -214,15 +216,15 @@ The repo uses three layers:
 
 | Layer | Command | Purpose |
 | --- | --- | --- |
-| Criterion TCP data plane | `cargo bench -p portunus-client --bench data_plane -- --quick` | Stable loopback proxy-primitive regression signal. |
+| Criterion TCP data plane | `cargo bench -p portunus-client --bench data_plane -- --quick` | Stable loopback proxy regression signal. |
 | Criterion UDP data plane | `cargo bench -p portunus-client --bench udp_data_plane -- --quick` | UDP steady-state and RTT regression signal. |
 | Real-process compare | `scripts/perf_compare.py` | Real `portunus-server` + `portunus-client` + `portunus-standalone` + `iptables` + `iperf3` on one host. |
 
-`scripts/perf_compare.py` is the v1.6.1 harness. It drives the current
+`scripts/perf_compare.py` is the v1.6.1 test harness. It drives the current
 CLI end-to-end — `server.toml` `operator_token` bootstrap, the operator
 HTTP `POST /v1/client-enrollments` enrollment flow, `portunus-client
 enroll` + bundle + `push-rule`, and a TOML-driven `portunus-standalone`
-rule — measuring the direct, `iptables` REDIRECT, standalone, and client
+rule — measuring the `iperf3`, `iptables` REDIRECT, standalone, and client
 paths back-to-back. (The older `scripts/perf_loopback.py` predates the
 v1.6.1 one-time enrollment URI flow and the SQLite `state.db` file lock,
 so its `provision-client` / bundle path no longer runs.)
@@ -230,7 +232,7 @@ so its `provision-client` / bundle path no longer runs.)
 ## Interpretation
 
 Portunus is a **userspace L4 forwarder**: it accepts a TCP connection,
-dials the target, and shuttles bytes between the two sockets. That makes
+dials the target, and moves bytes between the two sockets. That makes
 it far richer than a plain kernel NAT rule, but it still has to cross the
 userspace boundary that the kernel does not.
 
@@ -239,10 +241,10 @@ How much each connection costs depends on what the rule asks for:
 - **Plain TCP, no bandwidth cap, on Linux**: the byte copy runs through
   the kernel `splice + pipe` path, so the payload never enters userspace.
   On this host the [offered-load sweep](#offered-load-sweep) shows both
-  Portunus builds tracking direct `iperf3` and `iptables` REDIRECT within
-  iperf3 noise all the way to 20 Gbit/s.
+  Portunus builds tracking `iperf3` and `iptables` REDIRECT within iperf3
+  noise all the way to 20 Gbit/s.
 - **Any bandwidth cap, or UDP, or macOS / Windows, or splice disabled**:
-  the original userspace path runs. For these shapes, kernel NAT and
+  the original userspace path runs. For these cases, kernel NAT and
   nftables flowtables remain the performance ceiling — the userspace
   `read → memcpy → write` cycle adds a real per-connection cost.
 
@@ -250,19 +252,19 @@ Either way, Portunus is the right tool when you need remote client
 enrollment, central rule push, RBAC, an audit trail, per-owner QoS,
 metrics, SNI routing, the PROXY protocol, and a managed rule lifecycle. A
 static DNAT rule (a fixed kernel destination rewrite) gives you none of
-these — so comparing raw throughput alone is the wrong axis, unless raw
+these — so comparing raw throughput alone is the wrong question, unless raw
 throughput is genuinely all you need.
 
 ## Comparable Forwarders
 
 | Dimension | **Portunus (v1.6.1)** | `iptables` DNAT / MASQUERADE | `nftables` + flowtables | NGINX `stream` | HAProxy TCP mode | Envoy `tcp_proxy` | `rinetd` | `socat` | SSH `-L` / `-R` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Performance profile | Userspace L4 with a Linux TCP `splice` fast path for uncapped flows. On the bench host tracks `iptables` REDIRECT to 20 Gbit/s; capped / UDP / non-Linux paths stay on the canonical userspace copy. | Highest. Kernel path, no userspace copy. | Highest for eligible flows; bypasses parts of the classic forwarding path. | High userspace proxy with mature event loop. | Very high userspace TCP proxy with excellent connection handling. | High but heavier userspace proxy, designed for service mesh / xDS. | Lightweight userspace redirector. | Flexible diagnostic pipe, not tuned as a managed production proxy. | Encrypted tunnel; throughput pays SSH crypto overhead. |
+| Performance profile | Userspace L4 with a Linux TCP `splice` fast path for uncapped flows. On the bench host tracks `iptables` REDIRECT to 20 Gbit/s; capped / UDP / non-Linux paths stay on the standard userspace copy. | Highest. Kernel path, no userspace copy. | Highest for eligible flows; bypasses parts of the classic forwarding path. | High userspace proxy with mature event loop. | Very high userspace TCP proxy with excellent connection handling. | High but heavier userspace proxy, designed for service mesh / xDS. | Lightweight userspace redirector. | Flexible diagnostic pipe, not tuned as a managed production proxy. | Encrypted tunnel; throughput pays SSH crypto overhead. |
 | TCP | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | UDP | Yes (first-packet enforced) | Yes | Yes | Yes | No generic UDP forwarding | Dedicated UDP filters / use cases | Yes | Yes | No native UDP |
 | Dynamic remote rule push | First-class: central server pushes signed rule bundles to edge clients over pinned TLS; CLI, operator HTTP API, embedded Web UI, hot-reload. | No built-in control plane | No built-in control plane | Reload/API depends on edition/config | Runtime API supports many operations | xDS control plane | Config reload style | No | Per-session |
 | RBAC / audit / metrics | Native per-user / per-client / per-protocol / per-port-range RBAC; structured audit trail; Prometheus metrics; embedded SQLite store. | External only | External only | Metrics via modules; no native tenant RBAC | Strong stats, ACLs, stick tables | Rich telemetry and policy | Minimal | Minimal | SSH auth/logs |
-| QoS / rate limit | Per-rule and per-owner: `bandwidth_in/out_bps`, `new_connections_per_sec`, `concurrent_connections`. Token-bucket shaper; capped rules go through the canonical userspace path. | Basic shaping via `tc` / nftables ecosystem | Via nftables / `tc`, not app-owner aware | `limit_conn` / `limit_rate` style controls | Rich connection/rate controls | Rich filters, overload manager | Minimal | Minimal | Minimal |
+| QoS / rate limit | Per-rule and per-owner: `bandwidth_in/out_bps`, `new_connections_per_sec`, `concurrent_connections`. Token-bucket limiter; capped rules go through the standard userspace path. | Basic shaping via `tc` / nftables ecosystem | Via nftables / `tc`, not app-owner aware | `limit_conn` / `limit_rate` style controls | Rich connection/rate controls | Rich filters, overload manager | Minimal | Minimal | Minimal |
 | Best fit | Centrally managed edge listeners with tenant-aware RBAC, per-owner QoS, observability, SNI dispatch, and PROXY protocol — TCP/UDP, single ports or ranges, IP or DNS targets. | Static local host/network NAT. | Modern Linux packet filtering and forwarding. | Generic TCP/UDP proxying. | L4/L7 load balancing where TCP is enough. | Service mesh or xDS-managed environments. | Simple port redirection baseline. | Experiments and debugging. | Operationally convenient encrypted tunnels. |
 
 A fair benchmark is not "compare published numbers." It is:

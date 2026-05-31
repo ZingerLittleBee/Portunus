@@ -4,10 +4,17 @@ description: How the control-plane server, edge clients, operator surface, and d
 icon: Network
 ---
 
-`Portunus` is a two-process system with a strict separation between the
-**control plane** (rule push, auth, metrics rollup) and the **data plane**
-(byte forwarding). The two never share code paths, which is what lets the
-project guarantee data-plane stability across releases.
+`Portunus` separates the **control plane** (rule push, auth, metrics rollup)
+from the **data plane** (byte forwarding). The two never share code paths,
+which is what lets the project guarantee data-plane stability across releases.
+
+The full control-plane deployment is a two-process system: `portunus-server`
+manages state and pushes rules to one or more `portunus-client` edge processes.
+The data plane itself lives in the standalone `portunus-forwarder` library,
+which both the client and the single-binary
+[`portunus-standalone`](/en/docs/configuration/standalone) forwarder consume —
+so a TOML-driven standalone host runs the same forwarding code without any
+control plane.
 
 ## Components
 
@@ -57,10 +64,19 @@ project guarantee data-plane stability across releases.
 ## Data plane
 
 - **TCP**: each rule binds an `accept` loop; per-connection bidirectional
-  copy with no userspace buffering beyond the kernel send/recv windows.
-- **UDP**: each rule binds a `recv_from` loop; the kernel allocates one
-  upstream socket per `(source-addr, port)` pair, providing NAT-style
-  return-path isolation without userspace tracking.
+  copy with no userspace buffering beyond the kernel send/recv windows. On
+  Linux, an uncapped rule moves bytes through a kernel `splice + pipe` fast
+  path so the payload never enters userspace; any bandwidth cap, UDP, or a
+  non-Linux build falls back to the userspace copy. See the
+  [performance report](/en/docs/getting-started/performance).
+- **UDP**: each rule runs a single centralized runtime — one listener task
+  per listen port, a shared flow registry keyed by `(listen_port,
+  source-addr)`, a reply-demux task, and an idle-flow reaper. Each flow gets
+  one `connect()`-ed upstream socket (multi-target selection happens once, at
+  flow creation), giving NAT-style return-path isolation. The flow cap
+  (`udp_max_flows_per_rule`) is enforced rule-wide. On Linux, ICMP errors
+  (`port`/`host`/`network unreachable`) evict the affected flow; the next
+  datagram rebuilds it against a freshly selected target.
 - **DNS targets**: resolved on first connect, cached per the resolver's
   TTL clamped to `[5 s, 5 min]`, with 30 s stale-while-error grace.
 - **Multi-target failover**: 1..=8 targets per rule, priority-ordered,

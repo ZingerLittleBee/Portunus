@@ -75,10 +75,13 @@ Run from cron daily / weekly to bound database growth.
 
 ## Buffer overflow signal
 
-When the in-memory buffer (v0.6 path) overflowed, the
-`portunus_audit_buffer_drops_total` counter incremented. The metric
-remains for the v0.6 code path; on v0.8+ durable storage, drops should
-not occur in normal operation.
+`portunus_audit_buffer_drops_total` increments whenever an audit entry
+is lost to backpressure: an eviction from the in-memory ring (at
+capacity 1000) or an overflow of the durable writer's bounded hand-off
+queue. Both are semantically "we lost an audit entry" and share the one
+counter. It should stay at zero in normal operation; sustained growth
+means the durable writer can't keep up. `portunus_audit_durable_writer_lag_seconds`
+is the leading indicator — it climbs before drops start.
 
 ## What is **not** audited
 

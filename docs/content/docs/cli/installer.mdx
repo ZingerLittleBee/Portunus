@@ -12,10 +12,12 @@ install · uninstall · upgrade · status · service · config · env
 ```
 
 It manages both deploy forms — a **release binary + systemd unit** and a
-**Docker Compose** stack — and it is bilingual (English / 中文). The
-non-interactive flag interface that CI, automation, and the documented
-`curl … | bash` one-liner depend on is unchanged; the interactive menu
-is purely additive.
+**Docker Compose** stack — across the `server`, `client`, and
+`standalone` roles, and it is bilingual (English / 中文). For a server it
+can also provision a **Caddy** reverse proxy with automatic Let's
+Encrypt HTTPS for the Web UI. The non-interactive flag interface that
+CI, automation, and the documented `curl … | bash` one-liner depend on
+is unchanged; the interactive menu is purely additive.
 
 The same script is reachable two ways:
 
@@ -52,8 +54,9 @@ Select [0-7]:
 ```
 
 Because it reads from `/dev/tty` when piped, `curl … | bash` reaches the
-menu. Pick `1` for a guided install wizard (role → deploy form → version
-→ paths → advertised endpoint → plan preview → confirm).
+menu. Pick `1` for a guided install wizard: role (`server` / `client` /
+`standalone`) → deploy form → (server only) HTTPS domain → advertised
+endpoint → plan preview → confirm.
 
 **Non-interactive** — any verb/role/recognized flag, or `--yes`, or no
 usable terminal. This is the contract for CI and automation; behaviour
@@ -62,29 +65,32 @@ matches the historical downloader plus the new verbs.
 ## Synopsis
 
 ```text
-install.sh <client|server|install|uninstall|upgrade|status|service|config|env>
-           [start|stop|restart] [get|set <key> [value]]
+install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain>
+           [start|stop|restart] [get|set <key> [value]] [<fqdn>]
            [--version V] [--deploy binary|docker]
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
            [--operator-http-listen ADDR]
-           [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]
+           [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
+           [--systemd] [--lang en|zh] [--reset-lang]
+           [--yes] [--purge] [--dry-run]
 ```
 
 A bare role is shorthand for install: `client` ≡ `install client`,
-`server` ≡ `install server`.
+`server` ≡ `install server`, `standalone` ≡ `install standalone`.
 
 ## Verbs
 
 | Verb | What it does |
 | --- | --- |
-| `install <client\|server>` | Guided or flag-driven install. Default deploy form is `binary`. |
-| `uninstall [client\|server]` | Remove the binary + unit + drop-in, or `docker compose down`. Confirms first. |
-| `upgrade [client\|server]` | Resolve latest, compare to recorded version, reuse recorded config. No-op when current. |
+| `install <client\|server\|standalone>` | Guided or flag-driven install. Default deploy form is `binary`. |
+| `uninstall [client\|server\|standalone]` | Remove the binary + unit + drop-in, or `docker compose down`. Confirms first. |
+| `upgrade [client\|server\|standalone]` | Resolve latest, compare to recorded version, reuse recorded config. No-op when current. |
 | `status` | Recorded metadata + a live probe (`systemctl is-active` / `docker compose ps`). Read-only. |
 | `service <start\|stop\|restart>` | Dispatch to `systemctl` or `docker compose` by the recorded deploy form. |
 | `config <get\|set> <key> [value]` | Read/write one scoped key (see below). |
 | `env` | Print all scoped keys and their persisted values. |
+| `domain <fqdn>` | Server-only. Provision/refresh the Caddy HTTPS front for an existing install (see [Domain & HTTPS](#domain--https)). |
 
 ## Flags
 
@@ -97,8 +103,12 @@ A bare role is shorthand for install: `client` ≡ `install client`,
 | `--advertised-endpoint <HOST:PORT>` | Server reach address (see below). Blank ⇒ runtime auto. |
 | `--data-dir <DIR>` | Server data dir (default `/var/lib/portunus`). |
 | `--operator-http-listen <ADDR>` | Operator HTTP listen address override. |
+| `--domain <FQDN>` | Server-only. Provision a Caddy HTTPS front for the Web UI; also derives the advertised endpoint as `<FQDN>:7443` when `--advertised-endpoint` is unset. |
+| `--acme-email <ADDR>` | ACME / Let's Encrypt contact email for the Caddy domain. |
+| `--skip-dns-check` | Skip the pre-flight check that the domain's DNS resolves to this host. |
 | `--systemd` | Also install the hardened systemd unit (Linux only). |
 | `--lang <en\|zh>` | Force UI language (also via `PORTUNUS_LANG`). |
+| `--reset-lang` | Clear the cached language preference and exit; the next interactive run re-prompts. |
 | `--yes` | Assume yes for ordinary confirmations. **Does not** bypass the `--purge` typed token. |
 | `--purge` | With `uninstall`, also delete the data dir / compose volume. Requires a typed confirmation. |
 | `--dry-run` | Print the plan; perform **zero** network and **zero** filesystem changes. |
@@ -149,11 +159,11 @@ subcommands know how to act:
 | Deploy form / role | Path |
 | --- | --- |
 | binary server | `<data-dir>/.install-meta` (default `/var/lib/portunus/.install-meta`) |
-| binary client | `/etc/portunus/.install-meta` |
+| binary client / standalone | `/etc/portunus/.install-meta` |
 | docker | `<compose-dir>/.install-meta` |
 
 Fields include `role`, `deploy`, `version`, `lang`,
-`advertised_endpoint_set`, `installed_at`, `installer_version`.
+`advertised_endpoint_set`, `domain`, `installed_at`, `installer_version`.
 
 Lifecycle verbs resolve the metadata in this order: an explicit
 `--compose-dir`, then the **current directory**, then
@@ -163,6 +173,8 @@ lifecycle commands **from the compose directory** (or pass
 
 ## Scoped config & env
 
+`config get/set` does not apply to the `standalone` role — edit
+`/etc/portunus/standalone.toml` directly. For `server` and `client`,
 `config` and `env` accept only these four keys (anything else is a hard
 error):
 
@@ -199,6 +211,43 @@ auto-resolve it at run time. The installer only does a light `host:port`
 sanity check and persists the value (systemd drop-in or compose `.env`
 as `PORTUNUS_ADVERTISED_ENDPOINT`); authoritative SAN/grammar validation
 is performed by the server itself at startup.
+
+## Domain & HTTPS
+
+Server-only. When you supply a `--domain` (or answer the wizard's HTTPS
+prompt), the installer fronts the Web UI with **Caddy** and automatic
+Let's Encrypt HTTPS:
+
+```sh
+# At install time
+curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
+  --domain portunus.example.com --acme-email admin@example.com
+
+# Or attach / refresh HTTPS on an existing server install
+sudo bash install.sh domain portunus.example.com
+```
+
+What it does:
+
+- Pre-flight checks that the domain's DNS A record resolves to this
+  host (skip with `--skip-dns-check`).
+- Installs Caddy if absent (apt / dnf / yum), then writes a managed
+  block — delimited by `# >>> portunus >>>` / `# <<< portunus <<<` — into
+  `/etc/caddy/Caddyfile` reverse-proxying the domain to the operator HTTP
+  port. An existing Caddyfile is backed up and only the managed block is
+  rewritten.
+- `--acme-email` seeds the ACME contact for certificate issuance.
+- Reloads Caddy and polls `https://<domain>/` until issuance completes
+  (~30 s typical).
+
+Supplying `--domain` also derives the advertised endpoint as
+`<domain>:7443` when `--advertised-endpoint` is not set. After `domain`
+re-aligns the advertised endpoint, the server refreshes its gRPC
+certificate SAN on restart and **existing client bundles must be
+re-issued** (`portunus-server enroll-client <name>`).
+
+The Web UI becomes publicly reachable over HTTPS but stays protected by
+operator login / token.
 
 ## Lifecycle examples
 

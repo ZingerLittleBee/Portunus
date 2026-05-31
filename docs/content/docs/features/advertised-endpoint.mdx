@@ -17,12 +17,12 @@ loopback-pinned; the advertised endpoint is the public reach address.
 
 ## Why it is configurable
 
-On reverse-proxied / PaaS deployments (Railway, fly.io, …) the
-public host the client must dial is not the host the server binds
-locally, and it can differ between environments. Instead of baking it
-into an environment variable only, the endpoint is resolved at runtime
-through a tiered, fail-closed resolver and can be set by an operator
-without redeploying.
+On reverse-proxied / PaaS deployments (Railway, fly.io, …) the public
+host the client must dial differs from the host the server binds locally,
+and can vary between environments. So rather than being fixed to one
+environment variable, the endpoint is resolved at runtime through a
+tiered, fail-closed resolver and an operator can change it without
+redeploying.
 
 ## Resolution tiers
 

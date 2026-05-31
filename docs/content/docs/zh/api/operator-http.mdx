@@ -78,13 +78,14 @@ Token 请求不需要 CSRF 头。
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
 | `POST` | `/v1/rules` | 推送规则（单目标 / 多目标 / 端口范围 / 含上限 / 含 SNI） |
-| `GET` | `/v1/rules` | 列出规则；非超管只看到自己拥有的 |
+| `GET` | `/v1/rules` | 列出规则；非超管只看到自己拥有的。可选 `?client=<name>` 过滤 |
 | `GET` | `/v1/rules?owner=<user_id>` | 超管按所有者过滤 |
-| `GET` | `/v1/rules/{id}/stats` | 聚合统计 |
-| `GET` | `/v1/rules/{id}/stats?per_port=true` | 逐端口（端口范围规则） |
-| `GET` | `/v1/rules/{id}/stats?per_target=true` | 逐目标（多目标规则） |
-| `GET` | `/v1/rules/{id}/stats/stream` | SSE 流，5 秒节奏（v0.6+） |
-| `DELETE` | `/v1/rules/{id}` | drain 后移除 |
+| `PUT` | `/v1/rules/{rule_id}` | 仅热更新 `rate_limit`；`client`、监听、`protocol` 与目标必须保持不变 |
+| `DELETE` | `/v1/rules/{rule_id}` | drain 后移除 |
+| `GET` | `/v1/rules/{rule_id}/stats` | 聚合统计 |
+| `GET` | `/v1/rules/{rule_id}/stats?per_port=true` | 逐端口（端口范围规则） |
+| `GET` | `/v1/rules/{rule_id}/stats?per_target=true` | 逐目标（多目标规则） |
+| `GET` | `/v1/rules/{rule_id}/stats/stream` | SSE 流，5 秒节奏；支持 `?per_target=true`（v0.6+） |
 
 ### Users
 
@@ -115,11 +116,39 @@ Token 请求不需要 CSRF 头。
 
 ### Rate limiting（v0.11+）
 
+每条规则的上限随 `POST` / `PUT /v1/rules` 的 body 一起提交（见上文
+`rate_limit`）。下列端点设置的是按 (owner, client) 维度的信封。
+
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
-| `PUT` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | 设置每个所有者信封 |
-| `GET` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | 读信封 |
-| `DELETE` | `/v1/clients/{id}/owners/{owner_id}/rate-limit` | 删除信封 |
+| `GET` | `/v1/clients/{client_id}/owners` | 列出该 Client 下拥有规则的所有者 |
+| `GET` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | 读取按所有者维度的信封 |
+| `PUT` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | 设置按所有者维度的信封 |
+| `DELETE` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | 删除按所有者维度的信封 |
+
+### Traffic quotas（v0.13+）
+
+按 (user, client) 维度的月度流量配额，以及历史流量查询。流量查询需要 `from`
+与 `to`（Unix 秒，必填），并可选 `bucket`（采样粒度）。
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/users/{user_id}/quotas` | 列出某用户的配额 |
+| `PUT` | `/v1/users/{user_id}/quotas/{client_name}` | 设置月度配额 |
+| `PATCH` | `/v1/users/{user_id}/quotas/{client_name}` | 更新 `monthly_bytes` 和/或清零当期用量 |
+| `DELETE` | `/v1/users/{user_id}/quotas/{client_name}` | 删除配额 |
+| `GET` | `/v1/users/{user_id}/quotas/{client_name}/status` | 当期用量与上限对比 |
+| `GET` | `/v1/users/{user_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某用户的历史流量 |
+| `GET` | `/v1/clients/{client_name}/quotas` | 列出某 Client 的配额 |
+| `GET` | `/v1/clients/{client_name}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某 Client 的历史流量 |
+| `GET` | `/v1/traffic/global?from=<unix>&to=<unix>&bucket=<size>` | 所有规则的历史流量汇总 |
+
+### Settings（v0.14+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/settings/advertised-endpoint` | 读取 advertised-endpoint 覆盖值与生效值（超管） |
+| `PUT` | `/v1/settings/advertised-endpoint` | 设置 / 清除覆盖值；host 必须被服务端证书 SAN 覆盖（超管） |
 
 ### Audit（v0.6+）
 

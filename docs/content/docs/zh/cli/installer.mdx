@@ -11,10 +11,11 @@ icon: Terminal
 install · uninstall · upgrade · status · service · config · env
 ```
 
-它同时管理两种部署形态——**release 二进制 + systemd unit** 与
-**Docker Compose** ——并且是双语的（English / 中文）。CI、自动化以及文档中
-`curl … | bash` 一行命令所依赖的非交互 flag 接口保持不变；交互式菜单是纯粹的
-增量功能。
+它在 `server`、`client`、`standalone` 三种角色下同时管理两种部署形态——
+**release 二进制 + systemd unit** 与 **Docker Compose** ——并且是双语的
+（English / 中文）。对于 server，它还能为 Web UI 配置一个带自动 Let's
+Encrypt HTTPS 的 **Caddy** 反向代理。CI、自动化以及文档中 `curl … | bash`
+一行命令所依赖的非交互 flag 接口保持不变；交互式菜单是纯粹的增量功能。
 
 同一个脚本有两种使用方式：
 
@@ -51,8 +52,8 @@ Select [0-7]:
 ```
 
 因为管道时它从 `/dev/tty` 读取，所以 `curl … | bash` 也能进入菜单。选 `1`
-进入引导式安装向导（角色 → 部署形态 → 版本 → 路径 → 通告地址 → 计划预览
-→ 确认）。
+进入引导式安装向导：角色（`server` / `client` / `standalone`）→ 部署形态
+→（仅 server）HTTPS 域名 → 通告地址 → 计划预览 → 确认。
 
 **非交互模式** —— 出现任意 verb/role/已识别 flag，或 `--yes`，或没有可用
 终端。这是 CI 与自动化的契约；行为与历史下载器加上新 verb 一致。
@@ -60,29 +61,32 @@ Select [0-7]:
 ## 用法
 
 ```text
-install.sh <client|server|install|uninstall|upgrade|status|service|config|env>
-           [start|stop|restart] [get|set <key> [value]]
+install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain>
+           [start|stop|restart] [get|set <key> [value]] [<fqdn>]
            [--version V] [--deploy binary|docker]
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
            [--operator-http-listen ADDR]
-           [--systemd] [--lang en|zh] [--yes] [--purge] [--dry-run]
+           [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
+           [--systemd] [--lang en|zh] [--reset-lang]
+           [--yes] [--purge] [--dry-run]
 ```
 
 裸角色是安装的简写：`client` ≡ `install client`，`server` ≡
-`install server`。
+`install server`，`standalone` ≡ `install standalone`。
 
 ## Verb
 
 | Verb | 作用 |
 | --- | --- |
-| `install <client\|server>` | 引导式或 flag 驱动安装。默认部署形态为 `binary`。 |
-| `uninstall [client\|server]` | 删除二进制 + unit + drop-in，或 `docker compose down`。会先确认。 |
-| `upgrade [client\|server]` | 解析最新版本，与记录版本比较，复用记录的配置。已是最新则空操作。 |
+| `install <client\|server\|standalone>` | 引导式或 flag 驱动安装。默认部署形态为 `binary`。 |
+| `uninstall [client\|server\|standalone]` | 删除二进制 + unit + drop-in，或 `docker compose down`。会先确认。 |
+| `upgrade [client\|server\|standalone]` | 解析最新版本，与记录版本比较，复用记录的配置。已是最新则空操作。 |
 | `status` | 记录的元数据 + 实时探测（`systemctl is-active` / `docker compose ps`）。只读。 |
 | `service <start\|stop\|restart>` | 按记录的部署形态分发到 `systemctl` 或 `docker compose`。 |
 | `config <get\|set> <key> [value]` | 读写单个限定键（见下）。 |
 | `env` | 打印全部限定键及其持久化值。 |
+| `domain <fqdn>` | 仅 server。为已有安装配置 / 刷新 Caddy HTTPS 前端（见 [域名与 HTTPS](#域名与-https)）。 |
 
 ## Flag
 
@@ -95,8 +99,12 @@ install.sh <client|server|install|uninstall|upgrade|status|service|config|env>
 | `--advertised-endpoint <HOST:PORT>` | server 通告地址（见下）。留空 ⇒ 运行时自动。 |
 | `--data-dir <DIR>` | server 数据目录（默认 `/var/lib/portunus`）。 |
 | `--operator-http-listen <ADDR>` | Operator HTTP 监听地址覆写。 |
+| `--domain <FQDN>` | 仅 server。为 Web UI 配置 Caddy HTTPS 前端；当未设置 `--advertised-endpoint` 时，还会把通告地址推导为 `<FQDN>:7443`。 |
+| `--acme-email <ADDR>` | Caddy 域名的 ACME / Let's Encrypt 联系邮箱。 |
+| `--skip-dns-check` | 跳过域名 DNS 是否解析到本机的预检查。 |
 | `--systemd` | 同时安装加固 systemd unit（仅 Linux）。 |
 | `--lang <en\|zh>` | 强制界面语言（也可用 `PORTUNUS_LANG`）。 |
+| `--reset-lang` | 清除缓存的语言偏好并退出；下次交互运行会重新询问。 |
 | `--yes` | 普通确认默认为是。**不会**绕过 `--purge` 的输入令牌。 |
 | `--purge` | 配合 `uninstall`，额外删除数据目录 / compose 卷。需键入确认令牌。 |
 | `--dry-run` | 打印计划；**不**联网、**不**写文件。 |
@@ -144,11 +152,11 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 | 部署形态 / 角色 | 路径 |
 | --- | --- |
 | 二进制 server | `<data-dir>/.install-meta`（默认 `/var/lib/portunus/.install-meta`） |
-| 二进制 client | `/etc/portunus/.install-meta` |
+| 二进制 client / standalone | `/etc/portunus/.install-meta` |
 | docker | `<compose-dir>/.install-meta` |
 
 字段包括 `role`、`deploy`、`version`、`lang`、
-`advertised_endpoint_set`、`installed_at`、`installer_version`。
+`advertised_endpoint_set`、`domain`、`installed_at`、`installer_version`。
 
 生命周期 verb 按此顺序解析元数据：显式 `--compose-dir`、然后**当前
 目录**、然后 `/var/lib/portunus`、然后 `/etc/portunus`。对 Docker
@@ -157,7 +165,9 @@ curl -fsSL .../scripts/install.sh | bash -s -- server --deploy docker \
 
 ## 限定 config 与 env
 
-`config` 与 `env` 仅接受以下四个键（其它键为硬错误）：
+`config get/set` 不适用于 `standalone` 角色——请直接编辑
+`/etc/portunus/standalone.toml`。对 `server` 与 `client`，`config` 与
+`env` 仅接受以下四个键（其它键为硬错误）：
 
 | 键 | 映射的环境变量 |
 | --- | --- |
@@ -189,6 +199,37 @@ bash install.sh env
 时自动解析。安装器只做轻量 `host:port` 合法性检查，并把值持久化
 （systemd drop-in 或 compose `.env` 中的 `PORTUNUS_ADVERTISED_ENDPOINT`）；
 权威的 SAN/语法校验由 server 在启动时完成。
+
+## 域名与 HTTPS
+
+仅 server。当你提供 `--domain`（或在向导的 HTTPS 提示中作答）时，安装器
+会用 **Caddy** 加自动 Let's Encrypt HTTPS 为 Web UI 提供前端：
+
+```sh
+# 安装时
+curl -fsSL .../scripts/install.sh | sudo bash -s -- server --systemd \
+  --domain portunus.example.com --acme-email admin@example.com
+
+# 或为已有的 server 安装附加 / 刷新 HTTPS
+sudo bash install.sh domain portunus.example.com
+```
+
+它的行为：
+
+- 预检查域名的 DNS A 记录是否解析到本机（用 `--skip-dns-check` 跳过）。
+- 若缺失则安装 Caddy（apt / dnf / yum），随后把一个受管区块——以
+  `# >>> portunus >>>` / `# <<< portunus <<<` 为界——写入
+  `/etc/caddy/Caddyfile`，将该域名反向代理到 operator HTTP 端口。已存在
+  的 Caddyfile 会被备份，且只重写受管区块。
+- `--acme-email` 为证书签发设置 ACME 联系邮箱。
+- 重载 Caddy 并轮询 `https://<domain>/` 直到签发完成（通常约 30 秒）。
+
+提供 `--domain` 时，若未设置 `--advertised-endpoint`，还会把通告地址推导
+为 `<domain>:7443`。当 `domain` 重新对齐通告地址后，server 会在重启时刷新
+其 gRPC 证书 SAN，且**已有的 client bundle 必须重新签发**
+（`portunus-server enroll-client <name>`）。
+
+Web UI 随之通过 HTTPS 公开可访问，但仍由运维登录 / 令牌保护。
 
 ## 生命周期示例
 

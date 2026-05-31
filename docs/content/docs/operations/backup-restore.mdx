@@ -19,7 +19,8 @@ backup is **WAL-aware** and consistent without quiescing writers — safe
 to run while traffic is flowing.
 
 Refuses to overwrite an existing destination — pick a unique path
-(date-stamped is the convention).
+(date-stamped is the convention). If `--out` is an existing directory,
+the backup is written as `portunus-state-<RFC3339>.db` inside it.
 
 Verify:
 
@@ -61,9 +62,14 @@ sudo systemctl start portunus-server
 `restore`:
 
 - Validates the SQLite header magic before copying.
-- Refuses to clobber a non-empty data dir without `--force`.
+- Refuses to clobber a non-empty data dir without `--force`. With
+  `--force` it first removes `state.db` and the `-wal` / `-shm` /
+  `.lock` sidecars, then copies the artefact in.
 - Runs schema migrations automatically if the binary is newer than
   the backup's schema.
+- On any migration or open failure, rolls back the half-written
+  `state.db` (and its sidecars) so the next start does not see a
+  corrupt file.
 - **Refuses** if the backup is **newer** than the binary, exiting `78`
   with `event=startup.schema_version_too_new`. Either keep the older
   backup or restore using the matching binary version.
@@ -78,12 +84,14 @@ portunus-server reset
 portunus-server reset --confirm
 ```
 
-Removes `state.db` plus the sidecar `state.db-wal` and `state.db-shm`.
+Removes `state.db` plus the sidecars `state.db-wal`, `state.db-shm`,
+and `state.db.lock`.
 
 The reset CLI **refuses** to operate on a path whose first 16 bytes
 don't start with the SQLite header — protects against typo'd
-`--data-dir`. It does **not** wipe the generated TLS material or
-optional `server.toml` in the same data-dir.
+`--data-dir`. It does **not** wipe the generated TLS material
+(`server.crt` / `server.key`) or an optional `server.toml` in the same
+data-dir. On an empty data-dir `reset` is a no-op and exits 0.
 
 ## Cross-host migration
 

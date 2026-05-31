@@ -11,8 +11,26 @@ fingerprint, and accepts rule pushes over a bidirectional gRPC stream.
 ## Synopsis
 
 ```sh
-portunus-client [--bundle <PATH>] [--shutdown-drain-timeout-secs <N>]
+# Daemon mode (no subcommand): connect, accept rule pushes, forward.
+portunus-client [--bundle <PATH>] [--reconnect-initial-delay-ms <N>]
+                [--reconnect-max-delay-secs <N>] [--shutdown-drain-timeout-secs <N>]
+                [--stats-report-interval-secs <N>]
+
+# Enroll: redeem a one-time URI and write a bundle, then exit.
+portunus-client enroll <URI> [--out <PATH>]
 ```
+
+## Enroll
+
+```sh
+portunus-client enroll 'portunus://...' --out ./edge-01.bundle.json
+```
+
+Redeems a one-time enrollment URI (from `portunus-server enroll-client`),
+verifies the pinned server certificate, and writes the credential bundle
+with mode `0600`. `--out` defaults to the normal client bundle location.
+On success the bundle path is printed to stdout; on failure the client
+exits `1`.
 
 ## Bundle resolution
 
@@ -27,10 +45,15 @@ If none resolve, the client exits `1` listing every attempted path.
 
 ## Flags
 
+Daemon-mode flags (no subcommand):
+
 | Flag | Default | Purpose |
 | --- | --- | --- |
 | `--bundle <PATH>` | (resolution chain) | Explicit bundle path |
+| `--reconnect-initial-delay-ms <N>` | 500 | Initial reconnect delay; base of the full-jitter exponential backoff |
+| `--reconnect-max-delay-secs <N>` | 30 | Reconnect backoff cap |
 | `--shutdown-drain-timeout-secs <N>` | 30 | Drain budget on SIGTERM/SIGINT |
+| `--stats-report-interval-secs <N>` | 5 | Stats reporting interval |
 
 Run `portunus-client --help` for the current authoritative surface.
 
@@ -52,7 +75,7 @@ Run `portunus-client --help` for the current authoritative surface.
    - Allocate listener (TCP `bind` or UDP `bind`).
    - Activate the forwarder loop.
    - Reply `Active` (or `Failed(<reason>)`).
-7. Push `StatsReport` every 5 s.
+7. Push `StatsReport` every `--stats-report-interval-secs` (default 5 s).
 
 ## Drain on shutdown
 

@@ -50,12 +50,17 @@ RUST_LOG=portunus_client::forwarder::udp=debug portunus-client
 
 ## Redaction layer
 
-A redaction layer scrubs any log call whose **field names** match
-`token | secret | private_key`:
+A defense-in-depth `RedactionLayer` inspects every event and span for
+**field names** containing `token`, `secret`, or `private_key`
+(case-insensitive substring match). It does **not** rewrite the
+offending value — it is a runtime tripwire: on a match it increments a
+violation counter and emits a separate `audit.redaction_violation`
+event to stderr so the leak is visible even if a misconfigured
+formatter swallowed the original line.
 
-- `token=…` → `token=<redacted>`
-- `secret=…` → `secret=<redacted>`
-- `private_key=…` → `private_key=<redacted>`
+Values are redacted at the point of recording (call sites write
+`token = "<redacted>"` rather than the raw value); the layer exists to
+fail loudly if a future patch forgets.
 
 The audit code path in particular **never sees raw bearer tokens** —
 the auth middleware verifies the bearer and hands the post-verify
@@ -64,17 +69,25 @@ implementation bug cannot leak a token through structured logging.
 
 ## Common events to alert on
 
+These are real `event=` field values. Alert on them by matching the
+`event` field, not free-text.
+
 | Event | Severity | Cause |
 | --- | --- | --- |
-| `tls.cert_generated` | INFO | Self-signed material auto-generated on first run |
-| `control.tls_pinned_mismatch` | ERROR | Server certificate fingerprint mismatch — possible MITM |
+| `tls.cert_regenerated` | WARN | Operator certificate regenerated (e.g. expired / SAN change) |
+| `tls.operator_cert_in_use` | INFO | Existing operator certificate reused on startup |
 | `auth.failure` | WARN | Client bearer rejected (revoked / unknown / signature mismatch) |
 | `operator.deny` | WARN | RBAC rejection on the operator API |
-| `startup.unsupported_filesystem` | ERROR | `--data-dir` on NFS / tmpfs / ramfs |
-| `startup.store_in_use` | ERROR | Two server processes sharing `--data-dir` |
-| `startup.schema_version_too_new` | ERROR | Running an older binary against a newer DB schema |
 | `client.disconnected` | WARN/INFO | Client lost the gRPC stream (transient or revoke) |
+| `client.transport_error` | WARN | gRPC transport-level error on a client stream |
+| `store.pool_exhausted` | WARN | SQLite connection pool exhausted under load |
 | `rule.failed` | WARN | Rule activation failed (e.g. `port_in_use`) |
+
+Some fatal startup conditions abort before the logging pipeline is
+useful and surface as the process error message rather than an `event`
+field: `startup.unsupported_filesystem` (`--data-dir` on NFS / tmpfs /
+ramfs), `store_in_use` (two server processes sharing `--data-dir`), and
+`schema_version_too_new` (an older binary against a newer DB schema).
 
 ## Local development tips
 
