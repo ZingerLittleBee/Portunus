@@ -37,12 +37,12 @@ const meterSegments = [
 const copy = {
   en: {
     title: "Portunus",
-    headlineLead: "High-performance TCP/UDP forwarding,",
-    headlineAccent: "without giving up control.",
-    hero: "Run lightweight clients on the hosts that own your public ports, and push TCP and UDP forwarding rules from one server. Permissions, rate limits, metrics, and audit come built in — without ever reading, modifying, or decrypting the bytes that flow through.",
+    headlineLead: "Fast TCP/UDP forwarding,",
+    headlineAccent: "managed from one server.",
+    hero: "Run a small client on each host that exposes public ports. Use one server to add, update, and remove forwarding rules. Portunus also handles permissions, limits, metrics, and audit logs without reading or changing your traffic.",
     primary: "Read the docs",
     secondary: "Performance report",
-    proof: "Linux · Rust · single binary deploy",
+    proof: "Linux · Rust · one static binary",
     mockTitle: "Portunus / dashboard",
     mockBadge: "real-time",
     rulesHeading: "rules",
@@ -64,79 +64,79 @@ const copy = {
     ],
     statusOk: "OK",
     statusActive: "ACTIVE",
-    rangesTitle: "Performance you can plan around.",
+    rangesTitle: "Fast enough for real links, with numbers you can check.",
     rangesIntro:
-      "On Linux, plain TCP rules with no bandwidth cap use a kernel splice fast path. On the bench host, single-flow throughput doubles from 9.9 Gbit/s to 21.9 Gbit/s, and across the offered-load sweep the proxied flow stays within 95-109 % of both direct iperf3 and iptables REDIRECT through 20 Gbit/s — the v0.11 saturation point disappears for uncapped TCP.",
+      "On the benchmark host, uncapped TCP forwarding keeps up with iptables through 20 Gbit/s. The performance report includes the commands, raw results, and caveats so you can rerun the test before relying on it.",
     ranges: [
       [
-        "100M – 10G",
-        "Hits the offered rate end-to-end. Indistinguishable from a direct iperf3 baseline.",
+        "100M – 20G",
+        "Hits the requested rate end-to-end on the benchmark host.",
       ],
       [
-        "12.5G – 20G",
-        "With the splice fast path, the proxied flow stays within iperf3 noise of direct loopback and iptables REDIRECT.",
+        "Standalone / client",
+        "Both builds use the same forwarding code, so choose by deployment model, not throughput.",
       ],
       [
         "Rate-limited rules",
-        "Bandwidth-capped rules stay on the canonical userspace path — byte-identical metrics, counters, and audit.",
+        "Bandwidth-capped rules keep the same metrics, counters, and audit behavior.",
       ],
     ],
     capabilitiesTitle:
-      "Everything a team needs around the rule, not just the rule.",
+      "Rules, access, limits, metrics, and audit in one place.",
     capabilitiesIntro:
-      "Rule push, permissions, rate limits, metrics, and audit are first-class on the server, so you do not stitch them together yourself.",
+      "The server manages rule pushes, permissions, rate limits, metrics, and audit logs, so you do not have to glue separate tools together.",
     capabilities: [
       {
         icon: Network,
         title: "Rules",
-        text: "Forward TCP or UDP, single ports or ranges, to IP or DNS targets. Route HTTPS by hostname without decrypting the connection.",
+        text: "Forward TCP or UDP, single ports or port ranges, to IP or DNS targets. Route HTTPS by hostname without decrypting the connection.",
       },
       {
         icon: ShieldCheck,
         title: "Access",
-        text: "Each user can be limited to specific clients, protocols, and port ranges. Rules are owned, and ownership is enforced on the server.",
+        text: "Grant each user only the clients, protocols, and port ranges they need. The server checks ownership before applying rules.",
       },
       {
         icon: SlidersHorizontal,
         title: "Limits",
-        text: "Cap bandwidth, new connections per second, and concurrent connections per rule or per user, so one edge host can be shared safely.",
+        text: "Set bandwidth, new-connection, and concurrent-connection limits per rule or per user, so shared forwarding hosts stay predictable.",
       },
       {
         icon: Activity,
         title: "Visibility",
-        text: "Prometheus metrics, structured logs, an audit trail, an embedded SQLite store, and built-in backup / restore.",
+        text: "Prometheus metrics, structured logs, audit logs, SQLite state, and built-in backup / restore.",
       },
     ],
-    topologyTitle: "One server. Many edge clients.",
+    topologyTitle: "One server manages many forwarding hosts.",
     topologyIntro:
-      "You talk to the server from CLI, API, or the Web UI. The server pushes signed rule bundles to the clients that own the public ports. Your traffic flows directly through the client, never through the server.",
+      "Use the CLI, API, or Web UI to change rules on the server. The server sends signed rules to the clients that expose public ports. Your traffic flows through the client, not through the server.",
     nodeOperator: "You",
     nodeServer: "Server",
     nodeServerSub: "rules + access",
-    nodeClient: "Edge Client",
+    nodeClient: "Client",
     nodeTarget: "Target",
     edgeControl: "rules",
     edgeData: "your traffic",
-    workflowTitle: "Four steps from install to live traffic.",
+    workflowTitle: "Four steps to forwarding traffic.",
     workflow: [
       "Generate a one-time client enrollment command from the server.",
-      "Run the client on the host that owns your public ports.",
+      "Run the client on the host that exposes public ports.",
       "Add forwarding rules from the CLI, HTTP API, or Web UI.",
-      "Watch traffic, quotas, and rejects in real time, without touching user data.",
+      "Watch traffic, quotas, and rejected traffic in real time, without touching user data.",
     ],
-    finalTitle: "Read the docs. Run the benchmark. Decide.",
+    finalTitle: "Start with one forwarding rule.",
     finalText:
-      "The performance report ships with the exact commands, raw numbers, and caveats so you can compare against your own bandwidth target before adopting it.",
-    finalCta: "Open documentation",
+      "Use standalone for one machine. Add Server + Client when you need multiple entry nodes.",
+    finalCta: "Open docs",
   },
   zh: {
     title: "Portunus",
-    headlineLead: "高性能 TCP/UDP 转发，",
-    headlineAccent: "还能集中管控。",
-    hero: "在拥有公网端口的主机上运行轻量 Client，由一台 Server 统一下发 TCP / UDP 转发规则。权限、限速、指标、审计开箱即用——而业务流量不被读、不被改、不被解密。",
+    headlineLead: "TCP / UDP 转发",
+    headlineAccent: "统一管理",
+    hero: "在公网入口机器上运行轻量 Client，由 Server 下发规则。权限、限速、指标和审计集中管理，转发仍在入口机器上完成。",
     primary: "阅读文档",
     secondary: "性能报告",
-    proof: "Linux · Rust · 单二进制部署",
+    proof: "Linux · Rust · 单个静态二进制",
     mockTitle: "Portunus / 仪表盘",
     mockBadge: "实时",
     rulesHeading: "规则",
@@ -158,65 +158,61 @@ const copy = {
     ],
     statusOk: "OK",
     statusActive: "运行中",
-    rangesTitle: "性能可预期，便于容量规划。",
+    rangesTitle: "性能实测公开，按你的带宽自己验证。",
     rangesIntro:
-      "Linux 上不限带宽的 TCP 规则会走内核 splice 快路径。测试机上单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；在 100 Mbit/s 到 20 Gbit/s 的压测区间内，代理路径始终保持在直连 iperf3 和 iptables REDIRECT 的 95-109 %——v0.11 报告里的早期饱和拐点，对不限带宽的 TCP 已不复存在。",
+      "在测试机上，未限速的 TCP 转发一路到 20 Gbit/s 都能跟上 iptables。性能报告附带命令、原始结果和注意事项，方便你在自己的机器上复测。",
     ranges: [
-      ["100M – 10G", "端到端跑满目标速率，和直连 iperf3 实测几乎没有差距。"],
+      ["100M – 20G", "在测试机上端到端打满目标速率。"],
       [
-        "12.5G – 20G",
-        "开启 splice 快路径后，代理路径与直连 loopback、iptables REDIRECT 的差距只在测量噪声范围内。",
+        "Standalone / Client",
+        "两种模式共用同一套转发代码，按部署方式选择，不按吞吐选择。",
       ],
-      [
-        "带限速的规则",
-        "限带宽的规则仍走用户态通道——指标、计数器、审计都做到字节级一致。",
-      ],
+      ["带限速的规则", "限带宽的规则仍保留完整指标、计数器和审计记录。"],
     ],
-    capabilitiesTitle: "不只是转发规则，还有团队真正用得上的一切。",
-    capabilitiesIntro:
-      "规则下发、权限、限速、指标、审计，在 Server 上都是原生能力，不用你自己东拼西凑。",
+    capabilitiesTitle: "规则、权限、限速、指标、审计。",
+    capabilitiesIntro: "",
     capabilities: [
       {
         icon: Network,
         title: "规则",
-        text: "转发 TCP 或 UDP，支持单端口、端口范围、IP 或 DNS 目标。HTTPS 可按域名分流，全程不解密连接。",
+        text: "转发 TCP 或 UDP，支持单端口、端口范围、IP 或 DNS 目标。HTTPS 可以按域名匹配到不同后端。",
       },
       {
         icon: ShieldCheck,
         title: "权限",
-        text: "可以把每个用户限制在指定的 Client、协议和端口范围内。规则归属明确，并由 Server 强制校验。",
+        text: "只把用户需要的 Client、协议和端口范围授权给他。Server 会在应用规则前检查归属。",
       },
       {
         icon: SlidersHorizontal,
         title: "限额",
-        text: "按规则或按用户限制带宽、新连接速率和并发连接数，让一台边缘机能被多方安全共享。",
+        text: "按规则或按用户限制带宽、新连接速率和并发连接数，让共享的转发机器更可控。",
       },
       {
         icon: Activity,
         title: "可观测",
-        text: "Prometheus 指标、结构化日志、审计记录、内置 SQLite，以及备份 / 恢复。",
+        text: "Prometheus 指标、结构化日志、审计记录、SQLite 状态，以及内置备份 / 恢复。",
       },
     ],
-    topologyTitle: "一个 Server，多个边缘 Client。",
+    topologyTitle: "一台 Server\n管理多台转发机器",
     topologyIntro:
-      "你通过 CLI、API 或 Web UI 与 Server 对话。Server 把签名过的规则下发给拥有公网端口的 Client。业务流量直接经 Client 转发——永远不经过 Server。",
+      "你通过 CLI、API 或 Web UI 修改 Server 上的规则。Server 把签名规则下发给暴露公网端口的 Client。业务流量只经过 Client，不经过 Server。",
     nodeOperator: "你",
     nodeServer: "Server",
     nodeServerSub: "规则 + 权限",
-    nodeClient: "边缘 Client",
+    nodeClient: "Client",
     nodeTarget: "目标",
     edgeControl: "规则",
     edgeData: "业务流量",
-    workflowTitle: "从安装到上线，只需四步。",
+    workflowTitle: "四步开始转发流量。",
     workflow: [
       "在 Server 上生成一次性的 Client 注册命令。",
-      "在拥有公网端口的机器上运行 Client。",
+      "在暴露公网端口的机器上运行 Client。",
       "通过 CLI、HTTP API 或 Web UI 添加转发规则。",
-      "实时查看流量、配额和拒绝事件——全程不触碰用户数据。",
+      "实时查看流量、配额和被拒绝的请求，不触碰用户数据。",
     ],
-    finalTitle: "看文档，跑实测，再决定。",
+    finalTitle: "先跑通一条转发规则",
     finalText:
-      "性能报告附带完整命令、原始数据和注意事项，方便你按自己的带宽目标先验证再上线。",
+      "单机先用 standalone。需要多台入口机器时，再接入 Server + Client。",
     finalCta: "打开文档",
   },
 } as const;
@@ -308,12 +304,16 @@ export function LandingPage({ locale }: { locale: Locale }) {
         <section className="border-b border-white/10 bg-black px-6 py-24 lg:px-10 lg:py-32">
           <div className="mx-auto max-w-7xl">
             <div className="grid gap-10 lg:grid-cols-[1fr_1.3fr] lg:items-end">
-              <h2 className="text-balance text-3xl font-semibold tracking-tight md:text-5xl">
+              <h2
+                className={`text-balance text-3xl font-semibold tracking-tight md:text-5xl ${t.capabilitiesIntro ? "" : "lg:col-span-2 lg:whitespace-nowrap"}`}
+              >
                 {t.capabilitiesTitle}
               </h2>
-              <p className="max-w-2xl text-base leading-7 text-white/55 md:text-lg">
-                {t.capabilitiesIntro}
-              </p>
+              {t.capabilitiesIntro ? (
+                <p className="max-w-2xl text-base leading-7 text-white/55 md:text-lg">
+                  {t.capabilitiesIntro}
+                </p>
+              ) : null}
             </div>
             <div className="mt-16 grid gap-px overflow-hidden rounded-xl border border-white/10 bg-white/5 sm:grid-cols-2">
               {t.capabilities.map((item: Capability) => (
@@ -348,7 +348,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
           />
           <div className="mx-auto max-w-7xl">
             <div className="grid gap-10 lg:grid-cols-[1fr_1.3fr] lg:items-end">
-              <h2 className="text-balance text-3xl font-semibold tracking-tight md:text-5xl">
+              <h2 className="whitespace-pre-line text-balance text-3xl font-semibold tracking-tight md:text-5xl">
                 {t.topologyTitle}
               </h2>
               <p className="max-w-2xl text-base leading-7 text-white/55 md:text-lg">
@@ -602,41 +602,45 @@ function Topology({ t }: { t: (typeof copy)["en"] | (typeof copy)["zh"] }) {
 
       {/* rule edges */}
       <line
-        x1="170"
+        x1="130"
         y1="160"
-        x2="320"
+        x2="340"
         y2="160"
-        stroke="url(#fr-edge-control)"
+        stroke="#c8f36f"
+        strokeOpacity="0.65"
         strokeWidth="1.5"
         strokeDasharray="4 4"
         markerEnd="url(#fr-arrow-control)"
       />
       <line
-        x1="480"
-        y1="120"
-        x2="660"
+        x1="460"
+        y1="136"
+        x2="680"
         y2="80"
-        stroke="url(#fr-edge-control)"
+        stroke="#c8f36f"
+        strokeOpacity="0.65"
         strokeWidth="1.5"
         strokeDasharray="4 4"
         markerEnd="url(#fr-arrow-control)"
       />
       <line
-        x1="480"
+        x1="460"
         y1="160"
-        x2="660"
+        x2="680"
         y2="160"
-        stroke="url(#fr-edge-control)"
+        stroke="#c8f36f"
+        strokeOpacity="0.65"
         strokeWidth="1.5"
         strokeDasharray="4 4"
         markerEnd="url(#fr-arrow-control)"
       />
       <line
-        x1="480"
-        y1="200"
-        x2="660"
+        x1="460"
+        y1="184"
+        x2="680"
         y2="240"
-        stroke="url(#fr-edge-control)"
+        stroke="#c8f36f"
+        strokeOpacity="0.65"
         strokeWidth="1.5"
         strokeDasharray="4 4"
         markerEnd="url(#fr-arrow-control)"
@@ -644,29 +648,32 @@ function Topology({ t }: { t: (typeof copy)["en"] | (typeof copy)["zh"] }) {
 
       {/* traffic edges */}
       <line
-        x1="820"
+        x1="800"
         y1="80"
-        x2="930"
+        x2="870"
         y2="80"
-        stroke="url(#fr-edge-data)"
+        stroke="#00d2ff"
+        strokeOpacity="0.65"
         strokeWidth="2"
         markerEnd="url(#fr-arrow-data)"
       />
       <line
-        x1="820"
+        x1="800"
         y1="160"
-        x2="930"
+        x2="870"
         y2="160"
-        stroke="url(#fr-edge-data)"
+        stroke="#00d2ff"
+        strokeOpacity="0.65"
         strokeWidth="2"
         markerEnd="url(#fr-arrow-data)"
       />
       <line
-        x1="820"
+        x1="800"
         y1="240"
-        x2="930"
+        x2="870"
         y2="240"
-        stroke="url(#fr-edge-data)"
+        stroke="#00d2ff"
+        strokeOpacity="0.65"
         strokeWidth="2"
         markerEnd="url(#fr-arrow-data)"
       />
@@ -683,9 +690,9 @@ function Topology({ t }: { t: (typeof copy)["en"] | (typeof copy)["zh"] }) {
       <Node x={740} y={80} label={t.nodeClient} sub="edge-1" />
       <Node x={740} y={160} label={t.nodeClient} sub="edge-2" />
       <Node x={740} y={240} label={t.nodeClient} sub="edge-3" />
-      <Node x={965} y={80} label={t.nodeTarget} muted />
-      <Node x={965} y={160} label={t.nodeTarget} muted />
-      <Node x={965} y={240} label={t.nodeTarget} muted />
+      <Node x={930} y={80} label={t.nodeTarget} muted />
+      <Node x={930} y={160} label={t.nodeTarget} muted />
+      <Node x={930} y={240} label={t.nodeTarget} muted />
 
       {/* legend */}
       <g transform="translate(70, 290)">

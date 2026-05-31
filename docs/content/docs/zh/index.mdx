@@ -1,17 +1,17 @@
 ---
 title: Portunus
-description: 基于 Rust 数据面的远程 TCP / UDP 转发，提供中心控制面、RBAC、指标与 QoS。
+description: TCP / UDP 端口转发，可用单个 TOML 文件单机运行，也可用 Server + Client 集中管理规则、权限、指标和审计。
 icon: BookOpen
 ---
 
 # Portunus
 
-面向真实运维场景的远程 TCP / UDP 转发。边缘 Client 运行在远端主机上，Server
-集中下发转发规则；数据面保持 L4 字节直通，同时补上 RBAC、指标、审计日志和
-流量配额。
+Portunus 用来转发远端机器上的 TCP / UDP 端口。单机时，它可以读取一个 TOML 文件
+直接运行；机器多了以后，可以用 Server 集中下发规则，并管理用户权限、限速、指标和
+审计记录。业务流量只经过转发机器，不经过 Server，也不会被解密或改写。
 
-只有一台主机？单二进制的 [standalone 转发器](/zh/docs/configuration/standalone)
-靠一个本地 TOML 文件就能跑起同一套数据面——不需要 Server、不需要 enrollment、不需要控制面。
+只有一台主机？[standalone 转发器](/zh/docs/configuration/standalone)
+读取本地 TOML，并复用同一套转发代码，不需要 Server 或注册步骤。
 
 <Cards>
   <Card title="60 秒安装" href="/zh/docs/getting-started/installation" />
@@ -21,17 +21,14 @@ icon: BookOpen
 
 ## 性能
 
-**从 v1.3.0 起**，Linux 上无带宽限制的 TCP 规则会走内核 `splice(2)` 快路径。在
-跑出 v0.11 基线的同一台 Linux 机器上，单流未限速吞吐**从 9.9 Gbit/s 翻倍到
-21.9 Gbit/s（2.20×）**；在 100 Mbit/s 到 20 Gbit/s 的递增负载扫描中，全程都贴近
-直连 `iperf3` 和 `iptables` REDIRECT（落在 iperf3 短样本噪声内）——v0.11 报告里
-"Portunus 在 12.5 Gbit/s 以上提前饱和"这条提醒，在无带宽限制的 TCP 上已不复存在。
+在测试机上，未限速的 TCP 转发一路到 20 Gbit/s 都能跟上 `iptables`。当前性能报告
+基于 v1.6.1 实测，包含测试机信息、命令、原始数字和注意事项。
 
-| 目标带宽 | 结论（v1.3.0） |
+| 场景 | 结论 |
 | --- | --- |
-| 100 Mbit/s - 10 Gbit/s | 端到端跑满目标速率，与直连 iperf3 实测没有可感知的差距。 |
-| 12.5 - 20 Gbit/s | 开启 splice 快路径后，单流吞吐与直连 loopback、iptables REDIRECT 的差距仅落在 iperf3 噪声范围内（95-109 %）。 |
-| 带限速的规则 | 限带宽规则继续走用户态通道——指标、计数器、审计均与 v1.2.0 二进制级别完全一致。 |
+| 100 Mbit/s - 20 Gbit/s | 在测试机上打满目标速率。 |
+| Standalone 与 Client | 共用同一套转发代码，当前实测看不出吞吐差异。 |
+| 带限速的规则 | 保留同样的指标、计数器和审计行为。 |
 
 <Cards>
   <Card title="查看方法、原始数据与注意事项" href="/zh/docs/getting-started/performance" />
@@ -42,10 +39,10 @@ icon: BookOpen
 | 领域 | 能力 |
 | --- | --- |
 | 转发 | TCP / UDP 规则、端口范围、DNS 域名目标、多目标故障切换。 |
-| L4 路由 | TLS SNI 路由但不终结 TLS，可选 PROXY protocol。 |
-| 控制面 | CLI、操作员 HTTP API、内置 Web UI、基于 TLS 指纹固定的热更新规则流。 |
-| 多租户 | 按用户、Client、协议与端口范围做 RBAC，规则归属由 Server 强制执行。 |
-| QoS | 按规则或 owner 设置带宽、新连接速率、并发连接 / flow 上限。 |
+| 路由 | 按 HTTPS 域名分流但不解密 TLS，可选 PROXY protocol。 |
+| 管理 | CLI、HTTP API、内置 Web UI，以及向已连接 Client 实时下发规则更新。 |
+| 权限 | 按用户、Client、协议与端口范围授权，规则归属由 Server 强制执行。 |
+| 限速 / 限额 | 按规则或用户设置带宽、新连接速率、并发连接上限。 |
 | 运维 | Prometheus 指标、结构化日志、审计记录、内置 SQLite、备份与恢复。 |
 
 ## 功能一览
@@ -57,20 +54,19 @@ icon: BookOpen
   <Card title="多目标故障切换" href="/zh/docs/features/multi-target-failover" />
   <Card title="TLS SNI 路由" href="/zh/docs/features/tls-sni-routing" />
   <Card title="PROXY 协议" href="/zh/docs/features/proxy-protocol" />
-  <Card title="限流与 QoS" href="/zh/docs/features/rate-limiting" />
-  <Card title="多用户 RBAC" href="/zh/docs/features/rbac" />
+  <Card title="限速与配额" href="/zh/docs/features/rate-limiting" />
+  <Card title="用户权限" href="/zh/docs/features/rbac" />
   <Card title="Web UI" href="/zh/docs/features/web-ui" />
   <Card title="SQLite 存储" href="/zh/docs/features/sqlite-storage" />
 </Cards>
 
 ## 适合什么场景
 
-当你需要集中管理远端监听端口、给不同用户分配可控范围、观察转发流量，或按 owner
-设置配额时，`Portunus` 比一条静态的本机转发规则更像一套可运维的系统。如果只是
-单机上的单条固定规则，且唯一目标就是极限吞吐，那么内核态转发路径依然更简单、更快。
-如果你想在单机上用上 `Portunus` 的数据面（端口范围、多目标故障切换、PROXY
-protocol、`splice`），又完全不需要控制面，就用
-[standalone 转发器](/zh/docs/configuration/standalone)——同一套转发代码，
+当你需要跨机器管理转发规则、给用户限定可用范围、查看流量，或按用户设置限额时，
+`Portunus` 比一条静态的本机转发规则更合适。如果你只需要单机上的一条固定转发，
+并且唯一目标就是极限吞吐，那么内核转发更简单。如果你想在单机上使用 Portunus 的
+端口范围、多目标故障切换、PROXY protocol 等能力，但不需要 Server，就用
+[standalone 转发器](/zh/docs/configuration/standalone)：同一套转发代码，
 完全由 TOML 文件驱动。
 
 ## 快速链接
