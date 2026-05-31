@@ -70,6 +70,7 @@ Token 请求不需要 CSRF 头。
 | `POST` | `/v1/client-enrollments` | 为新 Client 创建一次性接入命令 |
 | `POST` | `/v1/clients/{name}/enrollment` | 为已有 Client 创建一次性重新接入命令 |
 | `GET` | `/v1/clients` | 列出 Client；超管可见全部 |
+| `PUT` | `/v1/clients/{name}` | 更新该 Client 的 advertised address；body 为 `{address}` |
 | `POST` | `/v1/clients/{name}/revoke` | 撤销 + 断线 |
 | `DELETE` | `/v1/clients/{name}` | 删除已撤销的 Client 行 |
 

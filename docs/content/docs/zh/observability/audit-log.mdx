@@ -30,13 +30,13 @@ curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
 
 对 v0.7 调用方而言此路径字节稳定（无 `since`/`until`/`cursor`）。
 
-### 历史回滚（v0.8+ 信封）
+### 历史回溯（v0.8+ 信封）
 
 ```sh
 # 最近 24 小时，分页
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?since=2026-05-07T15:00:00Z&limit=50'
-# → {"entries":[...], "next_cursor":"abc123"}
+# → {"entries":[...], "next_cursor":"abc123", "count":50}
 
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?cursor=abc123&limit=50'

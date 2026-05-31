@@ -38,7 +38,7 @@ This path is byte-stable for v0.7 callers (no `since`/`until`/`cursor`).
 # Last 24 hours, paginated
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?since=2026-05-07T15:00:00Z&limit=50'
-# → {"entries":[...], "next_cursor":"abc123"}
+# → {"entries":[...], "next_cursor":"abc123", "count":50}
 
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/audit?cursor=abc123&limit=50'
