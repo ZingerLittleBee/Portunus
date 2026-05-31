@@ -1,9 +1,28 @@
 # Installer rework: POSIX sh, init-system abstraction, default-start, `--config`
 
 - **Date:** 2026-06-01
-- **Status:** Approved (design)
+- **Status:** Approved (design); implemented with one deviation (see below)
 - **Scope target:** `scripts/install.sh` and its supporting service/template
   files; docs that reference the installer.
+
+## 0. Implementation deviation — `--config` is standalone-only
+
+This design (§5.4, D3) describes `--config PATH` as a per-role override with
+per-role defaults. During implementation we confirmed the real binary CLIs:
+`portunus-client` takes `--bundle PATH` and `portunus-server` takes
+`--data-dir DIR serve …` — **neither accepts a `--config` flag**. Generalising
+`--config` across roles would have meant inventing a flag the binaries cannot
+honor. The flag is therefore **scoped to the `standalone` role only**:
+
+- `--config PATH` with `standalone` → seeds/points the service at `PATH`
+  (default `/etc/portunus/standalone.toml`).
+- `--config PATH` with `client`/`server` → hard error
+  (`--config is only valid for the standalone role`).
+- The client/server service definitions instead carry their native knobs
+  (`bundle=` / `datadir=`+`server_args=` for OpenRC conf.d; the systemd
+  drop-in for server `--data-dir`/`serve` args is unchanged from prior art).
+
+References to "per-role config path" below should be read with this scope.
 
 ## 1. Problem
 

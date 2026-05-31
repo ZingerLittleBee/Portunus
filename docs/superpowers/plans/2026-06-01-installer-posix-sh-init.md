@@ -10,6 +10,13 @@
 
 **Source of truth:** `docs/superpowers/specs/2026-06-01-installer-posix-sh-init-service-config-design.md`.
 
+**Implementation deviation:** `--config PATH` ended up **standalone-only**. The
+real binaries use `--bundle` (client) and `--data-dir … serve` (server), so a
+generalised `--config` was impossible; passing `--config` with a non-standalone
+role is now a hard error. See §0 of the spec for the full rationale. Wherever a
+task below says "per-role config", read it as "standalone config; client/server
+carry their native `bundle=` / `datadir=`+`server_args=` knobs instead".
+
 ---
 
 ## File Structure
