@@ -229,10 +229,10 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
     *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
     *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
-    zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default \&\& sudo rc-service portunus-%s start" ;;
-    *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default \&\& sudo rc-service portunus-%s start" ;;
-    zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>\&1 \&" ;;
-    *:next_manual) _f="  no supported init system; run it in the background manually:\n  nohup %s --config %s > /var/log/portunus.log 2>\&1 \&" ;;
+    zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
+    *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
+    zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
+    *:next_manual) _f="  no supported init system; run it in the background manually:\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
     *) _f="$_k" ;;
   esac
   # shellcheck disable=SC2059
@@ -340,8 +340,13 @@ server_extra_args() {
 ensure_svc_user() {
   _r="$1"; _u="$(svc_user_for "$_r")"
   if ! id "$_u" >/dev/null 2>&1; then
+    # useradd (Debian/RHEL) creates a matching primary group on its own.
+    # busybox adduser does NOT, so create the group first and bind to it —
+    # otherwise `chown root:$_u` later has no group and the 0640 config
+    # becomes unreadable by the service user.
     ${SUDO:-} useradd --system --no-create-home --shell /usr/sbin/nologin "$_u" 2>/dev/null \
-      || ${SUDO:-} adduser -S -D -H -s /sbin/nologin "$_u" 2>/dev/null \
+      || { ${SUDO:-} addgroup -S "$_u" 2>/dev/null; \
+           ${SUDO:-} adduser -S -D -H -s /sbin/nologin -G "$_u" "$_u" 2>/dev/null; } \
       || die "failed to create system user $_u"
   fi
   case "$_r" in
@@ -1160,8 +1165,11 @@ dispatch_verb() {
         detect_init
         svc install "$ROLE" "$CONFIG_PATH"
         [ "$ROLE" = "server" ] && [ "$INIT" = systemd ] && write_server_dropin
-        if [ "$NO_SERVICE" != yes ] && [ "$INIT" != none ]; then svc enable_start "$ROLE"; fi
+        # Record the install BEFORE attempting to start: the binary, unit,
+        # and config are already on disk, so even if enable/start fails the
+        # deploy is recoverable via uninstall/upgrade/status.
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+        if [ "$NO_SERVICE" != yes ] && [ "$INIT" != none ]; then svc enable_start "$ROLE"; fi
       fi
       if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" "domain=$DOMAIN"
