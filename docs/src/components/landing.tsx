@@ -39,7 +39,7 @@ const copy = {
     title: "Portunus",
     headlineLead: "Forward ports,",
     headlineAccent: "without giving up control.",
-    hero: "Run lightweight clients on the hosts that own your public ports. Push TCP and UDP forwarding rules from one server. Get permissions, rate limits, metrics, and audit out of the box, without reading, modifying, or decrypting the bytes that flow through.",
+    hero: "Run lightweight clients on the hosts that own your public ports, and push TCP and UDP forwarding rules from one server. Permissions, rate limits, metrics, and audit come built in — without ever reading, modifying, or decrypting the bytes that flow through.",
     primary: "Read the docs",
     secondary: "Performance report",
     proof: "Linux · Rust · single binary deploy",
@@ -133,7 +133,7 @@ const copy = {
     title: "Portunus",
     headlineLead: "转发端口——",
     headlineAccent: "但不放弃控制。",
-    hero: "在拥有公网端口的主机上运行轻量 Client，从一个 Server 下发 TCP / UDP 转发规则。权限、限速、指标、审计开箱即用——业务流量不被读、不被改、不被解密。",
+    hero: "在拥有公网端口的主机上运行轻量 Client，由一台 Server 统一下发 TCP / UDP 转发规则。权限、限速、指标、审计开箱即用——而业务流量不被读、不被改、不被解密。",
     primary: "阅读文档",
     secondary: "性能报告",
     proof: "Linux · Rust · 单二进制部署",
@@ -160,12 +160,12 @@ const copy = {
     statusActive: "运行中",
     rangesTitle: "性能可预期，便于容量规划。",
     rangesIntro:
-      "Linux 上不限带宽的 TCP 规则会走内核 splice 快路径。测试机上单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；在 100 Mbit/s 到 20 Gbit/s 的压测区间内，代理路径始终保持在 direct iperf3 和 iptables REDIRECT 的 95-109 %——v0.11 报告里的早期饱和拐点，对不限带宽的 TCP 已不复存在。",
+      "Linux 上不限带宽的 TCP 规则会走内核 splice 快路径。测试机上单流吞吐从 9.9 Gbit/s 翻倍到 21.9 Gbit/s；在 100 Mbit/s 到 20 Gbit/s 的压测区间内，代理路径始终保持在直连 iperf3 和 iptables REDIRECT 的 95-109 %——v0.11 报告里的早期饱和拐点，对不限带宽的 TCP 已不复存在。",
     ranges: [
-      ["100M – 10G", "端到端跑满目标速率，和 direct iperf3 实测几乎没有差距。"],
+      ["100M – 10G", "端到端跑满目标速率，和直连 iperf3 实测几乎没有差距。"],
       [
         "12.5G – 20G",
-        "开启 splice 快路径后，代理路径与 direct loopback、iptables REDIRECT 的差距只在测量噪声范围内。",
+        "开启 splice 快路径后，代理路径与直连 loopback、iptables REDIRECT 的差距只在测量噪声范围内。",
       ],
       [
         "带限速的规则",
