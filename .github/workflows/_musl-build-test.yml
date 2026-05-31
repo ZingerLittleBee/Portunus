@@ -1,9 +1,10 @@
 name: musl build test (temporary)
 
-# Temporary workflow to validate the gnu->musl release switch:
-# reproduces release.yml's build step (container + zig/cargo-zigbuild +
-# static musl build of all three binaries) with NO publish side effects.
-# Delete once the musl release path is confirmed green.
+# Temporary workflow to validate the gnu->musl release switch with the
+# standard NATIVE musl-tools toolchain (no zig — CI runners build their
+# own arch natively, there is no cross-compilation). Builds all three
+# binaries static-musl with linkage verification. NO publish side
+# effects. Delete once the musl release path is confirmed green.
 
 on:
   push:
@@ -32,6 +33,11 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+    env:
+      # aws-lc-sys (tonic TLS) compiles C with cmake; point it at musl-gcc
+      # so its objects match the static-musl target ABI.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
     steps:
       - uses: actions/checkout@v4
 
@@ -40,21 +46,17 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates curl xz-utils
+          apt-get install -y --no-install-recommends \
+            protobuf-compiler ca-certificates musl-tools musl-dev cmake
           rm -rf /var/lib/apt/lists/*
 
       - name: Install Rust target
         shell: bash
         run: rustup target add "${{ matrix.target }}"
 
-      - name: Install zig and cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        with:
-          tool: zig,cargo-zigbuild
-
-      - name: cargo zigbuild --release (static musl)
+      - name: cargo build --release (native static musl)
         shell: bash
-        run: cargo zigbuild --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
+        run: cargo build --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
 
       - name: Verify static linkage
         shell: bash
