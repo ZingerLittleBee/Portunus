@@ -284,8 +284,12 @@ hosts, the **one-click installer** for plain Linux (systemd or OpenRC).
 
 ### Docker
 
+The installer never writes a config. For the Docker path the config is
+`./portunus.toml` in your current directory, which the generated Compose file
+bind-mounts read-only — so **create it first**, then install:
+
 ```sh
-# 1. write your forwarding rules (the container mounts this file read-only):
+# 1. write your forwarding rules (Compose mounts ./portunus.toml read-only)
 cat > portunus.toml <<'EOF'
 [[rule]]
 name        = "ssh"
@@ -295,17 +299,15 @@ target      = "10.0.0.5:22"
 EOF
 chmod 0644 portunus.toml   # the container runs as UID 65532 and must read it
 
-# 2. Run it (host networking so port-range rules bind directly):
-docker run -d --network host \
-  --name portunus-standalone \
-  --restart unless-stopped \
-  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
-  ghcr.io/zingerlittlebee/portunus-standalone:latest
+# 2. install + start via Docker Compose
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
 ```
 
 The container runs as UID 65532 (`nonroot`), so the host config must be readable
-by that UID — `chmod 0644 portunus.toml` is the simplest fix. Pin a version tag
-(`:vX.Y.Z`) in production instead of `:latest`.
+by that UID — `chmod 0644 portunus.toml` is the simplest fix. The installer
+writes a `compose.yaml` and starts the service; later `upgrade` / `status` /
+`uninstall` reuse it. Prefer a raw `docker run` or a hand-written Compose file?
+See [Standalone Forwarder](/en/docs/configuration/standalone#docker).
 
 ### One-click installer (binary + service)
 

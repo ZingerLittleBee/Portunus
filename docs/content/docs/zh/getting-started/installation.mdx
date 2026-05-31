@@ -275,8 +275,11 @@ enrollment、无需 gRPC。两条安装路径——容器主机用 **Docker**，
 
 ### Docker
 
+安装器不会替你写配置。Docker 路径的配置是当前目录下的 `./portunus.toml`,
+由生成的 Compose 文件只读挂载——所以请**先创建配置**,再安装:
+
 ```sh
-# 1. 写入你的转发规则（容器会只读挂载这个文件）：
+# 1. 写入你的转发规则（Compose 会只读挂载 ./portunus.toml）
 cat > portunus.toml <<'EOF'
 [[rule]]
 name        = "ssh"
@@ -286,17 +289,15 @@ target      = "10.0.0.5:22"
 EOF
 chmod 0644 portunus.toml   # 容器以 UID 65532 运行,必须能读到它
 
-# 2. 运行容器（host 网络，使端口范围规则可直接绑定）：
-docker run -d --network host \
-  --name portunus-standalone \
-  --restart unless-stopped \
-  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
-  ghcr.io/zingerlittlebee/portunus-standalone:latest
+# 2. 通过 Docker Compose 安装并启动
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
 ```
 
 容器以 UID 65532（`nonroot`）运行，因此宿主配置文件必须能被该 UID 读取——
-`chmod 0644 portunus.toml` 是最简单的修复方式。生产环境请固定版本 tag
-（`:vX.Y.Z`）而非 `:latest`。
+`chmod 0644 portunus.toml` 是最简单的修复方式。安装器会写出 `compose.yaml`
+并启动服务;后续 `upgrade` / `status` / `uninstall` 会复用它。想用裸
+`docker run` 或自己写 Compose 文件？参见
+[Standalone 转发器](/zh/docs/configuration/standalone#docker)。
 
 ### 一键安装脚本（二进制 + 服务）
 
