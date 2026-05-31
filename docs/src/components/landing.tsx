@@ -38,8 +38,8 @@ const copy = {
   en: {
     title: "Portunus",
     headlineLead: "Fast TCP/UDP forwarding,",
-    headlineAccent: "managed from one server.",
-    hero: "Run a small client on each host that exposes public ports. Use one server to add, update, and remove forwarding rules. Portunus also handles permissions, limits, metrics, and audit logs without reading or changing your traffic.",
+    headlineAccent: "managed from one Server.",
+    hero: "Run a small Client on each host that exposes public ports. Use one Server to add, update, and remove TCP or UDP forwarding rules, with permissions, limits, metrics, and audit logs built in.",
     primary: "Read the docs",
     secondary: "Performance report",
     proof: "Linux · Rust · one static binary",
@@ -64,32 +64,30 @@ const copy = {
     ],
     statusOk: "OK",
     statusActive: "ACTIVE",
-    rangesTitle: "Fast enough for real links, with numbers you can check.",
+    rangesTitle: "Benchmarks with the raw numbers included.",
     rangesIntro:
-      "On the benchmark host, uncapped TCP forwarding keeps up with iptables through 20 Gbit/s. The performance report includes the commands, raw results, and caveats so you can rerun the test before relying on it.",
+      "The report lists the test host, commands, raw results, and caveats, so the numbers are easy to inspect.",
     ranges: [
       [
         "100M – 20G",
-        "Hits the requested rate end-to-end on the benchmark host.",
+        "Uncapped TCP forwarding keeps up with iptables in the current benchmark.",
       ],
       [
-        "Standalone / client",
-        "Both builds use the same forwarding code, so choose by deployment model, not throughput.",
+        "Standalone / Client",
+        "Both deployments use the same forwarding code.",
       ],
       [
         "Rate-limited rules",
-        "Bandwidth-capped rules keep the same metrics, counters, and audit behavior.",
+        "Metrics, counters, and audit behavior stay intact.",
       ],
     ],
-    capabilitiesTitle:
-      "Rules, access, limits, metrics, and audit in one place.",
-    capabilitiesIntro:
-      "The server manages rule pushes, permissions, rate limits, metrics, and audit logs, so you do not have to glue separate tools together.",
+    capabilitiesTitle: "Rules, access, limits, metrics, audit.",
+    capabilitiesIntro: "",
     capabilities: [
       {
         icon: Network,
         title: "Rules",
-        text: "Forward TCP or UDP, single ports or port ranges, to IP or DNS targets. Route HTTPS by hostname without decrypting the connection.",
+        text: "Forward TCP or UDP, single ports or port ranges, to IP or DNS targets. Route HTTPS to different backends by hostname.",
       },
       {
         icon: ShieldCheck,
@@ -122,7 +120,7 @@ const copy = {
       "Generate a one-time client enrollment command from the server.",
       "Run the client on the host that exposes public ports.",
       "Add forwarding rules from the CLI, HTTP API, or Web UI.",
-      "Watch traffic, quotas, and rejected traffic in real time, without touching user data.",
+      "Watch traffic, quotas, and rejected requests in real time.",
     ],
     finalTitle: "Start with one forwarding rule.",
     finalText:
@@ -158,16 +156,16 @@ const copy = {
     ],
     statusOk: "OK",
     statusActive: "运行中",
-    rangesTitle: "性能实测公开，按你的带宽自己验证。",
+    rangesTitle: "性能报告公开原始结果。",
     rangesIntro:
-      "在测试机上，未限速的 TCP 转发一路到 20 Gbit/s 都能跟上 iptables。性能报告附带命令、原始结果和注意事项，方便你在自己的机器上复测。",
+      "报告里有测试机器、执行命令、原始数字和注意事项。你可以直接看结论，也可以按同样方式复测。",
     ranges: [
-      ["100M – 20G", "在测试机上端到端打满目标速率。"],
+      ["100M – 20G", "未限速 TCP 转发能跟上 iptables。"],
       [
         "Standalone / Client",
-        "两种模式共用同一套转发代码，按部署方式选择，不按吞吐选择。",
+        "两种部署方式共用同一套转发代码。",
       ],
-      ["带限速的规则", "限带宽的规则仍保留完整指标、计数器和审计记录。"],
+      ["带限速的规则", "指标、计数器和审计记录保持完整。"],
     ],
     capabilitiesTitle: "规则、权限、限速、指标、审计。",
     capabilitiesIntro: "",
