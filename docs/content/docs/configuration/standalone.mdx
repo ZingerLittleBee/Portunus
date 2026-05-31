@@ -28,12 +28,15 @@ The GHCR image `ghcr.io/zingerlittlebee/portunus-standalone:<version>` is
 published on every release (multi-arch: `linux/amd64`, `linux/arm64`).
 
 ```sh
-# 1. Drop a starter config in your working directory and edit it:
-curl -fsSL -o portunus.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-chmod 0644 portunus.toml
-# Edit portunus.toml with your editor (vi, nano, ${EDITOR:-vi}, …).
-${EDITOR:-vi} portunus.toml
+# 1. write your forwarding rules (the container mounts this file read-only):
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # the container runs as UID 65532 and must read it
 
 # 2. Run the container:
 docker run -d --network host \

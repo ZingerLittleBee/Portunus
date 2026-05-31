@@ -280,16 +280,20 @@ portunus-client --version
 
 `portunus-standalone` reads all of its rules from a TOML file and needs no
 server, no enrollment, and no gRPC. Two install paths — **Docker** for container
-hosts, the **one-click installer** for plain Linux + systemd.
+hosts, the **one-click installer** for plain Linux (systemd or OpenRC).
 
 ### Docker
 
 ```sh
-# 1. Grab a starter config and edit it:
-curl -fsSL -o portunus.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-chmod 0644 portunus.toml
-${EDITOR:-vi} portunus.toml
+# 1. write your forwarding rules (the container mounts this file read-only):
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # the container runs as UID 65532 and must read it
 
 # 2. Run it (host networking so port-range rules bind directly):
 docker run -d --network host \

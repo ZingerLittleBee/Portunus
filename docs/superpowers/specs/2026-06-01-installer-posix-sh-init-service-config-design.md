@@ -44,6 +44,12 @@ after merge per operator feedback:
   and always start unless `--no-service` / no init manager. This avoids a
   failed unit on first install while preserving "install starts the service"
   for the documented create-first flow.
+- The **docker** path (`--deploy docker`) is consistent: `write_compose_file`
+  no longer copies the example to `<compose-dir>/portunus.toml`. The compose
+  bind-mounts that file read-only, so a missing source would make Docker
+  create a bogus *directory* — the installer now `die`s with a create-first
+  message instead. Docs guide writing `portunus.toml` via a heredoc before
+  `--deploy docker`.
 
 ## 1. Problem
 

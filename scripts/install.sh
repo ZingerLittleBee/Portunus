@@ -640,6 +640,13 @@ write_compose_file() {
   local dir="$1" f="$1/compose.yml" port; port="$(op_http_port)"
   mkdir -p "$dir"
   if [ "$ROLE" = "standalone" ]; then
+    # The compose file bind-mounts ./portunus.toml read-only into the
+    # container. We never seed it — a missing source would make Docker
+    # create a bogus *directory* at that path. Require the operator to
+    # author it first (see the standalone docs).
+    if [ ! -f "$dir/portunus.toml" ]; then
+      die "create ${dir}/portunus.toml first — docker mounts it at /etc/portunus/standalone.toml (example: ${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml)"
+    fi
     # No GHCR image is published for standalone — copy the reference
     # compose file from contrib/ and the user builds locally.
     local self_dir3=""
@@ -651,14 +658,6 @@ write_compose_file() {
     else
       curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/docker-compose.yml" -o "$dir/docker-compose.yml" \
         || die "failed to fetch contrib/docker-compose.yml"
-    fi
-    if [ ! -f "$dir/portunus.toml" ]; then
-      if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" ]; then
-        cp "$self_dir3/../crates/portunus-standalone/contrib/portunus.example.toml" "$dir/portunus.toml"
-      else
-        curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml" -o "$dir/portunus.toml" \
-          || die "failed to fetch contrib/portunus.example.toml"
-      fi
     fi
     return 0
   fi

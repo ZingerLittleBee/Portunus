@@ -159,6 +159,21 @@ curl -fsSL .../scripts/install.sh | sh -s -- server --deploy docker \
 `docker-compose` ，但优先使用 v2）。server 配置走 `.env` 旁挂文件，
 已存在的 compose 文件不会被改写。
 
+对 **standalone** 用 `--deploy docker` 时,compose 文件会把
+`<compose目录>/portunus.toml` 挂进容器——请在安装**之前**创建它（缺失时
+安装器会直接报错,而不是放任 Docker 创建一个同名假目录）：
+
+```sh
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+curl -fsSL .../scripts/install.sh | sh -s -- standalone --deploy docker
+```
+
 ## 安装元数据
 
 每次安装会记录一个 `.install-meta` 文件（shell `key=value`），供后续

@@ -170,6 +170,22 @@ Docker Compose **v2** is required (legacy `docker-compose` is detected
 but v2 is preferred). Server config goes through the `.env` sidecar; an
 existing compose file is never rewritten.
 
+For **standalone** with `--deploy docker`, the compose file bind-mounts
+`<compose-dir>/portunus.toml` into the container — create it **before**
+installing (the installer errors if it is missing rather than letting
+Docker create a bogus directory):
+
+```sh
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+curl -fsSL .../scripts/install.sh | sh -s -- standalone --deploy docker
+```
+
 ## Install metadata
 
 Each install records an `.install-meta` file (shell `key=value`) so later

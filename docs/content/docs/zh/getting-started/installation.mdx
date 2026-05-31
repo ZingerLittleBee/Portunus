@@ -270,17 +270,21 @@ portunus-client --version
 ## 安装 Standalone
 
 `portunus-standalone` 的所有规则都从一个 TOML 文件读取，无需 Server、无需
-enrollment、无需 gRPC。两条安装路径——容器主机用 **Docker**，普通 Linux + systemd
-用**一键安装脚本**。
+enrollment、无需 gRPC。两条安装路径——容器主机用 **Docker**，普通 Linux
+（systemd / OpenRC）用**一键安装脚本**。
 
 ### Docker
 
 ```sh
-# 1. 下载一份起步配置并编辑：
-curl -fsSL -o portunus.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-chmod 0644 portunus.toml
-${EDITOR:-vi} portunus.toml
+# 1. 写入你的转发规则（容器会只读挂载这个文件）：
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # 容器以 UID 65532 运行,必须能读到它
 
 # 2. 运行容器（host 网络，使端口范围规则可直接绑定）：
 docker run -d --network host \

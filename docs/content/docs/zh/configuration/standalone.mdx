@@ -26,12 +26,15 @@ icon: Cpu
 （支持 `linux/amd64`、`linux/arm64`）。
 
 ```sh
-# 1. 在工作目录放一份起步配置并编辑：
-curl -fsSL -o portunus.toml \
-  https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/crates/portunus-standalone/contrib/portunus.example.toml
-chmod 0644 portunus.toml
-# 用任意编辑器修改 portunus.toml（vi、nano 等）。
-${EDITOR:-vi} portunus.toml
+# 1. 写入你的转发规则（容器会只读挂载这个文件）：
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # 容器以 UID 65532 运行,必须能读到它
 
 # 2. 启动容器：
 docker run -d --network host \
