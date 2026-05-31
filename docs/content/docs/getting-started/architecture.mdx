@@ -47,6 +47,41 @@ control plane.
                    Configured upstream targets
 ```
 
+## Standalone mode
+
+For a single host that needs the same forwarding without a control plane,
+[`portunus-standalone`](/en/docs/configuration/standalone) reads a TOML file
+and runs the `portunus-forwarder` data plane directly:
+
+```
+                  portunus.toml
+                       │ rules, defaults, [stats]
+                       ▼
+              ┌──────────────────────────────────────┐
+              │          portunus-standalone          │
+              │                                      │
+   End-user ──▶ portunus-forwarder data plane        │
+   traffic     │  • Per-rule TCP / UDP listeners      │
+              │  • Port ranges, DNS targets          │
+              │  • Multi-target failover             │
+              │  • PROXY protocol                    │
+              │  • Optional stats over a Unix socket │
+              │    → `portunus-standalone stats` TUI │
+              └──────────────┬───────────────────────┘
+                             │ TCP / UDP
+                             ▼
+                   Configured upstream targets
+```
+
+It runs the **same data plane** as `portunus-client`, so the
+[Data plane](#data-plane) section below applies unchanged. Everything else
+is gone: no gRPC control stream, operator HTTP API, Web UI, RBAC, audit log,
+or Prometheus `/metrics`. Configuration is the TOML file, reloaded on
+restart, and its schema does not expose TLS SNI routing or rate limiting —
+both are configured only through the server. Live throughput is read from
+the optional stats socket and the built-in `stats` TUI. See the
+[standalone guide](/en/docs/configuration/standalone) for the full schema.
+
 ## Control plane
 
 - **TLS-pinned client authentication**. The server generates a self-signed leaf
@@ -79,8 +114,11 @@ control plane.
   datagram rebuilds it against a freshly selected target.
 - **DNS targets**: resolved on first connect, cached per the resolver's
   TTL clamped to `[5 s, 5 min]`, with 30 s stale-while-error grace.
-- **Multi-target failover**: 1..=8 targets per rule, priority-ordered,
-  passive health detection (3 consecutive failures → Failed).
+- **Multi-target failover**: 1..=8 targets per rule, priority-ordered;
+  passive health detection (3 consecutive failures → Failed) plus an
+  optional active TCP-connect probe.
+- **PROXY protocol**: an optional v1/v2 header prepended to the upstream
+  connection so the target sees the original client address (TCP only).
 - **TLS SNI routing**: peeks the ClientHello, parses the SNI extension,
   routes by exact host or single-label wildcard. Never decrypts.
 - **Rate limiting**: token-bucket throttle for bandwidth caps;

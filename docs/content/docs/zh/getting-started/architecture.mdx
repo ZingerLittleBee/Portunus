@@ -45,6 +45,40 @@ icon: Network
                        配置的上游目标
 ```
 
+## Standalone 模式
+
+只有一台主机、又想要同一套转发但不要控制面时，
+[`portunus-standalone`](/zh/docs/configuration/standalone) 读取一份 TOML
+文件，直接运行 `portunus-forwarder` 数据面：
+
+```
+                  portunus.toml
+                       │ rules、defaults、[stats]
+                       ▼
+              ┌──────────────────────────────────────┐
+              │          portunus-standalone          │
+              │                                      │
+   终端用户 ──▶ portunus-forwarder 数据面            │
+   流量        │  • 每条规则 TCP / UDP Listener       │
+              │  • 端口范围、DNS 目标                │
+              │  • 多目标 failover                   │
+              │  • PROXY protocol                    │
+              │  • 可选的 Unix socket 统计           │
+              │    → `portunus-standalone stats` TUI │
+              └──────────────┬───────────────────────┘
+                             │ TCP / UDP
+                             ▼
+                       配置的上游目标
+```
+
+它跑的是和 `portunus-client` **完全相同的数据面**，因此下面的
+[数据面](#数据面) 一节同样适用。其余部分全部没有：没有 gRPC 控制流、
+操作员 HTTP API、Web UI、RBAC、审计日志，也没有 Prometheus `/metrics`。
+配置就是这份 TOML 文件，重启时重新加载；它的 schema 不暴露 TLS SNI 路由和
+限流——这两者只能通过 Server 配置。实时吞吐通过可选的统计 socket 和内置的
+`stats` TUI 查看。完整 schema 见
+[standalone 指南](/zh/docs/configuration/standalone)。
+
 ## 控制面
 
 - **TLS 指纹固定的 Client 认证**。Server 在首次启动时自签一张叶证书；每个
@@ -73,7 +107,9 @@ icon: Network
 - **DNS 目标**：首次连接时懒解析，按解析器返回的 TTL 缓存（夹紧到
   `[5 s, 5 min]`），刷新失败时享有 30 秒的 stale-while-error 宽限。
 - **多目标故障切换**：每条规则 1..=8 个目标，按 priority 顺序选择；
-  被动健康检测（连续 3 次失败即切到 Failed）。
+  被动健康检测（连续 3 次失败即切到 Failed），外加可选的主动 TCP-connect 探测。
+- **PROXY protocol**：可选的 v1/v2 头部，预置在上游连接前，让目标看到
+  原始客户端地址（仅 TCP）。
 - **TLS SNI 路由**：peek ClientHello、解析 SNI 扩展、按精确主机或
   单层通配符路由 —— 全程不解密。
 - **限流**：带宽用 token bucket 限制；连接速率 / 并发用 accept-then-RST。
