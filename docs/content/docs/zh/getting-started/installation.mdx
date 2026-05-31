@@ -183,10 +183,11 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 ### 接入并启动
 
-向操作员申请一条接入命令——可通过 Web UI **Clients** 页面；也可在宿主机二进制
-部署的服务端执行 `portunus-server enroll-client <name>`；或者对于 Docker 部署的
-服务端，执行 `docker compose run --rm operator enroll-client <name>`（参见
-[操作员命令](/zh/docs/deployment/docker#操作员命令)）。然后在边缘主机上：
+向操作员申请一条接入命令。无停机的路径是 Web UI **Clients** 页面（或
+`POST /v1/client-enrollments` API），可在 Server 运行时使用。而 `enroll-client`
+CLI 命令则直接打开 SQLite 存储，需要先**停止** Server（运行中的 Server 持有独占
+锁，命令会以 `store_in_use` 退出）——宿主二进制与 Docker 两种形式参见
+[操作员命令](/zh/docs/deployment/docker#操作员命令)。然后在边缘主机上：
 
 ```sh
 portunus-client enroll 'portunus://...' --out ./client.bundle.json

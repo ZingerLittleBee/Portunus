@@ -188,7 +188,13 @@ For production, running the client as a container is recommended — see Docker 
 
 ### Enroll and start
 
-Ask an operator for an enrollment command — from the Web UI **Clients** page; or `portunus-server enroll-client <name>` on a host-binary server; or, for a Docker-deployed server, `docker compose run --rm operator enroll-client <name>` (see [Operator commands](/en/docs/deployment/docker#operator-commands)). Then on the edge host:
+Ask an operator for an enrollment command. The no-downtime path is the Web UI
+**Clients** page (or the `POST /v1/client-enrollments` API) while the server
+runs. The `enroll-client` CLI command instead opens the SQLite store directly
+and needs the server **stopped** first (a running server holds an exclusive
+lock and the command exits `store_in_use`) — see
+[Operator commands](/en/docs/deployment/docker#operator-commands) for the
+host-binary and Docker forms. Then on the edge host:
 
 ```sh
 portunus-client enroll 'portunus://...' --out ./client.bundle.json
