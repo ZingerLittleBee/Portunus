@@ -101,7 +101,7 @@ pick option 3 for the standalone role.
 # [global] section — all fields optional
 [global]
 label              = "my-forwarder"   # human label; informational only
-log_level          = "info"           # tracing EnvFilter directive (default: "info")
+log_level          = "warn"           # tracing EnvFilter directive (default: "warn")
 log_format         = "json"           # "json" (default) or "pretty"
 shutdown_drain_secs = 30              # graceful-drain budget on SIGTERM (default: 30)
 
@@ -218,7 +218,7 @@ DNS target, single UDP, UDP range). Copy and trim as needed.
 # ─────────── Global (all fields optional) ───────────
 [global]
 label               = "edge-1"     # informational label printed in logs
-log_level           = "info"       # EnvFilter; e.g. "portunus=debug,info"
+log_level           = "warn"       # EnvFilter; e.g. "portunus=debug,info"
 log_format          = "json"       # "json" (default) or "pretty"
 shutdown_drain_secs = 30           # graceful-drain budget on SIGTERM
 

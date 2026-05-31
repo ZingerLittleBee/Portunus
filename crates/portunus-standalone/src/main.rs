@@ -187,7 +187,7 @@ fn init_tracing(cli: &Cli, cfg: &config::Config) {
     let level = cli.log_level.as_deref().unwrap_or(&cfg.global.log_level);
     let format = cli.log_format.as_deref().unwrap_or(&cfg.global.log_format);
 
-    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("warn"));
     let reg = tracing_subscriber::registry().with(filter);
     match format {
         "pretty" => {
