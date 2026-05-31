@@ -10,14 +10,12 @@
 
 > **Fast TCP/UDP port forwarding in Rust.** One static binary, no runtime dependencies. Run it standalone from a single TOML file, or as a control plane that pushes rules to a fleet of edge nodes.
 
-Forward a port with no server and no database:
+Forward a port with no server and no database — write a config, then install it as a service:
 
 ```sh
-# install the standalone binary
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --no-service
-
-# write a forwarding rule
-cat > portunus.toml <<'EOF'
+# 1. write your forwarding rules where the service can read them
+sudo mkdir -p /etc/portunus
+cat <<'EOF' | sudo tee /etc/portunus/portunus.toml >/dev/null
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -25,9 +23,11 @@ listen_port = 2222
 target      = "10.0.0.5:22"
 EOF
 
-# run it — :2222 → 10.0.0.5:22, TCP and UDP
-portunus-standalone --config portunus.toml
+# 2. install + start (detects systemd/OpenRC; reads the config above)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone --config /etc/portunus/portunus.toml
 ```
+
+`:2222 → 10.0.0.5:22`, TCP and UDP, surviving reboots and SSH logout. Just trying it out? Drop `sudo` and the service and run it in the foreground: `portunus-standalone --config portunus.toml`.
 
 ## Why Portunus
 

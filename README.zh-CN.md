@@ -10,14 +10,12 @@
 
 > **用 Rust 写的高性能 TCP/UDP 端口转发。** 单个静态二进制，不依赖任何运行时。既可以一份 TOML 文件单机跑，也可以做控制面，把规则下发到一批边缘节点。
 
-转发一个端口，不用 Server、不用数据库：
+转发一个端口，不用 Server、不用数据库 —— 先写配置，再装成服务：
 
 ```sh
-# 安装 standalone 二进制
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --no-service
-
-# 写一条转发规则
-cat > portunus.toml <<'EOF'
+# 1. 把转发规则写到服务用户能读到的位置
+sudo mkdir -p /etc/portunus
+cat <<'EOF' | sudo tee /etc/portunus/portunus.toml >/dev/null
 [[rule]]
 name        = "ssh"
 protocol    = "tcp"
@@ -25,9 +23,11 @@ listen_port = 2222
 target      = "10.0.0.5:22"
 EOF
 
-# 运行 —— :2222 → 10.0.0.5:22，TCP 与 UDP
-portunus-standalone --config portunus.toml
+# 2. 安装并启动（自动探测 systemd/OpenRC，读取上面的配置）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone --config /etc/portunus/portunus.toml
 ```
+
+`:2222 → 10.0.0.5:22`，TCP 与 UDP，重启和退出 SSH 都不会停。只是想试一下？去掉 `sudo` 和服务、前台运行即可：`portunus-standalone --config portunus.toml`。
 
 ## 为什么选 Portunus
 

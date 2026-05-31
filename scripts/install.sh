@@ -498,6 +498,7 @@ print_plan() {
     echo "env_file:         ${COMPOSE_DIR:-$PWD}/.env"
   fi
   echo "bin_dir:          ${BIN_DIR}"
+  [ "$ROLE" = "standalone" ] && [ "${DEPLOY:-binary}" != "docker" ] && echo "config:           ${CONFIG_PATH:-/etc/portunus/standalone.toml} (you create it; service exits if absent)"
   echo "init:             ${INIT:-?}"
   echo "service:          $([ "$NO_SERVICE" = yes ] && echo 'install only (--no-service)' || echo 'install + start')"
   echo "advertised:       ${ADVERTISED:-<unset, runtime auto>}"
@@ -1031,6 +1032,12 @@ apply_install_defaults() {
     die "--config is only valid for the standalone role (client uses --bundle, server uses --data-dir)"
   fi
   [ -z "$CONFIG_PATH" ] && [ "$ROLE" = standalone ] && CONFIG_PATH="/etc/portunus/standalone.toml"
+  # A service unit embeds this path, so it must be absolute — resolve a
+  # relative --config against the invoking cwd.
+  case "$CONFIG_PATH" in
+    ""|/*) : ;;
+    *) CONFIG_PATH="$(pwd)/$CONFIG_PATH" ;;
+  esac
   if [ -z "${DEPLOY:-}" ]; then
     DEPLOY="binary"
     return 0
