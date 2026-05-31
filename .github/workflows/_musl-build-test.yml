@@ -1,0 +1,68 @@
+name: musl build test (temporary)
+
+# Temporary workflow to validate the gnu->musl release switch:
+# reproduces release.yml's build step (container + zig/cargo-zigbuild +
+# static musl build of all three binaries) with NO publish side effects.
+# Delete once the musl release path is confirmed green.
+
+on:
+  push:
+    branches: [docs/polish-en-zh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  PORTUNUS_SKIP_WEBUI: "1"
+
+jobs:
+  musl-build:
+    name: musl build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    container:
+      image: rust:1.88-bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends protobuf-compiler ca-certificates curl xz-utils
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Install zig and cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: zig,cargo-zigbuild
+
+      - name: cargo zigbuild --release (static musl)
+        shell: bash
+        run: cargo zigbuild --release -p portunus-server -p portunus-client -p portunus-standalone --target "${{ matrix.target }}"
+
+      - name: Verify static linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          for b in portunus-server portunus-client portunus-standalone; do
+            f="target/${{ matrix.target }}/release/${b}"
+            echo "== ${b} =="
+            file "${f}" || true
+            ldd "${f}" 2>&1 || true
+          done
