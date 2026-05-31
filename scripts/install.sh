@@ -301,7 +301,7 @@ detect_platform() {
     *) die "unsupported arch: $arch" ;;
   esac
   case "$os" in
-    linux) target="${arch}-unknown-linux-gnu" ;;
+    linux) target="${arch}-unknown-linux-musl" ;;
     darwin) target="${arch}-apple-darwin" ;;
     *) die "unsupported os: $os" ;;
   esac
