@@ -38,7 +38,7 @@ const copy = {
   en: {
     title: "Portunus",
     headlineLead: "High-performance TCP/UDP forwarding,",
-    headlineAccent: "with a control plane to match.",
+    headlineAccent: "without giving up control.",
     hero: "Run lightweight clients on the hosts that own your public ports, and push TCP and UDP forwarding rules from one server. Permissions, rate limits, metrics, and audit come built in — without ever reading, modifying, or decrypting the bytes that flow through.",
     primary: "Read the docs",
     secondary: "Performance report",

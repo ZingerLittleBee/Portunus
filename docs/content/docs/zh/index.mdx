@@ -29,7 +29,7 @@ icon: BookOpen
 
 | 目标带宽 | 结论（v1.3.0） |
 | --- | --- |
-| 100 Mbit/s - 10 Gbit/s | 端到端跑满 offered 速率，与 direct iperf3 实测没有可感知的差距。 |
+| 100 Mbit/s - 10 Gbit/s | 端到端跑满目标速率，与直连 iperf3 实测没有可感知的差距。 |
 | 12.5 - 20 Gbit/s | 开启 splice 快路径后，单流吞吐与直连 loopback、iptables REDIRECT 的差距仅落在 iperf3 噪声范围内（95-109 %）。 |
 | 带限速的规则 | 限带宽规则继续走用户态通道——指标、计数器、审计均与 v1.2.0 二进制级别完全一致。 |
 
