@@ -20,7 +20,7 @@ fields preserve v0.10 behaviour byte-for-byte.
 each accept an optional burst override; `concurrent_connections` does
 not (it has no token bucket). Absent → `burst = 1 × rate` (one second of
 tokens). Server validation clamps the burst to `[rate / 100, rate × 60]`
-and rejects zero or negative rates.
+and rejects zero rates.
 
 <Callout type="info">
   **The rate limiter never closes existing connections** — including

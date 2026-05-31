@@ -31,6 +31,7 @@ server 端，使用 `… | sudo sh -s -- server --systemd`（创建 `portunus-se
 ```ini
 [Unit]
 Description=Portunus control plane
+Documentation=https://github.com/ZingerLittleBee/Portunus
 After=network-online.target
 Wants=network-online.target
 
@@ -78,6 +79,7 @@ WantedBy=multi-user.target
 ```ini
 [Unit]
 Description=Portunus edge client
+Documentation=https://github.com/ZingerLittleBee/Portunus
 After=network-online.target
 Wants=network-online.target
 

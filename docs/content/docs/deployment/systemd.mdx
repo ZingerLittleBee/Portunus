@@ -36,6 +36,7 @@ be on `PATH`).
 ```ini
 [Unit]
 Description=Portunus control plane
+Documentation=https://github.com/ZingerLittleBee/Portunus
 After=network-online.target
 Wants=network-online.target
 
@@ -84,6 +85,7 @@ SQLite state, generated TLS material, and the optional `server.toml`.
 ```ini
 [Unit]
 Description=Portunus edge client
+Documentation=https://github.com/ZingerLittleBee/Portunus
 After=network-online.target
 Wants=network-online.target
 

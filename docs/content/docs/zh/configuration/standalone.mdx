@@ -159,7 +159,7 @@ targets = [
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `--config <PATH>` |（自动搜索）| TOML 配置文件路径 |
+| `--config <PATH>` | `./portunus.toml` | TOML 配置文件路径 |
 | `--check` | false | 仅验证配置后退出（0 = 合法，2 = 非法）|
 | `--log-level <LEVEL>` | 取自配置 | 覆盖日志级别 |
 | `--log-format <FMT>` | 取自配置 | 覆盖日志格式（`json` 或 `pretty`）|
@@ -168,8 +168,7 @@ targets = [
 
 `stats` 子命令有自己的标志，参见 [实时流量面板](#实时流量面板)。
 
-不传 `--config` 时，按顺序搜索 `$PORTUNUS_STANDALONE_CONFIG`、
-`./portunus.toml`，都不存在时以 2 退出。
+不传 `--config` 时，从工作目录加载 `./portunus.toml`；该文件不存在时以 2 退出。
 
 ## 信号
 
@@ -383,7 +382,7 @@ TUI 客户端按平台选默认 socket：
 
 `portunus-standalone` 默认以 JSON 格式写 **stderr**（本地迭代时可切换到
 `log_format = "pretty"`）。每条规则启动时写结构化事件，且有一个周期 reporter
-每 30 秒输出一次按规则汇总的字节数与连接数。
+每 60 秒输出一次按规则汇总的字节数与连接数。
 
 不内嵌 HTTP / Prometheus / gRPC 任何接口 —— 那些是 `portunus-server` 的范畴。
 用日志聚合器（`journald`、`docker logs`、sidecar log shipper 等）来收集 JSON 输出。

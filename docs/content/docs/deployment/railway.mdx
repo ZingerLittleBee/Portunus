@@ -22,13 +22,17 @@ writes a minimal `/var/lib/portunus/server.toml`:
 control_listen = "0.0.0.0:7443"
 operator_http_listen = "0.0.0.0:${PORT}"
 metrics_listen = "127.0.0.1:7081"
+# Appended only when a public origin is resolved (see below):
 operator_http_public_origin = "https://${RAILWAY_PUBLIC_DOMAIN}"
 ```
 
 `$PORT` is the HTTP port assigned by Railway. The control-plane listener stays
-on `7443` so Railway's TCP Proxy can expose it separately. The public origin is
-derived from Railway's `RAILWAY_PUBLIC_DOMAIN`; override it with
-`PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN` if you attach a custom domain.
+on `7443` so Railway's TCP Proxy can expose it separately. The first three
+lines are always written; the `operator_http_public_origin` line is only
+appended when a public origin is resolved — taken from
+`PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN` if set, otherwise from Railway's
+`RAILWAY_PUBLIC_DOMAIN`. If neither is set, the line is omitted entirely. Set
+`PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN` when you attach a custom domain.
 
 ## Required Railway resources
 
