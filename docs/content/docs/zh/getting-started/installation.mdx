@@ -325,12 +325,14 @@ sudo install -m 0755 target/release/portunus-standalone /usr/local/bin/
 选择适合你平台的归档。归档命名格式为
 `portunus-<version>-<target>.tar.gz`，支持以下四个目标平台：
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
-每次 release 同时发布对应的 `portunus-<version>-checksums.txt`。
+Linux 归档自 v1.8.0 起是**静态 musl** 二进制：一个归档即可在所有 Linux
+发行版（glibc、Alpine/musl、busybox）上运行。每次 release 同时发布对应的
+`portunus-<version>-checksums.txt`。
 
 解压并安装：
 

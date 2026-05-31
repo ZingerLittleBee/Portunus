@@ -331,12 +331,14 @@ For a manual download, visit the GitHub
 the archive that matches your platform. Asset names follow the pattern
 `portunus-<version>-<target>.tar.gz` for these four targets:
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
-A `portunus-<version>-checksums.txt` is published alongside each release.
+The Linux archives are **static musl** binaries (since v1.8.0): one archive
+runs on every Linux distribution — glibc, Alpine/musl, or busybox. A
+`portunus-<version>-checksums.txt` is published alongside each release.
 
 Extract and install:
 
