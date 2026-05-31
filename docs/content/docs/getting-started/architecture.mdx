@@ -114,9 +114,14 @@ the optional stats socket and the built-in `stats` TUI. See the
   datagram rebuilds it against a freshly selected target.
 - **DNS targets**: resolved on first connect, cached per the resolver's
   TTL clamped to `[5 s, 5 min]`, with 30 s stale-while-error grace.
-- **Multi-target failover**: 1..=8 targets per rule, priority-ordered;
-  passive health detection (3 consecutive failures → Failed) plus an
-  optional active TCP-connect probe.
+- **Multi-target failover**: 1..=8 targets per rule, priority-ordered.
+  Passive health detection (3 consecutive failures → `Failed`, 2
+  consecutive successes → `Healthy`) is always on and is the only health
+  mechanism in standalone mode. An optional active TCP-connect probe is a
+  **control-plane-only** feature: it runs only when the server pushes a
+  rule with `--health-check-interval-secs`, so the TOML-driven
+  `portunus-standalone` forwarder has passive failover only — no active
+  probing.
 - **PROXY protocol**: an optional v1/v2 header prepended to the upstream
   connection so the target sees the original client address (TCP only).
 - **TLS SNI routing**: peeks the ClientHello, parses the SNI extension,

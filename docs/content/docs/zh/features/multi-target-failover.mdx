@@ -60,8 +60,8 @@ curl -N -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats/stream?per_target=true'
 ```
 
-Web UI 规则详情页会展示健康徽标（`Healthy / Degraded / Failed`）、
-最近一次失败 / 成功时间戳，以及在现有 5 秒 SSE 节奏下更新的逐目标字节计数。
+Web UI 规则详情页会展示健康徽标（`Healthy / Failed`）、最近一次失败 / 成功
+时间戳，以及在现有 5 秒 SSE 节奏下更新的逐目标字节计数。
 
 ## 默认 `/metrics`
 

@@ -106,8 +106,12 @@ icon: Network
   对重新选定的目标重建该流。
 - **DNS 目标**：首次连接时懒解析，按解析器返回的 TTL 缓存（夹紧到
   `[5 s, 5 min]`），刷新失败时享有 30 秒的 stale-while-error 宽限。
-- **多目标故障切换**：每条规则 1..=8 个目标，按 priority 顺序选择；
-  被动健康检测（连续 3 次失败即切到 Failed），外加可选的主动 TCP-connect 探测。
+- **多目标故障切换**：每条规则 1..=8 个目标，按 priority 顺序选择。被动健康
+  检测（连续 3 次失败切到 `Failed`，连续 2 次成功切回 `Healthy`）始终开启，
+  也是 standalone 模式下唯一的健康机制。可选的主动 TCP-connect 探测是
+  **仅控制面** 的能力：只有当 Server 用 `--health-check-interval-secs` 下发
+  规则时才会运行，因此 TOML 驱动的 `portunus-standalone` 转发器只有被动故障
+  切换，不做主动探测。
 - **PROXY protocol**：可选的 v1/v2 头部，预置在上游连接前，让目标看到
   原始客户端地址（仅 TCP）。
 - **TLS SNI 路由**：peek ClientHello、解析 SNI 扩展、按精确主机或

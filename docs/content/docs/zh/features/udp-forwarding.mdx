@@ -9,19 +9,21 @@ v0.4.0 起支持。UDP 规则可以与 TCP 规则共用同一个监听端口 —
 
 ## 工作原理
 
-每条 UDP 规则为每个监听端口运行一个 listener 任务，每个任务持有一块 64 KiB
-接收缓冲。来自新终端 `(源地址, 源端口)` 的数据报会开启一条 **流**：代理绑定
+每条 UDP 规则为每个监听端口运行一个 listener 任务，每个任务持有一块固定大小
+的接收缓冲。来自新终端 `(源地址, 源端口)` 的数据报会开启一条 **流**：代理绑定
 一个新的上游 `UdpSocket`，一次性 `connect()` 到选定目标，并把该流登记到一个
 按 `(监听端口, 源地址)` 索引的、规则级共享的 registry 中。回程数据报通过这个
 registry 解复用回原始源。
 
-接收缓冲的内存占用是 **每条规则 O(1)** —— 无论流多少，每个 listener 只用一块
-64 KiB 缓冲，而不是每条流一块。空闲流由 idle reaper 关闭（见下文
-`udp_flow_idle_secs`）。
+接收缓冲的内存占用相对并发流数量是 **O(1)** —— 每个 listener 任务持有一块
+固定大小的接收缓冲，不随流的数量增长，而不是每条流一块。空闲流由 idle
+reaper 关闭（见下文 `udp_flow_idle_secs`）。
 
 在 Linux 上，listener 使用批量系统调用（`recvmmsg`/`sendmmsg`，每次最多 32 个
-数据报）来降低每包的系统调用开销；其它平台使用单数据报的
-`recv_from`/`send`。
+数据报）来降低每包的系统调用开销。批量路径为每个 listener 持有一块固定的约
+2 MiB 接收 arena（32 个槽 × 64 KiB），外加一块 64 KiB 的单包回退缓冲；两者都
+不随流的数量增长。其它平台不使用批量 arena，走单块 64 KiB 的
+`recv_from`/`send` 路径。
 
 由于上游 socket 是 `connect()` 过的，Linux 会把 ICMP 错误
 （`ECONNREFUSED`、`EHOSTUNREACH`、`ENETUNREACH`）反射回代理。受影响的流会被
@@ -58,7 +60,7 @@ udp_max_flows_per_rule = 1024
 `udp_max_flows_per_rule = N`，则在其 **所有** 监听端口上合计最多接纳 `N` 条
 并发流 —— 这是一个 registry 级的全局计数器，而不是 `N × 端口数`。
 
-当大量不同源造成持续抖动时，超出上限的流会让
+当大量不同源持续频繁地建立、销毁流而超过上限时，超出上限的流会让
 `portunus_rule_flows_dropped_overflow_total` 累加。**已存在的流不会被驱逐
 腾位** —— 稳态收缩由空闲回收来完成。
 

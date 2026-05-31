@@ -65,9 +65,9 @@ curl -N -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      'http://127.0.0.1:7080/v1/rules/<id>/stats/stream?per_target=true'
 ```
 
-The Web UI rule detail page shows health badges (`Healthy / Degraded /
-Failed`), last-failure / last-success timestamps, and per-target byte
-counters that update on the existing 5-second SSE cadence.
+The Web UI rule detail page shows health badges (`Healthy / Failed`),
+last-failure / last-success timestamps, and per-target byte counters
+that update on the existing 5-second SSE cadence.
 
 ## Default `/metrics`
 
