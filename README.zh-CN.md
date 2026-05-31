@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ZingerLittleBee/Portunus/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/ZingerLittleBee/Portunus/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ZingerLittleBee/Portunus?style=flat-square&logo=github&color=blue)](https://github.com/ZingerLittleBee/Portunus/releases)
 [![Docker](https://img.shields.io/badge/GHCR-images-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/ZingerLittleBee/Portunus/pkgs/container/portunus-server)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#许可证)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
 [English](README.md) | **简体中文**
@@ -137,6 +137,6 @@ Web UI 位于 `webui/`（React + Vite + TypeScript），在编译时被嵌入 `p
 
 ## 许可证
 
-双重许可，任选其一：[MIT](LICENSE-MIT) 或 [Apache 2.0](LICENSE-APACHE)。
+采用 [GNU Affero 通用公共许可证 v3.0](LICENSE)（`AGPL-3.0-only`）授权。
 
-除非你明确另行声明，否则你有意提交以纳入本作品的任何贡献（按 Apache-2.0 许可证定义），都将如上双重许可，无任何附加条款或条件。
+除非你明确另行声明，否则你有意提交以纳入本作品的任何贡献，都将如上授权，无任何附加条款或条件。
