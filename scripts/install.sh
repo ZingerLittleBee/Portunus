@@ -1,23 +1,21 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Portunus lifecycle manager: install/uninstall/upgrade/status/service/
-# config/env for client and server, binary+systemd or Docker Compose.
+# config/env for client/server/standalone, binary+systemd|openrc or Docker.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash -s -- client
-#   curl -fsSL .../scripts/install.sh | bash        # interactive menu
+#   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
+#   curl -fsSL .../scripts/install.sh | sh        # interactive menu
 #
-set -euo pipefail
+# POSIX sh. The only non-POSIX builtin relied upon is `local`, which dash,
+# busybox ash, and ksh all provide.
+# shellcheck disable=SC3043  # 'local' is provided by dash/busybox-ash/ksh
+set -eu
 
-# ─── Guard ────────────────────────────────────────────────────────────
-if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
-  echo "Portunus installer requires bash 4.0+ (found ${BASH_VERSION:-unknown})." >&2
-  echo "On macOS: 'brew install bash' then run it with that bash." >&2
-  exit 1
-fi
-
+# When piped (curl|sh) $0 is the shell name; when run as a file it is the
+# path. Only a readable file path yields local templates.
 SELF_SCRIPT=""
-case "${BASH_SOURCE[0]:-}" in
-  "" | bash | sh | -bash | -sh) ;;
-  *) [ -r "${BASH_SOURCE[0]}" ] && SELF_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")" || true ;;
+case "${0:-}" in
+  ""|sh|-sh|dash|-dash|bash|-bash|ash|-ash) ;;
+  *) [ -r "$0" ] && SELF_SCRIPT="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")" || true ;;
 esac
 
 # ─── Constants ────────────────────────────────────────────────────────
@@ -25,6 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -63,165 +62,14 @@ PRINT_EFF="no"               # --effective-advertised seam
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 
-# Single script-level cleanup: a RETURN trap would re-fire on every later
-# function return (where the local tmp is out of scope ⇒ set -u abort).
-CLEANUP_DIRS=()
-_cleanup() { local d; for d in "${CLEANUP_DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; return 0; }
+# Space-separated list of temp dirs removed on exit (paths contain no spaces).
+CLEANUP_DIRS=""
+_cleanup() { for d in $CLEANUP_DIRS; do [ -n "$d" ] && rm -rf "$d"; done; return 0; }
 trap _cleanup EXIT
-# Register from the caller's own shell — a helper used via $(...) would
-# push to CLEANUP_DIRS in a subshell and the entry would be lost.
-track_tmp() { CLEANUP_DIRS+=("$1"); }
+track_tmp() { CLEANUP_DIRS="$CLEANUP_DIRS $1"; }
 
 # ─── i18n ─────────────────────────────────────────────────────────────
 # Convention: every '%' in a message value MUST be a '%s' directive with a matching t() arg (values are used as printf format strings).
-declare -A MSG_EN MSG_ZH
-MSG_EN=(
-  [menu_title]="Portunus Manager"
-  [menu_install]="  [1] Install"
-  [menu_uninstall]="  [2] Uninstall"
-  [menu_upgrade]="  [3] Upgrade"
-  [menu_status]="  [4] Status"
-  [menu_service]="  [5] Service (start/stop/restart)"
-  [menu_config]="  [6] Config"
-  [menu_env]="  [7] Env"
-  [menu_exit]="  [0] Exit"
-  [menu_select]="Select [0-7]: "
-  [lang_prompt]="Select language\n  [1] English\n  [2] 中文"
-  [ask_role]="Install which role?\n  [1] server\n  [2] client\n  [3] standalone"
-  [ask_deploy_server]="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + systemd"
-  [ask_deploy_client]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
-  [ask_deploy_standalone]="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose"
-  [ask_version]="Version (blank = latest): "
-  [ask_bindir]="Install dir [%s]: "
-  [ask_datadir]="Server data dir (blank = default): "
-  [ask_ophttp]="Operator HTTP listen (blank = default): "
-  [confirm_proceed]="Proceed? [Y/n]: "
-  [confirm_uninstall]="Uninstall portunus-%s (%s)? [y/N]: "
-  [confirm_purge_typed]="Type 'purge' to also delete data at %s: "
-  [need_role]="role required: client, server, or standalone"
-  [no_install_found]="No Portunus install detected (no .install-meta and no probe match)."
-  [done_next]="Done. Next steps:"
-  [next_standalone_config]="  edit:    sudoedit /etc/portunus/standalone.toml"
-  [next_systemd]="  start:   sudo systemctl enable --now portunus-%s"
-  [next_docker]="  manage:  (cd %s && docker compose ps)"
-  [next_status]="  status:  install.sh status"
-  [restart_now]="Apply now (restart service)? [y/N]: "
-  [upgrade_current]="Already at %s; nothing to upgrade."
-  [unknown_config_key]="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)"
-  [ask_config_key]="Config key\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin"
-  [ask_config_value]="New value for %s: "
-  [ask_service_action]="Service action\n  [1] start\n  [2] stop\n  [3] restart"
-  [menu_invalid]="invalid option: %s"
-  [press_enter]="Press Enter to continue…"
-  [bad_endpoint]="invalid host:port '%s' — expected like host.example:7443 (blank = auto)"
-  [op_cancelled]="cancelled."
-  [ask_advertised_pub]="Public advertised endpoint [%s] (Enter=accept, '-' = none/loopback): "
-  [summary_title]="About to install:"
-  [sum_role]="  role:                 %s"
-  [sum_deploy]="  deploy:               %s"
-  [sum_version]="  version:              %s"
-  [sum_bindir]="  bin dir:              %s"
-  [sum_datadir]="  data dir:             %s"
-  [sum_ophttp]="  operator http:        %s"
-  [sum_compose]="  compose dir:          %s"
-  [sum_advertised]="  advertised endpoint:  %s"
-  [prov_detected]="(detected public IP)"
-  [prov_nic]="(local NIC)"
-  [prov_loopback]="(loopback — local only)"
-  [prov_user]="(you entered)"
-  [val_latest]="latest (resolved at run time)"
-  [val_binary]="binary + systemd"
-  [val_docker]="docker compose"
-  [ask_domain]="HTTPS domain for the web UI (blank = skip Caddy/HTTPS): "
-  [sum_domain]="  https domain:         %s"
-  [bad_domain]="invalid domain '%s' — expected an FQDN like portunus.example.com"
-  [dns_check]="Checking %s resolves to this server (%s)…"
-  [dns_ok]="DNS OK: %s → %s"
-  [dns_mismatch]="DNS for %s does not point here. A record(s): %s ; this server: %s"
-  [dns_help]="Add this DNS record, then press Enter to re-check (Ctrl-C to abort):\n  %s  A  %s"
-  [caddy_installing]="Installing Caddy…"
-  [caddy_done]="Caddy configured for %s"
-  [caddy_verify]="Verifying https://%s/ (Let's Encrypt issuance can take ~30s)…"
-  [caddy_verify_warn]="Could not verify https://%s/ yet. Check: journalctl -u caddy -e ; DNS propagation."
-  [https_ready]="HTTPS ready: https://%s/"
-  [https_public_note]="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token."
-  [adv_from_domain]="  advertised endpoint:  %s  (from domain)"
-  [config_na_standalone]="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly"
-)
-MSG_ZH=(
-  [menu_title]="Portunus 管理器"
-  [menu_install]="  [1] 安装    Install"
-  [menu_uninstall]="  [2] 卸载    Uninstall"
-  [menu_upgrade]="  [3] 升级    Upgrade"
-  [menu_status]="  [4] 状态    Status"
-  [menu_service]="  [5] 服务控制 Service (start/stop/restart)"
-  [menu_config]="  [6] 配置    Config"
-  [menu_env]="  [7] 环境变量 Env"
-  [menu_exit]="  [0] 退出    Exit"
-  [menu_select]="请选择 [0-7]: "
-  [lang_prompt]="请选择语言\n  [1] English\n  [2] 中文"
-  [ask_role]="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）"
-  [ask_deploy_server]="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + systemd"
-  [ask_deploy_client]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
-  [ask_deploy_standalone]="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose"
-  [ask_version]="版本号（留空则使用最新版）: "
-  [ask_bindir]="程序安装目录 [%s]: "
-  [ask_datadir]="服务端数据目录（留空则使用默认值）: "
-  [ask_ophttp]="运维 HTTP 监听地址（留空则使用默认值）: "
-  [confirm_proceed]="确认继续吗？[Y/n]: "
-  [confirm_uninstall]="确定要卸载 portunus-%s（%s）吗？[y/N]: "
-  [confirm_purge_typed]="如需连同数据一并删除 %s，请输入 'purge' 确认: "
-  [need_role]="请指定角色：client、server 或 standalone"
-  [no_install_found]="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。"
-  [done_next]="安装完成，后续步骤："
-  [next_standalone_config]="  编辑配置：sudoedit /etc/portunus/standalone.toml"
-  [next_systemd]="  启动服务：sudo systemctl enable --now portunus-%s"
-  [next_docker]="  查看容器：cd %s && docker compose ps"
-  [next_status]="  查看状态：install.sh status"
-  [restart_now]="是否立即生效（重启服务）？[y/N]: "
-  [upgrade_current]="当前已是最新版 %s，无需升级。"
-  [unknown_config_key]="未知的配置项：%s（可用：advertised-endpoint data-dir operator-http-listen version-pin）"
-  [ask_config_key]="请选择要修改的配置项\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin"
-  [ask_config_value]="请输入 %s 的新值: "
-  [ask_service_action]="请选择服务操作\n  [1] 启动\n  [2] 停止\n  [3] 重启"
-  [menu_invalid]="无效的选项：%s"
-  [press_enter]="按回车键继续…"
-  [bad_endpoint]="无效的 host:port：'%s'（示例：host.example:7443；留空则自动）"
-  [op_cancelled]="已取消。"
-  [ask_advertised_pub]="对外通告地址 [%s]（回车采用此默认值，输入 - 表示不设置/仅本机回环）: "
-  [summary_title]="即将安装："
-  [sum_role]="  角色：%s"
-  [sum_deploy]="  部署方式：%s"
-  [sum_version]="  版本：%s"
-  [sum_bindir]="  程序目录：%s"
-  [sum_datadir]="  数据目录：%s"
-  [sum_ophttp]="  运维 HTTP：%s"
-  [sum_compose]="  compose 目录：%s"
-  [sum_advertised]="  对外通告地址：%s"
-  [prov_detected]="（自动探测到的公网 IP）"
-  [prov_nic]="（本机网卡地址）"
-  [prov_loopback]="（回环地址，仅本机可用）"
-  [prov_user]="（手动输入）"
-  [val_latest]="最新版（运行时解析）"
-  [val_binary]="二进制 + systemd"
-  [val_docker]="docker compose"
-  [ask_domain]="Web UI 的 HTTPS 域名（留空则跳过 Caddy/HTTPS）: "
-  [sum_domain]="  HTTPS 域名：%s"
-  [bad_domain]="无效的域名：'%s'（需为完整域名，如 portunus.example.com）"
-  [dns_check]="正在检查 %s 是否解析到本机（%s）…"
-  [dns_ok]="DNS 校验通过：%s → %s"
-  [dns_mismatch]="%s 的解析未指向本机。A 记录：%s ；本机公网 IP：%s"
-  [dns_help]="请添加以下 DNS 记录，然后按回车重新校验（Ctrl-C 取消）：\n  %s  A  %s"
-  [caddy_installing]="正在安装 Caddy…"
-  [caddy_done]="Caddy 已为 %s 配置完成"
-  [caddy_verify]="正在验证 https://%s/（Let's Encrypt 签发约需 30 秒）…"
-  [caddy_verify_warn]="暂时无法验证 https://%s/。请检查：journalctl -u caddy -e；以及 DNS 是否已生效。"
-  [https_ready]="HTTPS 已就绪：https://%s/"
-  [https_public_note]="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。"
-  [adv_from_domain]="  对外通告地址：%s（由域名推导）"
-  [config_na_standalone]="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml"
-)
-
 resolve_lang() {
   if [ -z "$LANG_CODE" ]; then
     case "${LC_ALL:-${LANG:-}}" in zh*|*zh_*) LANG_CODE="zh" ;; *) LANG_CODE="" ;; esac
@@ -233,13 +81,155 @@ resolve_lang() {
   case "$LANG_CODE" in zh|en) ;; *) LANG_CODE="" ;; esac
 }
 
-t() {
-  local key="${1:-}"; shift || true
-  local val
-  if [ "${LANG_CODE:-en}" = "zh" ]; then val="${MSG_ZH[$key]:-}"; else val="${MSG_EN[$key]:-}"; fi
-  [ -n "$val" ] || val="${MSG_EN[$key]:-$key}"
+t() {  # t <key> [printf-args...] — localized printf, no trailing newline (callers add it)
+  _k="${1:-}"; shift 2>/dev/null || true
+  case "$LANG_CODE:$_k" in
+    zh:menu_title) _f="Portunus 管理器" ;;
+    zh:menu_install) _f="  [1] 安装    Install" ;;
+    zh:menu_uninstall) _f="  [2] 卸载    Uninstall" ;;
+    zh:menu_upgrade) _f="  [3] 升级    Upgrade" ;;
+    zh:menu_status) _f="  [4] 状态    Status" ;;
+    zh:menu_service) _f="  [5] 服务控制 Service (start/stop/restart)" ;;
+    zh:menu_config) _f="  [6] 配置    Config" ;;
+    zh:menu_env) _f="  [7] 环境变量 Env" ;;
+    zh:menu_exit) _f="  [0] 退出    Exit" ;;
+    zh:menu_select) _f="请选择 [0-7]: " ;;
+    zh:lang_prompt) _f="请选择语言\n  [1] English\n  [2] 中文" ;;
+    zh:ask_role) _f="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）" ;;
+    zh:ask_deploy_server) _f="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + systemd" ;;
+    zh:ask_deploy_client) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose" ;;
+    zh:ask_deploy_standalone) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + systemd  （推荐）\n  [2] docker compose" ;;
+    zh:ask_version) _f="版本号（留空则使用最新版）: " ;;
+    zh:ask_bindir) _f="程序安装目录 [%s]: " ;;
+    zh:ask_datadir) _f="服务端数据目录（留空则使用默认值）: " ;;
+    zh:ask_ophttp) _f="运维 HTTP 监听地址（留空则使用默认值）: " ;;
+    zh:confirm_proceed) _f="确认继续吗？[Y/n]: " ;;
+    zh:confirm_uninstall) _f="确定要卸载 portunus-%s（%s）吗？[y/N]: " ;;
+    zh:confirm_purge_typed) _f="如需连同数据一并删除 %s，请输入 'purge' 确认: " ;;
+    zh:need_role) _f="请指定角色：client、server 或 standalone" ;;
+    zh:no_install_found) _f="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。" ;;
+    zh:done_next) _f="安装完成，后续步骤：" ;;
+    zh:next_standalone_config) _f="  编辑配置：sudoedit /etc/portunus/standalone.toml" ;;
+    zh:next_systemd) _f="  启动服务：sudo systemctl enable --now portunus-%s" ;;
+    zh:next_docker) _f="  查看容器：cd %s && docker compose ps" ;;
+    zh:next_status) _f="  查看状态：install.sh status" ;;
+    zh:restart_now) _f="是否立即生效（重启服务）？[y/N]: " ;;
+    zh:upgrade_current) _f="当前已是最新版 %s，无需升级。" ;;
+    zh:unknown_config_key) _f="未知的配置项：%s（可用：advertised-endpoint data-dir operator-http-listen version-pin）" ;;
+    zh:ask_config_key) _f="请选择要修改的配置项\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin" ;;
+    zh:ask_config_value) _f="请输入 %s 的新值: " ;;
+    zh:ask_service_action) _f="请选择服务操作\n  [1] 启动\n  [2] 停止\n  [3] 重启" ;;
+    zh:menu_invalid) _f="无效的选项：%s" ;;
+    zh:press_enter) _f="按回车键继续…" ;;
+    zh:bad_endpoint) _f="无效的 host:port：'%s'（示例：host.example:7443；留空则自动）" ;;
+    zh:op_cancelled) _f="已取消。" ;;
+    zh:ask_advertised_pub) _f="对外通告地址 [%s]（回车采用此默认值，输入 - 表示不设置/仅本机回环）: " ;;
+    zh:summary_title) _f="即将安装：" ;;
+    zh:sum_role) _f="  角色：%s" ;;
+    zh:sum_deploy) _f="  部署方式：%s" ;;
+    zh:sum_version) _f="  版本：%s" ;;
+    zh:sum_bindir) _f="  程序目录：%s" ;;
+    zh:sum_datadir) _f="  数据目录：%s" ;;
+    zh:sum_ophttp) _f="  运维 HTTP：%s" ;;
+    zh:sum_compose) _f="  compose 目录：%s" ;;
+    zh:sum_advertised) _f="  对外通告地址：%s" ;;
+    zh:prov_detected) _f="（自动探测到的公网 IP）" ;;
+    zh:prov_nic) _f="（本机网卡地址）" ;;
+    zh:prov_loopback) _f="（回环地址，仅本机可用）" ;;
+    zh:prov_user) _f="（手动输入）" ;;
+    zh:val_latest) _f="最新版（运行时解析）" ;;
+    zh:val_binary) _f="二进制 + systemd" ;;
+    zh:val_docker) _f="docker compose" ;;
+    zh:ask_domain) _f="Web UI 的 HTTPS 域名（留空则跳过 Caddy/HTTPS）: " ;;
+    zh:sum_domain) _f="  HTTPS 域名：%s" ;;
+    zh:bad_domain) _f="无效的域名：'%s'（需为完整域名，如 portunus.example.com）" ;;
+    zh:dns_check) _f="正在检查 %s 是否解析到本机（%s）…" ;;
+    zh:dns_ok) _f="DNS 校验通过：%s → %s" ;;
+    zh:dns_mismatch) _f="%s 的解析未指向本机。A 记录：%s ；本机公网 IP：%s" ;;
+    zh:dns_help) _f="请添加以下 DNS 记录，然后按回车重新校验（Ctrl-C 取消）：\n  %s  A  %s" ;;
+    zh:caddy_installing) _f="正在安装 Caddy…" ;;
+    zh:caddy_done) _f="Caddy 已为 %s 配置完成" ;;
+    zh:caddy_verify) _f="正在验证 https://%s/（Let's Encrypt 签发约需 30 秒）…" ;;
+    zh:caddy_verify_warn) _f="暂时无法验证 https://%s/。请检查：journalctl -u caddy -e；以及 DNS 是否已生效。" ;;
+    zh:https_ready) _f="HTTPS 已就绪：https://%s/" ;;
+    zh:https_public_note) _f="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。" ;;
+    zh:adv_from_domain) _f="  对外通告地址：%s（由域名推导）" ;;
+    zh:config_na_standalone) _f="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml" ;;
+    *:menu_title) _f="Portunus Manager" ;;
+    *:menu_install) _f="  [1] Install" ;;
+    *:menu_uninstall) _f="  [2] Uninstall" ;;
+    *:menu_upgrade) _f="  [3] Upgrade" ;;
+    *:menu_status) _f="  [4] Status" ;;
+    *:menu_service) _f="  [5] Service (start/stop/restart)" ;;
+    *:menu_config) _f="  [6] Config" ;;
+    *:menu_env) _f="  [7] Env" ;;
+    *:menu_exit) _f="  [0] Exit" ;;
+    *:menu_select) _f="Select [0-7]: " ;;
+    *:lang_prompt) _f="Select language\n  [1] English\n  [2] 中文" ;;
+    *:ask_role) _f="Install which role?\n  [1] server\n  [2] client\n  [3] standalone" ;;
+    *:ask_deploy_server) _f="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + systemd" ;;
+    *:ask_deploy_client) _f="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose" ;;
+    *:ask_deploy_standalone) _f="Deploy form? (Enter = recommended)\n  [1] binary + systemd  (recommended)\n  [2] docker compose" ;;
+    *:ask_version) _f="Version (blank = latest): " ;;
+    *:ask_bindir) _f="Install dir [%s]: " ;;
+    *:ask_datadir) _f="Server data dir (blank = default): " ;;
+    *:ask_ophttp) _f="Operator HTTP listen (blank = default): " ;;
+    *:confirm_proceed) _f="Proceed? [Y/n]: " ;;
+    *:confirm_uninstall) _f="Uninstall portunus-%s (%s)? [y/N]: " ;;
+    *:confirm_purge_typed) _f="Type 'purge' to also delete data at %s: " ;;
+    *:need_role) _f="role required: client, server, or standalone" ;;
+    *:no_install_found) _f="No Portunus install detected (no .install-meta and no probe match)." ;;
+    *:done_next) _f="Done. Next steps:" ;;
+    *:next_standalone_config) _f="  edit:    sudoedit /etc/portunus/standalone.toml" ;;
+    *:next_systemd) _f="  start:   sudo systemctl enable --now portunus-%s" ;;
+    *:next_docker) _f="  manage:  (cd %s && docker compose ps)" ;;
+    *:next_status) _f="  status:  install.sh status" ;;
+    *:restart_now) _f="Apply now (restart service)? [y/N]: " ;;
+    *:upgrade_current) _f="Already at %s; nothing to upgrade." ;;
+    *:unknown_config_key) _f="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)" ;;
+    *:ask_config_key) _f="Config key\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin" ;;
+    *:ask_config_value) _f="New value for %s: " ;;
+    *:ask_service_action) _f="Service action\n  [1] start\n  [2] stop\n  [3] restart" ;;
+    *:menu_invalid) _f="invalid option: %s" ;;
+    *:press_enter) _f="Press Enter to continue…" ;;
+    *:bad_endpoint) _f="invalid host:port '%s' — expected like host.example:7443 (blank = auto)" ;;
+    *:op_cancelled) _f="cancelled." ;;
+    *:ask_advertised_pub) _f="Public advertised endpoint [%s] (Enter=accept, '-' = none/loopback): " ;;
+    *:summary_title) _f="About to install:" ;;
+    *:sum_role) _f="  role:                 %s" ;;
+    *:sum_deploy) _f="  deploy:               %s" ;;
+    *:sum_version) _f="  version:              %s" ;;
+    *:sum_bindir) _f="  bin dir:              %s" ;;
+    *:sum_datadir) _f="  data dir:             %s" ;;
+    *:sum_ophttp) _f="  operator http:        %s" ;;
+    *:sum_compose) _f="  compose dir:          %s" ;;
+    *:sum_advertised) _f="  advertised endpoint:  %s" ;;
+    *:prov_detected) _f="(detected public IP)" ;;
+    *:prov_nic) _f="(local NIC)" ;;
+    *:prov_loopback) _f="(loopback — local only)" ;;
+    *:prov_user) _f="(you entered)" ;;
+    *:val_latest) _f="latest (resolved at run time)" ;;
+    *:val_binary) _f="binary + systemd" ;;
+    *:val_docker) _f="docker compose" ;;
+    *:ask_domain) _f="HTTPS domain for the web UI (blank = skip Caddy/HTTPS): " ;;
+    *:sum_domain) _f="  https domain:         %s" ;;
+    *:bad_domain) _f="invalid domain '%s' — expected an FQDN like portunus.example.com" ;;
+    *:dns_check) _f="Checking %s resolves to this server (%s)…" ;;
+    *:dns_ok) _f="DNS OK: %s → %s" ;;
+    *:dns_mismatch) _f="DNS for %s does not point here. A record(s): %s ; this server: %s" ;;
+    *:dns_help) _f="Add this DNS record, then press Enter to re-check (Ctrl-C to abort):\n  %s  A  %s" ;;
+    *:caddy_installing) _f="Installing Caddy…" ;;
+    *:caddy_done) _f="Caddy configured for %s" ;;
+    *:caddy_verify) _f="Verifying https://%s/ (Let's Encrypt issuance can take ~30s)…" ;;
+    *:caddy_verify_warn) _f="Could not verify https://%s/ yet. Check: journalctl -u caddy -e ; DNS propagation." ;;
+    *:https_ready) _f="HTTPS ready: https://%s/" ;;
+    *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
+    *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
+    *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
+    *) _f="$_k" ;;
+  esac
   # shellcheck disable=SC2059
-  printf "$val" "$@"
+  printf "$_f" "$@"
 }
 
 # ─── Meta ─────────────────────────────────────────────────────────────
@@ -596,7 +586,7 @@ parse_args() {
       --yes) ASSUME_YES="yes" ;;
       --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
-      --print-i18n-keys) shift; resolve_lang; if [ "${1:-en}" = zh ]; then for k in "${!MSG_ZH[@]}"; do echo "$k"; done; else for k in "${!MSG_EN[@]}"; do echo "$k"; done; fi; exit 0 ;;
+      --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
       -h|--help) echo "usage: install.sh <client|server|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--systemd] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
@@ -657,8 +647,8 @@ MENU_FORCE_STDIN="no"
 ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
   local p; p="$(t "$@")"; local a
   printf '%s\n' "$p" >&2          # question on its own line; answer below
-  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "> " a || a=""
-  else read -r -p "> " a < /dev/tty 2>/dev/null || a=""; fi
+  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r a || a=""
+  else printf '> ' >&2; read -r a < /dev/tty 2>/dev/null || a=""; fi
   printf '%s' "$a"
 }
 
@@ -1020,8 +1010,8 @@ run_menu() {
     echo "$(t menu_env)"; echo "$(t menu_exit)"
     local c
     printf '%s\n' "$(t menu_select)" >&2     # prompt on its own line; answer below
-    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then read -r -p "> " c || return 0
-    else read -r -p "> " c < /dev/tty || return 0; fi
+    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r c || return 0
+    else printf '> ' >&2; read -r c < /dev/tty || return 0; fi
     case "$c" in 0|q|Q) return 0 ;; esac
     # Subshell isolation: a die()/exit inside any lifecycle path ends
     # only this action, never the whole interactive session.
@@ -1190,8 +1180,8 @@ lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operato
 read_tty() {
   REPLY_TTY=""
   printf '%s\n' "$1" >&2           # question on its own line; answer below
-  if [ -t 0 ]; then read -r -p "> " REPLY_TTY
-  elif [ -r /dev/tty ]; then read -r -p "> " REPLY_TTY </dev/tty
+  if [ -t 0 ]; then printf '> ' >&2; read -r REPLY_TTY
+  elif [ -r /dev/tty ]; then printf '> ' >&2; read -r REPLY_TTY </dev/tty
   else return 1; fi
 }
 # confirm <prompt> [default]   default = yes (Enter ⇒ proceed) | no (Enter ⇒ abort)
