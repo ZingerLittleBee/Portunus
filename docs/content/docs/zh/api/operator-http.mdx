@@ -166,6 +166,62 @@ Token 请求不需要 CSRF 头。
 
 抓取面 `metrics_listen:7081/metrics` 不变（Prometheus 仍无 Bearer 抓取）。
 
+## 常用写入端点的请求体
+
+大多数自动化场景所需的 JSON 形态。未列出的字段均为可选。
+
+### `POST /v1/auth/onboarding`
+
+在尚无活跃 `superadmin` 时创建第一个管理员。需要 server 日志里打印的 setup
+token。
+
+```json
+{
+  "user_id": "admin",
+  "display_name": "Admin",
+  "password": "correct horse battery staple",
+  "password_confirm": "correct horse battery staple",
+  "setup_token": "<token from server logs>"
+}
+```
+
+返回 `201` 及 `{ user_id, display_name, role }`。**它不会设置 session cookie**
+——在发起任何已认证请求之前，需要接着调用 `POST /v1/auth/login`。
+
+### `POST /v1/auth/login`
+
+```json
+{ "user_id": "admin", "password": "correct horse battery staple" }
+```
+
+返回 `200 { "password_change_required": false }`，并设置后续 cookie 认证调用
+所用的 `HttpOnly` `portunus_session` cookie。
+
+### `POST /v1/client-enrollments`
+
+```json
+{ "name": "edge-01", "address": "edge-01.example.com", "ttl_secs": 600 }
+```
+
+- `name` —— 要接入的 client 名称。
+- `address` —— 该 client 转发端口的消费者将要拨号的**公网主机**。它必须是不含
+  端口的纯主机（DNS 名或 IP）；带端口的 `host:port` 值会被拒绝并返回
+  `400 invalid_client_address`。
+- `ttl_secs` —— 可选的接入码有效期（默认取 server 的设置）。
+
+返回 `{ client_name, expires_at, command, uri }`。在边缘主机上运行 `command`
+（或兑换 `uri`）。URI 中嵌入的 server endpoint 来自
+[通告地址](/zh/docs/features/advertised-endpoint)，缺省回落到 `127.0.0.1:7443`。
+
+### `POST /v1/users/{id}/credentials`
+
+```json
+{ "label": "ops-cli" }
+```
+
+返回 `201 { credential_id, user_id, token, label, created_at }`。其中 `token`
+就是 bearer 凭据，仅显示**一次**——请立即保存。
+
 ## 状态码语义
 
 | 码 | 含义 |

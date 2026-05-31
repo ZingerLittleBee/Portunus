@@ -170,6 +170,64 @@ Traffic queries take `from` and `to` (Unix seconds, required) plus an optional
 The standalone scraper-facing endpoint at `metrics_listen:7081/metrics`
 is unchanged (Prometheus continues scraping without bearer).
 
+## Request bodies for the common write endpoints
+
+The JSON shapes most automation needs. Unlisted fields are optional.
+
+### `POST /v1/auth/onboarding`
+
+First-admin creation while no active `superadmin` exists. Requires the setup
+token printed in the server logs.
+
+```json
+{
+  "user_id": "admin",
+  "display_name": "Admin",
+  "password": "correct horse battery staple",
+  "password_confirm": "correct horse battery staple",
+  "setup_token": "<token from server logs>"
+}
+```
+
+Returns `201` with `{ user_id, display_name, role }`. **It does not set a
+session cookie** — call `POST /v1/auth/login` next before any authenticated
+request.
+
+### `POST /v1/auth/login`
+
+```json
+{ "user_id": "admin", "password": "correct horse battery staple" }
+```
+
+Returns `200 { "password_change_required": false }` and sets the `HttpOnly`
+`portunus_session` cookie used by subsequent cookie-authenticated calls.
+
+### `POST /v1/client-enrollments`
+
+```json
+{ "name": "edge-01", "address": "edge-01.example.com", "ttl_secs": 600 }
+```
+
+- `name` — the client name to enroll.
+- `address` — the **public host** consumers of this client's forwarded ports
+  will reach. It must be a bare host (DNS name or IP) **without a port**; a
+  `host:port` value is rejected with `400 invalid_client_address`.
+- `ttl_secs` — optional code lifetime (defaults to the server's setting).
+
+Returns `{ client_name, expires_at, command, uri }`. Run the `command` (or
+redeem `uri`) on the edge host. The server endpoint embedded in the URI comes
+from the [advertised endpoint](/en/docs/features/advertised-endpoint), falling
+back to `127.0.0.1:7443`.
+
+### `POST /v1/users/{id}/credentials`
+
+```json
+{ "label": "ops-cli" }
+```
+
+Returns `201 { credential_id, user_id, token, label, created_at }`. The
+`token` is the bearer credential and is shown **once** — store it immediately.
+
 ## Status code semantics
 
 | Code | Meaning |
