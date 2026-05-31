@@ -12,7 +12,7 @@ import {
   ViewOptionsPopover,
 } from 'fumadocs-ui/layouts/docs/page';
 import { baseOptions } from '@/lib/layout.shared';
-import { gitConfig } from '@/lib/shared';
+import { gitConfig, siteUrl } from '@/lib/shared';
 import { staticFunctionMiddleware } from '@tanstack/start-static-server-functions';
 import { useFumadocsLoader } from 'fumadocs-core/source/client';
 import { Suspense } from 'react';
@@ -25,6 +25,14 @@ export const Route = createFileRoute('/$lang/docs/$')({
     const data = await loader({ data: { slugs, lang: params.lang } });
     await clientLoader.preload(data.path);
     return data;
+  },
+  head: ({ loaderData }) => {
+    if (!loaderData?.url) return {};
+    const canonical = `${siteUrl}${loaderData.url}`;
+    return {
+      links: [{ rel: 'canonical', href: canonical }],
+      meta: [{ property: 'og:url', content: canonical }],
+    };
   },
 });
 
@@ -40,6 +48,7 @@ const loader = createServerFn({
     return {
       path: page.path,
       lang,
+      url: page.url,
       markdownUrl: slugsToMarkdownPath(page.slugs, lang).url,
       pageTree: await source.serializePageTree(source.getPageTree(lang)),
     };
