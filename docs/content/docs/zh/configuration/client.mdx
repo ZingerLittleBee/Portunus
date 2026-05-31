@@ -148,7 +148,7 @@ docker run -d --name portunus-client --network host \
 
 Client **按 SHA-256 指纹** 校验 Server 证书（来自 bundle 的
 `server_cert_sha256`），**不走 CA 链**。这是核心安全保证：即使 Server 的
-IP / DNS 被劫持，错误的证书会在任何 Token 出门前被拒绝。
+IP / DNS 被劫持，错误的证书也会在任何 Token 发出之前被拒绝。
 
 不匹配时日志：
 

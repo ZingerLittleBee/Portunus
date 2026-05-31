@@ -4,18 +4,18 @@ description: 按 TLS 握手中的主机名（SNI），把单个 TCP 监听端口
 icon: Lock
 ---
 
-v0.9.0 起支持。根据 TLS ClientHello 里的 SNI 扩展决定转发目标，全程保持纯
-L4 字节直通——只读取握手中的明文主机名，绝不解密流量、也不需要证书或私钥。
+v0.9.0 起支持。根据 TLS ClientHello 中的 SNI 扩展决定转发目标，全程保持纯
+L4 字节直通——只读取握手中的明文主机名，既不解密流量，也不需要证书或私钥。
 
 ## 工作原理
 
-单个 TCP 监听端口（通常是 443）可以根据 TLS 主机名扇出到不同上游目标。
-Client：
+单个 TCP 监听端口（通常是 443）可以根据 TLS 主机名分发到不同上游目标。
+Client 的处理流程如下：
 
-1. peek 出 ClientHello。
+1. peek 读取 ClientHello。
 2. 解析 SNI 扩展。
-3. 把连接转发到匹配规则的上游。
-4. 把 peek 缓冲区按字节回放到上游。
+3. 将连接转发到匹配规则的上游。
+4. 把 peek 缓冲区按字节原样回放给上游。
 
 即便在 SNI 模式下，Portunus 也 **绝不** 解密、终结或重新加密 TLS——它只读取
 ClientHello 开头那段明文里的主机名，加密载荷原封不动地透传给上游。
@@ -32,8 +32,8 @@ portunus-server push-rule edge-01 443 web.example.com:8080 \
   --sni '*.example.com'
 ```
 
-多条规则可以共用同一个监听端口，靠不同的 SNI 选择器来区分。Client 的
-SNI 路由器会按 ClientHello 的 SNI 选出匹配的规则。
+多条规则可以共用同一个监听端口，通过不同的 SNI 选择器区分。Client 的
+SNI 路由器会根据 ClientHello 中的 SNI 选出匹配的规则。
 
 ## 仅 TLS 兜底
 
@@ -49,9 +49,9 @@ portunus-server push-rule edge-01 443 fallback.example.com:8080
 
 ## 模式锁定
 
-`(client, listen_port)` 组的模式（旧的纯 TCP 还是 SNI 路由）一旦确定就
-固化下来。跨模式推送会被 HTTP 409 `conflict.legacy_to_sni_unsupported`
-拒绝。如需切换模式，请先移除该组现有规则。
+`(client, listen_port)` 组合的模式（旧版纯 TCP 还是 SNI 路由）一旦确定便
+固定下来。跨模式推送会被 HTTP 409 `conflict.legacy_to_sni_unsupported`
+拒绝。如需切换模式，请先移除该组合现有的规则。
 
 ## 限制
 
@@ -75,15 +75,15 @@ portunus_tls_sni_listener_parse_failures_total{client,port}
 portunus_tls_sni_routes_active
 ```
 
-- `portunus_tls_sni_route_total` —— 逐规则的成功分发计数，
+- `portunus_tls_sni_route_total` —— 按规则统计的成功分发次数，
   `result` ∈ `{exact, wildcard, fallback}`（每种结果一行）。
-- `portunus_tls_sni_listener_miss_total` —— 逐 listener 统计 SNI 未匹配
+- `portunus_tls_sni_listener_miss_total` —— 按 listener 统计 SNI 未匹配
   任何规则 **且** 无兜底（即被丢弃）的连接数。
-- `portunus_tls_sni_listener_parse_failures_total` —— 逐 listener 统计
-  无法解析为 ClientHello、超时或触达大小上限的 peek 次数。
-- `portunus_tls_sni_routes_active` —— 带 SNI 选择器的活跃规则全局计量。
+- `portunus_tls_sni_listener_parse_failures_total` —— 按 listener 统计
+  无法解析为 ClientHello、超时或达到大小上限的 peek 次数。
+- `portunus_tls_sni_routes_active` —— 带 SNI 选择器的活跃规则全局计数。
 
-旧的纯 TCP listener 不会暴露上述任何指标序列。
+旧版纯 TCP listener 不会暴露上述任何指标序列。
 
 ## Tracing 事件
 
@@ -98,5 +98,5 @@ portunus_tls_sni_routes_active
 | `tls.parse_failed` | peek 到的字节无法解析为 ClientHello |
 | `tls.sni_listener.started` / `.stopped` / `.accept_error` | listener 生命周期 |
 
-按照审计隔离不变量（D13），数据面 SNI 事件 **不会** 进入 SQLite 操作员
+根据审计隔离不变量（D13），数据面 SNI 事件 **不会** 写入 SQLite 操作员
 审计表。

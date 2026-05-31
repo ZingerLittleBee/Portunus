@@ -4,59 +4,59 @@ description: 客户端连接 gRPC 控制面所用的 host:port，可运行时配
 icon: Waypoints
 ---
 
-**通告地址（advertised endpoint）** 是边缘 client 拨号连接 **gRPC 控制面**
-的 `host:port`（默认端口 `7443`，`control_listen`）。它是 enrollment URI
+**通告地址（advertised endpoint）** 是边缘 client 连接 **gRPC 控制面**
+所用的 `host:port`（默认端口 `7443`，`control_listen`）。它是 enrollment URI
 里嵌入的 authority：
 
 ```
 portunus://<通告地址>/enroll?pin=…&code=…&cert=…
 ```
 
-它**不是** operator HTTP / Web UI 端口（`7080`）。后者保持 loopback 绑定；
-通告地址是对外可达地址。
+它**不是** operator HTTP / Web UI 端口（`7080`）。后者始终绑定 loopback；
+通告地址则是对外可达的地址。
 
 ## 为什么要可配置
 
-在反向代理 / PaaS 部署（Railway、fly.io……）下，client 必须拨号的公网
-主机与服务器本地绑定的主机不同，且不同环境可能各异。因此该地址不再固定
-绑定到单个环境变量，而是在运行时经一个分级、fail-closed 的解析器得出，
+在反向代理 / PaaS 部署（Railway、fly.io 等）下，client 需要连接的公网
+主机与服务器本地绑定的主机并不相同，且因环境而异。因此该地址不再固定
+绑定到单个环境变量，而是在运行时通过一个分级、fail-closed 的解析器得出，
 operator 无需重新部署即可修改。
 
 ## 解析优先级
 
-最终生效地址取**第一个**能给出值的层级：
+最终生效地址取自**第一个**能给出有效值的层级：
 
 | # | 层级 | 来源 | 非法 / 未被 SAN 覆盖时 |
 |---|------|------|------------------------|
-| 1 | **Override** | operator 设置，持久化在 SQLite（Web UI / API） | **硬错误**（显式配置 — fail closed） |
-| 2 | **Seed** | `--advertised-endpoint` CLI 参数或 `PORTUNUS_ADVERTISED_ENDPOINT` 环境变量 | **硬错误**（显式配置 — fail closed） |
-| 3 | **Derived** | HTTP 请求的 `Host` 头（仅 HTTP enrollment） | 向下一层回落（隐式） |
-| 4 | **Loopback** | `127.0.0.1:<control_port>` | —（兜底） |
+| 1 | **Override** | operator 设置，持久化在 SQLite（Web UI / API） | **硬错误**（显式配置 —— fail closed） |
+| 2 | **Seed** | `--advertised-endpoint` CLI 参数或 `PORTUNUS_ADVERTISED_ENDPOINT` 环境变量 | **硬错误**（显式配置 —— fail closed） |
+| 3 | **Derived** | HTTP 请求的 `Host` 头（仅 HTTP enrollment） | 回落到下一层（隐式） |
+| 4 | **Loopback** | `127.0.0.1:<control_port>` | —（兜底层） |
 
 显式配置（第 1–2 层）**绝不静默降级**：非法或未被 SAN 覆盖的
-override/seed 会报错，而不是悄悄通告 loopback。隐式的 `Host` 推导
-（第 3 层）在无法得出被覆盖的地址时向下回落。
+override/seed 会直接报错，而不会改用 loopback 对外通告。隐式的 `Host` 推导
+（第 3 层）在无法得出被覆盖的地址时，会向下回落。
 
-`PORTUNUS_ADVERTISED_ENDPOINT` 仍然生效 —— 它现在就是第 2 层 seed。
-CLI 参数与环境变量是同一个第 2 层字符串。
+`PORTUNUS_ADVERTISED_ENDPOINT` 仍然生效 —— 它如今就是第 2 层的 seed。
+CLI 参数与环境变量对应的是同一个第 2 层字符串。
 
-## 创建时解析一次，redeem 时复放
+## 创建时解析一次，redeem 时原样回放
 
-地址在 **enrollment 创建时解析一次**，并持久化到 enrollment 行。redeem
-时把持久化的值**原样复放**进客户端凭据 bundle（`server_endpoint`）。
-之后修改 override **不会**追溯改变已创建的 enrollment —— 需重新创建
+地址在 **enrollment 创建时解析一次**，并持久化到 enrollment 行中。redeem
+时把持久化的值**原样写入**客户端凭据 bundle（`server_endpoint`）。
+此后修改 override **不会**追溯影响已创建的 enrollment —— 需重新创建
 enrollment 才能采用新地址。
 
-本功能之前创建的 enrollment（legacy `NULL`-endpoint 行）在 **redeem 时**
-fail-closed 解析：若解析失败则 redeem 被拒（`failed_precondition`），
-enrollment **不被消费**、客户端 token **不轮换** —— 修好配置后 client
+本功能上线之前创建的 enrollment（legacy `NULL`-endpoint 行）会在 **redeem 时**
+以 fail-closed 方式解析：若解析失败则 redeem 被拒（`failed_precondition`），
+enrollment **不会被消费**、客户端 token **不会轮换** —— 修好配置后 client
 直接重试即可。
 
 ## 证书 SAN 要求
 
 解析出的主机**必须被服务器证书的 Subject Alternative Name（SAN）覆盖**。
-client 会 pin 并通过 TLS 拨号该主机；通告一个证书未背书的主机将无法
-验证，因此解析器拒绝它。
+client 会 pin 该主机并通过 TLS 向其发起连接；若通告一个证书未背书的主机，将无法
+通过验证，因此解析器会拒绝它。
 
 匹配遵循 webpki 语义：
 
@@ -94,23 +94,23 @@ curl -X PUT -H "Authorization: Bearer $TOK" -H "content-type: application/json" 
 | 不是纯 `host:port`（带 scheme、path、IPv6……） | `422` | `endpoint_invalid` |
 | 主机未被证书 SAN 覆盖 | `422` | `endpoint_not_in_cert_san` |
 
-发送 `{"advertised_endpoint": null}`（或 `""`）清除 override，回落到
+发送 `{"advertised_endpoint": null}`（或 `""`）即可清除 override，回落到
 seed/loopback 层。
 
 ## Web UI
 
 **设置 → “客户端连接地址”**：显示当前生效地址及其来源，允许 superadmin
-设置或清除 override，并在卡片内就地显示同样的 `422` 校验文案。留空则按
-本页域名自动推导。
+设置或清除 override，并在卡片内就地展示相同的 `422` 校验文案。留空则按
+当前页面域名自动推导。
 
 ## SAN 不匹配时 admin 需要做什么
 
-收到 `endpoint_not_in_cert_san` 拒绝（API/Web UI），或 GET / 启动时带
-未覆盖 seed 导致 `effective` 为 `null` 且 `diagnostic` 指向 SAN —— 说明
-期望的客户端可达主机**未**被已部署的服务器证书背书。该地址被有意
-**不予应用** —— 修复是一项 operator 操作：
+如果收到 `endpoint_not_in_cert_san` 拒绝（API/Web UI），或者 GET / 启动时
+因 seed 未被覆盖而导致 `effective` 为 `null` 且 `diagnostic` 指向 SAN ——
+都说明期望的客户端可达主机**未**被已部署的服务器证书背书。该地址被有意
+**不予应用** —— 修复属于 operator 操作：
 
-1. **确定客户端可达的 host:port。** 这是 client 拨号的公网地址（例如
+1. **确定客户端可达的 host:port。** 这是 client 连接的公网地址（例如
    Railway TCP 代理域名），不是本地绑定地址。
 2. **检查已部署的服务器证书 SAN：**
 
@@ -119,18 +119,18 @@ seed/loopback 层。
      | grep -A1 "Subject Alternative Name"
    ```
 
-3. **若主机其实已被覆盖**（注意上面的通配 / IP 规则），多半是输入有误
-   或用错了标签 —— 修正后重试 `PUT` / Web UI 保存。
+3. **若该主机其实已被覆盖**（注意上面的通配 / IP 规则），多半是输入有误
+   或用错了标签 —— 修正后重新 `PUT` / 在 Web UI 中保存。
 4. **若主机未被覆盖**，重新签发或获取一张 SAN 包含该主机的服务器证书：
    - 主机名对应一条 **DNS** SAN（或后缀能覆盖它的单标签 `*.` 通配），或
-   - 若 client 拨号 IP 字面量，则一条 **IP** SAN。
+   - 若 client 连接的是 IP 字面量，则一条 **IP** SAN。
 5. **重新部署** `server.crt` + `server.key` 并重启服务器。
 6. **重新应用** override（`PUT` / Web UI），或修正 seed
-   （`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`）—— 此时
+   （`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`）—— 此时应
    返回 `200` / 解析成功。
-7. **重建受影响的 enrollment。** 在地址错误期间创建的 enrollment 已冻结
-   旧（可能是 loopback 的）值，需重新生成。legacy `NULL`-endpoint
-   enrollment 无需重建 —— 配置修好后其 redeem 直接成功。
+7. **重建受影响的 enrollment。** 在地址错误期间创建的 enrollment 已冻结了
+   旧值（可能是 loopback），需要重新生成。legacy `NULL`-endpoint
+   enrollment 无需重建 —— 配置修好后其 redeem 会直接成功。
 
-在证书覆盖该主机之前，服务器**fail closed**：不会把指向无法验证主机的
+在证书覆盖该主机之前，服务器始终 **fail closed**：不会把指向无法验证主机的
 bundle 交给 client。

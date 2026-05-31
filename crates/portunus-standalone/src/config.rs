@@ -149,7 +149,7 @@ impl Default for GlobalConfig {
 }
 
 fn default_log_level() -> String {
-    "info".into()
+    "warn".into()
 }
 fn default_log_format() -> String {
     "json".into()

@@ -12,8 +12,8 @@ TCP 转发是项目的核心原语。其它所有功能（UDP、端口范围、S
 每条 TCP 规则在 Client 上运行一个 `accept` 循环。每当 accept 到一条新连接，
 Client 就 `TcpStream::connect` 上游目标，然后双向字节拷贝直到任意一侧关闭。
 
-用户态 **不做任何缓冲**（除了内核 send/recv 窗口）。转发器是纯粹的 L4 字节
-直通：TLS 会话、HTTP 请求和任意协议都可以原封不动通过。
+用户态 **不做任何缓冲**（内核 send/recv 窗口除外）。转发器是纯粹的 L4 字节
+直通：TLS 会话、HTTP 请求以及任意协议都能原样透传。
 
 在 Linux 上，没有带宽限制的连接走 `splice(2)` 快路径（数据零拷贝穿过内核）；
 配置了限流的连接则回退到用户态拷贝循环。监听器以 `SO_REUSEADDR` 绑定，因此
@@ -64,7 +64,7 @@ portunus-server remove-rule <rule_id>
 
 | 条件 | 表现 |
 | --- | --- |
-| Client 上的监听端口已被占用 | 规则状态 `Failed(port_in_use)`；移除并换端口重试 |
+| Client 上的监听端口已被占用 | 规则状态 `Failed(port_in_use)`；移除后换用其他端口重试 |
 | Target 拒绝连接 / 超时 | 连接级错误；规则保持 `Active`，不会清空指标 |
 | 推送时 Client 已断开 | HTTP 4xx，码值 `client_not_connected` |
 | Client 重连后 | 规则在 Server 端持久化，会重新下发到该 Client |
@@ -78,7 +78,7 @@ portunus-server remove-rule <rule_id>
 - `portunus_rule_active_connections`
 
 即便走 `splice` 快路径，字节计数也会增量更新（每 64 KiB 一次），因此长连接
-（SSH、gRPC 流、WebSocket）会实时上报吞吐量，而不是在连接关闭前一直冻结。
+（SSH、gRPC 流、WebSocket）会实时上报吞吐量，而不会在连接关闭前一直停在零。
 
 完整 collector 列表见 [指标](/zh/docs/observability/metrics)。
 

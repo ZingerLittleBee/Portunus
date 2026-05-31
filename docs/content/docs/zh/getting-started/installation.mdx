@@ -7,8 +7,8 @@ icon: Download
 `Portunus` 提供两种部署模式，安装前先选定其一：
 
 - **Server + Client（控制面）。** [`portunus-server`](#安装-server) 运行在控制面
-  主机上——Operator 连接它，它保存状态，并把规则推送给已连接的 Client；
-  [`portunus-client`](#安装-client) 运行在每台边缘主机上，连接回 Server、绑定转发
+  主机上——Operator 连接它，由它保存状态，并把规则推送给已连接的 Client；
+  [`portunus-client`](#安装-client) 运行在每台边缘主机上，连回 Server、绑定转发
   端口并搬运流量。
 - **Standalone（无控制面）。** [`portunus-standalone`](#安装-standalone) 是一个
   单独的二进制，所有规则都从本地 TOML 文件读取——没有 Server、没有 enrollment、
@@ -31,7 +31,7 @@ icon: Download
 | TCP/UDP、端口范围、多目标故障转移、PROXY protocol、DNS 目标 | ✓ | ✓ |
 
 Server + Client 部署通常是一台 Server 主机加一台或多台 Client 主机；Standalone
-部署就是一台主机加一个配置文件。本地试用一台主机两个终端即可。
+部署则是一台主机加一个配置文件。本地试用时，一台主机开两个终端即可。
 
 ## 前置条件
 
@@ -111,12 +111,12 @@ docker compose up -d && docker compose logs -f -t
 Web UI 在 Server 主机的 `http://127.0.0.1:7080/`。Client 控制面 listener
 仍然是 `0.0.0.0:7443`。
 
-**部署在反向代理 / 云主机后面？** enrollment URI 必须嵌入边缘 client
-能拨号的**公网** `host:port`。若不配置，未经浏览器请求创建的 enrollment
+**部署在反向代理 / 云主机后面？** enrollment URI 中必须嵌入边缘 client
+能连上的**公网** `host:port`。否则，未经浏览器请求创建的 enrollment
 （例如 Docker operator 的 `enroll-client`）会回落到 `127.0.0.1:7443`，
-远程 client 无法连接。通过 `PORTUNUS_ADVERTISED_ENDPOINT=host:port`
+导致远程 client 无法连接。请通过 `PORTUNUS_ADVERTISED_ENDPOINT=host:port`
 （或 Web UI **设置 → 客户端连接地址**）设置通告地址，并确保服务器证书
-SAN 覆盖该主机 —— 参见
+SAN 覆盖该主机——参见
 [通告地址](/zh/docs/features/advertised-endpoint)。
 
 ### Compose 文件参考
@@ -183,10 +183,11 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 ### 接入并启动
 
-向操作员申请一条接入命令——可通过 Web UI **Clients** 页面；也可在宿主机二进制
-部署的服务端执行 `portunus-server enroll-client <name>`；或者对于 Docker 部署的
-服务端，执行 `docker compose run --rm operator enroll-client <name>`（参见
-[操作员命令](/zh/docs/deployment/docker#操作员命令)）。然后在边缘主机上：
+向操作员申请一条接入命令。不停机的做法是用 Web UI **Clients** 页面（或
+`POST /v1/client-enrollments` API），它们可在 Server 运行时使用。而 `enroll-client`
+CLI 命令会直接打开 SQLite 存储，因此需要先**停止** Server（运行中的 Server 持有独占
+锁，该命令会以 `store_in_use` 退出）——宿主二进制与 Docker 两种形式参见
+[操作员命令](/zh/docs/deployment/docker#操作员命令)。然后在边缘主机上：
 
 ```sh
 portunus-client enroll 'portunus://...' --out ./client.bundle.json
@@ -198,7 +199,7 @@ portunus-client --bundle ./client.bundle.json
 
 ### Docker
 
-以宿主用户身份运行一次性接入和长驻容器，确保 `0600` bundle 由同一身份写入与读取：
+以宿主用户身份运行一次性接入容器和长驻容器，确保 `0600` 的 bundle 由同一身份写入和读取：
 
 ```sh
 # 一次性：把接入命令兑换为宿主文件。
@@ -212,6 +213,16 @@ docker run -d --name portunus-client --network host \
   -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
   ghcr.io/zingerlittlebee/portunus-client
 ```
+
+<Callout type="warn">
+**同机试用？** 当 Server 的 advertised endpoint 是默认的 `127.0.0.1:7443` 时，
+一次性接入容器在 Docker bridge 网络下连不到它（报 `transport error`，且不会写出
+bundle）——这时需要给 `enroll` 命令也加上 `--network host`（上面的长驻容器已经用了它），
+或设置一个可达的 [advertised endpoint](/zh/docs/features/advertised-endpoint)。
+另外请确认 `enroll` 步骤确实在长驻 `docker run` **之前**写出了
+`client.bundle.json`：Docker 会把不存在的 bind-mount 源路径创建成一个**目录**，
+随后 client 会以 `Is a directory` 拒绝它。
+</Callout>
 
 Compose 等价写法（`compose.client.yaml`），在 bundle 已存在的情况下：
 
@@ -234,7 +245,7 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d
 ```
 
 Client 推荐使用 `--network host`，因为转发监听端口是在后续 operator 推送规则时
-动态创建的。如果不用 host networking，需要显式发布每个转发监听端口。
+动态创建的。若不使用 host networking，就得为每个转发监听端口显式做端口发布。
 
 参见 [Client 配置](/zh/docs/configuration/client#docker) 了解为何两条命令都要以
 宿主用户身份运行，以及 [Docker 部署](/zh/docs/deployment/docker) 了解生产注意事项。
@@ -290,8 +301,8 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ```
 
 脚本会安装二进制、创建 `portunus` 系统用户、写入起步配置
-`/etc/portunus/standalone.toml`，并安装一个加固的 systemd unit。服务**不会**自动
-启动——随附配置是模板。先编辑，再启用：
+`/etc/portunus/standalone.toml`，并安装一个加固过的 systemd unit。服务**不会**自动
+启动——随附的配置只是模板。请先编辑，再启用：
 
 ```sh
 sudo ${EDITOR:-vi} /etc/portunus/standalone.toml
@@ -325,12 +336,14 @@ sudo install -m 0755 target/release/portunus-standalone /usr/local/bin/
 选择适合你平台的归档。归档命名格式为
 `portunus-<version>-<target>.tar.gz`，支持以下四个目标平台：
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
-每次 release 同时发布对应的 `portunus-<version>-checksums.txt`。
+Linux 归档自 v1.8.0 起是**静态 musl** 二进制：一个归档即可在所有 Linux
+发行版（glibc、Alpine/musl、busybox）上运行。每次 release 同时发布对应的
+`portunus-<version>-checksums.txt`。
 
 解压并安装：
 
@@ -350,9 +363,22 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo bash -s -- client --systemd
 ```
 
-这会创建服务用户和目录，并安装加固 unit（仅 Linux）。如果使用源码 checkout 安装，
-改用 `cd deploy/systemd && sudo ./install.sh server client`（二进制必须已在
+这会创建服务用户和目录，并安装加固过的 unit（仅 Linux）。如果从源码 checkout 安装，
+请改用 `cd deploy/systemd && sudo ./install.sh server client`（二进制必须已在
 `/usr/local/bin`）。
+
+<Callout type="warn">
+`portunus-client` unit 以非特权的 `portunus-client` 服务用户运行，**无法**读取
+属主为 root 的 `0600` bundle（unit 会以 `bundle_load_failed … Permission denied`
+不断重启）。enroll 之后，请把 bundle 放到服务用户所属的组下，而不要以 root 直接拷贝：
+
+```sh
+sudo install -o root -g portunus-client -m 0640 \
+  ./client.bundle.json /etc/portunus/client.bundle.json
+sudo systemctl enable --now portunus-client
+```
+
+</Callout>
 
 详见 [systemd 部署](/zh/docs/deployment/systemd) 中的 unit 文件解读与加固说明。
 
@@ -364,10 +390,10 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | bash
 ```
 
-提供 **安装 / 卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量**，覆盖
-二进制+systemd 与 Docker Compose；server 安装会提示通告地址（持久化到
-systemd drop-in 或 compose `.env`）。非交互 flag 不变，供 CI/自动化使用；
-`--dry-run` 仍不联网、不写文件。需要 bash 4+。
+提供 **安装 / 卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量** 等操作，覆盖
+二进制 + systemd 与 Docker Compose 两种形态；server 安装时会提示填写通告地址
+（并持久化到 systemd drop-in 或 compose `.env`）。非交互 flag 保持不变，供 CI /
+自动化使用；`--dry-run` 仍然不联网、不写文件。需要 bash 4+。
 
 完整的 verb/flag 列表、部署形态细节、限定 config 键、生命周期示例与安全
 语义，参见 [install.sh 管理器参考](/zh/docs/cli/installer)。
@@ -375,7 +401,7 @@ systemd drop-in 或 compose `.env`）。非交互 flag 不变，供 CI/自动化
 ## 下一步
 
 - **想看原始 CLI 流程？** → [CLI 跑通示例](/zh/docs/cli/walkthrough)
-  会带你从 fresh checkout 到 "100 MB 数据通过转发规则"。
+  会带你从全新 checkout 一路走到"让 100 MB 数据穿过转发规则"。
 - **准备上生产？** → [Docker 部署](/zh/docs/deployment/docker) 或
   [systemd 部署](/zh/docs/deployment/systemd)。
 - **想先了解整体设计？** → [架构](/zh/docs/getting-started/architecture)。

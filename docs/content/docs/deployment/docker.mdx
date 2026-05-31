@@ -14,7 +14,7 @@ docker pull ghcr.io/zingerlittlebee/portunus-client:latest
 ```
 
 For fully repeatable production deploys, replace `:latest` with a pinned
-release tag such as `:1.7.0`.
+release tag such as `:1.8.0`.
 
 ## Server compose
 
@@ -131,11 +131,25 @@ docker compose run --rm \
 `reset-password`, `onboarding-token`) open the SQLite store directly and take an
 exclusive lock. They do **not** read `PORTUNUS_OPERATOR_TOKEN`, and they cannot
 run while `server` holds the store — a running server makes them exit with
-`store_in_use` (exit code 75). Stop `server` first:
+`store_in_use` (exit code 75).
+
+<Callout type="warn">
+Do **not** run a store-direct command through the `operator` compose service.
+That service shares the server's network namespace
+(`network_mode: "service:server"`), so `docker compose run operator …`
+transparently **restarts** the `server` you just stopped — which re-acquires
+the store lock and reproduces `store_in_use`. `--no-deps` does not help either
+(it then fails with *"cannot join network of a non running container"*).
+</Callout>
+
+Stop `server` and run the command in a throwaway container bound only to the
+data volume — no compose service, no network namespace:
 
 ```sh
 docker compose stop server
-docker compose run --rm operator enroll-client edge-01
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus enroll-client edge-01
 docker compose up -d server
 ```
 
@@ -145,11 +159,13 @@ host.
 `onboarding-token` is mainly an offline maintenance command; a later `serve`
 start rotates the setup token again, so browser onboarding normally uses the
 token printed in the `server` logs. `reset-password` follows the same
-stop-server pattern:
+stop-server + throwaway-container pattern:
 
 ```sh
 docker compose stop server
-docker compose run --rm operator reset-password admin --temporary
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus reset-password admin --temporary
 docker compose up -d server
 ```
 
@@ -177,6 +193,17 @@ docker run -d --name portunus-client --network host \
   -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
   ghcr.io/zingerlittlebee/portunus-client
 ```
+
+<Callout type="warn">
+**Same-host trial?** When the server's advertised endpoint is the default
+`127.0.0.1:7443`, the one-shot enroll container cannot reach it over Docker's
+bridge network (`transport error`, no bundle written) — add `--network host`
+to the `enroll` command too, or set a reachable
+[advertised endpoint](/en/docs/features/advertised-endpoint). And confirm the
+`enroll` step wrote `client.bundle.json` **before** the long-lived `docker run`:
+a missing bind-mount source path is created by Docker as a **directory**, which
+the client rejects with `Is a directory`.
+</Callout>
 
 Compose equivalent (`compose.client.yaml`), after the bundle exists:
 

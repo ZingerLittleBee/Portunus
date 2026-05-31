@@ -45,7 +45,7 @@ docker run -d --network host \
 
 Notes:
 
-- Pin a specific version in production (`:1.7.0` rather than `:latest`).
+- Pin a specific version in production (`:1.8.0` rather than `:latest`).
 - The container runs as **UID 65532** (`nonroot`). The host file must be
   readable by that UID — `chmod 0644 portunus.toml` is the simplest fix.
   If you get `error: io error: Permission denied (os error 13)`, this is
@@ -101,7 +101,7 @@ pick option 3 for the standalone role.
 # [global] section — all fields optional
 [global]
 label              = "my-forwarder"   # human label; informational only
-log_level          = "info"           # tracing EnvFilter directive (default: "info")
+log_level          = "warn"           # tracing EnvFilter directive (default: "warn")
 log_format         = "json"           # "json" (default) or "pretty"
 shutdown_drain_secs = 30              # graceful-drain budget on SIGTERM (default: 30)
 
@@ -218,7 +218,7 @@ DNS target, single UDP, UDP range). Copy and trim as needed.
 # ─────────── Global (all fields optional) ───────────
 [global]
 label               = "edge-1"     # informational label printed in logs
-log_level           = "info"       # EnvFilter; e.g. "portunus=debug,info"
+log_level           = "warn"       # EnvFilter; e.g. "portunus=debug,info"
 log_format          = "json"       # "json" (default) or "pretty"
 shutdown_drain_secs = 30           # graceful-drain budget on SIGTERM
 
@@ -461,7 +461,7 @@ output.
 If you installed via the **one-click installer**:
 
 ```sh
-# Upgrade to the latest release (or pin --version v1.7.0):
+# Upgrade to the latest release (or pin --version v1.8.0):
 bash install.sh upgrade standalone
 
 # Status (binary version, service active, deploy form):

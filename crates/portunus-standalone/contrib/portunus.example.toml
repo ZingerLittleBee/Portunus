@@ -9,7 +9,7 @@
 
 [global]
 label              = "edge-1"
-log_level          = "info"
+log_level          = "warn"
 log_format         = "json"
 shutdown_drain_secs = 30
 

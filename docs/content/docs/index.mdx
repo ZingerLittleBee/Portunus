@@ -1,19 +1,20 @@
 ---
 title: Portunus
-description: Remote TCP and UDP forwarding with a Rust data plane, central control plane, RBAC, metrics, and QoS.
+description: TCP and UDP port forwarding that can run from one TOML file or from a central server with clients, permissions, metrics, and audit logs.
 icon: BookOpen
 ---
 
 # Portunus
 
-Remote TCP and UDP forwarding for teams that need more than a static port
-map. Run edge clients on remote hosts, push forwarding rules from a central
-server, and keep L4 traffic as byte passthrough while adding RBAC, metrics,
-audit logs, and traffic caps.
+Portunus forwards TCP and UDP ports on remote hosts. For one machine, run the
+standalone binary from a TOML file. For many machines, run a server that pushes
+rules to clients and manages permissions, rate limits, metrics, and audit logs.
+Business traffic flows through the forwarding host, not through the server, and
+Portunus does not decrypt or edit it.
 
-Just one host? The single-binary [standalone forwarder](/en/docs/configuration/standalone)
-runs the same data plane from a local TOML file — no server, no enrollment, no
-control plane.
+Only need one host? The [standalone forwarder](/en/docs/configuration/standalone)
+reads local TOML and uses the same forwarding code, with no server or enrollment
+step.
 
 <Cards>
   <Card title="Start in 60 seconds" href="/en/docs/getting-started/installation" />
@@ -23,18 +24,15 @@ control plane.
 
 ## Performance
 
-Starting in v1.3.0, plain TCP rules with no bandwidth cap use a Linux kernel
-`splice(2)` fast path. On the same Linux host that produced the v0.11 baseline,
-single-flow uncapped throughput **doubled from 9.9 Gbit/s to 21.9 Gbit/s**
-(2.20×). An offered-load sweep through 20 Gbit/s tracks both direct `iperf3` and
-`iptables` REDIRECT within iperf3 short-run noise — the v0.11 "Portunus
-saturates ≥ 12.5 Gbit/s" caveat disappears for uncapped TCP.
+On the benchmark host, uncapped TCP forwarding keeps up with `iptables` through
+20 Gbit/s. The current performance report is based on v1.6.1 measurements and
+includes the host details, commands, raw numbers, and caveats.
 
-| Offered bandwidth | What to expect (v1.3.0) |
+| Case | What to expect |
 | --- | --- |
-| 100 Mbit/s - 10 Gbit/s | Hits the offered rate. Indistinguishable from a direct iperf3 baseline. |
-| 12.5 - 20 Gbit/s | With splice on, single-flow throughput stays within iperf3 noise of direct loopback and iptables REDIRECT (95-109 %). |
-| Rate-limited rules | Bandwidth-capped rules stay on the canonical userspace path — metrics, counters, and audit byte-identical to v1.2.0. |
+| 100 Mbit/s - 20 Gbit/s | Hits the requested rate on the benchmark host. |
+| Standalone vs client | Same forwarding code; no measurable throughput difference in the current tests. |
+| Rate-limited rules | Keep the same metrics, counters, and audit behavior. |
 
 <Cards>
   <Card title="Methodology, raw numbers, and caveats" href="/en/docs/getting-started/performance" />
@@ -45,10 +43,10 @@ saturates ≥ 12.5 Gbit/s" caveat disappears for uncapped TCP.
 | Area | Capabilities |
 | --- | --- |
 | Forwarding | TCP and UDP rules, port ranges, DNS-name targets, multi-target failover. |
-| L4 routing | TLS SNI routing without TLS termination, optional PROXY protocol headers. |
-| Control plane | CLI, operator HTTP API, embedded Web UI, hot rule updates over pinned TLS. |
-| Multi-tenancy | RBAC by user, client, protocol, and port range, with server-enforced ownership. |
-| QoS | Per-rule and per-owner bandwidth, new-connection, and concurrent-flow caps. |
+| Routing | Route HTTPS by hostname without decrypting TLS, optional PROXY protocol headers. |
+| Management | CLI, HTTP API, embedded Web UI, and live rule updates to connected clients. |
+| Access control | Per-user grants by client, protocol, and port range, with server-enforced ownership. |
+| Limits | Per-rule and per-owner bandwidth, new-connection, and concurrent-connection caps. |
 | Operations | Prometheus metrics, structured logs, audit trail, bundled SQLite, backup and restore. |
 
 ## Feature highlights
@@ -60,22 +58,20 @@ saturates ≥ 12.5 Gbit/s" caveat disappears for uncapped TCP.
   <Card title="Multi-target failover" href="/en/docs/features/multi-target-failover" />
   <Card title="TLS SNI routing" href="/en/docs/features/tls-sni-routing" />
   <Card title="PROXY protocol" href="/en/docs/features/proxy-protocol" />
-  <Card title="Rate limiting & QoS" href="/en/docs/features/rate-limiting" />
-  <Card title="Multi-user RBAC" href="/en/docs/features/rbac" />
+  <Card title="Rate limits and quotas" href="/en/docs/features/rate-limiting" />
+  <Card title="User permissions" href="/en/docs/features/rbac" />
   <Card title="Web UI" href="/en/docs/features/web-ui" />
   <Card title="SQLite storage" href="/en/docs/features/sqlite-storage" />
 </Cards>
 
 ## Where it fits
 
-Use `Portunus` when you need centrally managed edge listeners, tenant-aware
-access control, observability, or per-owner quotas around plain L4 forwarding.
-For a single static rule on one Linux host where only peak throughput matters,
-kernel-space forwarding has a simpler, faster execution path. Want the
-`Portunus` data plane (port ranges, multi-target failover, PROXY protocol,
-`splice`) on a single host but none of the control plane? Reach for the
-[standalone forwarder](/en/docs/configuration/standalone) — the same forwarding
-code, driven entirely by a TOML file.
+Use `Portunus` when you need to manage forwarding rules across machines, give
+users scoped access, watch traffic, or set per-user limits. If you only need one
+static local redirect and peak throughput is the only goal, kernel forwarding is
+simpler. If you want Portunus forwarding features on one host without a server,
+use the [standalone forwarder](/en/docs/configuration/standalone): the same
+forwarding code, driven entirely by a TOML file.
 
 ## Quick links
 

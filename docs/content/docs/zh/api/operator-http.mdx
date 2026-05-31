@@ -4,7 +4,7 @@ description: 暴露在 operator_http_listen 上的 /v1 API。默认 loopback、s
 icon: Code
 ---
 
-`portunus-server` 把操作员侧 API 暴露为 `operator_http_listen` 上的 HTTP API
+`portunus-server` 在 `operator_http_listen` 上以 HTTP 形式提供操作员侧 API
 （默认 loopback）。大多数 `/v1/*` 请求需要 Web session cookie 或 API Bearer
 Token。
 
@@ -20,8 +20,8 @@ Content-Type: application/json
 {"user_id":"admin","password":"correct horse battery staple"}
 ```
 
-成功登录会返回 `{"password_change_required": false}`，并设置 `HttpOnly`
-`portunus_session` cookie。API 客户端和 CLI 自动化继续使用 Bearer 凭据：
+登录成功会返回 `{"password_change_required": false}`，并设置 `HttpOnly`
+的 `portunus_session` cookie。API 客户端和 CLI 自动化则继续使用 Bearer 凭据：
 
 ```http
 GET /v1/clients
@@ -29,11 +29,11 @@ Host: 127.0.0.1:7080
 Authorization: Bearer T006-quickstart-token
 ```
 
-使用 cookie 认证的写请求（`POST`、`PUT`、`PATCH`、`DELETE`）必须带精确同源
-`Origin`、`X-Portunus-CSRF: 1`，并且有 body 时使用 JSON content type。Bearer
-Token 请求不需要 CSRF 头。
+使用 cookie 认证的写请求（`POST`、`PUT`、`PATCH`、`DELETE`）必须带上严格同源的
+`Origin`、`X-Portunus-CSRF: 1`，并在有 body 时使用 JSON content type。Bearer
+Token 请求则不需要 CSRF 头。
 
-认证缺失或非法时的响应：
+认证缺失或非法时的响应如下：
 
 | 状态 | Body | 原因 |
 | --- | --- | --- |
@@ -117,8 +117,8 @@ Token 请求不需要 CSRF 头。
 
 ### Rate limiting（v0.11+）
 
-每条规则的上限随 `POST` / `PUT /v1/rules` 的 body 一起提交（见上文
-`rate_limit`）。下列端点设置的是按 (owner, client) 维度的信封。
+每条规则的上限随 `POST` / `PUT /v1/rules` 的 body 一并提交（见上文
+`rate_limit`）。下列端点设置的则是按 (owner, client) 维度的信封。
 
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
@@ -129,8 +129,8 @@ Token 请求不需要 CSRF 头。
 
 ### Traffic quotas（v0.13+）
 
-按 (user, client) 维度的月度流量配额，以及历史流量查询。流量查询需要 `from`
-与 `to`（Unix 秒，必填），并可选 `bucket`（采样粒度）。
+按 (user, client) 维度的月度流量配额，以及历史流量查询。流量查询必须带上 `from`
+与 `to`（Unix 秒），并可选 `bucket`（采样粒度）。
 
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
@@ -164,7 +164,63 @@ Token 请求不需要 CSRF 头。
 | --- | --- | --- |
 | `GET` | `/v1/metrics` | RBAC 守门后的 `/metrics` 镜像；仅超管 |
 
-抓取面 `metrics_listen:7081/metrics` 不变（Prometheus 仍无 Bearer 抓取）。
+抓取面 `metrics_listen:7081/metrics` 保持不变（Prometheus 抓取仍不需要 Bearer）。
+
+## 常用写入端点的请求体
+
+下面是大多数自动化场景所需的 JSON 结构。未列出的字段均为可选。
+
+### `POST /v1/auth/onboarding`
+
+在还没有活跃 `superadmin` 时创建第一个管理员。需要提供 server 日志里打印的 setup
+token。
+
+```json
+{
+  "user_id": "admin",
+  "display_name": "Admin",
+  "password": "correct horse battery staple",
+  "password_confirm": "correct horse battery staple",
+  "setup_token": "<token from server logs>"
+}
+```
+
+返回 `201` 及 `{ user_id, display_name, role }`。**该接口不会设置 session cookie**
+——在发起任何已认证请求之前，还需接着调用 `POST /v1/auth/login`。
+
+### `POST /v1/auth/login`
+
+```json
+{ "user_id": "admin", "password": "correct horse battery staple" }
+```
+
+返回 `200 { "password_change_required": false }`，并设置 `HttpOnly` 的
+`portunus_session` cookie，供后续 cookie 认证调用使用。
+
+### `POST /v1/client-enrollments`
+
+```json
+{ "name": "edge-01", "address": "edge-01.example.com", "ttl_secs": 600 }
+```
+
+- `name` —— 要接入的 client 名称。
+- `address` —— 消费者连接该 client 转发端口时使用的**公网主机**。它必须是不含
+  端口的纯主机名（DNS 名或 IP），带端口的 `host:port` 值会被拒绝并返回
+  `400 invalid_client_address`。
+- `ttl_secs` —— 可选的接入码有效期（默认取 server 的设置）。
+
+返回 `{ client_name, expires_at, command, uri }`。在边缘主机上运行 `command`
+（或兑换 `uri`）即可。URI 中嵌入的 server endpoint 来自
+[通告地址](/zh/docs/features/advertised-endpoint)，未设置时回落到 `127.0.0.1:7443`。
+
+### `POST /v1/users/{id}/credentials`
+
+```json
+{ "label": "ops-cli" }
+```
+
+返回 `201 { credential_id, user_id, token, label, created_at }`。其中 `token`
+就是 bearer 凭据，只显示**一次**，请立即保存。
 
 ## 状态码语义
 
@@ -182,7 +238,7 @@ Token 请求不需要 CSRF 头。
 | `429` | 认证限流 |
 | `503` | `bootstrap_required` |
 
-完整 code → exit-code → HTTP-status 映射在 v1 冻结；详见每个 spec 的契约文档
+完整的 code → exit-code → HTTP-status 映射已在 v1 冻结，详见各 spec 的契约文档
 [`specs/*/contracts/operator-api.md`](https://github.com/ZingerLittleBee/Portunus/tree/main/specs)。
 
 ## 示例：推送一条带上限的规则

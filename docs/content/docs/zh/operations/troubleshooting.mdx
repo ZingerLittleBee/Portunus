@@ -5,7 +5,7 @@ icon: Stethoscope
 ---
 
 绝大多数故障都会以结构化日志 **加上** 具体退出码或 HTTP 状态码的形式
-出现。这两者的组合通常足以唯一确定原因。
+出现。两者结合通常足以唯一确定原因。
 
 ## Client 无法连接
 
@@ -16,10 +16,10 @@ icon: Stethoscope
 ```
 
 server 的叶证书指纹与 bundle 中的 `server_cert_sha256` 不匹配。
-**client 非零退出**，server 不会有任何日志（TLS 握手根本没完成）。
+**client 非零退出**，server 端不会有任何日志（TLS 握手根本没完成）。
 
-**修复**：在 server 证书重新生成后，重新用 `enroll-client` 生成接入命令；
-或在 server 端恢复原 `server.crt` + `server.key`。
+**修复**：server 证书重新生成后，用 `enroll-client` 重新生成接入命令；
+或在 server 端恢复原来的 `server.crt` + `server.key`。
 
 ### `auth.failure { reason: "token_revoked" }`
 
@@ -30,12 +30,12 @@ portunus-server revoke edge-01
 # 重启后 Client 日志：auth.failure reason=token_revoked
 ```
 
-**修复**：生成重新接入命令，并在边缘主机执行。
+**修复**：重新生成接入命令，并在边缘主机执行。
 
 ### Connect refused / network unreachable
 
 检查 server 端 `control_listen` 是否与 bundle 的 `server_endpoint` 一致，并
-确认防火墙没有丢弃 `tcp/7443`。
+确认防火墙没有拦掉 `tcp/7443`。
 
 ## 规则激活失败
 
@@ -48,18 +48,18 @@ portunus-server push-rule edge-01 18080 10.0.0.5:8080
 
 client 上有别的东西（另一条规则、无关进程）占用了监听端口。
 
-**修复**：换一个空闲端口；或先 `remove-rule` 占用者再重试。**没有自动重试**
-—— 失败的规则会一直占住该端口（生命周期 Q4 决策有意为之），直到被显式
-移除。
+**修复**：改用一个空闲端口；或先 `remove-rule` 移除占用者再重试。**没有自动
+重试** —— 失败的规则会一直占住该端口（生命周期 Q4 决策有意为之），直到被
+显式移除。
 
 <Callout type="info">
   **v1.6.1** 起，TCP listener 以 `SO_REUSEADDR` 绑定，因此 `docker
   restart` 或进程快速重启时，已死进程 `accept()` 出的子 socket 残留在
   `TIME_WAIT` 不再导致误报 `port_in_use`（此前会占住端口约
   `tcp_fin_timeout`，默认 60 s）。`SO_REUSEADDR` 只放宽 `TIME_WAIT`
-  绑定 —— 同一端口上两个存活的 `LISTEN` socket 仍然冲突，所以重复规则
+  绑定 —— 同一端口上两个存活的 `LISTEN` socket 仍会冲突，所以重复规则
   仍会被拒为 `port_in_use`。如果在全新启动时看到 `port_in_use`，说明端口
-  确实被另一进程或规则占用。
+  确实被另一进程或规则占用了。
 </Callout>
 
 ### `client_not_connected`
@@ -69,7 +69,7 @@ portunus-server push-rule edge-01 18080 …
 # exit 4: client_not_connected
 ```
 
-client 丢失了 gRPC 流。规则在 server 端持久化；client 重连后 server 自动
+client 的 gRPC 流断了。规则在 server 端持久化；client 重连后 server 会自动
 重推。确认状态：
 
 ```sh
@@ -78,8 +78,8 @@ portunus-server list-clients
 
 ## 目标解析（DNS）
 
-目标为 DNS 名称的规则，在每次新连接 / 新 flow 时惰性解析。解析失败**不会**
-让规则失败 —— 只丢掉该次连接（TCP）或首包（UDP），并发出结构化事件：
+目标是 DNS 名称的规则，会在每次新连接 / 新 flow 时惰性解析。解析失败**不会**
+让规则失败 —— 只丢掉这次连接（TCP）或首包（UDP），并发出结构化事件：
 
 ```json
 {"event":"rule.dns_failed","rule":"…","host":"…","reason":"…"}
@@ -95,11 +95,11 @@ portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="42"}
 **修复**：确认目标主机名能从 client 主机解析（`dig`、`getent hosts`），且
 client 的 resolver / `/etc/resolv.conf` 可达。上游 DNS 短暂中断会表现为
 counter 上升、恢复后趋平；resolver 会缓存成功结果（遵守 TTL），并在刷新
-失败时短暂提供 stale 条目，所以抖动的 resolver 不一定会丢掉每一条连接。
+失败时短暂返回 stale 条目，所以抖动的 resolver 不一定会丢掉每一条连接。
 
-resolver 缓存是 **bounded** 的（v1.7 起的内存泄漏防护）：在高基数目标
-workload 下，它会优先淘汰最接近过期的条目，而不是无限增长。这是内部
-保护，没有运维开关。
+resolver 缓存有上界（v1.7 起加入的内存泄漏防护）：在高基数目标 workload
+下，它会优先淘汰最接近过期的条目，而不是无限增长。这是内部保护，没有
+运维开关。
 
 ## RBAC 拒绝
 
@@ -151,10 +151,10 @@ journalctl -u portunus-server -n 100 --no-pager \
 ```
 
 setup token 30 分钟后过期；只要 onboarding 还没完成，每次 server 启动都会
-轮换 token。如果已经存在 `superadmin`，onboarding 不会重新打开，请走下面的
+轮换 token。如果已经存在 `superadmin`，onboarding 不会再次打开，请走下面的
 密码恢复流程。
 
-旧自动化仍可使用 `bootstrap-superadmin` 或 `server.toml` 中的 `operator_token`
+旧自动化仍可用 `bootstrap-superadmin` 或 `server.toml` 中的 `operator_token`
 创建 API Token 访问，但这些路径不会创建 Web 密码。
 
 ## Web 登录与密码恢复
@@ -162,12 +162,12 @@ setup token 30 分钟后过期；只要 onboarding 还没完成，每次 server 
 ### `rate_limited`
 
 登录、onboarding、密码重置都会按 subject 和远端 IP 限流。等 lockout 过期后再
-试。暴力猜密码就该无聊，代码这次没犯傻。
+试。暴力破解密码本就该枯燥乏味，这里的实现也确实如此。
 
 ### 最后一个 `superadmin` 忘记密码
 
-先停止 server 进程，在本地重置现有账户，然后重启。这里要使用真实的超管用户
-ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的是
+先停止 server 进程，在本地重置现有账户，然后重启。这里要填真实的超管用户
+ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的则是
 初始化时选择的 ID，例如 `admin`。
 
 ```sh
@@ -179,7 +179,7 @@ sudo systemctl start portunus-server
 ```
 
 该命令只打印一次 `temporary_password=...`，撤销 Web 会话，默认撤销 API Token，
-并标记账户下次登录必须修改密码。这个场景没有远程 "forgot password" 接口。
+并标记账户下次登录必须改密码。这个场景没有远程 "forgot password" 接口。
 
 ## 性能问题
 
@@ -194,11 +194,11 @@ cargo bench -p portunus-client --bench data_plane
 CI 的回归守门
 （`.github/workflows/bench.yml` →
 `scripts/bench_regression_gate.py`）只要任何基准的中位数比 v0.1.0 baseline
-慢 25% 就会失败。怀疑回归时可用 `git bisect run cargo bench …` 二分。
+慢 25% 就会失败。怀疑回归时，可用 `git bisect run cargo bench …` 二分定位。
 
 ### "持续 UDP 负载下连接被丢"
 
-查 `portunus_rule_flows_dropped_overflow_total`。非零则把 `server.toml` 中的
+查 `portunus_rule_flows_dropped_overflow_total`。非零就把 `server.toml` 中的
 `udp_max_flows_per_rule` 调高（同时调高 client systemd unit 的 `LimitNOFILE`）。
 
 **v1.5** 起，flow 上限按**每规则**统计，不再按每监听端口统计 —— 设了
@@ -208,7 +208,7 @@ CI 的回归守门
 [升级指南](/zh/docs/operations/upgrade#v1x-数据面版本)。
 
 **v1.7** 起，每规则 UDP listener 循环对队头阻塞做了硬化，单个慢上游不再
-拖住同规则其它 flow 的数据报。某条行为异常的 flow 仍可能在收到反射的
+拖住同规则下其它 flow 的数据报。某条行为异常的 flow 仍可能在收到反射回来的
 ICMP 错误时被提前驱逐（`rule.udp_flow_evicted_icmp`）—— 下一个数据报会
 重建它。
 
@@ -221,7 +221,7 @@ histogram_quantile(0.99,
   rate(portunus_tls_client_hello_peek_duration_seconds_bucket[5m]))
 ```
 
-长尾（接近 3 s）通常意味着 client 在慢网络下分片发送 ClientHello —— 不是
+长尾（接近 3 s）通常说明 client 在慢网络下分片发送 ClientHello —— 不是
 Portunus 的问题。
 
 ## 流量配额（v1.4+）
@@ -230,7 +230,7 @@ Portunus 的问题。
 
 ### "终端用户报告连接在 GB 边界被断开"
 
-怀疑这个 pair 撞到了月配额。先看实时 gauge：
+怀疑这个 pair 撞到了月配额上限。先看实时 gauge：
 
 ```text
 portunus_traffic_quota_exhausted{user="alice", client="edge-tokyo"} 1
@@ -270,7 +270,7 @@ curl -sS \
   ```
 
 Server 会立刻下发新的 `TrafficQuotaUpdate { action: SET }`，client
-不需要重连即可恢复接受连接。
+无须重连即可恢复接受连接。
 
 ### "配额状态卡住不动"
 
@@ -284,7 +284,7 @@ portunus_clients_connected{client="edge-tokyo"} 1
 ```
 
 值为 `0` 说明 control-plane 流断了；server 的配额变更已经排队，
-等 client 重连时会被 replay 下发。
+等 client 重连时会 replay 下发。
 
 检查 2 —— client 真的处理了 update 吗？grep client 日志：
 
@@ -292,13 +292,13 @@ portunus_clients_connected{client="edge-tokyo"} 1
 journalctl -u portunus-client | grep traffic_quota.applied_set
 ```
 
-`traffic_quota.applied_set` 事件行表示 `QuotaHandle` 已被装载或替换。
+`traffic_quota.applied_set` 事件行表示 `QuotaHandle` 已装载或替换。
 没有这行说明 `TrafficQuotaUpdate` 根本没到 —— 确认 client 二进制是
 v1.4.0+。
 
 如果 client 确实重连了，内存里的 `QuotaHandle` 会由 server 的
 `TrafficQuotaUpdate` replay 步骤重建（这一步**先于 rule replay**，
-所以第一条 rule 绑定 listener 时 handle 已经就位）。无需运维介入
+所以第一条 rule 绑定 listener 时 handle 已经就位）。无须运维介入
 —— 重连后的 StatsReport 周期内，server 端 `bytes_used` 可能短暂
 比实际已送达字节略高。
 
@@ -307,8 +307,8 @@ v1.4.0+。
 Traffic tab 的图表来自 `traffic_samples_1m` / `traffic_samples_1h`。
 空有两种可能：根本没生成样本，或查询窗口超出 retention。
 
-- **没生成样本** —— rollup 任务只在 pair 那一分钟 / 那一小时实际
-  转发过字节时才写 sample 行。空闲 pair 就是会有缺口。把查询指向
+- **没生成样本** —— rollup 任务只在 pair 那一分钟 / 那一小时确实
+  转发过字节时才写 sample 行。空闲 pair 自然会有缺口。把查询指向
   你确定有流量的时段验证一下。
 - **超出 retention** —— `bucket=1m` 行保留 **7 天**；`bucket=1h`
   行保留 **90 天**。`from` 超过对应 retention 的查询会返回
@@ -318,22 +318,22 @@ Traffic tab 的图表来自 `traffic_samples_1m` / `traffic_samples_1h`。
   `bucket=1m` 查询。
 
 如果底层 gauge（`portunus_traffic_quota_bytes_used` 在涨）显示有
-流量但图表是空的，把 bucket 切到 `1m`，并把查询窗口缩到覆盖那段活动
-即可。
+流量、但图表是空的，把 bucket 切到 `1m`，并把查询窗口缩到刚好覆盖那段
+活动即可。
 
 ## 在排错时关闭 Linux 快路径
 
 在 Linux 上，`portunus-client` 默认对没有 `bandwidth_in_bps` /
-`bandwidth_out_bps`（per-rule 或 per-owner）的 TCP 规则使用 `splice(2)`
+`bandwidth_out_bps`（per-rule 或 per-owner）的 TCP 规则启用 `splice(2)`
 快路径。这个优化**对运维不可见**——没有规则字段、配置项或 CLI 开关。
-为了诊断或压测对照，**内部**环境变量 `PORTUNUS_DISABLE_SPLICE=1` 可以
+为了诊断或压测对照，可用**内部**环境变量 `PORTUNUS_DISABLE_SPLICE=1`
 强制所有连接走 userspace 通道：
 
 ```sh
 PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
 ```
 
-`--help` 里有意不提这个变量。请把它当作**仅供排错的应急开关**，不是稳定 API。
+`--help` 里特意不提这个变量。请把它当作**仅供排错的应急开关**，而非稳定 API。
 
 ### "我看到 `proxy.splice_unsupported_fallback` 事件"
 
@@ -342,9 +342,9 @@ PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
 ```
 
 内核（或它前面的 sandbox / LSM / seccomp 策略）拒绝了 `splice` 系统调用。
-连接已**透明回落到 userspace 通道**——功能不受影响，只有峰值吞吐略有下降。
+连接已**透明回落到 userspace 通道**——功能不受影响，只是峰值吞吐略有下降。
 
-**修复**：放宽策略，或接受回落并设置 `PORTUNUS_DISABLE_SPLICE=1` 来消音
+**修复**：放宽策略，或接受回落并设置 `PORTUNUS_DISABLE_SPLICE=1` 来消掉
 告警。
 
 ### "我看到反复 `proxy.splice_pipe_size_failed` 事件"
@@ -356,57 +356,57 @@ PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
  "errno_name":"EPERM"}
 ```
 
-`/proc/sys/fs/pipe-max-size` 低于请求的 1 MiB。快路径仍以内核默认 pipe
-大小（多数发行版上 64 KiB）工作，但大块 workload 的峰值吞吐会下降。
+`/proc/sys/fs/pipe-max-size` 低于请求的 1 MiB。快路径仍按内核默认 pipe
+大小（多数发行版上是 64 KiB）工作，但大块 workload 的峰值吞吐会下降。
 
-**修复**：调高这个 sysctl（per-host 或在 systemd unit 里），或接受降低的
+**修复**：调高这个 sysctl（按主机或在 systemd unit 里），或接受降低的
 峰值吞吐。
 
 ### "Linux 上的吞吐跟 v1.2.0 baseline 一样"
 
 快路径没有生效。依次检查：
 
-1. client 进程里 `PORTUNUS_DISABLE_SPLICE` 是否设置？取消它。
+1. client 进程里是否设了 `PORTUNUS_DISABLE_SPLICE`？取消它。
 2. 规则有没有 `bandwidth_in_bps` 或 `bandwidth_out_bps`？带宽限速需要
-   per-chunk userspace token 计数，所以快路径是被正确禁用的。
+   per-chunk userspace token 计数，所以这种情况下快路径会被正确禁用。
 3. owner 有没有带宽上限？同 #2。
 4. 看 `proxy.splice_selected`（info 级）——一条规则首次进入快路径时会
-   触发一次。这条事件缺席意味着规则不符合条件。
+   触发一次。没有这条事件，说明规则不符合条件。
 
 **v1.6.1** 起，`bytes_in` / `bytes_out` 在 splice 路径上增量更新（每方向
-每 64 KiB 批次一次 `Relaxed` 累加），而不是只在连接关闭时更新 —— 长连接
-（SSH、gRPC、WebSocket）不再让速率显示一直停在 0。**v1.7** 起，splice
-快路径与实时字节计数在多目标 failover 路径上也同样生效。
+每 64 KiB 批次做一次 `Relaxed` 累加），不再只在连接关闭时更新 —— 长连接
+（SSH、gRPC、WebSocket）的速率显示不会再一直停在 0。**v1.7** 起，splice
+快路径与实时字节计数在多目标 failover 路径上同样生效。
 
 ### "RST 下 `bytes_in` 跟 upstream 实收字节数对不上"
 
 行为与 v1.2.0 userspace 通道完全一致：计数器统计的是**已送达**字节，
 不是"已收但未送达"的字节。中途 RST 会丢掉两条路径在途的字节；两侧
-计数器都同意"已送达总数"。这不是快路径引入的回归。
+计数器对"已送达总数"的认定是一致的。这不是快路径引入的回归。
 
 ## 通告地址
 
-完整模型见 [通告地址](/zh/docs/features/advertised-endpoint)。该地址
-fail-closed 解析，并按服务器证书 SAN 校验。
+完整模型见 [通告地址](/zh/docs/features/advertised-endpoint)。该地址按
+fail-closed 方式解析，并按服务器证书 SAN 校验。
 
 ### `endpoint_invalid`（HTTP 422）
 
-`PUT /v1/settings/advertised-endpoint`（或 Web UI 保存）拒绝了该值：
+`PUT /v1/settings/advertised-endpoint`（或在 Web UI 保存）拒绝了该值：
 它不是纯 `host:port`（带了 scheme、path、IPv6 字面量、空白……）。
 
-**修复**：提交纯 `host:port`，例如 `proxy.example.com:34567`。不要
-`https://`，不要结尾 path。
+**修复**：提交纯 `host:port`，例如 `proxy.example.com:34567`。不要带
+`https://`，也不要带结尾 path。
 
 ### `endpoint_not_in_cert_san`（HTTP 422）
 
-主机格式正确但**未被服务器证书 SAN 覆盖**。该 override 被有意
+主机格式正确，但**未被服务器证书 SAN 覆盖**。该 override 会被刻意
 *不予持久化* —— 服务器 fail closed，不通告无法通过 TLS 证明的主机。
-GET 返回 `effective: null` 且带 SAN `diagnostic`、或启动日志报未覆盖
-seed，根因相同。
+GET 返回 `effective: null` 且带 SAN `diagnostic`、或启动日志报 seed 未
+被覆盖，根因相同。
 
 **修复**（operator 操作）：
 
-1. 确认客户端可达的 `host:port`（client 拨号的公网地址 —— 例如
+1. 确认客户端可达的 `host:port`（client 连接的公网地址 —— 例如
    Railway TCP 代理域名）。
 2. 检查已部署证书的 SAN：
 
@@ -416,20 +416,20 @@ seed，根因相同。
    ```
 
 3. 若主机**确实**在其中（注意：通配只匹配最左单标签；IP 字面量需要
-   IP SAN，而非 DNS SAN），说明输入用错了标签 —— 修正后重试。
+   IP SAN，而非 DNS SAN），说明你填错了标签 —— 修正后重试。
 4. 若不在，重新签发 / 获取一张 SAN 包含该主机的证书（一条 DNS SAN、
    一条覆盖它的单标签 `*.` 通配，或 IP 字面量对应的 IP SAN），重新
-   部署 `server.crt` + `server.key`，重启。
+   部署 `server.crt` + `server.key`，再重启。
 5. 重新应用 override（`PUT` / Web UI）或修正 seed
    （`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`）——
    此时返回 `200`。
 6. 重建在地址错误期间创建的 enrollment（它们冻结了旧值）。legacy
-   `NULL`-endpoint enrollment 无需重建 —— 配置修好后其 redeem 成功。
+   `NULL`-endpoint enrollment 无须重建 —— 配置修好后即可成功 redeem。
 
 ### 客户端 bundle 指向 `127.0.0.1` / loopback
 
-未设置 override 也未设置 seed，解析回落到第 4 层 loopback
-（`127.0.0.1:<control_port>`），远程 client 无法连接。
+既没设 override 也没设 seed 时，解析会回落到第 4 层 loopback
+（`127.0.0.1:<control_port>`），远程 client 连不上。
 
 **修复**：设置显式 override（Web UI / `PUT`）或 seed
 （`PORTUNUS_ADVERTISED_ENDPOINT`）为一个被 SAN 覆盖的公网
@@ -437,12 +437,12 @@ seed，根因相同。
 
 ### legacy enrollment redeem 报 `failed_precondition`
 
-一条升级前的 enrollment（存储 endpoint 为 NULL）在 redeem 时
-fail-closed 解析，而当前配置非法 / 未覆盖。该 enrollment **未被消费**，
-客户端 token **未轮换**。
+一条升级前的 enrollment（存储 endpoint 为 NULL）在 redeem 时按 fail-closed
+方式解析，而当前配置非法 / 未覆盖。该 enrollment **未被消费**，客户端
+token **未轮换**。
 
 **修复**：修正通告地址配置（见上面的 `endpoint_not_in_cert_san`）；
-随后 client 可用同一个 code 再次 redeem —— 在成功前是幂等的。
+之后 client 可用同一个 code 再次 redeem —— 成功之前是幂等的。
 
 ## 哪里报 bug
 
