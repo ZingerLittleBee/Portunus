@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# OpenRC service for portunus-server (control plane).
+# Data dir and extra serve args come from /etc/conf.d/portunus-server.
+description="Portunus control-plane server"
+
+command="/usr/local/bin/portunus-server"
+command_args="--data-dir ${datadir:-/var/lib/portunus} serve ${server_args:-}"
+command_user="portunus-server:portunus-server"
+supervisor=supervise-daemon
+pidfile="/run/portunus-server.pid"
+respawn_delay=2
+respawn_max=0
+output_log="/var/log/portunus-server.log"
+error_log="/var/log/portunus-server.log"
+
+depend() {
+	need net
+	after firewall
+}

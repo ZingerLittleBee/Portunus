@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# OpenRC service for portunus-client.
+# The bundle path comes from /etc/conf.d/portunus-client (bundle=...).
+description="Portunus edge client"
+
+command="/usr/local/bin/portunus-client"
+command_args="--bundle ${bundle:-/etc/portunus/client.bundle.json}"
+command_user="portunus-client:portunus-client"
+supervisor=supervise-daemon
+pidfile="/run/portunus-client.pid"
+respawn_delay=2
+respawn_max=0
+output_log="/var/log/portunus-client.log"
+error_log="/var/log/portunus-client.log"
+
+depend() {
+	need net
+	after firewall
+}

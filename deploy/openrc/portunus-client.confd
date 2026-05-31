@@ -1,0 +1,3 @@
+# /etc/conf.d/portunus-client
+# Path to the enrollment bundle produced by `portunus-client enroll`.
+bundle="/etc/portunus/client.bundle.json"
