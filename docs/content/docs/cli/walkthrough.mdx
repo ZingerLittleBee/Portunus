@@ -81,8 +81,8 @@ Within a few seconds the server logs `client.connected`. Verify:
 
 ```sh
 portunus-server --data-dir ./srv list-clients
-# NAME      CONNECTED   REMOTE              CONNECTED-AT
-# edge-01   yes         203.0.113.5:51234   2026-05-06T12:01:30Z
+# CLIENT   STATE       PROVISIONED_AT         ADDRESS
+# edge-01  connected   2026-05-06T12:01:30Z   -
 ```
 
 ## 5. Push a forwarding rule
@@ -90,10 +90,13 @@ portunus-server --data-dir ./srv list-clients
 ```sh
 # 18080 on edge-01 → 10.0.0.5:8080
 portunus-server push-rule edge-01 18080 10.0.0.5:8080
-# → rule_id=1
+# → 1
 ```
 
-The rule transitions `Pending → Active` with a 1-second ack budget.
+`push-rule` prints only the new rule's bare `rule_id` on stdout (here `1`).
+
+The rule transitions `Pending → Active` within a 2-second ack budget
+(controlled by `--ack-timeout`, default 2).
 The client now binds `0.0.0.0:18080` and forwards every accepted TCP
 connection to `10.0.0.5:8080`.
 
@@ -112,7 +115,7 @@ sha256sum /tmp/in.bin /tmp/out.bin   # hashes must match
 ```sh
 # Aggregate counters via the operator CLI
 portunus-server rule-stats 1
-# → rule_id=1 bytes_in=104857600 bytes_out=0 active_connections=0
+# → rule_id=1 client=edge-01 protocol=tcp bytes_in=104857600 bytes_out=0 active=0 dns_failures=0 target_failovers_total=0 updated_at=2026-05-06T12:05:00Z
 
 # Same numbers via Prometheus
 curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
