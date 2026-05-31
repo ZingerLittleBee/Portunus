@@ -55,14 +55,24 @@ For UDP, port ranges, failover, PROXY protocol, and the stats TUI, see the [stan
 
 The one-line script is POSIX `sh` (runs under `dash`/busybox `ash` — no `bash` required), detects OS/arch, and verifies release checksums. By default it installs **and starts** a service; pass `--no-service` to install the binary only. Add `--deploy docker` to any role to run it via Docker Compose instead.
 
-**Standalone** — one host, one TOML file:
+**Standalone** — one host, one TOML file. The installer never seeds a config, so create it first:
 
 ```sh
-## Docker Compose
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
-## binary + service (systemd / OpenRC)
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
+# write your rules to the default path (the binary install reads this)
+sudo mkdir -p /etc/portunus
+cat <<'EOF' | sudo tee /etc/portunus/standalone.toml >/dev/null
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# binary + service (systemd / OpenRC)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
 ```
+
+Prefer Docker? Write `./portunus.toml` in your working directory instead (the compose file mounts it), then `curl … | sh -s -- standalone --deploy docker`.
 
 **Control plane** — a central server plus any number of edge clients:
 
@@ -80,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
 ```
 
-In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus a seeded config and printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone installs accept `--config PATH` to point the service at a specific TOML file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
+In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone never seeds a config — you create it (the binary exits without one); `--config PATH` points the service at a specific file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
 
 **From source** (Rust 1.88+ stable; `protoc` is vendored via `prost-build`):
 
