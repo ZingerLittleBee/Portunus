@@ -433,11 +433,51 @@ fn main() -> ExitCode {
     }
 }
 
+/// True when `ep` carries a non-empty host portion. Mirrors
+/// `serve::advertised_host` so the cert-SAN host and the bundle endpoint
+/// never disagree. Guards against the `:` / `:7443` that
+/// `${{RAILWAY_TCP_PROXY_DOMAIN}}:${{RAILWAY_TCP_PROXY_PORT}}` resolves to
+/// before Railway assigns the TCP proxy.
+fn advertised_has_host(ep: &str) -> bool {
+    let ep = ep.trim();
+    if ep.is_empty() {
+        return false;
+    }
+    let host = ep.rsplit_once(':').map_or(ep, |(h, _)| h);
+    !host.trim().is_empty()
+}
+
+/// Pure resolution: flag overrides env; host-less values are dropped.
+fn resolve_advertised(flag: Option<String>, env_value: Option<String>) -> Option<String> {
+    flag.or(env_value).filter(|s| advertised_has_host(s))
+}
+
 fn advertised_seed(cli: &Cli) -> Option<String> {
-    cli.advertised_endpoint
-        .clone()
-        .or_else(|| std::env::var("PORTUNUS_ADVERTISED_ENDPOINT").ok())
-        .filter(|s| !s.is_empty())
+    resolve_advertised(
+        cli.advertised_endpoint.clone(),
+        std::env::var("PORTUNUS_ADVERTISED_ENDPOINT").ok(),
+    )
+}
+
+/// Pure resolution for the operator HTTP bind address: an explicit
+/// `--operator-http-listen` flag wins; otherwise parse
+/// `PORTUNUS_OPERATOR_HTTP_LISTEN`. Empty/whitespace env → `None` (caller keeps
+/// its default). A malformed env value is a hard error so a Railway deploy fails
+/// loudly instead of silently binding loopback and 502-ing.
+fn resolve_operator_http_listen(
+    flag: Option<SocketAddr>,
+    env_value: Option<String>,
+) -> Result<Option<SocketAddr>, String> {
+    if let Some(addr) = flag {
+        return Ok(Some(addr));
+    }
+    match env_value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => s
+            .parse::<SocketAddr>()
+            .map(Some)
+            .map_err(|e| format!("invalid PORTUNUS_OPERATOR_HTTP_LISTEN '{s}': {e}")),
+        None => Ok(None),
+    }
 }
 
 fn run(cli: Cli) -> Result<(), u8> {
@@ -448,6 +488,14 @@ fn run(cli: Cli) -> Result<(), u8> {
         Cmd::Serve {
             operator_http_listen,
         } => {
+            let operator_http_listen = resolve_operator_http_listen(
+                operator_http_listen,
+                std::env::var("PORTUNUS_OPERATOR_HTTP_LISTEN").ok(),
+            )
+            .map_err(|msg| {
+                eprintln!("error: {msg}");
+                2u8
+            })?;
             let opts = serve::ServeOptions {
                 data_dir: data_dir.clone(),
                 advertised_endpoint: seed.clone(),
@@ -893,5 +941,51 @@ mod tests {
             }
             other => panic!("expected serve command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_advertised_rejects_hostless_values() {
+        // Flag wins when present.
+        assert_eq!(
+            resolve_advertised(Some("flag.host:7443".into()), Some("env.host:7443".into())),
+            Some("flag.host:7443".into())
+        );
+        // Env used when no flag.
+        assert_eq!(
+            resolve_advertised(None, Some("d.example.com:7443".into())),
+            Some("d.example.com:7443".into())
+        );
+        // The Railway "proxy not yet assigned" cases must be dropped.
+        assert_eq!(resolve_advertised(None, Some(":".into())), None);
+        assert_eq!(resolve_advertised(None, Some(":7443".into())), None);
+        assert_eq!(resolve_advertised(None, Some("   ".into())), None);
+        assert_eq!(resolve_advertised(None, Some(String::new())), None);
+        assert_eq!(resolve_advertised(None, None), None);
+        // A bare host (no port) is still valid.
+        assert_eq!(
+            resolve_advertised(None, Some("bare.host".into())),
+            Some("bare.host".into())
+        );
+    }
+
+    #[test]
+    fn resolve_operator_http_listen_prefers_flag_then_env() {
+        let flag: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let env: SocketAddr = "0.0.0.0:7080".parse().unwrap();
+        // Flag wins.
+        assert_eq!(
+            resolve_operator_http_listen(Some(flag), Some("0.0.0.0:7080".into())),
+            Ok(Some(flag))
+        );
+        // Env parsed when no flag.
+        assert_eq!(
+            resolve_operator_http_listen(None, Some("0.0.0.0:7080".into())),
+            Ok(Some(env))
+        );
+        // Empty / whitespace env → None (fall back to ServeOptions default).
+        assert_eq!(resolve_operator_http_listen(None, Some("   ".into())), Ok(None));
+        assert_eq!(resolve_operator_http_listen(None, None), Ok(None));
+        // Malformed env is a hard error (don't silently bind loopback on Railway).
+        assert!(resolve_operator_http_listen(None, Some("not-an-addr".into())).is_err());
     }
 }
