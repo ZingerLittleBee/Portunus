@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-06-02
+
+### Added
+- **Railway one-click deploy template** for `portunus-server`. Deploys the
+  prebuilt multi-arch GHCR image directly (no build on Railway): the Web UI runs
+  on Railway's HTTP domain and the gRPC control plane on a TCP Proxy pointed at
+  internal port `7443`. Configured entirely through environment variables, with
+  Image Auto Updates tracking `:latest`. See `deploy/railway/README.md` and the
+  Railway deployment guide.
+- `portunus-server serve` reads the operator HTTP bind address from
+  `PORTUNUS_OPERATOR_HTTP_LISTEN` when `--operator-http-listen` is absent, so the
+  loopback-pinned default can be overridden in shell-less container images
+  (a malformed value is a hard error rather than a silent loopback bind).
+
+### Changed
+- `PORTUNUS_ADVERTISED_ENDPOINT` now ignores host-less values (`:` / `:7443`)
+  produced before a TCP proxy is assigned, so client bundles and the gRPC cert
+  SAN never bake a broken endpoint; the real endpoint is picked up on the next
+  start.
+- Rewrote the Railway deployment docs (`deployment/railway`, en + zh) for the
+  image-based template flow.
+
+### Removed
+- Source-build Railway assets (`deploy/railway/Dockerfile`,
+  `deploy/railway/start-server.sh`, `railway.json`); the template deploys the
+  published GHCR image instead of compiling on Railway.
+
 ## [1.8.0] — 2026-05-31
 
 ### Changed
