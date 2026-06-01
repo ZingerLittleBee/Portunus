@@ -6,6 +6,9 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
+[![Deploy on Railway](https://railway.com/button.svg)](RAILWAY_TEMPLATE_URL)
+<!-- TODO(railway-template): replace RAILWAY_TEMPLATE_URL after the template is published (Phase 2) -->
+
 **English** | [简体中文](README.zh-CN.md)
 
 > **Fast TCP/UDP port forwarding in Rust.** One static binary, no runtime dependencies. Run it standalone from a single TOML file, or as a control plane that pushes rules to a fleet of edge nodes.
@@ -105,6 +108,15 @@ cargo build --release -p portunus-server -p portunus-client -p portunus-standalo
 ```
 
 Prebuilt binaries for Linux and macOS (x86_64 + aarch64) are on the [releases page](https://github.com/ZingerLittleBee/Portunus/releases).
+
+**Control plane on Railway** — one-click deploy of `portunus-server` (Web UI + gRPC control plane) from the prebuilt GHCR image, no build on Railway:
+
+1. Click **Deploy on Railway** above and create the service.
+2. Open the service **Deploy Logs** and copy `Portunus onboarding setup token: <token>`.
+3. Visit the generated HTTPS domain → onboarding page → paste the token, set a superadmin username + password.
+4. `provision-client` a bundle and run `portunus-client --bundle <file>` on any public host; it connects through the Railway TCP proxy.
+
+See the [Railway deployment guide](https://portunus.bybee.dev/en/docs/deployment/railway) and [`deploy/railway/README.md`](deploy/railway/README.md) for details.
 
 More configuration — CLI flags, `server.toml` / `standalone.toml`, systemd hardening, advertised endpoints → [installation guide](https://portunus.bybee.dev/en/docs/getting-started/installation) and the [configuration reference](https://portunus.bybee.dev/en/docs/configuration/server).
 

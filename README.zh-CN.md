@@ -6,6 +6,9 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
+[![Deploy on Railway](https://railway.com/button.svg)](RAILWAY_TEMPLATE_URL)
+<!-- TODO(railway-template): replace RAILWAY_TEMPLATE_URL after the template is published (Phase 2) -->
+
 [English](README.md) | **简体中文**
 
 > **用 Rust 写的高性能 TCP/UDP 端口转发。** 单个静态二进制，不依赖任何运行时。既可以一份 TOML 文件单机跑，也可以做控制面，把规则下发到一批边缘节点。
@@ -105,6 +108,15 @@ cargo build --release -p portunus-server -p portunus-client -p portunus-standalo
 ```
 
 Linux 与 macOS（x86_64 + aarch64）的预编译二进制见 [releases 页面](https://github.com/ZingerLittleBee/Portunus/releases)。
+
+**在 Railway 部署控制平面** —— 直接拉取 GHCR 预构建镜像一键部署 `portunus-server`（Web UI + gRPC 控制平面），不在 Railway 上构建：
+
+1. 点上方 **Deploy on Railway** 创建服务。
+2. 打开服务的 **Deploy Logs**，复制 `Portunus onboarding setup token: <token>`。
+3. 访问生成的 HTTPS 域名 → 引导页 → 粘贴 token，设置超管用户名 + 密码。
+4. `provision-client` 生成一个 bundle，在任意公网主机上运行 `portunus-client --bundle <file>`，它会经 Railway TCP proxy 连接。
+
+详见 [Railway 部署指南](https://portunus.bybee.dev/zh/docs/deployment/railway) 与 [`deploy/railway/README.md`](deploy/railway/README.md)。
 
 更多配置 —— 命令行标志、`server.toml` / `standalone.toml`、systemd 加固、对外端点 → 见 [安装文档](https://portunus.bybee.dev/zh/docs/getting-started/installation) 与 [配置参考](https://portunus.bybee.dev/zh/docs/configuration/server)。
 
