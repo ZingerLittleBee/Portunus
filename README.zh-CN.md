@@ -6,8 +6,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
-[![Deploy on Railway](https://railway.com/button.svg)](RAILWAY_TEMPLATE_URL)
-<!-- TODO(railway-template): replace RAILWAY_TEMPLATE_URL after the template is published (Phase 2) -->
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/portunus-server)
 
 [English](README.md) | **简体中文**
 
