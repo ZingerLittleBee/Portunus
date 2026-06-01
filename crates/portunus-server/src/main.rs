@@ -471,7 +471,11 @@ fn resolve_operator_http_listen(
     if let Some(addr) = flag {
         return Ok(Some(addr));
     }
-    match env_value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    match env_value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(s) => s
             .parse::<SocketAddr>()
             .map(Some)
@@ -983,7 +987,10 @@ mod tests {
             Ok(Some(env))
         );
         // Empty / whitespace env → None (fall back to ServeOptions default).
-        assert_eq!(resolve_operator_http_listen(None, Some("   ".into())), Ok(None));
+        assert_eq!(
+            resolve_operator_http_listen(None, Some("   ".into())),
+            Ok(None)
+        );
         assert_eq!(resolve_operator_http_listen(None, None), Ok(None));
         // Malformed env is a hard error (don't silently bind loopback on Railway).
         assert!(resolve_operator_http_listen(None, Some("not-an-addr".into())).is_err());
