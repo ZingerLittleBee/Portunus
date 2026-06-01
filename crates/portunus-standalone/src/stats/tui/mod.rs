@@ -165,67 +165,74 @@ async fn run_loop(
             state.last_probe_at = Some(Instant::now());
         }
 
-        // Non-blocking key event poll (10 ms budget).
-        if event::poll(Duration::from_millis(10))?
-            && let Event::Key(k) = event::read()?
-        {
-            if k.kind != KeyEventKind::Press {
-                continue;
+        // Non-blocking event poll (10 ms budget).
+        if event::poll(Duration::from_millis(10))? {
+            let ev = event::read()?;
+            // A terminal resize must force a repaint: with change-driven
+            // rendering it would otherwise stay stale (mis-laid-out / blank)
+            // until the next snapshot/probe/key — up to refresh_ms.
+            if matches!(ev, Event::Resize(_, _)) {
+                dirty = true;
             }
-            // Any handled key press may change what's displayed.
-            dirty = true;
-            // IMPORTANT: match Ctrl-C BEFORE plain 'c' (session-reset).
-            match (k.code, k.modifiers) {
-                (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                    return Ok(());
+            if let Event::Key(k) = ev {
+                if k.kind != KeyEventKind::Press {
+                    continue;
                 }
-
-                (KeyCode::Char('?'), _) => state.show_help = !state.show_help,
-
-                (KeyCode::Esc, _) => {
-                    // Esc closes the help overlay; otherwise no-op (never quits).
-                    state.show_help = false;
-                }
-
-                (KeyCode::Char('p'), _) => state.paused = !state.paused,
-
-                (KeyCode::Char('s'), _) => state.sort = state.sort.cycle(),
-
-                (KeyCode::Char('r'), _) => state.sort_desc = !state.sort_desc,
-
-                // Session reset — capture current cumulative values as new zero baseline.
-                (KeyCode::Char('c'), _) => {
-                    if let Some(snap) = client.ring.back() {
-                        // Clone is needed because `reset_baseline` takes &Snapshot
-                        // and we hold &client.ring simultaneously.
-                        let snap = snap.clone();
-                        state.reset_baseline(&snap);
+                // Any handled key press may change what's displayed.
+                dirty = true;
+                // IMPORTANT: match Ctrl-C BEFORE plain 'c' (session-reset).
+                match (k.code, k.modifiers) {
+                    (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        return Ok(());
                     }
-                }
 
-                (KeyCode::Up | KeyCode::Char('k'), _) => {
-                    state.selected = state.selected.saturating_sub(1);
-                }
-                (KeyCode::Down | KeyCode::Char('j'), _) => {
-                    let n = client.hello.rules.len().saturating_sub(1);
-                    if state.selected < n {
-                        state.selected += 1;
+                    (KeyCode::Char('?'), _) => state.show_help = !state.show_help,
+
+                    (KeyCode::Esc, _) => {
+                        // Esc closes the help overlay; otherwise no-op (never quits).
+                        state.show_help = false;
                     }
-                }
 
-                // Tab / right / l → next tab.
-                (KeyCode::Tab | KeyCode::Right | KeyCode::Char('l'), _) => {
-                    state.tab = state.tab.next();
-                }
-                // Shift-Tab / left / h → previous tab.
-                (KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h'), _) => {
-                    state.tab = state.tab.prev();
-                }
+                    (KeyCode::Char('p'), _) => state.paused = !state.paused,
 
-                // Enter → jump to Detail tab.
-                (KeyCode::Enter, _) => state.tab = Tab::Detail,
+                    (KeyCode::Char('s'), _) => state.sort = state.sort.cycle(),
 
-                _ => {}
+                    (KeyCode::Char('r'), _) => state.sort_desc = !state.sort_desc,
+
+                    // Session reset — capture current cumulative values as new zero baseline.
+                    (KeyCode::Char('c'), _) => {
+                        if let Some(snap) = client.ring.back() {
+                            // Clone is needed because `reset_baseline` takes &Snapshot
+                            // and we hold &client.ring simultaneously.
+                            let snap = snap.clone();
+                            state.reset_baseline(&snap);
+                        }
+                    }
+
+                    (KeyCode::Up | KeyCode::Char('k'), _) => {
+                        state.selected = state.selected.saturating_sub(1);
+                    }
+                    (KeyCode::Down | KeyCode::Char('j'), _) => {
+                        let n = client.hello.rules.len().saturating_sub(1);
+                        if state.selected < n {
+                            state.selected += 1;
+                        }
+                    }
+
+                    // Tab / right / l → next tab.
+                    (KeyCode::Tab | KeyCode::Right | KeyCode::Char('l'), _) => {
+                        state.tab = state.tab.next();
+                    }
+                    // Shift-Tab / left / h → previous tab.
+                    (KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h'), _) => {
+                        state.tab = state.tab.prev();
+                    }
+
+                    // Enter → jump to Detail tab.
+                    (KeyCode::Enter, _) => state.tab = Tab::Detail,
+
+                    _ => {}
+                }
             }
         }
 
