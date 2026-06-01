@@ -1,4 +1,4 @@
-//! TUI application state. Holds selection, sort, filter, pause,
+//! TUI application state. Holds selection, sort, pause,
 //! and an optional client-side baseline for "session reset".
 
 use std::collections::HashMap;
@@ -76,7 +76,6 @@ pub struct AppState {
     pub selected: usize,
     pub sort: SortKey,
     pub sort_desc: bool,
-    pub filter: String,
     pub paused: bool,
     pub show_help: bool,
     /// Captured cumulative values for client-side "session reset".
@@ -108,7 +107,6 @@ impl AppState {
             selected: 0,
             sort: SortKey::RateIn,
             sort_desc: true,
-            filter: String::new(),
             paused: false,
             show_help: false,
             baseline: HashMap::new(),

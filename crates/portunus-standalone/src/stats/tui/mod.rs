@@ -17,17 +17,57 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use tokio::io::AsyncBufReadExt;
 
 use crate::stats::Snapshot;
 use crate::stats::client::Client;
 use probe::{ProbeSample, active_target};
 use state::{AppState, Tab};
 
+/// RAII guard for terminal state. Entering raw mode + the alternate screen
+/// is undone on `Drop`, so an early `?` return or a panic that unwinds
+/// through `run_inner` can never leave the user's terminal corrupted.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        Ok(Self)
+    }
+
+    /// Best-effort restore. Shared by `Drop` and the panic hook so both the
+    /// unwind path (`panic = "unwind"`) and the abort path
+    /// (`panic = "abort"`, the workspace release profile) leave a clean
+    /// terminal.
+    fn restore() {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        Self::restore();
+    }
+}
+
+/// Install a panic hook that restores the terminal before delegating to the
+/// previous hook. Necessary because the release profile sets
+/// `panic = "abort"`, which skips `Drop` — without this a panic would abort
+/// with raw mode still enabled.
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        TerminalGuard::restore();
+        prev(info);
+    }));
+}
+
 /// Entry point for the TUI; manages raw-mode setup/teardown around
 /// `run_inner`. Always disables raw mode and leaves the alternate
-/// screen, even when `run_inner` returns an error.
+/// screen, even when `run_inner` returns an error or panics.
 pub async fn run(socket: &Path) -> ExitCode {
+    install_panic_hook();
     match run_inner(socket).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -38,22 +78,17 @@ pub async fn run(socket: &Path) -> ExitCode {
 }
 
 async fn run_inner(socket: &Path) -> io::Result<()> {
+    // Connect before entering raw mode so a connection error prints normally.
     let (mut client, mut reader) = Client::connect(socket).await?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    // From here the guard restores the terminal on any exit path (Ok, Err,
+    // or panic unwind); the panic hook covers the abort path.
+    let _guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = AppState::new();
-    let r = run_loop(&mut client, &mut reader, &mut terminal, &mut state).await;
-
-    // Always restore the terminal, even if the loop returned an error.
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    r
+    run_loop(&mut client, &mut reader, &mut terminal, &mut state).await
 }
 
 async fn run_loop(
@@ -63,14 +98,22 @@ async fn run_loop(
     state: &mut AppState,
 ) -> io::Result<()> {
     let mut line_buf = String::new();
+    // Render only when something visible changed (a new snapshot, a probe
+    // result, or a key press). Idle/paused frames are skipped so we don't
+    // rebuild the whole widget tree every 50 ms for no reason. Start dirty
+    // so the initial frame paints.
+    let mut dirty = true;
     // Results from spawned probe tasks. Bounded; a full channel just drops
     // a probe result, which self-heals on the next tick.
     let (probe_tx, mut probe_rx) = tokio::sync::mpsc::channel::<(String, ProbeSample)>(8);
     loop {
         // Try to receive a snapshot with a short timeout so we can poll key events.
         line_buf.clear();
-        let read =
-            tokio::time::timeout(Duration::from_millis(50), reader.read_line(&mut line_buf)).await;
+        let read = tokio::time::timeout(
+            Duration::from_millis(50),
+            crate::stats::client::read_line_bounded(reader, &mut line_buf),
+        )
+        .await;
         match read {
             Ok(Ok(0)) => {
                 // EOF — daemon closed the socket.
@@ -81,6 +124,7 @@ async fn run_loop(
                     && !state.paused
                 {
                     client.push(snap);
+                    dirty = true;
                 }
             }
             Ok(Err(e)) => return Err(e),
@@ -90,6 +134,7 @@ async fn run_loop(
         // Drain any probe results that arrived since the last iteration.
         while let Ok((id, sample)) = probe_rx.try_recv() {
             state.probes.insert(id, sample);
+            dirty = true;
         }
 
         // Probe every rule's active TCP target so both the Overview list and
@@ -111,7 +156,9 @@ async fn run_loop(
                     let port = target.port;
                     tokio::spawn(async move {
                         let sample = probe::probe_tcp(&host, port).await;
-                        let _ = tx.send((id, sample)).await;
+                        // Non-blocking: a full channel drops this sample,
+                        // which self-heals on the next probe interval.
+                        let _ = tx.try_send((id, sample));
                     });
                 }
             }
@@ -125,6 +172,8 @@ async fn run_loop(
             if k.kind != KeyEventKind::Press {
                 continue;
             }
+            // Any handled key press may change what's displayed.
+            dirty = true;
             // IMPORTANT: match Ctrl-C BEFORE plain 'c' (session-reset).
             match (k.code, k.modifiers) {
                 (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -134,12 +183,8 @@ async fn run_loop(
                 (KeyCode::Char('?'), _) => state.show_help = !state.show_help,
 
                 (KeyCode::Esc, _) => {
-                    if state.show_help {
-                        state.show_help = false;
-                    } else if !state.filter.is_empty() {
-                        state.filter.clear();
-                    }
-                    // In normal mode with no filter: no-op (no quit).
+                    // Esc closes the help overlay; otherwise no-op (never quits).
+                    state.show_help = false;
                 }
 
                 (KeyCode::Char('p'), _) => state.paused = !state.paused,
@@ -184,6 +229,10 @@ async fn run_loop(
             }
         }
 
-        terminal.draw(|f| render::render(f, f.area(), client, state))?;
+        // Repaint only when state changed; skip idle/paused frames.
+        if dirty {
+            terminal.draw(|f| render::render(f, f.area(), client, state))?;
+            dirty = false;
+        }
     }
 }
