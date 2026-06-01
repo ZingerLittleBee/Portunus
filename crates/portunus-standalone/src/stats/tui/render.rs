@@ -553,7 +553,6 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  Enter          jump to Detail"),
         Line::from("  s              cycle sort"),
         Line::from("  r              reverse sort"),
-        Line::from("  /              filter (Esc clears)"),
         Line::from("  p              pause"),
         Line::from("  c              session reset"),
         Line::from("  q / Ctrl-C     quit"),

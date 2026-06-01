@@ -51,6 +51,18 @@ pub enum ConfigError {
     #[error("port range string invalid in rule {rule:?}: {msg}")]
     PortRangeParse { rule: String, msg: String },
 
+    #[error("rule {0:?}: `targets` list must contain at least one entry")]
+    EmptyTargets(String),
+
+    #[error(
+        "rule {0:?}: multi-target `targets` cannot be combined with a listen-port range; \
+         use a single `listen_port`"
+    )]
+    RangeMultiTargetUnsupported(String),
+
+    #[error("rule name collision: {a:?} and {b:?} derive the same RuleId; rename one")]
+    RuleIdCollision { a: String, b: String },
+
     #[error("validation error: {msg}")]
     Validation { msg: String },
 }
@@ -374,28 +386,67 @@ impl Config {
                 _ => {}
             }
 
-            // Range-size parity when `target` is a string range.
-            if let (Some(listen_ports_str), Some(target_str)) =
-                (rule.listen_ports.as_deref(), rule.target.as_deref())
-            {
-                let listen_range = parse_port_range(listen_ports_str).map_err(|msg| {
-                    ConfigError::PortRangeParse {
+            // Listen-port count for this rule (1 for a single port, N for a range).
+            let listen_len = if rule.listen_port.is_some() {
+                1
+            } else {
+                let s = rule
+                    .listen_ports
+                    .as_deref()
+                    .expect("listen XOR checked above");
+                parse_port_range(s)
+                    .map_err(|msg| ConfigError::PortRangeParse {
                         rule: rule.name.clone(),
                         msg,
-                    }
-                })?;
-                let target_range = parse_target_range_part(target_str).map_err(|msg| {
-                    ConfigError::TargetParse {
+                    })?
+                    .len()
+            };
+
+            // Validate listen/target arity for EVERY shape, not just
+            // `listen_ports` + string `target`. Two shapes previously slipped
+            // through validation and produced silent mis-routing or dropped
+            // packets downstream (and `into_iter_rules` did not catch them
+            // either).
+            if let Some(target_str) = rule.target.as_deref() {
+                // String `target`: count its `host:port` / `host:lo-hi` ports.
+                let target_len = parse_target_range_part(target_str)
+                    .map_err(|msg| ConfigError::TargetParse {
                         rule: rule.name.clone(),
                         msg,
-                    }
-                })?;
-                if listen_range.len() != target_range.len() {
+                    })?
+                    .len();
+                if listen_len != target_len {
                     return Err(ConfigError::RangeSizeMismatch {
-                        listen_len: listen_range.len(),
-                        target_len: target_range.len(),
+                        listen_len,
+                        target_len,
                     });
                 }
+            } else if let Some(targets) = rule.targets.as_deref() {
+                // Multi-target `targets` list: must be non-empty, and each
+                // entry is a single port. A multi-target rule is failover
+                // across targets for one listen port; combining it with a
+                // listen-port range has no per-port mapping, so reject it.
+                if targets.is_empty() {
+                    return Err(ConfigError::EmptyTargets(rule.name.clone()));
+                }
+                if listen_len != 1 {
+                    return Err(ConfigError::RangeMultiTargetUnsupported(rule.name.clone()));
+                }
+            }
+        }
+
+        // Reject rule-name collisions on the derived RuleId. Names are unique
+        // (checked above) but the 64-bit BLAKE3 prefix could in principle
+        // collapse two distinct names into one id, which would silently fold
+        // their stats/registry entries (last-writer-wins).
+        let mut seen_ids = std::collections::HashMap::new();
+        for rule in &self.rules {
+            let id = derive_rule_id(&rule.name);
+            if let Some(prev) = seen_ids.insert(id, rule.name.clone()) {
+                return Err(ConfigError::RuleIdCollision {
+                    a: prev,
+                    b: rule.name.clone(),
+                });
             }
         }
 
@@ -473,7 +524,7 @@ impl Config {
                 // Multi-target list form.
                 let raw_targets = raw.targets.expect("validated upstream");
                 if raw_targets.is_empty() {
-                    return Err(ConfigError::TargetExclusivity);
+                    return Err(ConfigError::EmptyTargets(raw.name.clone()));
                 }
 
                 // Use the first target for back-compat fields.
@@ -750,6 +801,92 @@ mod tests {
         .unwrap();
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::RangeSizeMismatch { .. }));
+    }
+
+    #[test]
+    fn single_listen_with_target_range_rejected() {
+        // Shape previously unvalidated: single listen_port + target range.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_port = 8000
+            target = "1.1.1.1:8000-8009"
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::RangeSizeMismatch {
+                    listen_len: 1,
+                    target_len: 10
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn listen_range_with_multi_targets_rejected() {
+        // Shape previously unvalidated: listen_ports range + multi-target list.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_ports = "8000-8009"
+            targets = [{ host = "1.1.1.1", port = 9000, priority = 0 }]
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ConfigError::RangeMultiTargetUnsupported(ref n) if n == "a"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn single_listen_with_multi_targets_accepted() {
+        // Valid HA shape: single listen_port + multi-target failover.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "ha"
+            protocol = "tcp"
+            listen_port = 443
+            targets = [
+                { host = "1.1.1.1", port = 443, priority = 0 },
+                { host = "2.2.2.2", port = 443, priority = 1 },
+            ]
+        "#,
+        )
+        .unwrap();
+        cfg.validate().expect("single-port multi-target is valid");
+    }
+
+    #[test]
+    fn empty_targets_rejected_by_validate() {
+        // Previously passed validate() but failed at startup (into_iter_rules),
+        // so `--check` wrongly reported ok.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_port = 1
+            targets = []
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ConfigError::EmptyTargets(ref n) if n == "a"),
+            "got {err:?}"
+        );
     }
 
     #[test]

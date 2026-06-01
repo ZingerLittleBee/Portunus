@@ -6,14 +6,14 @@ icon: Download
 
 `Portunus` 提供两种部署模式，安装前先选定其一：
 
+- **Standalone（无控制面）。** [`portunus-standalone`](#安装-standalone) 是一个
+  单独的二进制，所有规则都从本地 TOML 文件读取——没有 Server、没有 enrollment、
+  没有 gRPC。它复用与 Client 完全相同的数据面代码，并自带一个终端实时流量统计界面
+  （`portunus-standalone stats`）。**大多数用户用这个。**
 - **Server + Client（控制面）。** [`portunus-server`](#安装-server) 运行在控制面
   主机上——Operator 连接它，由它保存状态，并把规则推送给已连接的 Client；
   [`portunus-client`](#安装-client) 运行在每台边缘主机上，连回 Server、绑定转发
   端口并搬运流量。
-- **Standalone（无控制面）。** [`portunus-standalone`](#安装-standalone) 是一个
-  单独的二进制，所有规则都从本地 TOML 文件读取——没有 Server、没有 enrollment、
-  没有 gRPC。它复用与 Client 完全相同的数据面代码，并自带一个终端实时流量统计界面
-  （`portunus-standalone stats`）。
 
 ### 该安装哪一种？
 
@@ -42,13 +42,94 @@ Server + Client 部署通常是一台 Server 主机加一台或多台 Client 主
 - 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
 - **Linux 或 macOS**。Linux 是生产支持目标。
 
-## 快速安装 Docker
+<Accordions>
+<Accordion title="还没装 Docker？在全新 Linux 主机上安装">
 
 在一台全新的 Linux 主机上，可以直接使用 Docker 官方的 convenience script：
 
 ```sh
 sudo curl -fsSL https://get.docker.com | sh
 ```
+
+</Accordion>
+</Accordions>
+
+## 安装 Standalone
+
+`portunus-standalone` 的所有规则都从一个 TOML 文件读取，无需 Server、无需
+enrollment、无需 gRPC。两条安装路径——容器主机用 **Docker**，普通 Linux
+（systemd / OpenRC）用**一键安装脚本**。
+
+### Docker
+
+安装器不会替你写配置。Docker 路径的配置是当前目录下的 `./portunus.toml`,
+由生成的 Compose 文件只读挂载——所以请**先创建配置**,再安装:
+
+```sh
+# 1. 写入你的转发规则（Compose 会只读挂载 ./portunus.toml）
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. 容器以 UID 65532 运行，必须能读到它
+chmod 0644 portunus.toml
+
+# 3. 通过 Docker Compose 安装并启动
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
+```
+
+容器以 UID 65532（`nonroot`）运行，因此宿主配置文件必须能被该 UID 读取——
+`chmod 0644 portunus.toml` 是最简单的修复方式。安装器会写出 `compose.yaml`
+并启动服务;后续 `upgrade` / `status` / `uninstall` 会复用它。想用裸
+`docker run` 或自己写 Compose 文件？参见
+[Standalone 转发器](/zh/docs/configuration/standalone#docker)。
+
+### 一键安装脚本（二进制 + 服务）
+
+standalone 需要你自己编写配置——安装器**不会**替你写,且配置缺失时二进制会
+直接退出。所以请**先创建配置**,再安装:
+
+```sh
+# 1. 写入你的转发规则
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. 安装并启动（自动探测 systemd 或 OpenRC,读取上面的配置）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
+```
+
+脚本会安装二进制、创建 `portunus` 系统用户、安装一个加固过的服务 unit
+（systemd,或 Alpine 上的 OpenRC）,并——因为配置已存在——启用并启动服务。
+若你在创建配置**之前**就安装,安装器只放置 unit 而不启动,并打印如何创建
+配置、如何启动;加 `--no-service` 可始终跳过启动。用
+`--config /path/to/your.toml` 可指向其它配置文件。
+
+不启动服务即可校验任意配置（成功时打印 `ok` 并 exit 0）：
+
+```sh
+portunus-standalone --check --config /etc/portunus/standalone.toml
+```
+
+如果从源码编译：
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-standalone
+sudo install -m 0755 target/release/portunus-standalone /usr/local/bin/
+```
+
+→ 完整的配置 schema、规则示例、CLI 标志、信号、实时 stats TUI 与运维注意事项，
+参见 [Standalone 转发器](/zh/docs/configuration/standalone)。
 
 ## 安装 Server
 
@@ -266,81 +347,6 @@ sudo install -m 0755 target/release/portunus-client /usr/local/bin/
 ```sh
 portunus-client --version
 ```
-
-## 安装 Standalone
-
-`portunus-standalone` 的所有规则都从一个 TOML 文件读取，无需 Server、无需
-enrollment、无需 gRPC。两条安装路径——容器主机用 **Docker**，普通 Linux
-（systemd / OpenRC）用**一键安装脚本**。
-
-### Docker
-
-安装器不会替你写配置。Docker 路径的配置是当前目录下的 `./portunus.toml`,
-由生成的 Compose 文件只读挂载——所以请**先创建配置**,再安装:
-
-```sh
-# 1. 写入你的转发规则（Compose 会只读挂载 ./portunus.toml）
-cat > portunus.toml <<'EOF'
-[[rule]]
-name        = "ssh"
-protocol    = "tcp"
-listen_port = 2222
-target      = "10.0.0.5:22"
-EOF
-chmod 0644 portunus.toml   # 容器以 UID 65532 运行,必须能读到它
-
-# 2. 通过 Docker Compose 安装并启动
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone --deploy docker
-```
-
-容器以 UID 65532（`nonroot`）运行，因此宿主配置文件必须能被该 UID 读取——
-`chmod 0644 portunus.toml` 是最简单的修复方式。安装器会写出 `compose.yaml`
-并启动服务;后续 `upgrade` / `status` / `uninstall` 会复用它。想用裸
-`docker run` 或自己写 Compose 文件？参见
-[Standalone 转发器](/zh/docs/configuration/standalone#docker)。
-
-### 一键安装脚本（二进制 + 服务）
-
-standalone 需要你自己编写配置——安装器**不会**替你写,且配置缺失时二进制会
-直接退出。所以请**先创建配置**,再安装:
-
-```sh
-# 1. 写入你的转发规则
-sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
-[[rule]]
-name        = "ssh"
-protocol    = "tcp"
-listen_port = 2222
-target      = "10.0.0.5:22"
-EOF
-
-# 2. 安装并启动（自动探测 systemd 或 OpenRC,读取上面的配置）
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
-```
-
-脚本会安装二进制、创建 `portunus` 系统用户、安装一个加固过的服务 unit
-（systemd,或 Alpine 上的 OpenRC）,并——因为配置已存在——启用并启动服务。
-若你在创建配置**之前**就安装,安装器只放置 unit 而不启动,并打印如何创建
-配置、如何启动;加 `--no-service` 可始终跳过启动。用
-`--config /path/to/your.toml` 可指向其它配置文件。
-
-不启动服务即可校验任意配置（成功时打印 `ok` 并 exit 0）：
-
-```sh
-portunus-standalone --check --config /etc/portunus/standalone.toml
-```
-
-如果从源码编译：
-
-```sh
-git clone https://github.com/ZingerLittleBee/Portunus.git
-cd Portunus
-cargo build --release -p portunus-standalone
-sudo install -m 0755 target/release/portunus-standalone /usr/local/bin/
-```
-
-→ 完整的配置 schema、规则示例、CLI 标志、信号、实时 stats TUI 与运维注意事项，
-参见 [Standalone 转发器](/zh/docs/configuration/standalone)。
 
 ## Release 二进制
 

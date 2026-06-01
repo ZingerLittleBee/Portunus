@@ -1,9 +1,10 @@
 //! Client-side TCP-connect latency probing for the stats TUI.
 //!
-//! Probes are issued only for the selected rule's active target while the
-//! Detail tab is visible (see `tui::run_loop`). Nothing here touches the
-//! daemon or the UDS wire protocol — the target `host:port` already arrive
-//! in `Hello`.
+//! Once per `PROBE_INTERVAL`, `tui::run_loop` probes the active target of
+//! every TCP rule (regardless of which rule is selected or which tab is
+//! visible), so both the Overview list and the Detail panel can show live
+//! RTT. Nothing here touches the daemon or the UDS wire protocol — the
+//! target `host:port` already arrive in `Hello`.
 
 use std::time::{Duration, Instant};
 

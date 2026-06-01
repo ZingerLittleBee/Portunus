@@ -6,6 +6,7 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { RootProvider } from "fumadocs-ui/provider/tanstack";
+import { useEffect } from "react";
 import SearchDialog from "@/components/search";
 import { i18nUI } from "@/lib/layout.shared";
 import appCss from "@/styles/app.css?url";
@@ -37,6 +38,14 @@ export const Route = createRootRoute({
 function RootComponent() {
   const params = useParams({ strict: false }) as { lang?: string };
   const lang = params.lang ?? "en";
+
+  // Load react-grab in development only; the effect runs client-side
+  // exclusively, so it never enters the prerender/SSR or production bundle.
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      import("react-grab");
+    }
+  }, []);
 
   return (
     <html suppressHydrationWarning lang={lang}>
