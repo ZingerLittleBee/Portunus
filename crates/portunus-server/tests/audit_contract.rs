@@ -313,11 +313,7 @@ async fn successful_read_is_not_audited_but_deny_is() {
     let arr = v.as_array().expect("array");
     // Exactly one row: the deny. The five successful GET /v1/users reads
     // and the audit GET itself are all reads → not audited.
-    assert_eq!(
-        arr.len(),
-        1,
-        "only the deny should be audited, got {arr:?}"
-    );
+    assert_eq!(arr.len(), 1, "only the deny should be audited, got {arr:?}");
     assert_eq!(arr[0]["outcome"], "deny");
     assert!(
         arr.iter().all(|r| r["outcome"] == "deny"),
