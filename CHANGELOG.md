@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-06-02
+
+### Added
+- Web UI opens the **rule push**, **create-user**, and **client provisioning**
+  forms in dialogs instead of navigating to dedicated pages.
+- Audit log is split into **Live** (polling) and **History** (frozen) views,
+  backed by an hourly retention reaper with age and row-count ceilings.
+- Branding pass: favicon, a `Waypoints` sidebar brand icon, and the document /
+  app title set to `Portunus`.
+- `install.sh client --deploy docker` now emits a client-shaped Docker Compose
+  file (client image, host networking, read-only bundle mount).
+
+### Changed
+- The audit log records only successful mutations and denials; successful reads
+  (such as the dashboard's own polling) are no longer audited, cutting log
+  noise.
+- Reworked the enrollment install guide for in-dialog use: wrapping command
+  blocks with no horizontal overflow, and Binary vs Docker tabs both driven by
+  `install.sh` parameters.
+- `--systemd` is documented and treated as a deprecated no-op; the hardened
+  service unit is installed by default.
+
+### Fixed
+- `install.sh client --deploy docker` previously reused the server Compose
+  template, producing a container that crash-looped with
+  `unexpected argument '--data-dir'`.
+- The operator grants endpoint accepts reserved user IDs (e.g. `_superadmin`),
+  so viewing that user no longer fails with `rbac: reserved_user_id`.
+- The standalone stats TUI drains all buffered input per loop iteration,
+  fixing laggy key handling under bursty input.
+
 ## [1.9.0] — 2026-06-02
 
 ### Added
