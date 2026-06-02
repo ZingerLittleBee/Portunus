@@ -14,11 +14,18 @@
 use std::str::FromStr;
 
 use portunus_auth::UserId;
-use portunus_core::{ClientName, RuleId};
+use portunus_core::{ClientId, ClientName, RuleId};
 use portunus_server::metrics::{Metrics, RuleStatsCache};
 
 const CLIENT: &str = "edge-metrics-test";
 const OWNER: &str = "u-7";
+
+// 015-client-stable-id (T019): the per-listener prev-state map is keyed on
+// the stable id, not the display name. A fixed id keeps the monotonic-delta
+// state coherent across ticks within a test.
+fn cid() -> ClientId {
+    ClientId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ULID")
+}
 
 fn render_text(metrics: &Metrics) -> String {
     let body = metrics.render();
@@ -156,7 +163,7 @@ async fn listener_counters_render_with_correct_labels() {
     let client = ClientName::from_str(CLIENT).expect("client");
 
     cache
-        .observe_sni_listener(&client, 443, 4, 3, &[], 0, 0, &metrics)
+        .observe_sni_listener(cid(), &client, 443, 4, 3, &[], 0, 0, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -177,14 +184,14 @@ async fn listener_counters_keep_separate_state_per_port() {
     let client = ClientName::from_str(CLIENT).expect("client");
 
     cache
-        .observe_sni_listener(&client, 443, 10, 0, &[], 0, 0, &metrics)
+        .observe_sni_listener(cid(), &client, 443, 10, 0, &[], 0, 0, &metrics)
         .await;
     cache
-        .observe_sni_listener(&client, 8443, 7, 0, &[], 0, 0, &metrics)
+        .observe_sni_listener(cid(), &client, 8443, 7, 0, &[], 0, 0, &metrics)
         .await;
     // Bumps to port 443 don't leak into port 8443's prev-state.
     cache
-        .observe_sni_listener(&client, 443, 12, 0, &[], 0, 0, &metrics)
+        .observe_sni_listener(cid(), &client, 443, 12, 0, &[], 0, 0, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -208,7 +215,7 @@ async fn quiet_listener_does_not_emit_collector_lines() {
     let client = ClientName::from_str(CLIENT).expect("client");
 
     cache
-        .observe_sni_listener(&client, 443, 0, 0, &[], 0, 0, &metrics)
+        .observe_sni_listener(cid(), &client, 443, 0, 0, &[], 0, 0, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -244,7 +251,7 @@ async fn metrics_help_lines_describe_sni_collectors() {
         .observe_sni_per_rule(&client, rule_id, OWNER, 1, 1, 1, &metrics)
         .await;
     cache
-        .observe_sni_listener(&client, 443, 1, 1, &[1, 1, 1], 3_000, 1, &metrics)
+        .observe_sni_listener(cid(), &client, 443, 1, 1, &[1, 1, 1], 3_000, 1, &metrics)
         .await;
 
     let body = render_text(&metrics);
@@ -270,7 +277,7 @@ async fn listener_peek_histogram_renders_bucket_sum_and_count() {
     let buckets = vec![1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4];
 
     cache
-        .observe_sni_listener(&client, 443, 0, 0, &buckets, 3_750, 4, &metrics)
+        .observe_sni_listener(cid(), &client, 443, 0, 0, &buckets, 3_750, 4, &metrics)
         .await;
 
     let body = render_text(&metrics);

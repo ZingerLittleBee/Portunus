@@ -523,6 +523,7 @@ async fn handle_client_message(
                 state
                     .stats_cache
                     .observe_rate_limit_per_owner(
+                        identity.client_id,
                         &identity.client_name,
                         owner_stats.owner_id.as_str(),
                         reject_totals,
@@ -544,6 +545,7 @@ async fn handle_client_message(
                 state
                     .stats_cache
                     .observe_sni_listener(
+                        identity.client_id,
                         &identity.client_name,
                         port,
                         listener.sni_route_miss_total,
