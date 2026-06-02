@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
 
 import { useCreateClientEnrollment } from "@/api/clients";
 import { ApiError } from "@/api/client";
+import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { FieldGroup } from "@/components/ui/field";
+import { FormTextField } from "@/components/form/fields";
 import { EnrollmentInstallGuide } from "@/components/EnrollmentInstallGuide";
 import type { ClientEnrollmentResponse } from "@/api/types";
 
@@ -17,16 +21,25 @@ interface ClientProvisionFormProps {
 export function ClientProvisionForm({ onDone }: ClientProvisionFormProps) {
   const { t } = useTranslation();
   const enrollmentMutation = useCreateClientEnrollment();
-  const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
   const [enrollment, setEnrollment] = useState<ClientEnrollmentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  const schema = z.object({
+    name: z.string().trim().min(1),
+    address: z.string().trim().min(1),
+  });
+  const form = useForm<z.infer<typeof schema>>({
+    resolver: zResolver<z.infer<typeof schema>>(schema),
+    defaultValues: { name: "", address: "" },
+  });
+
+  async function onSubmit(values: z.infer<typeof schema>) {
     setError(null);
     try {
-      const res = await enrollmentMutation.mutateAsync({ name, address });
+      const res = await enrollmentMutation.mutateAsync({
+        name: values.name,
+        address: values.address,
+      });
       setEnrollment(res);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -50,38 +63,40 @@ export function ClientProvisionForm({ onDone }: ClientProvisionFormProps) {
     );
   }
 
+  const busy = enrollmentMutation.isPending || form.formState.isSubmitting;
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="name">{t("clients.name")}</Label>
-        <Input
-          id="name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
+    <form onSubmit={form.handleSubmit(onSubmit)}>
+      <FieldGroup>
+        <FormTextField
+          control={form.control}
+          name="name"
+          label={t("clients.name")}
           placeholder="client-a"
-          required
+          disabled={busy}
         />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="address">{t("clientProvision.address")}</Label>
-        <Input
-          id="address"
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
+        <FormTextField
+          control={form.control}
+          name="address"
+          label={t("clientProvision.address")}
           placeholder="68.77.201.69 or edge.example.com"
-          required
+          description={t("clientProvision.addressHint")}
+          disabled={busy}
         />
-        <p className="text-xs text-muted-foreground">{t("clientProvision.addressHint")}</p>
-      </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex gap-2">
-        <Button type="submit" disabled={enrollmentMutation.isPending}>
-          {enrollmentMutation.isPending ? t("confirm.busy") : t("clientProvision.submit")}
-        </Button>
-        <Button type="button" variant="outline" onClick={onDone}>
-          {t("confirm.cancel")}
-        </Button>
-      </div>
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <div className="flex gap-2">
+          <Button type="submit" disabled={busy}>
+            {busy ? t("confirm.busy") : t("clientProvision.submit")}
+          </Button>
+          <Button type="button" variant="outline" onClick={onDone}>
+            {t("confirm.cancel")}
+          </Button>
+        </div>
+      </FieldGroup>
     </form>
   );
 }

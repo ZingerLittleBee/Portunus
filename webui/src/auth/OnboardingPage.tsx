@@ -2,48 +2,60 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+
+import { zResolver } from "@/lib/zod-resolver";
 
 import { ApiError } from "@/api/client";
 import { login, onboard } from "@/api/auth";
 import { fetchIdentity, ME_QUERY_KEY } from "@/auth/AuthGate";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { FieldGroup } from "@/components/ui/field";
+import { FormTextField } from "@/components/form/fields";
 
 export function OnboardingPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [setupToken, setSetupToken] = useState("");
-  const [userId, setUserId] = useState("admin");
-  const [displayName, setDisplayName] = useState("Administrator");
-  const [password, setPassword] = useState("");
-  const [passwordConfirm, setPasswordConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  const schema = z
+    .object({
+      setupToken: z.string().trim().min(1, t("onboarding.required")),
+      userId: z.string().trim().min(1, t("onboarding.required")),
+      displayName: z.string().trim().min(1, t("onboarding.required")),
+      password: z.string().min(1, t("onboarding.required")),
+      passwordConfirm: z.string().min(1, t("onboarding.required")),
+    })
+    .refine((d) => d.password === d.passwordConfirm, {
+      message: t("onboarding.passwordMismatch"),
+      path: ["passwordConfirm"],
+    });
+  const form = useForm<z.infer<typeof schema>>({
+    resolver: zResolver<z.infer<typeof schema>>(schema),
+    defaultValues: {
+      setupToken: "",
+      userId: "admin",
+      displayName: "Administrator",
+      password: "",
+      passwordConfirm: "",
+    },
+  });
+
+  async function onSubmit(values: z.infer<typeof schema>) {
     setError(null);
-    if (!setupToken.trim() || !userId.trim() || !displayName.trim() || !password) {
-      setError(t("onboarding.required"));
-      return;
-    }
-    if (password !== passwordConfirm) {
-      setError(t("onboarding.passwordMismatch"));
-      return;
-    }
-    setBusy(true);
     try {
       await onboard({
-        setup_token: setupToken.trim(),
-        user_id: userId.trim(),
-        display_name: displayName.trim(),
-        password,
-        password_confirm: passwordConfirm,
+        setup_token: values.setupToken.trim(),
+        user_id: values.userId.trim(),
+        display_name: values.displayName.trim(),
+        password: values.password,
+        password_confirm: values.passwordConfirm,
       });
-      await login({ user_id: userId.trim(), password });
+      await login({ user_id: values.userId.trim(), password: values.password });
       const identity = await fetchIdentity();
       queryClient.setQueryData(["auth", "status"], { onboarding_required: false });
       queryClient.setQueryData(ME_QUERY_KEY, identity);
@@ -51,10 +63,10 @@ export function OnboardingPage() {
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "unknown";
       setError(t("onboarding.failed", { code }));
-    } finally {
-      setBusy(false);
     }
   }
+
+  const busy = form.formState.isSubmitting;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
@@ -64,66 +76,55 @@ export function OnboardingPage() {
           <CardDescription>{t("onboarding.subtitle")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="setup-token">{t("onboarding.setupTokenLabel")}</Label>
-              <Input
-                id="setup-token"
+          <form onSubmit={form.handleSubmit(onSubmit)}>
+            <FieldGroup>
+              <FormTextField
+                control={form.control}
+                name="setupToken"
                 type="password"
                 autoComplete="off"
-                value={setupToken}
-                onChange={(e) => setSetupToken(e.target.value)}
-                disabled={busy}
                 autoFocus
+                label={t("onboarding.setupTokenLabel")}
+                disabled={busy}
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="onboarding-user-id">{t("onboarding.userIdLabel")}</Label>
-              <Input
-                id="onboarding-user-id"
+              <FormTextField
+                control={form.control}
+                name="userId"
                 autoComplete="username"
-                value={userId}
-                onChange={(e) => setUserId(e.target.value)}
+                label={t("onboarding.userIdLabel")}
                 disabled={busy}
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="display-name">{t("onboarding.displayNameLabel")}</Label>
-              <Input
-                id="display-name"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+              <FormTextField
+                control={form.control}
+                name="displayName"
+                label={t("onboarding.displayNameLabel")}
                 disabled={busy}
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="onboarding-password">{t("onboarding.passwordLabel")}</Label>
-              <Input
-                id="onboarding-password"
+              <FormTextField
+                control={form.control}
+                name="password"
                 type="password"
                 autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                label={t("onboarding.passwordLabel")}
                 disabled={busy}
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="onboarding-password-confirm">
-                {t("onboarding.passwordConfirmLabel")}
-              </Label>
-              <Input
-                id="onboarding-password-confirm"
+              <FormTextField
+                control={form.control}
+                name="passwordConfirm"
                 type="password"
                 autoComplete="new-password"
-                value={passwordConfirm}
-                onChange={(e) => setPasswordConfirm(e.target.value)}
+                label={t("onboarding.passwordConfirmLabel")}
                 disabled={busy}
               />
-            </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <Button type="submit" className="w-full" disabled={busy}>
-              {busy ? t("onboarding.creating") : t("onboarding.create")}
-            </Button>
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              <Button type="submit" className="w-full" disabled={busy}>
+                {busy ? t("onboarding.creating") : t("onboarding.create")}
+              </Button>
+            </FieldGroup>
           </form>
         </CardContent>
       </Card>

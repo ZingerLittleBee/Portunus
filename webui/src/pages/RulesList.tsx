@@ -218,7 +218,9 @@ export function RulesList() {
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                <SelectItem value={OWNER_FILTER_ALL}>—</SelectItem>
+                <SelectItem value={OWNER_FILTER_ALL}>
+                  {t("rules.ownerFilterAll")}
+                </SelectItem>
                 {(users.data ?? []).map((u) => (
                   <SelectItem key={u.user_id} value={u.user_id}>
                     {u.user_id}

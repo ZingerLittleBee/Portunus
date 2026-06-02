@@ -140,6 +140,7 @@
     "title": "New user",
     "submit": "Create user",
     "invalidId": "ID must start with a lowercase letter and use a-z, 0-9, dash or underscore.",
+    "displayNameRequired": "Display name is required.",
     "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter.",
     "initialPassword": "Initial password",
     "initialPasswordHint": "Optional. Leave blank to create the user without Web login password.",
@@ -184,6 +185,7 @@
     "newRule": "Push rule",
     "remove": "Remove",
     "ownerFilter": "Owner",
+    "ownerFilterAll": "All owners",
     "emptyTitle": "No rules yet",
     "emptyBody": "Push your first rule to start forwarding traffic.",
     "multiTargetPill": "MT ×{{count}}"
@@ -215,7 +217,10 @@
     "sniPatternPlaceholder": "api.example.com or *.example.com",
     "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules.",
     "rateLimitTitle": "Quality of service",
-    "rateLimitHelp": "Optional per-rule QoS caps. Leave fields blank to leave that dimension uncapped."
+    "rateLimitHelp": "Optional per-rule QoS caps. Leave fields blank to leave that dimension uncapped.",
+    "requiredField": "This field is required.",
+    "invalidPort": "Enter a port between 1 and 65535.",
+    "invalidHealthCheckInterval": "Enter a value between 1 and 3600 seconds."
   },
   "rateLimitForm": {
     "title": "Rate limit",
