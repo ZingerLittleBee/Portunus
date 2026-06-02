@@ -10,3 +10,20 @@ Object.defineProperty(navigator, "clipboard", {
   configurable: true,
   writable: true,
 });
+
+// happy-dom has no layout engine, so `offsetHeight`/`offsetWidth` are always 0.
+// @tanstack/react-virtual (virtual-core 3.17+) sizes its scroll viewport from
+// `element.offsetHeight`, so a 0 height makes it render no rows and breaks
+// virtualized-list tests (e.g. DataTable). Report a fixed non-zero box so the
+// virtualizer has a viewport to fill.
+for (const [dim, size] of [
+  ["offsetHeight", 800],
+  ["offsetWidth", 1000],
+] as const) {
+  Object.defineProperty(HTMLElement.prototype, dim, {
+    configurable: true,
+    get() {
+      return size;
+    },
+  });
+}
