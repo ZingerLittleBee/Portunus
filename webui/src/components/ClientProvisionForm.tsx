@@ -42,7 +42,7 @@ export function ClientProvisionForm({ onDone }: ClientProvisionFormProps) {
   if (enrollment) {
     return (
       <div className="space-y-6">
-        <EnrollmentInstallGuide enrollment={enrollment} mode="provision" />
+        <EnrollmentInstallGuide enrollment={enrollment} mode="provision" framed={false} />
         <Button variant="link" className="px-0" onClick={onDone}>
           {t("clientProvision.backToList")}
         </Button>

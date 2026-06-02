@@ -315,20 +315,17 @@
       "heading": "安装 {{name}}",
       "expiresIn": "{{remaining}} 后过期",
       "expired": "该命令已过期 —— 请重新创建。",
-      "tabShell": "Shell",
-      "tabSystemd": "systemd",
+      "tabBinary": "二进制",
       "tabDocker": "Docker",
       "copy": "复制",
       "copied": "已复制",
       "skipNote": "该主机已安装？直接跳到第 {{step}} 步。",
-      "stepInstall": "安装二进制",
-      "stepEnroll": "兑换一次性接入命令",
-      "stepRun": "运行转发器",
+      "stepInstall": "安装二进制与服务",
       "stepEnrollSystemd": "兑换命令，并放置 bundle",
       "stepEnableSystemd": "启用并启动服务",
       "stepEnrollDocker": "一次性接入到宿主卷",
       "stepRunDocker": "运行长驻容器",
-      "dockerNote": "install.sh 仅用于宿主机；Docker 下两条命令都以你的宿主用户身份运行，使 0600 的 bundle 由同一身份写入与读取。"
+      "dockerNote": "install.sh --deploy docker 仅适用于 server/standalone；client 请直接运行发布镜像。两条命令都以你的宿主用户身份运行，使 0600 的 bundle 由同一身份写入与读取。"
     }
   },
   "clientDetail": {

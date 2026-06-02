@@ -315,20 +315,17 @@
       "heading": "Install {{name}}",
       "expiresIn": "Expires in {{remaining}}",
       "expired": "This command has expired — create a new one.",
-      "tabShell": "Shell",
-      "tabSystemd": "systemd",
+      "tabBinary": "Binary",
       "tabDocker": "Docker",
       "copy": "Copy",
       "copied": "Copied",
       "skipNote": "Already installed on this host? Skip to step {{step}}.",
-      "stepInstall": "Install the binary",
-      "stepEnroll": "Redeem the one-time enrollment command",
-      "stepRun": "Run the forwarder",
+      "stepInstall": "Install the binary and service",
       "stepEnrollSystemd": "Redeem the command, then place the bundle",
       "stepEnableSystemd": "Enable and start the service",
       "stepEnrollDocker": "Enroll once into a host volume",
       "stepRunDocker": "Run the long-lived container",
-      "dockerNote": "install.sh is host-only; in Docker both commands run as your host user so the 0600 bundle is writable and readable by one identity."
+      "dockerNote": "install.sh --deploy docker is server/standalone-only; for a client run the published image directly. Both commands run as your host user so the 0600 bundle is writable and readable by one identity."
     }
   },
   "clientDetail": {

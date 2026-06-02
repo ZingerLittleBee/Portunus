@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "@/i18n";
@@ -28,19 +29,18 @@ function mk(overrides: Partial<ClientEnrollmentResponse> = {}): ClientEnrollment
 }
 
 describe("EnrollmentInstallGuide", () => {
-  it("renders the three platform tabs and the shell command verbatim", () => {
+  it("renders the binary and docker tabs and the enroll command verbatim", () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="provision" />);
-    expect(screen.getByRole("tab", { name: "Shell" })).toBeDefined();
-    expect(screen.getByRole("tab", { name: "systemd" })).toBeDefined();
+    expect(screen.getByRole("tab", { name: "Binary" })).toBeDefined();
     expect(screen.getByRole("tab", { name: "Docker" })).toBeDefined();
-    expect(
-      screen.getByText("portunus-client enroll 'portunus://host:7443/enroll?code=abc'"),
-    ).toBeDefined();
+    expect(screen.queryByRole("tab", { name: "systemd" })).toBeNull();
+    const enroll = screen.getByTestId("guide-step-binary-enroll").textContent ?? "";
+    expect(enroll).toContain("portunus-client enroll 'portunus://host:7443/enroll?code=abc'");
   });
 
-  it("uses the bare uri (not the wrapped command) in the Docker tab", () => {
+  it("uses the bare uri (not the wrapped command) in the Docker tab", async () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="provision" />);
-    fireEvent.click(screen.getByRole("tab", { name: "Docker" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Docker" }));
     const docker = screen.getByTestId("guide-step-docker-enroll").textContent ?? "";
     expect(docker).toContain("enroll 'portunus://host:7443/enroll?code=abc'");
     expect(docker).toContain('--user "$(id -u):$(id -g)"');
