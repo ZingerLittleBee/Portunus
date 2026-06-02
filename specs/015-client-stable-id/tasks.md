@@ -98,9 +98,9 @@ specific message.
 
 - [X] T024 [P] [US1] Integration test (real sockets / operator API): friendly names accepted and round-trip verbatim; bad names rejected with rule-specific messages; creating a second client with an identical display name succeeds with no warning (G2 / FR-013) — `crates/portunus-server/tests/client_friendly_name.rs` — MUST FAIL first
 - [X] T025 [US1] Surface relaxed creation in the operator create/enroll handler and return clear field-specific validation errors (FR-011) in `crates/portunus-server/src/operator/`
-- [ ] T026 [P] [US1] Web UI: client provisioning form accepts free-form names (drop any DNS-label restriction) and renders server validation errors — `webui/src/components/` (client provisioning dialog). DO NOT touch `webui/src/components/UserCreateForm.tsx:44` (that regex is for **userId**)
-- [ ] T027 [P] [US1] Web UI: `ClientsList` / `ClientDetail` render the display name verbatim plus a short id form — `webui/src/pages/` + `webui/src/components/`
-- [ ] T028 [US1] Checkpoint: create a friendly-named client via API and UI; verify verbatim display + distinct id
+- [X] T026 [P] [US1] Web UI: client provisioning form accepts free-form names (drop any DNS-label restriction) and renders server validation errors — `webui/src/components/` (client provisioning dialog). DO NOT touch `webui/src/components/UserCreateForm.tsx:44` (that regex is for **userId**)
+- [X] T027 [P] [US1] Web UI: `ClientsList` / `ClientDetail` render the display name verbatim plus a short id form — `webui/src/pages/` + `webui/src/components/`
+- [X] T028 [US1] Checkpoint: create a friendly-named client via API and UI; verify verbatim display + distinct id
 
 ---
 
@@ -117,7 +117,7 @@ forwarding, duplicate rename accepted.
 - [X] T030 [US2] Add rename endpoint `PATCH /v1/clients/{client_id}` (`UPDATE client_tokens SET client_name=? WHERE client_id=?`, relaxed validation, audit-grade record) in `crates/portunus-server/src/operator/`
 - [X] T031 [P] [US2] Add CLI `client rename --client-id <ULID> --name "<display>"` subcommand in `crates/portunus-server/src/operator/`
 - [X] T032 [P] [US2] Web UI: rename control on `ClientDetail` calling `PATCH /v1/clients/{id}` — `webui/src/pages/` + `webui/src/components/`
-- [ ] T033 [US2] Checkpoint: rename a connected client; confirm session survives and records persist
+- [X] T033 [US2] Checkpoint: rename a connected client; confirm session survives and records persist
 
 ---
 
@@ -147,19 +147,19 @@ re-run is a no-op; a legacy bundle (no id) reconnects and forwards.
 
 - [X] T039 [P] [US4] e2e test: seed a `V010`-era client + legacy bundle (token, no `client_id`), start the upgraded server, reconnect with the legacy bundle, assert traffic forwards (SC-005) — `crates/portunus-e2e/tests/legacy_client_reconnect.rs` — MUST FAIL first
 - [X] T040 [US4] Confirm the token→`client_id` resolution path makes a legacy bundle connect transparently (no re-enroll) — `crates/portunus-server/src/store/token_store.rs` + `crates/portunus-server/src/grpc/service.rs`
-- [ ] T041 [US4] Add an e2e idempotency assertion: restart the upgraded server twice, no re-migration, data unchanged (complements T010) — `crates/portunus-e2e/`
-- [ ] T042 [US4] Checkpoint: populated `V010` DB upgrades cleanly and a legacy client reconnects
+- [X] T041 [US4] Add an e2e idempotency assertion: restart the upgraded server twice, no re-migration, data unchanged (complements T010) — `crates/portunus-e2e/`
+- [X] T042 [US4] Checkpoint: populated `V010` DB upgrades cleanly and a legacy client reconnects
 
 ---
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T043 [P] Add a `CHANGELOG.md` entry: new `client_id` wire field, relaxed client-name rules, client rename (Constitution: user-visible change requires a CHANGELOG note)
+- [X] T043 [P] Add a `CHANGELOG.md` entry: new `client_id` wire field, relaxed client-name rules, client rename (Constitution: user-visible change requires a CHANGELOG note)
 - [X] T044 [P] Update docs for id-based addressing + rename + free-form names in `docs/content/`
 - [X] T045 Run `cargo bench -p portunus-client --bench data_plane`; confirm flat vs the v0.1.0 baseline (Constitution II)
 - [X] T046 [P] Web UI build budget: `cd webui && pnpm install --frozen-lockfile && pnpm build` (tsc + vite + size-limit ≤500 KB gz) green
-- [ ] T047 Run the full `quickstart.md` acceptance walkthrough (SC-001..SC-007)
-- [ ] T048 Final gate: `PORTUNUS_SKIP_WEBUI=1 cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
+- [X] T047 Run the full `quickstart.md` acceptance walkthrough (SC-001..SC-007)
+- [X] T048 Final gate: `PORTUNUS_SKIP_WEBUI=1 cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
 
 ---
 
