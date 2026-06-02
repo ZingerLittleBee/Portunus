@@ -633,6 +633,12 @@ write_compose_env() {
   : > "$f"
   [ -n "$ADVERTISED" ]      && echo "PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}" >> "$f"
   [ -n "$OP_HTTP_LISTEN" ]  && echo "PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}" >> "$f"
+  # The client compose runs as the host user so the 0600 bundle written by
+  # `enroll` is readable inside the container (interpolated by compose).
+  if [ "$ROLE" = "client" ]; then
+    echo "HOST_UID=$(id -u)" >> "$f"
+    echo "HOST_GID=$(id -g)" >> "$f"
+  fi
   echo "→ wrote $f"
 }
 
@@ -659,6 +665,35 @@ write_compose_file() {
       curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/docker-compose.yml" -o "$dir/docker-compose.yml" \
         || die "failed to fetch contrib/docker-compose.yml"
     fi
+    return 0
+  fi
+  if [ "$ROLE" = "client" ]; then
+    # The client image's default entrypoint is already
+    # `portunus-client --bundle /etc/portunus/client.bundle.json`, so we
+    # do NOT override command. Host networking lets pushed-rule listeners
+    # bind on the edge host (their ports are unknown until the operator
+    # creates rules). The bundle must already exist — a missing bind-mount
+    # source is created by Docker as a bogus *directory*, which the client
+    # rejects with "Is a directory". Mirror the standalone author-it-first
+    # contract and point at the one-shot enroll.
+    if [ ! -f "$dir/client.bundle.json" ]; then
+      die "create ${dir}/client.bundle.json first — enroll once, then re-run:
+  docker run --rm --network host -v \"${dir}:/work\" ghcr.io/zingerlittlebee/portunus-client:${artifact_version:-latest} enroll '<portunus://…enroll URI>' --out /work/client.bundle.json
+(get the enroll URI from the Web UI Clients page or 'portunus-server enroll-client')"
+    fi
+    [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
+    cat > "$f" <<YAML
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:${artifact_version:-latest}
+    container_name: portunus-client
+    network_mode: host
+    user: "\${HOST_UID:-0}:\${HOST_GID:-0}"
+    volumes:
+      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
+    restart: unless-stopped
+YAML
+    echo "→ wrote $f"
     return 0
   fi
   [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
