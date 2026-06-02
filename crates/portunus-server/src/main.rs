@@ -59,6 +59,18 @@ enum Cmd {
     },
     /// Revoke a previously-provisioned client.
     Revoke { name: String },
+    /// Rename a client's free-form display name, addressed by its stable
+    /// id. The id — and every rule, token, quota and traffic-history row
+    /// keyed on it — is left intact (015-client-stable-id US2).
+    RenameClient {
+        /// Stable client id (ULID).
+        #[arg(long)]
+        client_id: String,
+        /// New free-form display name (relaxed validation: non-empty,
+        /// no control chars, ≤255 bytes; case/spaces/Unicode allowed).
+        #[arg(long)]
+        name: String,
+    },
     /// List provisioned + connected clients.
     ListClients {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -548,6 +560,21 @@ fn run(cli: Cli) -> Result<(), u8> {
                     eprintln!("error: {e}");
                     e.exit_code()
                 })
+        }
+        Cmd::RenameClient { client_id, name } => {
+            let state = build_offline_state(&data_dir, seed.clone())?;
+            match cli::rename_client(&state, &client_id, &name) {
+                Ok(client) => {
+                    println!("client_id={}", client.client_id);
+                    println!("client_name={}", client.client_name);
+                    Ok(())
+                }
+                Err(e) => {
+                    let code = e.exit_code();
+                    eprintln!("error: {e}");
+                    Err(code)
+                }
+            }
         }
         Cmd::ListClients { format } => {
             let state = build_offline_state(&data_dir, seed.clone())?;
