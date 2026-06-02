@@ -69,6 +69,7 @@
     "eslint-plugin-react-refresh": "0.4.14",
     "happy-dom": "15.7.4",
     "postcss": "8.4.47",
+    "react-grab": "^0.1.44",
     "rollup-plugin-visualizer": "5.12.0",
     "size-limit": "11.1.6",
     "tailwindcss": "3.4.14",
