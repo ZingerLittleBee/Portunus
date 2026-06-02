@@ -92,10 +92,10 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
 
 # 每台边缘主机
-## Docker Compose
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --deploy docker
-## 二进制 + 服务（systemd / OpenRC）
+## 二进制 + 服务（systemd / OpenRC）—— 推荐
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+## Docker Compose —— 先 enroll 一次（生成 ./client.bundle.json），再执行：
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --deploy docker
 ```
 
 二进制模式下，脚本会按检测到的 init 系统安装服务 —— **systemd**，或 Alpine 上的 **OpenRC**；两者都没有的主机则只装二进制并打印手动启动说明。Docker 模式则写出 `compose.yaml`。无论哪种方式都会记录这套部署，后续 `upgrade` / `status` / `uninstall` 同样可用。standalone 不会替你写配置 —— 由你自行创建（缺失时二进制直接退出）；`--config PATH` 可指定服务读取的 TOML 文件。Docker 镜像发布在 GHCR，名为 `portunus-{server,client,standalone}` —— 见 [Docker 部署指南](https://portunus.bybee.dev/zh/docs/deployment/docker)。

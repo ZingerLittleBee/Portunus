@@ -240,6 +240,26 @@ impl Store {
             Ok(n as u64)
         })
     }
+
+    /// Enforce a hard row-count ceiling on the audit table: keep the
+    /// newest `max_rows` rows (by `seq`) and delete the rest. Returns the
+    /// number of rows deleted. A no-op (returns 0) when the table holds
+    /// `<= max_rows` rows, because the `OFFSET max_rows` subquery yields
+    /// no row and `seq <= NULL` matches nothing. Complements
+    /// [`Store::audit_prune_apply`] (age-based) as a size backstop.
+    pub fn audit_prune_to_max_rows(&self, max_rows: usize) -> Result<u64, StoreError> {
+        let offset: i64 = max_rows.try_into().unwrap_or(i64::MAX);
+        self.with_write_tx(|tx| {
+            let n = tx
+                .execute(
+                    "DELETE FROM audit WHERE seq <= \
+                     (SELECT seq FROM audit ORDER BY seq DESC LIMIT 1 OFFSET ?)",
+                    rusqlite::params![offset],
+                )
+                .map_err(map_rusqlite)?;
+            Ok(n as u64)
+        })
+    }
 }
 
 /// Base64-url(no-pad) of the seq integer's decimal string. Opaque to
@@ -380,5 +400,38 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         assert!(store.query_audit_recent(10, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prune_to_max_rows_keeps_newest() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let base = Utc::now() - chrono::Duration::seconds(100);
+        for i in 0..10 {
+            insert(
+                &store,
+                base + chrono::Duration::seconds(i),
+                AuditOutcome::Allow,
+                &format!("u-{i}"),
+            );
+        }
+        let deleted = store.audit_prune_to_max_rows(4).unwrap();
+        assert_eq!(deleted, 6);
+        let rows = store.query_audit_recent(100, None).unwrap();
+        assert_eq!(rows.len(), 4);
+        // The four survivors are the newest (u-9..u-6, newest-first).
+        assert_eq!(rows[0].actor, "u-9");
+        assert_eq!(rows[3].actor, "u-6");
+    }
+
+    #[test]
+    fn prune_to_max_rows_noop_when_under_ceiling() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let now = Utc::now();
+        insert(&store, now, AuditOutcome::Allow, "solo");
+        let deleted = store.audit_prune_to_max_rows(100).unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(store.query_audit_recent(10, None).unwrap().len(), 1);
     }
 }

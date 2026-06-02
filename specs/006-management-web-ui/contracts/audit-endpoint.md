@@ -72,9 +72,13 @@ Standard `ApiError` body shape per `operator-api.md`:
 
 ## Side effects
 
-- A successful read emits one `operator.allow` audit entry like any
-  other request (the audit endpoint audits itself — meta but
-  consistent).
+- A successful **read-only** request (GET/HEAD/OPTIONS) does NOT emit an
+  audit entry. This endpoint, like all dashboard polling, is a read, so
+  reading the audit log does not pollute it. Only successful
+  state-changing requests (POST/PUT/PATCH/DELETE) and **all** denied
+  requests are audited (the latter via `auth_layer::record_deny`,
+  regardless of method — denied reads are a security signal and are
+  always recorded).
 
 ## Test plan
 

@@ -330,6 +330,18 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         }
     });
 
+    // Audit-table retention reaper: hourly age + row-count pruning of
+    // the `audit` table. Same fire-and-forget shutdown semantics as
+    // rollup_task.
+    let audit_retention_store: crate::store::Store = (*store).clone();
+    let audit_retention_shutdown = shutdown.token();
+    let audit_retention_task = tokio::spawn(async move {
+        tokio::select! {
+            () = crate::operator::audit_retention::run_forever(audit_retention_store) => {}
+            () = audit_retention_shutdown.cancelled() => {}
+        }
+    });
+
     // 013-traffic-quotas C4: per-minute period rollover tick. Same
     // shutdown semantics as rollup_task.
     let rollover_state = Arc::clone(&state);
@@ -396,6 +408,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
         rollup_task,
         rollover_task,
         exhaust_task,
+        audit_retention_task,
     );
     info!(event = "server.stopped");
     Ok(())

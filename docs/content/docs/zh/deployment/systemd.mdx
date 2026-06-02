@@ -14,13 +14,14 @@ icon: Server
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
-  | sudo sh -s -- client --systemd
+  | sudo sh -s -- client
 ```
 
 该命令会下载并校验 release 二进制、创建 `portunus-client` 服务用户、准备
-`/etc/portunus`（mode 0750），并安装加固后的 `portunus-client.service`。
-server 端用 `… | sudo sh -s -- server --systemd`（创建 `portunus-server`
-与 `/var/lib/portunus`，mode 0750）。二进制获取与标志说明统一记录在
+`/etc/portunus`（mode 0750），并安装加固后的 `portunus-client.service`
+（服务默认就会安装 —— `--systemd` 是已废弃的空操作）。server 端用
+`… | sudo sh -s -- server`（创建 `portunus-server` 与 `/var/lib/portunus`，
+mode 0750）。二进制获取与标志说明统一记录在
 [Client 配置](/zh/docs/configuration/client#安装二进制)。
 
 如果从源码 checkout 安装，也可以只安装 unit 文件：
@@ -148,7 +149,7 @@ portunus-server --data-dir /var/lib/portunus enroll-client edge-01
 
 # 6. 在边缘主机：安装并接入，然后放置 bundle
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
-  | sudo sh -s -- client --systemd
+  | sudo sh -s -- client
 portunus-client enroll 'portunus://...' --out ./client.bundle.json
 sudo install -o root -g portunus-client -m 0640 \
   ./client.bundle.json /etc/portunus/client.bundle.json

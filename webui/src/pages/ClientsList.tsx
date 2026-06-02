@@ -30,9 +30,11 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ClientProvisionForm } from "@/components/ClientProvisionForm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
 import { formatTimestamp } from "@/lib/format";
@@ -52,6 +54,7 @@ export function ClientsList() {
   const canProvision = canProvisionClient(identity);
 
   const [showRevoked, setShowRevoked] = useState(false);
+  const [provisionOpen, setProvisionOpen] = useState(false);
   const [pendingEdit, setPendingEdit] = useState<ClientView | null>(null);
   const [editAddress, setEditAddress] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
@@ -230,12 +233,20 @@ export function ClientsList() {
             </Button>
           )}
           {canProvision && (
-            <Button asChild className="w-full sm:w-auto">
-              <Link to="/clients/new">
-                <Plus className="mr-1 size-4" />
-                {t("clients.provision")}
-              </Link>
-            </Button>
+            <Dialog open={provisionOpen} onOpenChange={setProvisionOpen}>
+              <DialogTrigger asChild>
+                <Button className="w-full sm:w-auto">
+                  <Plus className="mr-1 size-4" />
+                  {t("clients.provision")}
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>{t("clientProvision.title")}</DialogTitle>
+                </DialogHeader>
+                <ClientProvisionForm onDone={() => setProvisionOpen(false)} />
+              </DialogContent>
+            </Dialog>
           )}
         </div>
       </div>

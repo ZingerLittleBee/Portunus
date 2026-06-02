@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
 
 import { useRulesList, useRemoveRule } from "@/api/rules";
 import { useUsersList } from "@/api/users";
@@ -9,6 +8,7 @@ import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { isSuperadmin } from "@/lib/permissions";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
+import { RulePushDialog } from "@/components/RulePushDialog";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -194,12 +194,7 @@ export function RulesList() {
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">{t("rules.title")}</h1>
-        <Button asChild className="w-full sm:w-auto">
-          <Link to="/rules/new">
-            <Plus className="mr-1 h-4 w-4" />
-            {t("rules.newRule")}
-          </Link>
-        </Button>
+        <RulePushDialog />
       </div>
       {isAdmin && (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">

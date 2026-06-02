@@ -92,10 +92,10 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
 
 # each edge host
-## Docker Compose
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --deploy docker
-## binary + service (systemd / OpenRC)
+## binary + service (systemd / OpenRC) — recommended
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+## Docker Compose — enroll once first (writes ./client.bundle.json), then:
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --deploy docker
 ```
 
 In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone never seeds a config — you create it (the binary exits without one); `--config PATH` points the service at a specific file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).

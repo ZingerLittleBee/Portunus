@@ -22,11 +22,13 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 | --- | --- |
 | `--version <X.Y.Z\|vX.Y.Z>` | 固定版本（默认最新）。两种格式均可。 |
 | `--bin-dir DIR` | 安装位置（默认 `/usr/local/bin`）。 |
-| `--systemd` | 同时安装并启用加固 unit（仅 Linux；参见 systemd 指南）。 |
+| `--no-service` | 仅安装二进制；跳过服务 unit。 |
+| `--deploy docker` | 用 Docker Compose 部署，替代二进制 + 服务 unit。 |
+| `--systemd` | 已废弃的空操作（为向后兼容保留）；现在默认就会安装加固 unit。 |
 | `--yes` | 非交互式；自动确认。前向兼容（目前尚无交互提示）。 |
 | `--dry-run` | 打印解析到的目标/URL 及计划动作；不实际执行。 |
 
-如果已是 root 环境：`curl -fsSL … | sudo sh -s -- client --systemd`。
+如果已是 root 环境：`curl -fsSL … | sudo sh -s -- client`。
 
 ## 接入（enroll）
 
@@ -95,7 +97,7 @@ portunus-client
 
 ## systemd
 
-`install.sh client --systemd` 会安装加固的 `portunus-client.service`（以
+`install.sh client` 默认就会安装加固的 `portunus-client.service`（以
 `portunus-client` 用户运行，`--bundle /etc/portunus/client.bundle.json`）。
 配置 bundle：
 

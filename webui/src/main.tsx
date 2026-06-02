@@ -12,6 +12,11 @@ import { Toaster } from "@/components/ui/sonner";
 
 import "@/theme/tokens.css";
 
+// Dev-only: react-grab overlay for inspecting React component sources.
+if (import.meta.env.DEV) {
+  void import("react-grab");
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

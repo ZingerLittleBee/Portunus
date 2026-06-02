@@ -173,7 +173,12 @@ pub async fn auth_middleware(
         }
     }
 
-    // Audit-log success and inject identity into request extensions.
+    // Count + structured-log every successful request (observability is
+    // unconditional), but only persist *auditable* allows into the audit
+    // ring/DB. Successful read-only requests (GET/HEAD/OPTIONS) are NOT
+    // audited — they flood the log with the dashboard's own polling and
+    // carry no security/change signal. Mutations are audited here; all
+    // denials are audited via `record_deny` regardless of method.
     bump_request(&state, "allow", "ok");
     info!(
         event = "operator.allow",
@@ -184,13 +189,15 @@ pub async fn auth_middleware(
         outcome = "allow",
         auth_method = auth_method.as_str(),
     );
-    record_allow(
-        &state,
-        identity.user_id.as_str(),
-        identity.role,
-        &method,
-        &path,
-    );
+    if is_auditable_mutation(&method) {
+        record_allow(
+            &state,
+            identity.user_id.as_str(),
+            identity.role,
+            &method,
+            &path,
+        );
+    }
     req.extensions_mut().insert(identity);
 
     next.run(req).await
@@ -246,6 +253,18 @@ pub(crate) fn verify_session_secret(
         user_id: user.id,
         role: user.role,
     })
+}
+
+/// Whether a *successful* request of this method is worth an audit row.
+/// Read-only methods (GET/HEAD/OPTIONS) are not: they are the bulk of
+/// dashboard polling traffic and record no change or security event.
+/// State-changing methods (POST/PUT/PATCH/DELETE) are. Denials are
+/// audited unconditionally elsewhere — this gate only governs allows.
+fn is_auditable_mutation(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    )
 }
 
 /// 006-management-web-ui T010: push an `allow` row into the ring.
@@ -418,4 +437,23 @@ fn password_change_required(state: &AppState, identity: &OperatorIdentity) -> Re
 #[must_use]
 pub fn rbac_status(e: &RbacError) -> StatusCode {
     http_status_for(e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_are_not_auditable_allows() {
+        for m in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            assert!(!is_auditable_mutation(&m), "{m} should not be audited");
+        }
+    }
+
+    #[test]
+    fn mutations_are_auditable_allows() {
+        for m in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+            assert!(is_auditable_mutation(&m), "{m} should be audited");
+        }
+    }
 }

@@ -28,11 +28,13 @@ it uses `sudo` only for the privileged steps).
 | --- | --- |
 | `--version <X.Y.Z\|vX.Y.Z>` | Pin a release (default: latest). Either form works. |
 | `--bin-dir DIR` | Install location (default `/usr/local/bin`). |
-| `--systemd` | Also install + enable the hardened unit (Linux only; see systemd guide). |
+| `--no-service` | Install the binary only; skip the service unit. |
+| `--deploy docker` | Run via Docker Compose instead of a binary + service unit. |
+| `--systemd` | Deprecated no-op (accepted for back-compat); the hardened unit is installed by default now. |
 | `--yes` | Non-interactive; assume yes. Forward-compat (no prompts exist yet). |
 | `--dry-run` | Print the resolved target/URL and planned actions; do nothing. |
 
-For an already-root context: `curl -fsSL … | sudo sh -s -- client --systemd`.
+For an already-root context: `curl -fsSL … | sudo sh -s -- client`.
 
 ## Enroll
 
@@ -104,8 +106,8 @@ portunus-client
 
 ## systemd
 
-`install.sh client --systemd` installs the hardened
-`portunus-client.service` (runs as the `portunus-client` user,
+`install.sh client` installs the hardened `portunus-client.service` by
+default (runs as the `portunus-client` user,
 `--bundle /etc/portunus/client.bundle.json`). Provision the bundle:
 
 ```sh

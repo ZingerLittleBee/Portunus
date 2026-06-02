@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const uiFiles = [
   "src/pages/RulesList.tsx",
   "src/pages/AuditLog.tsx",
-  "src/pages/RulePush.tsx",
+  "src/components/RuleForm.tsx",
   "src/components/Traffic/TrafficPanel.tsx",
 ];
 

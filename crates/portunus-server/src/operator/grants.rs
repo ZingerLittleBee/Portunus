@@ -27,6 +27,7 @@ use tracing::info;
 use crate::operator::cli::OperatorError;
 use crate::operator::http::ApiError;
 use crate::operator::rbac;
+use crate::operator::user_ids::parse_stored_user_id;
 use crate::state::AppState;
 
 fn api_rbac(e: RbacError) -> ApiError {
@@ -165,8 +166,11 @@ pub async fn get_grants(
     Query(q): Query<GrantsQuery>,
 ) -> Result<Json<Vec<GrantView>>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
+    // Accept reserved IDs (e.g. `_superadmin`) as a filter so the operator
+    // UI can list grants for the bootstrap superadmin without a 400; mirrors
+    // the `parse_stored_user_id` handling in the users/credentials handlers.
     let filter = match q.user_id.as_deref() {
-        Some(s) => Some(UserId::from_str(s).map_err(api_rbac)?),
+        Some(s) => Some(parse_stored_user_id(s).map_err(api_rbac)?),
         None => None,
     };
     let grants = state.operator_store.list_grants(filter.as_ref());

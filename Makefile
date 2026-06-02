@@ -5,14 +5,14 @@
 #   make dev            # hot-reload front-end + backend together
 #
 # First run of `make dev` (or `make backend`) auto-bootstraps a
-# `_superadmin` operator account and generates a TEMPORARY password.
-# Watch the banner — it prints something like:
-#     temporary_password=Zk6...
+# `_superadmin` operator account and sets a FIXED development password
+# (DEV_PASSWORD, default `superadmin123`). There is NO forced password
+# change — log in with the same credentials every time.
 # Login at http://localhost:5173 with:
 #     user_id  = _superadmin
-#     password = <that temporary_password>
-# The UI forces you to set a permanent password on first login.
-# Lost the password? `make clean && make dev` regenerates everything.
+#     password = superadmin123   (or your DEV_PASSWORD override)
+# Override with `make dev DEV_PASSWORD=mylongpassword` (>= 12 chars).
+# Reset local state? `make clean && make dev` re-applies it.
 #
 # Producing a release-shaped binary that embeds the UI:
 #   make setup          # one-time per checkout
@@ -39,6 +39,10 @@ DATA_DIR    ?= /tmp/portunus-dev
 LISTEN      ?= 127.0.0.1:7080
 CARGO_PROFILE ?= release
 DEMO_ARGS   ?=
+# Fixed Web UI password set for `_superadmin` on first `make dev` /
+# `make backend`. Must be >= 12 chars (server-side minimum). Override
+# on the command line, e.g. `make dev DEV_PASSWORD=mylongpassword`.
+DEV_PASSWORD ?= superadmin123
 SERVER_BIN  := target/$(CARGO_PROFILE)/portunus-server
 
 ifeq ($(CARGO_PROFILE),release)
@@ -100,11 +104,10 @@ bootstrap: server-build  ## Create _superadmin in $(DATA_DIR); prints bearer tok
 # implicitly by `make dev` / `make backend` on first run. It:
 #   1. Creates the `_superadmin` operator account (one-shot, errors if
 #      already bootstrapped).
-#   2. Generates a temporary password and prints it as
-#        temporary_password=<pwd>
-#      The first Web UI login is then user_id=`_superadmin` +
-#      that temp password; the UI forces a permanent-password change
-#      immediately after login.
+#   2. Sets a FIXED development password (DEV_PASSWORD, default
+#      `superadmin123`) via `reset-password --password-stdin`, with NO
+#      forced password change — so the Web UI login is just
+#      user_id=`_superadmin` + that password every time.
 # Marker file `$(DATA_DIR)/.dev-credentials-set` is touched on success
 # so subsequent `make dev` runs don't re-bootstrap (which would error).
 # To regenerate creds: `make clean && make dev`.
@@ -119,16 +122,16 @@ $(DATA_DIR)/.dev-credentials-set:
 	PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
 	  --data-dir $(DATA_DIR) bootstrap-superadmin --name ops
 	@echo ""
-	@echo "→ generating temporary Web UI password for _superadmin..."
-	PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
-	  --data-dir $(DATA_DIR) reset-password _superadmin --temporary
+	@echo "→ setting fixed dev password for _superadmin..."
+	printf '%s\n' "$(DEV_PASSWORD)" | PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
+	  --data-dir $(DATA_DIR) reset-password _superadmin --password-stdin --keep-api-tokens
 	@touch $(DATA_DIR)/.dev-credentials-set
 	@echo ""
 	@echo "==============================================================="
-	@echo "  Web UI login:"
+	@echo "  Web UI login (fixed dev credentials, no forced change):"
 	@echo "    user_id  = _superadmin"
-	@echo "    password = (the temporary_password value printed above)"
-	@echo "  The UI will force you to set a permanent password on first login."
+	@echo "    password = $(DEV_PASSWORD)"
+	@echo "  Override with DEV_PASSWORD=… (>= 12 chars)."
 	@echo "==============================================================="
 	@echo ""
 

@@ -1,98 +1,21 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
-import { useCreateClientEnrollment } from "@/api/clients";
-import { ApiError } from "@/api/client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { EnrollmentInstallGuide } from "@/components/EnrollmentInstallGuide";
-import type { ClientEnrollmentResponse } from "@/api/types";
+import { ClientProvisionForm } from "@/components/ClientProvisionForm";
 
 export function ClientProvision() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const enrollmentMutation = useCreateClientEnrollment();
-  const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
-  const [enrollment, setEnrollment] = useState<ClientEnrollmentResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-    try {
-      const res = await enrollmentMutation.mutateAsync({ name, address });
-      setEnrollment(res);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(`${err.code}: ${err.message}`);
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError(String(err));
-      }
-    }
-  }
 
   return (
-    <div className="max-w-3xl space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("clientProvision.title")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="name">{t("clients.name")}</Label>
-              <Input
-                id="name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="client-a"
-                required
-                disabled={!!enrollment}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="address">{t("clientProvision.address")}</Label>
-              <Input
-                id="address"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                placeholder="68.77.201.69 or edge.example.com"
-                required
-                disabled={!!enrollment}
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("clientProvision.addressHint")}
-              </p>
-            </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            {!enrollment && (
-              <div className="flex gap-2">
-                <Button type="submit" disabled={enrollmentMutation.isPending}>
-                  {enrollmentMutation.isPending ? t("confirm.busy") : t("clientProvision.submit")}
-                </Button>
-                <Button type="button" variant="outline" onClick={() => navigate(-1)}>
-                  {t("confirm.cancel")}
-                </Button>
-              </div>
-            )}
-          </form>
-        </CardContent>
-      </Card>
-
-      {enrollment && (
-        <>
-          <EnrollmentInstallGuide enrollment={enrollment} mode="provision" />
-          <Button variant="link" onClick={() => navigate("/clients")}>
-            {t("clientProvision.backToList")}
-          </Button>
-        </>
-      )}
-    </div>
+    <Card className="max-w-3xl">
+      <CardHeader>
+        <CardTitle>{t("clientProvision.title")}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ClientProvisionForm onDone={() => navigate("/clients")} />
+      </CardContent>
+    </Card>
   );
 }
