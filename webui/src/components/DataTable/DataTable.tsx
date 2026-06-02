@@ -74,7 +74,7 @@ export function DataTable<Row>({
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     const last = sorted.length - 1;
     if (last < 0) return;
-    let next = focusedIndex;
+    let next: number;
     switch (e.key) {
       case "ArrowDown": next = Math.min(last, focusedIndex + 1); break;
       case "ArrowUp": next = Math.max(0, focusedIndex - 1); break;
