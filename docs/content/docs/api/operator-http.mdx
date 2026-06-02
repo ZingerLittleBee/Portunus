@@ -67,14 +67,21 @@ Responses on missing / invalid authentication:
 
 ### Clients
 
+Client-scoped routes address the client by its stable `client_id` (a ULID
+assigned at enrollment). `client_name` is a free-form display label and is
+**not** an identifier — duplicates are allowed and a rename leaves the id
+intact. An unknown or malformed `client_id` returns `404` on every
+client-scoped route (it never reveals whether a colliding name exists).
+
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/v1/client-enrollments` | Create a one-time enrollment command for a new client |
-| `POST` | `/v1/clients/{name}/enrollment` | Create a one-time re-enrollment command for an existing client |
-| `GET` | `/v1/clients` | List clients; superadmin sees all |
-| `PUT` | `/v1/clients/{name}` | Update the client's advertised address; body `{address}` |
-| `POST` | `/v1/clients/{name}/revoke` | Revoke + disconnect |
-| `DELETE` | `/v1/clients/{name}` | Delete a revoked client row |
+| `POST` | `/v1/client-enrollments` | Create a one-time enrollment command for a new client. Body `{name, address?, ttl_secs?}`; `name` is free-form |
+| `POST` | `/v1/clients/{client_id}/enrollment` | Create a one-time re-enrollment command for an existing client |
+| `GET` | `/v1/clients` | List clients (each row carries `client_id` + `client_name`); superadmin sees all |
+| `PUT` | `/v1/clients/{client_id}` | Update the client's advertised address; body `{address}` |
+| `PATCH` | `/v1/clients/{client_id}/name` | Identity-safe rename; body `{client_name}`. The id and all dependent rows are untouched; a live session is not dropped |
+| `POST` | `/v1/clients/{client_id}/revoke` | Revoke + disconnect |
+| `DELETE` | `/v1/clients/{client_id}` | Delete a revoked client row |
 
 ### Rules
 
@@ -138,13 +145,13 @@ Traffic queries take `from` and `to` (Unix seconds, required) plus an optional
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/v1/users/{user_id}/quotas` | List a user's quotas |
-| `PUT` | `/v1/users/{user_id}/quotas/{client_name}` | Set the monthly quota |
-| `PATCH` | `/v1/users/{user_id}/quotas/{client_name}` | Update `monthly_bytes` and/or clear period usage |
-| `DELETE` | `/v1/users/{user_id}/quotas/{client_name}` | Remove the quota |
-| `GET` | `/v1/users/{user_id}/quotas/{client_name}/status` | Current period usage vs. cap |
+| `PUT` | `/v1/users/{user_id}/quotas/{client_id}` | Set the monthly quota |
+| `PATCH` | `/v1/users/{user_id}/quotas/{client_id}` | Update `monthly_bytes` and/or clear period usage |
+| `DELETE` | `/v1/users/{user_id}/quotas/{client_id}` | Remove the quota |
+| `GET` | `/v1/users/{user_id}/quotas/{client_id}/status` | Current period usage vs. cap |
 | `GET` | `/v1/users/{user_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic for a user |
-| `GET` | `/v1/clients/{client_name}/quotas` | List a client's quotas |
-| `GET` | `/v1/clients/{client_name}/traffic?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic for a client |
+| `GET` | `/v1/clients/{client_id}/quotas` | List a client's quotas |
+| `GET` | `/v1/clients/{client_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic for a client |
 | `GET` | `/v1/traffic/global?from=<unix>&to=<unix>&bucket=<size>` | Historical traffic across all rules |
 
 ### Settings (v0.14+)
