@@ -169,6 +169,8 @@ pub async fn put_owner_rate_limit(
                     owner_id: owner_id.clone(),
                     rate_limit: Some(rate_limit_to_proto(&row.rate_limit)),
                     action: proto::OwnerRateLimitAction::Set as i32,
+                    // TODO(T020): populate once routes address clients by id.
+                    client_id: String::new(),
                 },
             )),
         };
@@ -206,6 +208,8 @@ pub async fn delete_owner_rate_limit(
                     owner_id: owner_id.clone(),
                     rate_limit: None,
                     action: proto::OwnerRateLimitAction::Remove as i32,
+                    // TODO(T020): populate once routes address clients by id.
+                    client_id: String::new(),
                 },
             )),
         };

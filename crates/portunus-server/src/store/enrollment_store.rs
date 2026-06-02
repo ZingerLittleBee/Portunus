@@ -175,7 +175,17 @@ impl ClientEnrollmentStore {
                     other => Err(other),
                 })
                 .map_err(map_rusqlite)?;
-            if existing_client {
+            // 015-client-stable-id: resolve the stable id. A rotation reuses
+            // the existing client's id; a fresh redeem is where the client
+            // first materializes, so mint its id here (U2).
+            let client_id: String = if existing_client {
+                let id: String = tx
+                    .query_row(
+                        "SELECT client_id FROM client_tokens WHERE client_name = ?",
+                        rusqlite::params![client_name.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(map_rusqlite)?;
                 tx.execute(
                     "UPDATE client_tokens \
                      SET token_hash = ?, issued_at = ?, revoked_at = NULL, \
@@ -189,16 +199,15 @@ impl ClientEnrollmentStore {
                     ],
                 )
                 .map_err(map_rusqlite)?;
+                id
             } else {
-                // 015-client-stable-id: a redeem of a fresh client is where it
-                // first materializes — mint its stable id here (U2).
-                let client_id = ClientId::new().to_string();
+                let id = ClientId::new().to_string();
                 tx.execute(
                     "INSERT INTO client_tokens \
                          (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
                          VALUES (?, ?, ?, ?, NULL, ?)",
                     rusqlite::params![
-                        client_id,
+                        id,
                         client_name.as_str(),
                         client_token_hash,
                         consumed_at,
@@ -206,7 +215,8 @@ impl ClientEnrollmentStore {
                     ],
                 )
                 .map_err(map_rusqlite)?;
-            }
+                id
+            };
 
             tx.execute(
                 "UPDATE client_enrollments SET consumed_at = ? WHERE id = ?",
@@ -214,7 +224,14 @@ impl ClientEnrollmentStore {
             )
             .map_err(map_rusqlite)?;
 
+            let client_id = client_id.parse::<ClientId>().map_err(|e| {
+                StoreError::Corruption {
+                    detail: format!("client_tokens invalid client_id: {e}"),
+                }
+            })?;
+
             Ok(Ok(IssuedClientCredential {
+                client_id,
                 client_name,
                 token: client_token,
                 rotated_existing: existing_client,
@@ -249,6 +266,7 @@ pub struct CreatedEnrollment {
 
 #[derive(Debug, Clone)]
 pub struct IssuedClientCredential {
+    pub client_id: ClientId,
     pub client_name: ClientName,
     pub token: String,
     pub rotated_existing: bool,

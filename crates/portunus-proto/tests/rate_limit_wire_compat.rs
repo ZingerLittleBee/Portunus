@@ -296,6 +296,7 @@ fn t004_owner_rate_limit_update_set_roundtrip() {
         owner_id: String::from("alice"),
         rate_limit: Some(full_rate_limit()),
         action: OwnerRateLimitAction::Set as i32,
+        client_id: String::from("01HCLIENTID0000000000000000"),
     };
     let bytes = u.encode_to_vec();
     let decoded = OwnerRateLimitUpdate::decode(bytes.as_slice()).expect("decodes");
@@ -309,6 +310,7 @@ fn t004_owner_rate_limit_update_remove_roundtrip() {
         owner_id: String::from("alice"),
         rate_limit: None,
         action: OwnerRateLimitAction::Remove as i32,
+        client_id: String::new(),
     };
     let bytes = u.encode_to_vec();
     let decoded = OwnerRateLimitUpdate::decode(bytes.as_slice()).expect("decodes");

@@ -46,7 +46,7 @@ fn apply_through_v010(conn: &Connection) {
 /// id map must still mint an id for it (no orphan drop).
 fn seed_legacy(conn: &Connection) {
     conn.execute_batch(
-        r#"
+        "
         INSERT INTO users (user_id, role, display_name, disabled, created_at)
         VALUES ('alice', 'user', 'Alice', 0, '2026-01-01T00:00:00Z');
 
@@ -76,7 +76,7 @@ fn seed_legacy(conn: &Connection) {
 
         INSERT INTO client_enrollments (client_name, code_hash, issued_at, expires_at)
         VALUES ('edge-02', 'codehash02', '2026-01-01T00:00:00Z', '2026-01-01T00:05:00Z');
-        "#,
+        ",
     )
     .expect("seed legacy rows");
 }
@@ -104,7 +104,11 @@ fn v011_backfills_every_table_with_consistent_client_ids() {
 
     // 2. Dependent rows for edge-01 share the SAME client_id (consistent join).
     let rule_cid: String = conn
-        .query_row("SELECT client_id FROM rules WHERE client_name = 'edge-01'", [], |r| r.get(0))
+        .query_row(
+            "SELECT client_id FROM rules WHERE client_name = 'edge-01'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(rule_cid, id_edge01, "rules backfill matches token id");
 
@@ -126,23 +130,39 @@ fn v011_backfills_every_table_with_consistent_client_ids() {
         .unwrap();
     assert_eq!(tq_cid, id_edge01, "traffic_quotas backfill matches");
 
-    let s1m_cid: String = conn
-        .query_row("SELECT client_id FROM traffic_samples_1m WHERE client_name = 'edge-01'", [], |r| r.get(0))
+    let minute_cid: String = conn
+        .query_row(
+            "SELECT client_id FROM traffic_samples_1m WHERE client_name = 'edge-01'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(s1m_cid, id_edge01);
-    let s1h_cid: String = conn
-        .query_row("SELECT client_id FROM traffic_samples_1h WHERE client_name = 'edge-01'", [], |r| r.get(0))
+    assert_eq!(minute_cid, id_edge01);
+    let hour_cid: String = conn
+        .query_row(
+            "SELECT client_id FROM traffic_samples_1h WHERE client_name = 'edge-01'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(s1h_cid, id_edge01);
+    assert_eq!(hour_cid, id_edge01);
 
     // 3. Distinct clients get distinct ids.
     let id_edge02: String = conn
-        .query_row("SELECT client_id FROM client_tokens WHERE client_name = 'edge-02'", [], |r| r.get(0))
+        .query_row(
+            "SELECT client_id FROM client_tokens WHERE client_name = 'edge-02'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_ne!(id_edge01, id_edge02);
 
     let enr_cid: String = conn
-        .query_row("SELECT client_id FROM client_enrollments WHERE client_name = 'edge-02'", [], |r| r.get(0))
+        .query_row(
+            "SELECT client_id FROM client_enrollments WHERE client_name = 'edge-02'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(enr_cid, id_edge02, "enrollment backfill matches its client");
 
@@ -172,7 +192,10 @@ fn v011_backfills_every_table_with_consistent_client_ids() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(ghost_cid.is_some(), "tokenless billing-artifact row kept + backfilled");
+    assert!(
+        ghost_cid.is_some(),
+        "tokenless billing-artifact row kept + backfilled"
+    );
 
     // 5. client_name is no longer a PRIMARY KEY / UNIQUE on client_tokens —
     //    duplicate display names are now allowed (FR-013).

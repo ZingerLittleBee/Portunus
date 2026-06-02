@@ -670,6 +670,8 @@ async fn replay_owner_caps_for_client(
                     owner_id: envelope.owner_id.clone(),
                     rate_limit: Some(rate_limit_to_proto(&envelope.rate_limit)),
                     action: portunus_proto::v1::OwnerRateLimitAction::Set as i32,
+                    // TODO(T020): populate from the connected identity's client_id.
+                    client_id: String::new(),
                 },
             )),
         };

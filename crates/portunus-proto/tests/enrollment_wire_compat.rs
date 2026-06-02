@@ -33,6 +33,7 @@ fn credential_bundle_roundtrips() {
         server_cert_sha256: "a".repeat(64),
         server_cert_pem: "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n".into(),
         token: "client-token".into(),
+        client_id: "01HCLIENTID0000000000000000".into(),
     };
 
     let bytes = bundle.encode_to_vec();

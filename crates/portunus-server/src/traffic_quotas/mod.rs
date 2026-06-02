@@ -111,6 +111,8 @@ pub fn make_traffic_quota_set_msg(
                     period_ends_at_unix_sec: ends_at,
                     exhausted: row.is_exhausted(),
                 }),
+                // TODO(T020): populate once routes address clients by id.
+                client_id: String::new(),
             },
         )),
     }
@@ -131,6 +133,8 @@ pub fn make_traffic_quota_remove_msg(
                 client_name,
                 action: proto::TrafficQuotaAction::Remove as i32,
                 state: None,
+                // TODO(T020): populate once routes address clients by id.
+                client_id: String::new(),
             },
         )),
     }

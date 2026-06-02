@@ -91,6 +91,7 @@ impl ClientEnrollment for ClientEnrollmentService {
             server_cert_sha256: self.state.server_cert_sha256.clone(),
             server_cert_pem: self.state.server_cert_pem.clone(),
             token: issued.token,
+            client_id: issued.client_id.to_string(),
         }))
     }
 }

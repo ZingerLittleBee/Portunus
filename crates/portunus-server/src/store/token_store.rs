@@ -122,7 +122,13 @@ impl SqliteTokenStore {
                     "INSERT INTO client_tokens \
                      (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
                      VALUES (?, ?, ?, ?, NULL, ?)",
-                    rusqlite::params![client_id, name.as_str(), hash_hex, issued_at, client_address],
+                    rusqlite::params![
+                        client_id,
+                        name.as_str(),
+                        hash_hex,
+                        issued_at,
+                        client_address
+                    ],
                 )
                 .map_err(map_rusqlite)?;
                 Ok(())

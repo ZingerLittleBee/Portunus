@@ -53,8 +53,8 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Wire contract (`proto` + `portunus-proto`)
 
-- [ ] T008 [P] Wire contract tests: `client_id` round-trips in `CredentialBundle`/`OwnerRateLimitUpdate`/`TrafficQuotaUpdate`, and a message WITHOUT `client_id` (legacy) still decodes — in `crates/portunus-server/tests/wire_client_id.rs` — MUST FAIL first
-- [ ] T009 Add additive fields to `proto/portunus.proto` (`CredentialBundle.client_id = 7`, `OwnerRateLimitUpdate.client_id = 5`, `TrafficQuotaUpdate.client_id = 6`; `Hello`/`Welcome` unchanged) and rebuild to regenerate tonic-prost types; pass T008
+- [X] T008 [P] Wire contract tests: `client_id` round-trips in `CredentialBundle`/`OwnerRateLimitUpdate`/`TrafficQuotaUpdate`, and a message WITHOUT `client_id` (legacy) still decodes — in `crates/portunus-server/tests/wire_client_id.rs` — MUST FAIL first
+- [X] T009 Add additive fields to `proto/portunus.proto` (`CredentialBundle.client_id = 7`, `OwnerRateLimitUpdate.client_id = 5`, `TrafficQuotaUpdate.client_id = 6`; `Hello`/`Welcome` unchanged) and rebuild to regenerate tonic-prost types; pass T008
 
 ### Persistence migration (`V011`)
 
@@ -79,7 +79,7 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Client bundle
 
-- [ ] T022 Add `client_id` to `CredentialBundle` (load/save) with legacy-tolerant parsing (absent id = pre-upgrade bundle) in `crates/portunus-client/src/bundle.rs`
+- [X] T022 Add `client_id` to `CredentialBundle` (load/save) with legacy-tolerant parsing (absent id = pre-upgrade bundle) in `crates/portunus-client/src/bundle.rs`
 
 ### Checkpoint
 

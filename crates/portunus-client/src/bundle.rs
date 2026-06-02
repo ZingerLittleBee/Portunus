@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use portunus_core::ClientName;
+use portunus_core::{ClientId, ClientName};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -14,6 +14,11 @@ pub struct CredentialBundle {
     #[serde(default = "default_version")]
     pub version: u32,
     pub client_name: ClientName,
+    /// 015-client-stable-id: stable opaque identity. Absent in a pre-upgrade
+    /// bundle (legacy-tolerant) — the client still authenticates via `token`,
+    /// and the server resolves the id from that token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<ClientId>,
     pub server_endpoint: String,
     pub server_cert_sha256: String,
     pub server_cert_pem: String,
@@ -41,6 +46,7 @@ impl CredentialBundle {
     pub fn from_enrollment(
         version: u32,
         client_name: ClientName,
+        client_id: Option<ClientId>,
         server_endpoint: String,
         server_cert_sha256: String,
         server_cert_pem: String,
@@ -54,6 +60,7 @@ impl CredentialBundle {
         let bundle = Self {
             version,
             client_name,
+            client_id,
             server_endpoint,
             server_cert_sha256,
             server_cert_pem,

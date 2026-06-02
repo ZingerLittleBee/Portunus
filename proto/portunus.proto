@@ -52,6 +52,11 @@ message CredentialBundle {
   string server_cert_sha256 = 4;
   string server_cert_pem = 5;
   string token = 6;
+  // 015-client-stable-id: stable opaque ULID identity. Additive — a
+  // pre-upgrade bundle without this field still authenticates (identity is
+  // resolved from the bearer token server-side). client_name above is now a
+  // display field only.
+  string client_id = 7;
 }
 
 // ============================================================================
@@ -275,6 +280,9 @@ message OwnerRateLimitUpdate {
   // Body. Required when action == SET; ignored when action == REMOVE.
   optional RateLimit rate_limit = 3;
   OwnerRateLimitAction action   = 4;
+  // 015-client-stable-id: authoritative target id. Additive; client_name
+  // stays for display. Operator-originated messages carry this.
+  string client_id = 5;
 }
 
 enum OwnerRateLimitAction {
@@ -580,4 +588,7 @@ message TrafficQuotaUpdate {
   string client_name       = 3;
   TrafficQuotaAction action = 4;
   optional TrafficQuotaState state = 5;
+  // 015-client-stable-id: authoritative target id. Additive; client_name
+  // stays for display.
+  string client_id = 6;
 }
