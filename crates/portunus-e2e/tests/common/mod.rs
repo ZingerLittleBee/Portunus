@@ -576,6 +576,26 @@ pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode 
     resp.status()
 }
 
+/// 015-client-stable-id (US2): identity-safe rename. Resolves the client's
+/// stable id from its current display name, then `PATCH`es the new name.
+/// Returns the HTTP status.
+pub fn rename_http(
+    operator_http_addr: &str,
+    current_name: &str,
+    new_name: &str,
+) -> reqwest::StatusCode {
+    let client_id = client_id_for_name(operator_http_addr, current_name);
+    let url = format!("http://{operator_http_addr}/v1/clients/{client_id}/name");
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .patch(&url)
+        .header(k, v)
+        .json(&serde_json::json!({ "client_name": new_name }))
+        .send()
+        .expect("PATCH client name");
+    resp.status()
+}
+
 /// Resolve a client's stable `client_id` from its display name via the live
 /// `GET /v1/clients` list. Panics if no client carries that name.
 pub fn client_id_for_name(operator_http_addr: &str, name: &str) -> String {
