@@ -25,7 +25,7 @@
   },
   "login": {
     "title": "登录",
-    "subtitle": "使用 operator 用户 ID 和密码登录。",
+    "subtitle": "使用账号和密码登录。",
     "userIdLabel": "用户 ID",
     "passwordLabel": "密码",
     "credentialsRequired": "请填写用户 ID 和密码。",
