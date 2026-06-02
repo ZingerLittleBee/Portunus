@@ -101,4 +101,72 @@
   :focus-visible {
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
+
+  /*
+   * Global auto-hide scrollbars. Tailwind v3.4 has no first-party scrollbar
+   * utilities (those landed in v4.3), so we style native scrollbars once here
+   * and let every `overflow-*` container inherit a consistent look.
+   *
+   * At rest the thumb is transparent (invisible) while the track width stays
+   * fixed at 10px, so revealing it never reflows the layout. The thumb fades
+   * in only while the user is actively scrolling — scrollbar-autohide.ts
+   * toggles `data-scrolling` on <html> — and on hover for pointer users.
+   * Colors follow the --muted-foreground token, so light/dark switch
+   * automatically and match the Radix ScrollBar thumb.
+   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    background-color: transparent;
+    transition: background-color 200ms ease;
+  }
+
+  /* Reveal while actively scrolling (data-scrolling on <html>). */
+  html[data-scrolling],
+  html[data-scrolling] * {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+  }
+
+  html[data-scrolling]::-webkit-scrollbar-thumb,
+  html[data-scrolling] ::-webkit-scrollbar-thumb,
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  /* Reveal on hover for pointer users, slightly stronger on direct hover. */
+  *:hover {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.6);
+  }
+
+  /*
+   * Radix ScrollArea hides the native scrollbar and renders its own thumb.
+   * Opt its viewport out of the global rules above so the two don't stack.
+   */
+  [data-radix-scroll-area-viewport] {
+    scrollbar-width: none;
+  }
+
+  [data-radix-scroll-area-viewport]::-webkit-scrollbar {
+    display: none;
+  }
 }

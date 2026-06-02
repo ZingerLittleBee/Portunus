@@ -9,8 +9,12 @@ import { ThemeProvider } from "@/theme/ThemeProvider";
 import { i18n } from "@/i18n";
 import { App } from "@/App";
 import { Toaster } from "@/components/ui/sonner";
+import { initScrollbarAutoHide } from "@/lib/scrollbar-autohide";
 
 import "@/theme/tokens.css";
+
+// Reveal scrollbars only while actively scrolling (see scrollbar-autohide.ts).
+initScrollbarAutoHide();
 
 // Dev-only: react-grab overlay for inspecting React component sources.
 if (import.meta.env.DEV) {
