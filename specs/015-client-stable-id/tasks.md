@@ -131,7 +131,7 @@ unknown id returns a clean not-found.
 
 - [ ] T034 [P] [US3] Tests: id-based detail route + `--client-id` command resolve after rename; unknown `client_id` → 404 (FR-012) — `crates/portunus-server/tests/client_addressing.rs` (+ a webui route smoke test) — MUST FAIL first
 - [X] T035 [US3] Web UI: change route to `/clients/:clientId` (was `:clientName`) and key all client links/requests on the id — `webui/src/App.tsx:231` + callers
-- [ ] T036 [P] [US3] Web UI: disambiguate duplicate display names with a short id in all client listings — `webui/src/pages/` + `webui/src/components/`
+- [X] T036 [P] [US3] Web UI: disambiguate duplicate display names with a short id in all client listings — `webui/src/pages/` + `webui/src/components/`
 - [ ] T037 [US3] Ensure all client-scoped operator routes return 404 for unknown `client_id` without leaking colliding-name existence (Constitution V) in `crates/portunus-server/src/operator/`
 - [X] T038 [US3] Checkpoint: bookmark a client, rename it, reopen bookmark → same client
 

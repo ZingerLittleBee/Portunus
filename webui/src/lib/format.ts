@@ -79,3 +79,13 @@ export function formatTimestamp(iso: string): string {
     hour12: false,
   });
 }
+
+/**
+ * 015-client-stable-id: compact, human-recognizable form of a client_id
+ * (ULID) used to disambiguate duplicate display names in listings. Keeps
+ * the leading + trailing chars so two ids are easy to tell apart at a
+ * glance without showing all 26 characters.
+ */
+export function shortId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id;
+}

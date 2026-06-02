@@ -38,7 +38,7 @@ import { Label } from "@/components/ui/label";
 import { ClientProvisionForm } from "@/components/ClientProvisionForm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
-import { formatTimestamp } from "@/lib/format";
+import { formatTimestamp, shortId } from "@/lib/format";
 import type { ClientView } from "@/api/types";
 
 export function ClientsList() {
@@ -145,12 +145,17 @@ export function ClientsList() {
       key: "name",
       header: t("clients.name"),
       render: (c) => (
-        <Link
-          to={`/clients/${encodeURIComponent(c.client_id)}`}
-          className="text-primary hover:underline"
-        >
-          {c.client_name}
-        </Link>
+        <div className="flex flex-col">
+          <Link
+            to={`/clients/${encodeURIComponent(c.client_id)}`}
+            className="text-primary hover:underline"
+          >
+            {c.client_name}
+          </Link>
+          {/* 015-client-stable-id (US3 / FR-013): a short id disambiguates
+              duplicate display names, which are now allowed. */}
+          <code className="text-xs text-muted-foreground">{shortId(c.client_id)}</code>
+        </div>
       ),
       sortable: true,
       sortValue: (c) => c.client_name,
