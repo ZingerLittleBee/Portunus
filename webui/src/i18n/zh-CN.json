@@ -25,7 +25,7 @@
   },
   "login": {
     "title": "登录",
-    "subtitle": "使用 operator 用户 ID 和密码登录。",
+    "subtitle": "使用账号和密码登录。",
     "userIdLabel": "用户 ID",
     "passwordLabel": "密码",
     "credentialsRequired": "请填写用户 ID 和密码。",
@@ -140,6 +140,7 @@
     "title": "新建用户",
     "submit": "创建用户",
     "invalidId": "ID 必须以小写字母开头,可包含 a-z、0-9、连字符或下划线。",
+    "displayNameRequired": "请填写显示名称。",
     "idHint": "小写字母、数字、连字符和下划线;必须以字母开头。",
     "initialPassword": "初始密码",
     "initialPasswordHint": "可选。留空则创建没有 Web 登录密码的用户。",
@@ -184,6 +185,7 @@
     "newRule": "下发规则",
     "remove": "删除",
     "ownerFilter": "所有者",
+    "ownerFilterAll": "全部所有者",
     "emptyTitle": "暂无规则",
     "emptyBody": "下发第一条规则以开始转发流量。",
     "multiTargetPill": "多目标 ×{{count}}"
@@ -215,7 +217,10 @@
     "sniPatternPlaceholder": "api.example.com 或 *.example.com",
     "sniPatternHelp": "精确主机名或单层通配符。留空为普通 TCP 转发。仅适用于 TCP 单端口规则。",
     "rateLimitTitle": "服务质量(QoS)",
-    "rateLimitHelp": "按规则配置可选的 QoS 上限。留空表示该维度不限制。"
+    "rateLimitHelp": "按规则配置可选的 QoS 上限。留空表示该维度不限制。",
+    "requiredField": "此字段为必填项。",
+    "invalidPort": "请输入 1–65535 之间的端口。",
+    "invalidHealthCheckInterval": "请输入 1–3600 秒之间的值。"
   },
   "rateLimitForm": {
     "title": "速率限制",

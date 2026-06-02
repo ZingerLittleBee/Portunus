@@ -24,8 +24,10 @@ test.describe("multi-target rule push", () => {
     // Default mode is single-target — the multi-target controls are hidden.
     await expect(page.getByRole("button", { name: /add another target/i })).toBeHidden();
 
-    // Switch to multi-target mode.
-    await page.getByLabel(/multi-target/i).check();
+    // Switch to multi-target mode. The mode selector is a shadcn ToggleGroup
+    // (radix `type="single"`), so its items render as `role="radio"` buttons
+    // whose accessible name is the option text — click, not check.
+    await page.getByRole("radio", { name: /multi-target/i }).click();
 
     // The two seeded target rows render. Add a third.
     await page.getByRole("button", { name: /add another target/i }).click();

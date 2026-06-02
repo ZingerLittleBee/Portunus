@@ -2,15 +2,19 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
 
 import { ApiError } from "@/api/client";
 import { changeOwnPassword, login } from "@/api/auth";
 import { fetchIdentity, ME_QUERY_KEY } from "@/auth/AuthGate";
 import { clearLegacyToken } from "@/auth/token-store";
+import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { FieldGroup } from "@/components/ui/field";
+import { FormTextField } from "@/components/form/fields";
 
 function safeNext(raw: string | null): string {
   if (!raw) return "/";
@@ -23,18 +27,102 @@ function safeNext(raw: string | null): string {
   return "/";
 }
 
+/// Required password-change step, rendered only after a temporary-password
+/// login. Lives in its own component so its `useForm` initialises fresh on
+/// mount — co-locating it with the login form's `useForm` and transitioning
+/// via the login `handleSubmit` drops the first value written to the newly
+/// mounted controls (a React 18 + RHF state-flush race).
+function ChangePasswordForm({
+  currentPassword,
+  onChanged,
+}: {
+  currentPassword: string;
+  onChanged: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [error, setError] = useState<string | null>(null);
+
+  const schema = z
+    .object({
+      newPassword: z.string().min(1, t("login.newPasswordRequired")),
+      newPasswordConfirm: z.string().min(1, t("login.newPasswordRequired")),
+    })
+    .refine((d) => d.newPassword === d.newPasswordConfirm, {
+      message: t("login.passwordMismatch"),
+      path: ["newPasswordConfirm"],
+    });
+  const form = useForm<z.infer<typeof schema>>({
+    resolver: zResolver<z.infer<typeof schema>>(schema),
+    defaultValues: { newPassword: "", newPasswordConfirm: "" },
+  });
+
+  async function onSubmit(values: z.infer<typeof schema>) {
+    setError(null);
+    try {
+      await changeOwnPassword({
+        current_password: currentPassword,
+        new_password: values.newPassword,
+        new_password_confirm: values.newPasswordConfirm,
+      });
+      await onChanged();
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "unknown";
+      setError(t("login.passwordChangeFailed", { code }));
+    }
+  }
+
+  const busy = form.formState.isSubmitting;
+  return (
+    <form onSubmit={form.handleSubmit(onSubmit)}>
+      <FieldGroup>
+        <FormTextField
+          control={form.control}
+          name="newPassword"
+          type="password"
+          autoComplete="new-password"
+          autoFocus
+          label={t("login.newPasswordLabel")}
+          disabled={busy}
+        />
+        <FormTextField
+          control={form.control}
+          name="newPasswordConfirm"
+          type="password"
+          autoComplete="new-password"
+          label={t("login.newPasswordConfirmLabel")}
+          disabled={busy}
+        />
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <Button type="submit" className="w-full" disabled={busy}>
+          {busy ? t("login.savingPassword") : t("login.savePassword")}
+        </Button>
+      </FieldGroup>
+    </form>
+  );
+}
+
 export function LoginPage() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [userId, setUserId] = useState("");
-  const [password, setPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  // The change-password step needs the password just used to log in.
+  const [currentPassword, setCurrentPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+
+  const loginSchema = z.object({
+    userId: z.string().trim().min(1, t("login.credentialsRequired")),
+    password: z.string().min(1, t("login.credentialsRequired")),
+  });
+  const loginForm = useForm<z.infer<typeof loginSchema>>({
+    resolver: zResolver<z.infer<typeof loginSchema>>(loginSchema),
+    defaultValues: { userId: "", password: "" },
+  });
 
   const search = new URLSearchParams(location.search);
   const expired = search.get("reason") === "session_expired";
@@ -46,18 +134,13 @@ export function LoginPage() {
     navigate(next, { replace: true });
   }
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  async function onLogin(values: z.infer<typeof loginSchema>) {
     setError(null);
-    if (!userId.trim() || !password) {
-      setError(t("login.credentialsRequired"));
-      return;
-    }
-    setBusy(true);
     try {
       clearLegacyToken();
-      const response = await login({ user_id: userId.trim(), password });
+      const response = await login({ user_id: values.userId.trim(), password: values.password });
       if (response.password_change_required) {
+        setCurrentPassword(values.password);
         setMustChangePassword(true);
         return;
       }
@@ -65,37 +148,10 @@ export function LoginPage() {
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "unknown";
       setError(t("login.invalidCredentials", { code }));
-    } finally {
-      setBusy(false);
     }
   }
 
-  async function handlePasswordChange(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-    if (!newPassword || !newPasswordConfirm) {
-      setError(t("login.newPasswordRequired"));
-      return;
-    }
-    if (newPassword !== newPasswordConfirm) {
-      setError(t("login.passwordMismatch"));
-      return;
-    }
-    setBusy(true);
-    try {
-      await changeOwnPassword({
-        current_password: password,
-        new_password: newPassword,
-        new_password_confirm: newPasswordConfirm,
-      });
-      await finishLogin();
-    } catch (err) {
-      const code = err instanceof ApiError ? err.code : "unknown";
-      setError(t("login.passwordChangeFailed", { code }));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const busy = loginForm.formState.isSubmitting;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
@@ -108,69 +164,41 @@ export function LoginPage() {
         </CardHeader>
         <CardContent>
           {expired && !mustChangePassword && (
-            <p className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
-              {t("login.sessionExpired")}
-            </p>
+            <Alert className="mb-4">
+              <AlertDescription>{t("login.sessionExpired")}</AlertDescription>
+            </Alert>
           )}
           {mustChangePassword ? (
-            <form onSubmit={handlePasswordChange} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="new-password">{t("login.newPasswordLabel")}</Label>
-                <Input
-                  id="new-password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  disabled={busy}
-                  autoFocus
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="new-password-confirm">{t("login.newPasswordConfirmLabel")}</Label>
-                <Input
-                  id="new-password-confirm"
-                  type="password"
-                  autoComplete="new-password"
-                  value={newPasswordConfirm}
-                  onChange={(e) => setNewPasswordConfirm(e.target.value)}
-                  disabled={busy}
-                />
-              </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
-              <Button type="submit" className="w-full" disabled={busy}>
-                {busy ? t("login.savingPassword") : t("login.savePassword")}
-              </Button>
-            </form>
+            <ChangePasswordForm currentPassword={currentPassword} onChanged={finishLogin} />
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="user-id">{t("login.userIdLabel")}</Label>
-                <Input
-                  id="user-id"
+            <form onSubmit={loginForm.handleSubmit(onLogin)}>
+              <FieldGroup>
+                <FormTextField
+                  control={loginForm.control}
+                  name="userId"
                   autoComplete="username"
                   spellCheck={false}
-                  value={userId}
-                  onChange={(e) => setUserId(e.target.value)}
-                  disabled={busy}
                   autoFocus
+                  label={t("login.userIdLabel")}
+                  disabled={busy}
                 />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">{t("login.passwordLabel")}</Label>
-                <Input
-                  id="password"
+                <FormTextField
+                  control={loginForm.control}
+                  name="password"
                   type="password"
                   autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  label={t("login.passwordLabel")}
                   disabled={busy}
                 />
-              </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
-              <Button type="submit" className="w-full" disabled={busy}>
-                {busy ? t("login.signingIn") : t("login.signIn")}
-              </Button>
+                {error && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+                <Button type="submit" className="w-full" disabled={busy}>
+                  {busy ? t("login.signingIn") : t("login.signIn")}
+                </Button>
+              </FieldGroup>
             </form>
           )}
         </CardContent>
