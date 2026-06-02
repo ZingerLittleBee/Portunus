@@ -16,13 +16,14 @@ step:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
-  | sudo sh -s -- client --systemd
+  | sudo sh -s -- client
 ```
 
 This downloads + checksum-verifies the release binary, creates the
 `portunus-client` service user, lays out `/etc/portunus` (mode 0750),
-and installs the hardened `portunus-client.service`. For the server,
-use `… | sudo sh -s -- server --systemd` (creates `portunus-server` and
+and installs the hardened `portunus-client.service` (the service is
+installed by default — `--systemd` is a deprecated no-op). For the
+server, use `… | sudo sh -s -- server` (creates `portunus-server` and
 `/var/lib/portunus`, mode 0750). Binary acquisition and flags are
 documented once in
 [Client Configuration](/en/docs/configuration/client#install-the-binary).
@@ -156,7 +157,7 @@ portunus-server --data-dir /var/lib/portunus enroll-client edge-01
 
 # 6. On the edge host: install + enroll, then place the bundle
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
-  | sudo sh -s -- client --systemd
+  | sudo sh -s -- client
 portunus-client enroll 'portunus://...' --out ./client.bundle.json
 sudo install -o root -g portunus-client -m 0640 \
   ./client.bundle.json /etc/portunus/client.bundle.json

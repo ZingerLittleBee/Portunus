@@ -223,8 +223,10 @@ Start it with `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f
 compose.client.yaml up -d`. Host networking is the least surprising mode
 for `portunus-client`: pushed rules bind listeners on the edge host and
 Docker cannot know those ports before the operator creates the rules.
-`install.sh` is host-only — containers use the image directly. Binary
-and enroll details: [Client Configuration](/en/docs/configuration/client).
+`install.sh client --deploy docker` writes exactly this `compose.yml` for
+you — enroll once first so `./client.bundle.json` exists (it refuses
+otherwise). Binary and enroll details:
+[Client Configuration](/en/docs/configuration/client).
 
 ## Backup & migration
 

@@ -204,8 +204,9 @@ services:
 
 用 `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d`
 启动。`portunus-client` 用 host networking 最省心：operator 推送的规则会在 edge
-宿主机上绑定 listener，而 Docker 事先并不知道这些端口。`install.sh` 仅用于宿主机
-安装 —— 容器直接使用镜像。二进制与 enroll 详情见 [Client 配置](/zh/docs/configuration/client)。
+宿主机上绑定 listener，而 Docker 事先并不知道这些端口。`install.sh client --deploy docker`
+会为你生成完全相同的 `compose.yml` —— 先 enroll 一次让 `./client.bundle.json` 存在
+（否则会拒绝执行）。二进制与 enroll 详情见 [Client 配置](/zh/docs/configuration/client)。
 
 ## 备份与迁移
 
