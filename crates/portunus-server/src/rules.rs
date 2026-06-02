@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
-use portunus_core::{ClientName, PortRange, PortRangeError, RuleId};
+use portunus_core::{ClientId, ClientName, PortRange, PortRangeError, RuleId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -48,6 +48,12 @@ pub enum RuleState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     pub id: RuleId,
+    /// Stable, opaque owner id (015-client-stable-id, T015). This — not
+    /// the display name — is the canonical key the in-memory registry,
+    /// the persisted `rules.client_id` column, and the reconnect-replay
+    /// path key on, so a client rename never orphans its rules.
+    pub client_id: ClientId,
+    /// Free-form display name, kept for operator-facing messages / logs.
     pub client_name: ClientName,
     /// Range start (inclusive). For single-port rules this is also the
     /// only port (`listen_port_end == None`).
@@ -324,7 +330,7 @@ struct Inner {
     /// same `(client, listen_port)` (each with a distinct
     /// `sni_pattern`). For range rules and UDP rules the vec stays
     /// length-1 (overlap is still rejected the v0.7 way).
-    by_client_listen_start: HashMap<ClientName, BTreeMap<u16, Vec<RuleId>>>,
+    by_client_listen_start: HashMap<ClientId, BTreeMap<u16, Vec<RuleId>>>,
 }
 
 impl ServerRuleStore {
@@ -339,8 +345,10 @@ impl ServerRuleStore {
     /// The owner defaults to the built-in superadmin identity — only
     /// the test surface uses this path.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn push(
         &self,
+        client_id: ClientId,
         client_name: ClientName,
         listen_port: u16,
         target_host: String,
@@ -349,6 +357,7 @@ impl ServerRuleStore {
         prefer_ipv6: Option<bool>,
     ) -> Result<Rule, RuleStoreError> {
         self.push_range(
+            client_id,
             client_name,
             PortRange::single(listen_port),
             target_host,
@@ -372,8 +381,10 @@ impl ServerRuleStore {
     /// for tests and future SNI-aware callers. Available outside the
     /// test cfg so integration tests in `tests/` can reach it.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn push_with_sni(
         &self,
+        client_id: ClientId,
         client_name: ClientName,
         listen_port: u16,
         target_host: String,
@@ -382,6 +393,7 @@ impl ServerRuleStore {
         sni_pattern: Option<String>,
     ) -> Result<Rule, RuleStoreError> {
         self.push_range_with_targets(
+            client_id,
             client_name,
             PortRange::single(listen_port),
             target_host,
@@ -411,6 +423,7 @@ impl ServerRuleStore {
     #[allow(clippy::too_many_arguments)]
     pub async fn push_range(
         &self,
+        client_id: ClientId,
         client_name: ClientName,
         listen: PortRange,
         target_host: String,
@@ -421,6 +434,7 @@ impl ServerRuleStore {
         owner_user_id: portunus_auth::UserId,
     ) -> Result<Rule, RuleStoreError> {
         self.push_range_with_targets(
+            client_id,
             client_name,
             listen,
             target_host,
@@ -449,6 +463,7 @@ impl ServerRuleStore {
     #[allow(clippy::too_many_arguments)]
     pub async fn push_range_with_targets(
         &self,
+        client_id: ClientId,
         client_name: ClientName,
         listen: PortRange,
         target_host: String,
@@ -501,7 +516,7 @@ impl ServerRuleStore {
         //     SniFallbackDuplicate
         //   * distinct sni_pattern siblings → ACCEPT (the listener fans
         //     them out into one SniRoutingTable)
-        if let Some(index) = guard.by_client_listen_start.get(&client_name) {
+        if let Some(index) = guard.by_client_listen_start.get(&client_id) {
             for (_start, existing_ids) in index.range(..=listen.end()) {
                 for existing_id in existing_ids {
                     let Some(existing) = guard.rules.get(existing_id) else {
@@ -566,8 +581,7 @@ impl ServerRuleStore {
                                 //     and no fallback → ACCEPT (the
                                 //     candidate becomes the fallback).
                                 let mut has_fallback = false;
-                                if let Some(siblings) =
-                                    guard.by_client_listen_start.get(&client_name)
+                                if let Some(siblings) = guard.by_client_listen_start.get(&client_id)
                                     && let Some(sibling_ids) = siblings.get(&candidate_listen_port)
                                 {
                                     for sid in sibling_ids {
@@ -634,6 +648,7 @@ impl ServerRuleStore {
         };
         let rule = Rule {
             id,
+            client_id,
             client_name: client_name.clone(),
             listen_port: listen.start(),
             listen_port_end,
@@ -656,7 +671,7 @@ impl ServerRuleStore {
         };
         guard
             .by_client_listen_start
-            .entry(client_name)
+            .entry(client_id)
             .or_default()
             .entry(listen.start())
             .or_default()
@@ -708,7 +723,7 @@ impl ServerRuleStore {
     pub async fn remove(&self, id: RuleId) -> Result<Rule, RuleStoreError> {
         let mut guard = self.inner.write().await;
         let rule = guard.rules.remove(&id).ok_or(RuleStoreError::NotFound)?;
-        if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_name) {
+        if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_id) {
             if let Some(ids) = index.get_mut(&rule.listen_port) {
                 ids.retain(|x| *x != id);
                 if ids.is_empty() {
@@ -716,7 +731,7 @@ impl ServerRuleStore {
                 }
             }
             if index.is_empty() {
-                guard.by_client_listen_start.remove(&rule.client_name);
+                guard.by_client_listen_start.remove(&rule.client_id);
             }
         }
         Ok(rule)
@@ -748,7 +763,7 @@ impl ServerRuleStore {
             max_id = max_id.max(rule.id.0.saturating_add(1));
             guard
                 .by_client_listen_start
-                .entry(rule.client_name.clone())
+                .entry(rule.client_id)
                 .or_default()
                 .entry(rule.listen_port)
                 .or_default()
@@ -786,7 +801,7 @@ impl ServerRuleStore {
         let mut out = Vec::with_capacity(to_remove.len());
         for id in to_remove {
             if let Some(rule) = guard.rules.remove(&id) {
-                if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_name) {
+                if let Some(index) = guard.by_client_listen_start.get_mut(&rule.client_id) {
                     if let Some(ids) = index.get_mut(&rule.listen_port) {
                         ids.retain(|x| *x != id);
                         if ids.is_empty() {
@@ -794,7 +809,7 @@ impl ServerRuleStore {
                         }
                     }
                     if index.is_empty() {
-                        guard.by_client_listen_start.remove(&rule.client_name);
+                        guard.by_client_listen_start.remove(&rule.client_id);
                     }
                 }
                 out.push(id.0);
@@ -803,13 +818,13 @@ impl ServerRuleStore {
         out
     }
 
-    /// Snapshot of every rule. `client_filter` narrows by owner.
-    pub async fn list(&self, client_filter: Option<&ClientName>) -> Vec<Rule> {
+    /// Snapshot of every rule. `client_filter` narrows by stable id.
+    pub async fn list(&self, client_filter: Option<&ClientId>) -> Vec<Rule> {
         let guard = self.inner.read().await;
         let mut out: Vec<Rule> = guard
             .rules
             .values()
-            .filter(|r| client_filter.is_none_or(|c| &r.client_name == c))
+            .filter(|r| client_filter.is_none_or(|c| &r.client_id == c))
             .cloned()
             .collect();
         out.sort_by_key(|r| r.id.0);
@@ -839,9 +854,22 @@ mod tests {
         ClientName::from_str(s).unwrap()
     }
 
+    /// 015-client-stable-id: deterministically map a display name to a
+    /// stable `client_id` so a test that pushes several rules under one
+    /// name keys them on the same id (mirroring the real one-id-per-name
+    /// invariant), while distinct names get distinct ids.
+    fn cid(s: &str) -> ClientId {
+        let mut h: u128 = 0;
+        for b in s.bytes() {
+            h = h.wrapping_mul(31).wrapping_add(u128::from(b));
+        }
+        ClientId(ulid::Ulid::from(h))
+    }
+
     async fn push_one(store: &ServerRuleStore) -> Rule {
         store
             .push(
+                cid("edge-01"),
                 name("edge-01"),
                 18080,
                 "10.0.0.5".into(),
@@ -908,7 +936,15 @@ mod tests {
         let r = push_one(&store).await;
         store.mark_active(r.id).await.unwrap();
         let err = store
-            .push(name("edge-01"), 18080, "x".into(), 1, Protocol::Tcp, None)
+            .push(
+                cid("edge-01"),
+                name("edge-01"),
+                18080,
+                "x".into(),
+                1,
+                Protocol::Tcp,
+                None,
+            )
             .await
             .unwrap_err();
         match err {
@@ -926,7 +962,15 @@ mod tests {
         // Re-push: blocked.
         assert!(matches!(
             store
-                .push(name("edge-01"), 18080, "x".into(), 1, Protocol::Tcp, None)
+                .push(
+                    cid("edge-01"),
+                    name("edge-01"),
+                    18080,
+                    "x".into(),
+                    1,
+                    Protocol::Tcp,
+                    None,
+                )
                 .await,
             Err(RuleStoreError::PortInUse { .. })
         ));
@@ -949,15 +993,31 @@ mod tests {
     async fn list_filters_by_client() {
         let store = ServerRuleStore::new();
         store
-            .push(name("edge-a"), 1000, "x".into(), 1, Protocol::Tcp, None)
+            .push(
+                cid("edge-a"),
+                name("edge-a"),
+                1000,
+                "x".into(),
+                1,
+                Protocol::Tcp,
+                None,
+            )
             .await
             .unwrap();
         store
-            .push(name("edge-b"), 1001, "x".into(), 1, Protocol::Tcp, None)
+            .push(
+                cid("edge-b"),
+                name("edge-b"),
+                1001,
+                "x".into(),
+                1,
+                Protocol::Tcp,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(store.list(None).await.len(), 2);
-        assert_eq!(store.list(Some(&name("edge-a"))).await.len(), 1);
+        assert_eq!(store.list(Some(&cid("edge-a"))).await.len(), 1);
     }
 
     // --- T015 / T020: range push behavior ---
@@ -972,6 +1032,7 @@ mod tests {
     ) -> Result<Rule, RuleStoreError> {
         store
             .push_range(
+                cid(client),
                 name(client),
                 PortRange::new(l, le).unwrap(),
                 "10.0.0.5".into(),
@@ -1015,6 +1076,7 @@ mod tests {
         let store = ServerRuleStore::new();
         let err = store
             .push_range(
+                cid("edge-01"),
                 name("edge-01"),
                 PortRange::new(30000, 30050).unwrap(),
                 "10.0.0.5".into(),
@@ -1045,6 +1107,7 @@ mod tests {
         let store = ServerRuleStore::new();
         let err = store
             .push_range(
+                cid("edge-01"),
                 name("edge-01"),
                 PortRange::new(30000, 30002).unwrap(),
                 "h".into(),
@@ -1067,6 +1130,7 @@ mod tests {
         let store = ServerRuleStore::new();
         let err = store
             .push_range(
+                cid("edge-01"),
                 name("edge-01"),
                 PortRange::new(30000, 30100).unwrap(),
                 "h".into(),
@@ -1093,6 +1157,7 @@ mod tests {
         let store = ServerRuleStore::new();
         let r = store
             .push_range(
+                cid("edge-01"),
                 name("edge-01"),
                 PortRange::single(18080),
                 "10.0.0.5".into(),
@@ -1189,6 +1254,7 @@ mod tests {
         let store = ServerRuleStore::new();
         let tcp = store
             .push(
+                cid("edge-01"),
                 name("edge-01"),
                 6000,
                 "127.0.0.1".into(),
@@ -1201,6 +1267,7 @@ mod tests {
         store.mark_active(tcp.id).await.unwrap();
         let udp = store
             .push(
+                cid("edge-01"),
                 name("edge-01"),
                 6000,
                 "127.0.0.1".into(),
@@ -1220,6 +1287,7 @@ mod tests {
         let store = ServerRuleStore::new();
         let first = store
             .push(
+                cid("edge-01"),
                 name("edge-01"),
                 6000,
                 "127.0.0.1".into(),
@@ -1232,6 +1300,7 @@ mod tests {
         store.mark_active(first.id).await.unwrap();
         let err = store
             .push(
+                cid("edge-01"),
                 name("edge-01"),
                 6000,
                 "127.0.0.1".into(),
@@ -1260,6 +1329,7 @@ mod tests {
         let target = PortRange::new(9990, 9999).unwrap();
         let rule = store
             .push_range(
+                cid("edge-01"),
                 name("edge-01"),
                 listen,
                 "127.0.0.1".into(),
@@ -1281,6 +1351,7 @@ mod tests {
         let bad_target = PortRange::new(9990, 9991).unwrap();
         let err = store
             .push_range(
+                cid("edge-02"),
                 name("edge-02"),
                 listen,
                 "127.0.0.1".into(),

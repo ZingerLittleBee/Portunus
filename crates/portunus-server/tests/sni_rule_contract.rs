@@ -476,8 +476,19 @@ async fn sni_pattern_in_new_targets_shape_also_gated() {
 // only fires against rules in `Active`/`Failed` state (v0.7
 // semantics; preserved by v0.9).
 
-use portunus_core::PortRange;
+use portunus_core::{ClientId, PortRange};
 use portunus_server::rules::{Protocol, RuleStoreError, ServerRuleStore};
+
+/// 015-client-stable-id: deterministic name→id so rules planted under the
+/// same display name share one stable `client_id` (overlap detection is
+/// now id-keyed). Distinct names map to distinct ids.
+fn cid(c: &ClientName) -> ClientId {
+    let mut h: u128 = 0;
+    for b in c.as_str().bytes() {
+        h = h.wrapping_mul(31).wrapping_add(u128::from(b));
+    }
+    ClientId(ulid::Ulid::from(h))
+}
 
 async fn plant_active_legacy(
     store: &ServerRuleStore,
@@ -488,6 +499,7 @@ async fn plant_active_legacy(
 ) {
     let rule = store
         .push_range_with_targets(
+            cid(client),
             client.clone(),
             PortRange::single(listen_port),
             target_host.into(),
@@ -516,6 +528,7 @@ async fn plant_active_sni(
 ) {
     let rule = store
         .push_with_sni(
+            cid(client),
             client.clone(),
             listen_port,
             target_host.into(),
@@ -535,6 +548,7 @@ async fn overlap_matrix_legacy_legacy_collides() {
     plant_active_legacy(&store, &client, 443, "10.0.0.1", 9001).await;
     let err = store
         .push_range_with_targets(
+            cid(&client),
             client,
             PortRange::single(443),
             "10.0.0.2".into(),
@@ -564,6 +578,7 @@ async fn overlap_matrix_legacy_then_sni_returns_legacy_to_sni() {
     plant_active_legacy(&store, &client, 443, "10.0.0.1", 9001).await;
     let err = store
         .push_with_sni(
+            cid(&client),
             client,
             443,
             "10.0.0.2".into(),
@@ -618,6 +633,7 @@ async fn overlap_matrix_sni_duplicate_pattern_refused() {
     .await;
     let err = store
         .push_with_sni(
+            cid(&client),
             client,
             443,
             "10.0.0.2".into(),
@@ -665,7 +681,15 @@ async fn overlap_matrix_two_fallbacks_refused() {
     .await;
     plant_active_sni(&store, &client, 443, "10.0.0.2", 9002, None).await;
     let err = store
-        .push_with_sni(client, 443, "10.0.0.3".into(), 9003, Protocol::Tcp, None)
+        .push_with_sni(
+            cid(&client),
+            client,
+            443,
+            "10.0.0.3".into(),
+            9003,
+            Protocol::Tcp,
+            None,
+        )
         .await
         .expect_err("second fallback must refuse");
     assert!(
@@ -683,12 +707,22 @@ async fn http_legacy_listener_refuses_sni_candidate() {
     let f = build_fixture();
     register_fake_client(&f, CLIENT, Some("0.9.0"), false).await;
     // Plant a legacy rule at :30030 directly (bypass the wire ack)
-    // and mark it Active so the overlap check will see it.
+    // and mark it Active so the overlap check will see it. 015-client-
+    // stable-id: the HTTP push below resolves the client by its stable
+    // id via the connected registry, so plant the rule under that same
+    // id (not a synthetic one) or the id-keyed overlap check won't fire.
     let client = ClientName::new(CLIENT.to_string()).expect("name");
+    let connected_id = f
+        .state
+        .clients
+        .client_id_by_name(&client)
+        .await
+        .expect("registered client has a stable id");
     let rule = f
         .state
         .rules
         .push_range_with_targets(
+            connected_id,
             client.clone(),
             portunus_core::PortRange::single(30030),
             "10.0.0.1".into(),

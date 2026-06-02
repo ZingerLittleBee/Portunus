@@ -995,6 +995,12 @@ pub async fn push_rule(
     let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
+    // 015-client-stable-id (T015): rules are keyed by the client's stable
+    // id. Resolve it from the live registry — the client is guaranteed
+    // connected here, so the lookup always succeeds.
+    let Some(client_id) = state.clients.client_id_by_name(&client_name).await else {
+        return Err(OperatorError::ClientNotConnected(client_name));
+    };
 
     // 004-udp-forward T017: capability gating. UDP rules can only be
     // pushed to a client whose Hello declared UDP support. v0.3 clients
@@ -1018,6 +1024,7 @@ pub async fn push_rule(
     let rule = state
         .rules
         .push_range(
+            client_id,
             client_name.clone(),
             listen,
             target_host.to_string(),
@@ -1243,6 +1250,9 @@ pub async fn push_rule_multi_target(
     let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
+    let Some(client_id) = state.clients.client_id_by_name(&client_name).await else {
+        return Err(OperatorError::ClientNotConnected(client_name));
+    };
 
     // Capability gate (mirrors push_rule). UDP multi-target rules need
     // a UDP-capable client just like single-target UDP rules.
@@ -1264,6 +1274,7 @@ pub async fn push_rule_multi_target(
     let rule = state
         .rules
         .push_range_with_targets(
+            client_id,
             client_name.clone(),
             listen,
             target_host.clone(),
@@ -1526,11 +1537,11 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
         .list_owned_by(&removed.owner_user_id)
         .await
         .into_iter()
-        .filter(|r| r.client_name == removed.client_name)
+        .filter(|r| r.client_id == removed.client_id)
         .count();
     if let Err(e) = state
         .owner_caps
-        .gc_after_rule_removed(&removed.client_name, owner.as_str(), rules_remaining)
+        .gc_after_rule_removed(&removed.client_id, owner.as_str(), rules_remaining)
         .await
     {
         warn!(
@@ -1662,16 +1673,19 @@ pub async fn rule_stats(
         .ok_or(OperatorError::RuleNotFound)
 }
 
-/// `list-rules [--client <name>]`.
+/// `list-rules [--client <name>]`. The `--client` / `?client=` filter
+/// stays a free-form display-name match for operator convenience (rules
+/// are keyed internally by `client_id`, but a human types the name). An
+/// empty/whitespace filter is treated as "no filter".
 pub async fn list_rules(
     state: &AppState,
     raw_client: Option<&str>,
 ) -> Result<Vec<Rule>, OperatorError> {
-    let filter = match raw_client {
-        Some(s) => Some(ClientName::from_str(s)?),
-        None => None,
-    };
-    Ok(state.rules.list(filter.as_ref()).await)
+    let mut rules = state.rules.list(None).await;
+    if let Some(name) = raw_client.map(str::trim).filter(|s| !s.is_empty()) {
+        rules.retain(|r| r.client_name.as_str() == name);
+    }
+    Ok(rules)
 }
 
 #[allow(dead_code)]

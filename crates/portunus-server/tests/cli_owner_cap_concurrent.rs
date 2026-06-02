@@ -126,7 +126,23 @@ async fn build_harness() -> Harness {
 /// — this test only cares about the HTTP/CLI surface.
 async fn register_fake_client(harness: &Harness, name: &str, version: &str) {
     let client_name = ClientName::new(name.to_string()).expect("valid client");
-    let client_id = portunus_core::ClientId::new();
+    // 015-client-stable-id: provision the client into the token store so
+    // the CLI's name→id resolution (via GET /v1/clients) finds it, then
+    // register the live session under that same stable id.
+    harness
+        .state
+        .tokens
+        .issue_with_address(client_name.clone(), None)
+        .expect("issue token");
+    let client_id = harness
+        .state
+        .tokens
+        .list()
+        .expect("list clients")
+        .into_iter()
+        .find(|p| p.client_name == client_name)
+        .expect("provisioned client present")
+        .client_id;
     let cancel = CancellationToken::new();
     let (outbound, _rx) = tokio::sync::mpsc::channel(8);
     let waiters: Arc<

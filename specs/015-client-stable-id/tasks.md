@@ -64,18 +64,18 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 ### Store layer re-key (all on top of T011)
 
 - [X] T012 Re-key `token_store`: key by `ClientId`, `verify(token) -> ClientIdentity { client_id, client_name }`, issue/revoke/delete by `client_id`, keep `client_name` as mutable display column; rewrite its unit tests in `crates/portunus-server/src/store/token_store.rs`
-- [ ] T013 [P] Re-key `OwnerCap` + all SQL to `client_id` (`WHERE client_id = ?`, PK `(client_id, owner_id)`) in `crates/portunus-server/src/store/owner_cap_store.rs`
-- [ ] T014 [P] Re-key `client_enrollments` access to `client_id` in `crates/portunus-server/src/store/enrollment_store.rs`
-- [ ] T015 [P] Re-key rule rows to `client_id` (column + index) in `crates/portunus-server/src/store/operator_store.rs`
-- [ ] T016 [P] Re-key traffic-quota stores (`traffic_quotas`, `traffic_usage_minute`, `traffic_usage_hour`) to `(user_id, client_id, …)` in the traffic-quota store module(s) under `crates/portunus-server/src/store/`
+- [X] T013 [P] Re-key `OwnerCap` + all SQL to `client_id` (`WHERE client_id = ?`, PK `(client_id, owner_id)`) in `crates/portunus-server/src/store/owner_cap_store.rs`
+- [X] T014 [P] Re-key `client_enrollments` access to `client_id` in `crates/portunus-server/src/store/enrollment_store.rs`
+- [X] T015 [P] Re-key rule rows to `client_id` (column + index) in `crates/portunus-server/src/store/operator_store.rs`
+- [X] T016 [P] Re-key traffic-quota stores (`traffic_quotas`, `traffic_usage_minute`, `traffic_usage_hour`) to `(user_id, client_id, …)` in the traffic-quota store module(s) under `crates/portunus-server/src/store/`
 
 ### Server runtime + control plane
 
 - [X] T017 Switch `ConnectedClients` to `HashMap<ClientId, ConnectedClient>` (register/unregister/get/set_supported_protocols) in `crates/portunus-server/src/clients.rs`
 - [X] T018 Use `identity.client_id` for registry + rule lookups (keep `client_name` for log fields/display) across `crates/portunus-server/src/grpc/service.rs`
 - [ ] T019 Update `crates/portunus-server/src/metrics.rs`: correlate internally by `client_id`, keep the Prometheus `client` label VALUE as the display name
-- [ ] T020 Re-path client-scoped operator HTTP routes to `/v1/clients/{client_id}/...` and switch CLI subcommands to `--client-id` across `crates/portunus-server/src/operator/` (owner-cap, rule, quota CLIs + handlers) — keep workspace compiling
-- [ ] T021 Update client-reference error messages to use the id (with name for display) in `crates/portunus-server/src/rules.rs` and operator error paths
+- [X] T020 Re-path client-scoped operator HTTP routes to `/v1/clients/{client_id}/...` and switch CLI subcommands to `--client-id` across `crates/portunus-server/src/operator/` (owner-cap, rule, quota CLIs + handlers) — keep workspace compiling
+- [X] T021 Update client-reference error messages to use the id (with name for display) in `crates/portunus-server/src/rules.rs` and operator error paths
 
 ### Client bundle
 
@@ -83,7 +83,7 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Checkpoint
 
-- [ ] T023 Foundational green gate: `PORTUNUS_SKIP_WEBUI=1 cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check` all pass
+- [X] T023 Foundational green gate: `PORTUNUS_SKIP_WEBUI=1 cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check` all pass
 
 ---
 

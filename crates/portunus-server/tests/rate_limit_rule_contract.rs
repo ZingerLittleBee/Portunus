@@ -133,7 +133,22 @@ async fn register_fake_client(
 ) -> Arc<tokio::sync::Mutex<Vec<portunus_proto::v1::RuleUpdate>>> {
     use portunus_proto::v1::server_message::Payload;
     let client_name = ClientName::new(name.to_string()).expect("valid client");
-    let client_id = portunus_core::ClientId::new();
+    // 015-client-stable-id: provision into the token store so the live
+    // session and the id-keyed operator surface share one stable id.
+    fixture
+        .state
+        .tokens
+        .issue_with_address(client_name.clone(), None)
+        .expect("issue token");
+    let client_id = fixture
+        .state
+        .tokens
+        .list()
+        .expect("list clients")
+        .into_iter()
+        .find(|p| p.client_name == client_name)
+        .expect("provisioned client present")
+        .client_id;
     let cancel = CancellationToken::new();
     let (outbound, mut rx) = tokio::sync::mpsc::channel(8);
     let seen_updates = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -523,10 +538,21 @@ async fn rate_limit_on_legacy_target_host_shape_returns_400() {
 async fn uncapped_rule_emits_owner_id_when_owner_cap_exists() {
     let f = build_fixture();
     let updates = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    // 015-client-stable-id: address the owner-cap by the client's stable id.
+    let cid = f
+        .state
+        .tokens
+        .list()
+        .expect("list clients")
+        .into_iter()
+        .find(|p| p.client_name.as_str() == CLIENT)
+        .expect("provisioned client present")
+        .client_id
+        .to_string();
 
     let put_owner = Request::builder()
         .method("PUT")
-        .uri(format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"))
+        .uri(format!("/v1/clients/{cid}/owners/alice/rate-limit"))
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {SUPERADMIN_TOKEN}"))
         .body(Body::from(

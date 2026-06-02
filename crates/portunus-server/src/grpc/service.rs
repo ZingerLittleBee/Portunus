@@ -363,6 +363,7 @@ async fn handle_client_message(
                 state
                     .traffic_aggregator
                     .record(
+                        identity.client_id.to_string().as_str(),
                         identity.client_name.as_str(),
                         rule_id,
                         owner.as_str(),
@@ -570,7 +571,9 @@ async fn replay_rules_for_client(
     identity: &ClientIdentity,
     outbound: &OutboundSender,
 ) {
-    let rules = state.rules.list(Some(&identity.client_name)).await;
+    // 015-client-stable-id (T015): replay by the stable id so a renamed
+    // client still receives every rule it owns on reconnect.
+    let rules = state.rules.list(Some(&identity.client_id)).await;
     if rules.is_empty() {
         return;
     }
@@ -656,10 +659,7 @@ async fn replay_owner_caps_for_client(
         // wire byte-identical with the pre-0.11 contract.
         return;
     }
-    let envelopes = state
-        .owner_caps
-        .list_for_client(&identity.client_name)
-        .await;
+    let envelopes = state.owner_caps.list_for_client(&identity.client_id).await;
     if envelopes.is_empty() {
         return;
     }
@@ -667,12 +667,13 @@ async fn replay_owner_caps_for_client(
         let push = ServerMessage {
             payload: Some(server_message::Payload::OwnerRateLimitUpdate(
                 portunus_proto::v1::OwnerRateLimitUpdate {
-                    client_name: envelope.client_name.as_str().to_string(),
+                    // 015-client-stable-id: the wire carries the stable id
+                    // plus the client's current display name for readability.
+                    client_name: identity.client_name.as_str().to_string(),
                     owner_id: envelope.owner_id.clone(),
                     rate_limit: Some(rate_limit_to_proto(&envelope.rate_limit)),
                     action: portunus_proto::v1::OwnerRateLimitAction::Set as i32,
-                    // TODO(T020): populate from the connected identity's client_id.
-                    client_id: String::new(),
+                    client_id: envelope.client_id.to_string(),
                 },
             )),
         };
@@ -823,7 +824,9 @@ async fn apply_unsolicited_rule_status(
         );
         return;
     };
-    if existing.client_name != identity.client_name {
+    // 015-client-stable-id (T015): ownership is by stable id, not the
+    // mutable display name.
+    if existing.client_id != identity.client_id {
         warn!(
             event = "client.rule_status_wrong_client",
             client_name = %identity.client_name,
@@ -1012,6 +1015,7 @@ mod tests {
         let (identity, outbound, mut rx) = register_client(&state, "edge-replay", "0.10.0").await;
         let rule = crate::rules::Rule {
             id: portunus_core::RuleId(7),
+            client_id: identity.client_id,
             client_name: identity.client_name.clone(),
             listen_port: 443,
             listen_port_end: None,
@@ -1060,6 +1064,7 @@ mod tests {
             register_client(&state, "edge-replay-old", "0.8.0").await;
         let rule = crate::rules::Rule {
             id: portunus_core::RuleId(8),
+            client_id: identity.client_id,
             client_name: identity.client_name.clone(),
             listen_port: 443,
             listen_port_end: None,
@@ -1115,6 +1120,7 @@ mod tests {
             .hydrate(vec![
                 crate::rules::Rule {
                     id: portunus_core::RuleId(9),
+                    client_id: identity.client_id,
                     client_name: identity.client_name.clone(),
                     listen_port: 443,
                     listen_port_end: None,
@@ -1141,6 +1147,7 @@ mod tests {
                 },
                 crate::rules::Rule {
                     id: portunus_core::RuleId(10),
+                    client_id: identity.client_id,
                     client_name: identity.client_name.clone(),
                     listen_port: 444,
                     listen_port_end: None,
@@ -1204,6 +1211,7 @@ mod tests {
             .rules
             .hydrate(vec![crate::rules::Rule {
                 id: portunus_core::RuleId(11),
+                client_id: portunus_core::ClientId::new(),
                 client_name: other_client,
                 listen_port: 443,
                 listen_port_end: None,
@@ -1275,12 +1283,12 @@ mod tests {
         // Seed two cap envelopes for this client.
         state
             .owner_caps
-            .upsert(&identity.client_name, "alice", cap_envelope())
+            .upsert(&identity.client_id, "alice", cap_envelope())
             .await
             .unwrap();
         state
             .owner_caps
-            .upsert(&identity.client_name, "bob", cap_envelope())
+            .upsert(&identity.client_id, "bob", cap_envelope())
             .await
             .unwrap();
 
@@ -1318,7 +1326,7 @@ mod tests {
             register_client(&state, "edge-owner-replay-old", "0.10.5").await;
         state
             .owner_caps
-            .upsert(&identity.client_name, "alice", cap_envelope())
+            .upsert(&identity.client_id, "alice", cap_envelope())
             .await
             .unwrap();
 
@@ -1353,7 +1361,7 @@ mod tests {
         let state = build_state();
         let (identity, outbound, mut rx) = register_client(&state, "edge-target", "0.11.0").await;
         // Cap on a DIFFERENT client must not leak.
-        let other = portunus_core::ClientName::new("edge-other".to_string()).unwrap();
+        let other = portunus_core::ClientId::new();
         state
             .owner_caps
             .upsert(&other, "alice", cap_envelope())

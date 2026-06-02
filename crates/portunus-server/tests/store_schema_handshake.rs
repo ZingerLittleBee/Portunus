@@ -41,8 +41,8 @@ fn fresh_store_has_current_schema() {
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 11,
-        "current target schema is 11 (V001..V010 + V011 client_id re-key)"
+        v, 12,
+        "current target schema is 12 (V001..V010 + V011 client_id re-key + V012 PK flip)"
     );
     assert_eq!(v, Store::target_schema_version());
 
@@ -65,6 +65,28 @@ fn fresh_store_has_current_schema() {
             assert!(column_exists(conn, "client_tokens", "client_id"));
             assert!(column_exists(conn, "rules", "client_id"));
             assert!(column_exists(conn, "client_enrollments", "client_id"));
+            // V012: the four per-client tables are PK-flipped onto
+            // client_id. rate_limit_owner drops client_name entirely; the
+            // traffic tables keep it as a plain display column (the wire
+            // frame still echoes the human name).
+            for t in [
+                "rate_limit_owner",
+                "traffic_quotas",
+                "traffic_samples_1m",
+                "traffic_samples_1h",
+            ] {
+                assert!(column_exists(conn, t, "client_id"), "{t} has client_id");
+            }
+            assert!(
+                !column_exists(conn, "rate_limit_owner", "client_name"),
+                "rate_limit_owner dropped client_name"
+            );
+            for t in ["traffic_quotas", "traffic_samples_1m", "traffic_samples_1h"] {
+                assert!(
+                    column_exists(conn, t, "client_name"),
+                    "{t} keeps client_name as display"
+                );
+            }
             Ok(())
         })
         .expect("inspect schema");

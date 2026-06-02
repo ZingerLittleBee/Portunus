@@ -83,7 +83,10 @@ fn put_owner_rate_limit(
     owner: &str,
     body: &serde_json::Value,
 ) -> (reqwest::StatusCode, serde_json::Value) {
-    let url = format!("http://{http}/v1/clients/{client}/owners/{owner}/rate-limit");
+    // 015-client-stable-id: the operator surface addresses clients by
+    // their stable id, so resolve the display name to its client_id.
+    let client_id = common::client_id_for_name(http, client);
+    let url = format!("http://{http}/v1/clients/{client_id}/owners/{owner}/rate-limit");
     let resp = reqwest::blocking::Client::new()
         .put(&url)
         .header("Authorization", "Bearer test-operator-token-005")
@@ -102,7 +105,8 @@ fn get_owner_rate_limit(
     client: &str,
     owner: &str,
 ) -> (reqwest::StatusCode, serde_json::Value) {
-    let url = format!("http://{http}/v1/clients/{client}/owners/{owner}/rate-limit");
+    let client_id = common::client_id_for_name(http, client);
+    let url = format!("http://{http}/v1/clients/{client_id}/owners/{owner}/rate-limit");
     let resp = reqwest::blocking::Client::new()
         .get(&url)
         .header("Authorization", "Bearer test-operator-token-005")

@@ -240,6 +240,20 @@ impl ConnectedClients {
             .map(|c| (c.outbound.clone(), c.status_waiters.clone()))
     }
 
+    /// Name-scan bridge returning the stable `client_id` of a connected
+    /// client by display name. Used by the operator rule-push path to
+    /// stamp the rule with the client's id (rules are keyed by id, T015).
+    /// First match wins on duplicate display names — same semantics as
+    /// [`Self::handles_by_name`], and the push path already requires the
+    /// client to be connected.
+    pub async fn client_id_by_name(&self, client_name: &ClientName) -> Option<ClientId> {
+        let guard = self.inner.read().await;
+        guard
+            .iter()
+            .find(|(_, c)| &c.client_name == client_name)
+            .map(|(id, _)| *id)
+    }
+
     /// Name-scan bridge mirroring [`Self::client_version_of`] for callers
     /// that only hold a `client_name`. See [`Self::handles_by_name`].
     pub async fn client_version_by_name(&self, client_name: &ClientName) -> Option<String> {

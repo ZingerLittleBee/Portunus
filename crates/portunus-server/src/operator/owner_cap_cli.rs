@@ -8,6 +8,7 @@
 //! - `owner-cap set <client> <owner> [--cap …]` → `PUT /v1/clients/{id}/owners/{owner_id}/rate-limit`
 //! - `owner-cap delete <client> <owner>` → `DELETE /v1/clients/{id}/owners/{owner_id}/rate-limit`
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -110,9 +111,54 @@ fn extract_error(resp: reqwest::blocking::Response) -> u8 {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ClientSummary {
+    client_id: String,
+    client_name: String,
+}
+
+/// 015-client-stable-id (T020/T021): the operator HTTP surface addresses
+/// clients by their stable `client_id` (ULID). For ergonomics the CLI
+/// still accepts a display name and resolves it here against
+/// `GET /v1/clients`. A bare ULID is used verbatim (no lookup). A name
+/// matching zero clients is "not found" (exit 8); a name matching more
+/// than one is ambiguous (exit 3) — the operator must pass the
+/// `client_id` to disambiguate (display names are non-unique, FR-009).
+fn resolve_client_id(endpoint: &str, client: &str) -> Result<String, u8> {
+    if portunus_core::ClientId::from_str(client).is_ok() {
+        return Ok(client.to_string());
+    }
+    let url = format!("http://{endpoint}/v1/clients");
+    let resp = apply_auth(http_client()?.get(&url)).send().map_err(|e| {
+        eprintln!("error: http: {e}");
+        1
+    })?;
+    if !resp.status().is_success() {
+        return Err(extract_error(resp));
+    }
+    let clients: Vec<ClientSummary> = resp.json().map_err(|e| {
+        eprintln!("error: parse response: {e}");
+        1
+    })?;
+    let mut matched = clients.into_iter().filter(|c| c.client_name == client);
+    match matched.next() {
+        None => {
+            eprintln!("error: client_not_found (no client named `{client}`)");
+            Err(8)
+        }
+        Some(c) if matched.next().is_none() => Ok(c.client_id),
+        Some(_) => {
+            eprintln!(
+                "error: ambiguous_client_name (`{client}` matches multiple clients; pass the client_id instead)"
+            );
+            Err(3)
+        }
+    }
+}
+
 pub fn list(endpoint: &str, client_name: &str, format: OutputFormat) -> Result<(), u8> {
-    // See note in `get` re: identifier-only constraint.
-    let url = format!("http://{endpoint}/v1/clients/{client_name}/owners");
+    let client_id = resolve_client_id(endpoint, client_name)?;
+    let url = format!("http://{endpoint}/v1/clients/{client_id}/owners");
     let resp = apply_auth(http_client()?.get(&url)).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
@@ -158,11 +204,8 @@ pub fn get(
     owner_id: &str,
     format: OutputFormat,
 ) -> Result<(), u8> {
-    // Client name and owner_id are validated server-side as strict
-    // identifiers (alphanum + `-` + `_`); same constraint applies to
-    // CLI input via the operator HTTP layer's `parse_client_name`,
-    // so direct substitution is safe and mirrors `rule_cli.rs`.
-    let url = format!("http://{endpoint}/v1/clients/{client_name}/owners/{owner_id}/rate-limit");
+    let client_id = resolve_client_id(endpoint, client_name)?;
+    let url = format!("http://{endpoint}/v1/clients/{client_id}/owners/{owner_id}/rate-limit");
     let resp = apply_auth(http_client()?.get(&url)).send().map_err(|e| {
         eprintln!("error: http: {e}");
         1
@@ -260,11 +303,8 @@ pub fn set(
         );
         return Err(3);
     }
-    // Client name and owner_id are validated server-side as strict
-    // identifiers (alphanum + `-` + `_`); same constraint applies to
-    // CLI input via the operator HTTP layer's `parse_client_name`,
-    // so direct substitution is safe and mirrors `rule_cli.rs`.
-    let url = format!("http://{endpoint}/v1/clients/{client_name}/owners/{owner_id}/rate-limit");
+    let client_id = resolve_client_id(endpoint, client_name)?;
+    let url = format!("http://{endpoint}/v1/clients/{client_id}/owners/{owner_id}/rate-limit");
     let resp = apply_auth(http_client()?.put(&url).json(&caps.to_json()))
         .send()
         .map_err(|e| {
@@ -286,11 +326,8 @@ pub fn set(
 }
 
 pub fn delete(endpoint: &str, client_name: &str, owner_id: &str) -> Result<(), u8> {
-    // Client name and owner_id are validated server-side as strict
-    // identifiers (alphanum + `-` + `_`); same constraint applies to
-    // CLI input via the operator HTTP layer's `parse_client_name`,
-    // so direct substitution is safe and mirrors `rule_cli.rs`.
-    let url = format!("http://{endpoint}/v1/clients/{client_name}/owners/{owner_id}/rate-limit");
+    let client_id = resolve_client_id(endpoint, client_name)?;
+    let url = format!("http://{endpoint}/v1/clients/{client_id}/owners/{owner_id}/rate-limit");
     let resp = apply_auth(http_client()?.delete(&url))
         .send()
         .map_err(|e| {

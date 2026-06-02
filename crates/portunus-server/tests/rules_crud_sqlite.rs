@@ -83,6 +83,7 @@ async fn multi_target_rule_round_trip_preserves_v07_shape() {
     let rule = state
         .rules
         .push_range_with_targets(
+            portunus_core::ClientId::new(),
             client.clone(),
             PortRange::single(30101),
             "10.0.0.1".into(),

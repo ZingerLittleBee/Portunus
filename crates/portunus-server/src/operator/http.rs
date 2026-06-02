@@ -115,13 +115,13 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::operator::quota_http::list_user_quotas),
         )
         .route(
-            "/v1/users/{user_id}/quotas/{client_name}",
+            "/v1/users/{user_id}/quotas/{client_id}",
             put(crate::operator::quota_http::put_quota)
                 .patch(crate::operator::quota_http::patch_quota)
                 .delete(crate::operator::quota_http::delete_quota),
         )
         .route(
-            "/v1/users/{user_id}/quotas/{client_name}/status",
+            "/v1/users/{user_id}/quotas/{client_id}/status",
             get(crate::operator::quota_http::get_quota_status),
         )
         .route(
@@ -129,11 +129,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::operator::quota_http::get_user_traffic),
         )
         .route(
-            "/v1/clients/{client_name}/quotas",
+            "/v1/clients/{client_id}/quotas",
             get(crate::operator::quota_http::list_client_quotas),
         )
         .route(
-            "/v1/clients/{client_name}/traffic",
+            "/v1/clients/{client_id}/traffic",
             get(crate::operator::quota_http::get_client_traffic),
         )
         .route(

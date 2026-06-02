@@ -47,6 +47,7 @@ pub struct TrafficSample {
 pub fn upsert_1m_delta(
     store: &Store,
     user_id: &str,
+    client_id: &str,
     client_name: &str,
     ts_minute: i64,
     delta_in: i64,
@@ -54,12 +55,12 @@ pub fn upsert_1m_delta(
 ) -> Result<(), StoreError> {
     store.with_conn(|c| {
         c.execute(
-            "INSERT INTO traffic_samples_1m (user_id, client_name, ts_minute, bytes_in, bytes_out)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(user_id, client_name, ts_minute) DO UPDATE
+            "INSERT INTO traffic_samples_1m (user_id, client_id, client_name, ts_minute, bytes_in, bytes_out)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(user_id, client_id, ts_minute) DO UPDATE
                SET bytes_in  = bytes_in  + excluded.bytes_in,
                    bytes_out = bytes_out + excluded.bytes_out",
-            params![user_id, client_name, ts_minute, delta_in, delta_out],
+            params![user_id, client_id, client_name, ts_minute, delta_in, delta_out],
         )
         .map_err(map_rusqlite)?;
         Ok(())
@@ -72,14 +73,14 @@ pub fn upsert_1m_delta(
 pub fn rollup_hour(store: &Store, ts_hour: i64) -> Result<(), StoreError> {
     store.with_conn(|c| {
         c.execute(
-            "INSERT INTO traffic_samples_1h (user_id, client_name, ts_hour, bytes_in, bytes_out)
-             SELECT user_id, client_name, ?1 AS ts_hour,
+            "INSERT INTO traffic_samples_1h (user_id, client_id, client_name, ts_hour, bytes_in, bytes_out)
+             SELECT user_id, client_id, MIN(client_name) AS client_name, ?1 AS ts_hour,
                     COALESCE(SUM(bytes_in), 0)  AS bytes_in,
                     COALESCE(SUM(bytes_out), 0) AS bytes_out
              FROM traffic_samples_1m
              WHERE ts_minute >= ?1 AND ts_minute < ?2
-             GROUP BY user_id, client_name
-             ON CONFLICT(user_id, client_name, ts_hour) DO UPDATE
+             GROUP BY user_id, client_id
+             ON CONFLICT(user_id, client_id, ts_hour) DO UPDATE
                SET bytes_in  = excluded.bytes_in,
                    bytes_out = excluded.bytes_out",
             params![ts_hour, ts_hour + 3600],
@@ -144,7 +145,7 @@ pub fn query_samples(
     store: &Store,
     bucket: SampleBucket,
     user_id: Option<&str>,
-    client_name: Option<&str>,
+    client_id: Option<&str>,
     from_unix_sec: i64,
     to_unix_sec: i64,
 ) -> Result<Vec<TrafficSample>, StoreError> {
@@ -165,16 +166,13 @@ pub fn query_samples(
     if user_id.is_some() {
         sql.push_str(&format!(" AND user_id = {}", next_param_index(&mut idx)));
     }
-    if client_name.is_some() {
-        sql.push_str(&format!(
-            " AND client_name = {}",
-            next_param_index(&mut idx)
-        ));
+    if client_id.is_some() {
+        sql.push_str(&format!(" AND client_id = {}", next_param_index(&mut idx)));
     }
     sql.push_str(&format!(" GROUP BY {ts_col} ORDER BY {ts_col} ASC"));
 
     let user_id = user_id.map(str::to_string);
-    let client_name = client_name.map(str::to_string);
+    let client_id = client_id.map(str::to_string);
     store.with_conn(move |c| {
         let mut stmt = c.prepare(&sql).map_err(map_rusqlite)?;
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<TrafficSample> {
@@ -184,7 +182,7 @@ pub fn query_samples(
                 bytes_out: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
             })
         };
-        let rows: Vec<TrafficSample> = match (user_id.as_deref(), client_name.as_deref()) {
+        let rows: Vec<TrafficSample> = match (user_id.as_deref(), client_id.as_deref()) {
             (None, None) => stmt
                 .query_map(params![from_unix_sec, to_unix_sec], map_row)
                 .map_err(map_rusqlite)?
@@ -247,8 +245,8 @@ mod tests {
     #[test]
     fn upsert_1m_delta_is_additive() {
         let (_d, store) = make_store();
-        upsert_1m_delta(&store, "u", "c", 120, 100, 200).unwrap();
-        upsert_1m_delta(&store, "u", "c", 120, 50, 75).unwrap();
+        upsert_1m_delta(&store, "u", "c", "c", 120, 100, 200).unwrap();
+        upsert_1m_delta(&store, "u", "c", "c", 120, 50, 75).unwrap();
         let rows = query_samples(&store, SampleBucket::M1, Some("u"), Some("c"), 0, 180).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].bytes_in, 150);
@@ -259,7 +257,7 @@ mod tests {
     fn rollup_hour_aggregates_minutes() {
         let (_d, store) = make_store();
         for m in 0..60 {
-            upsert_1m_delta(&store, "u", "c", m * 60, 10, 20).unwrap();
+            upsert_1m_delta(&store, "u", "c", "c", m * 60, 10, 20).unwrap();
         }
         rollup_hour(&store, 0).unwrap();
         let rows = query_samples(&store, SampleBucket::H1, Some("u"), Some("c"), 0, 3600).unwrap();
@@ -271,7 +269,7 @@ mod tests {
     #[test]
     fn rollup_hour_is_idempotent_on_rerun() {
         let (_d, store) = make_store();
-        upsert_1m_delta(&store, "u", "c", 0, 10, 20).unwrap();
+        upsert_1m_delta(&store, "u", "c", "c", 0, 10, 20).unwrap();
         rollup_hour(&store, 0).unwrap();
         rollup_hour(&store, 0).unwrap();
         let rows = query_samples(&store, SampleBucket::H1, Some("u"), Some("c"), 0, 3600).unwrap();
@@ -283,8 +281,8 @@ mod tests {
     #[test]
     fn delete_old_removes_only_old_rows() {
         let (_d, store) = make_store();
-        upsert_1m_delta(&store, "u", "c", 60, 1, 1).unwrap();
-        upsert_1m_delta(&store, "u", "c", 1000, 2, 2).unwrap();
+        upsert_1m_delta(&store, "u", "c", "c", 60, 1, 1).unwrap();
+        upsert_1m_delta(&store, "u", "c", "c", 1000, 2, 2).unwrap();
         let removed = delete_1m_older_than(&store, 100).unwrap();
         assert_eq!(removed, 1);
         let rows = query_samples(&store, SampleBucket::M1, None, None, 0, 2000).unwrap();
@@ -295,8 +293,8 @@ mod tests {
     #[test]
     fn query_aggregates_across_users_when_filter_omits_user() {
         let (_d, store) = make_store();
-        upsert_1m_delta(&store, "alice", "edge-01", 60, 100, 200).unwrap();
-        upsert_1m_delta(&store, "bob", "edge-01", 60, 50, 75).unwrap();
+        upsert_1m_delta(&store, "alice", "edge-01", "edge-01", 60, 100, 200).unwrap();
+        upsert_1m_delta(&store, "bob", "edge-01", "edge-01", 60, 50, 75).unwrap();
         // No user filter, single client filter -> rows sum across users.
         let rows = query_samples(&store, SampleBucket::M1, None, Some("edge-01"), 0, 120).unwrap();
         assert_eq!(rows.len(), 1);

@@ -15,7 +15,8 @@
 use crate::state::AppState;
 use crate::traffic_quotas::{TrafficQuotaRow, advance_period_if_due, make_traffic_quota_set_msg};
 use chrono::{DateTime, TimeZone, Utc};
-use portunus_core::ClientName;
+use portunus_core::ClientId;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -53,7 +54,7 @@ pub async fn run_once(
         };
         let Some(updated) = state.traffic_quotas.reset_period(
             &r.user_id,
-            &r.client_name,
+            &r.client_id,
             new_start.timestamp(),
             now_ts,
         )?
@@ -89,10 +90,12 @@ pub async fn run_once(
 }
 
 async fn push_reset(state: &AppState, row: &TrafficQuotaRow) {
-    let Ok(client) = ClientName::new(row.client_name.clone()) else {
+    // 015-client-stable-id: address the live session by the stable id so
+    // a renamed client still receives its period-reset push.
+    let Ok(client_id) = ClientId::from_str(&row.client_id) else {
         return;
     };
-    let Some((outbound, _waiters)) = state.clients.handles_by_name(&client).await else {
+    let Some((outbound, _waiters)) = state.clients.handles(&client_id).await else {
         return;
     };
     let msg = make_traffic_quota_set_msg(row, format!("quota-rollover-{}", ulid::Ulid::new()));
@@ -100,7 +103,7 @@ async fn push_reset(state: &AppState, row: &TrafficQuotaRow) {
         warn!(
             event = "traffic_quota.rollover_push_failed",
             user = %row.user_id,
-            client = %client,
+            client_id = %client_id,
         );
     }
 }
@@ -153,6 +156,7 @@ mod tests {
         let (_d, cache) = make_cache();
         let r = TrafficQuotaRow {
             user_id: "alice".into(),
+            client_id: "edge-01".into(),
             client_name: "edge-01".into(),
             monthly_bytes: 100,
             billing_anchor: 0,

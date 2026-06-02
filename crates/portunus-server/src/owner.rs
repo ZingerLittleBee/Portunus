@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use portunus_core::{ClientName, RateLimit, rate_limit::RateLimitError};
+use portunus_core::{ClientId, RateLimit, rate_limit::RateLimitError};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -54,7 +54,7 @@ pub enum OwnerCapError {
 /// `Welcome` path (T029) reads this snapshot to decide which
 /// `OwnerRateLimitUpdate` pushes to emit on (re)connect; no extra
 /// SQLite read sits on the connect critical path.
-type Snapshot = HashMap<ClientName, HashMap<String, OwnerRateLimitRow>>;
+type Snapshot = HashMap<ClientId, HashMap<String, OwnerRateLimitRow>>;
 
 /// High-level façade over the SQLite owner-cap store. Cheap to
 /// clone — internal `Arc`.
@@ -79,7 +79,7 @@ impl OwnerCapService {
         let mut snapshot: Snapshot = HashMap::new();
         for row in cap_store.list_all()? {
             snapshot
-                .entry(row.client_name.clone())
+                .entry(row.client_id)
                 .or_default()
                 .insert(row.owner_id.clone(), row);
         }
@@ -102,7 +102,7 @@ impl OwnerCapService {
     /// can echo it back to the REST client.
     pub async fn upsert(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         owner_id: &str,
         rate_limit: RateLimit,
     ) -> Result<OwnerRateLimitRow, OwnerCapError> {
@@ -110,9 +110,9 @@ impl OwnerCapService {
         let updated_at_unix_ms = now_unix_ms();
         self.inner
             .store
-            .upsert(client_name, owner_id, &rate_limit, updated_at_unix_ms)?;
+            .upsert(client_id, owner_id, &rate_limit, updated_at_unix_ms)?;
         let row = OwnerRateLimitRow {
-            client_name: client_name.clone(),
+            client_id: *client_id,
             owner_id: owner_id.to_string(),
             rate_limit,
             updated_at_unix_ms,
@@ -121,12 +121,12 @@ impl OwnerCapService {
             .cache
             .write()
             .await
-            .entry(client_name.clone())
+            .entry(*client_id)
             .or_default()
             .insert(owner_id.to_string(), row.clone());
         info!(
             event = "owner_cap.upserted",
-            client_name = %client_name,
+            client_id = %client_id,
             owner_id = %owner_id,
             updated_at_unix_ms,
         );
@@ -138,21 +138,21 @@ impl OwnerCapService {
     /// in lockstep.
     pub async fn delete(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         owner_id: &str,
     ) -> Result<bool, OwnerCapError> {
-        let removed = self.inner.store.delete(client_name, owner_id)?;
+        let removed = self.inner.store.delete(client_id, owner_id)?;
         if removed {
             let mut guard = self.inner.cache.write().await;
-            if let Some(per_client) = guard.get_mut(client_name) {
+            if let Some(per_client) = guard.get_mut(client_id) {
                 per_client.remove(owner_id);
                 if per_client.is_empty() {
-                    guard.remove(client_name);
+                    guard.remove(client_id);
                 }
             }
             info!(
                 event = "owner_cap.deleted",
-                client_name = %client_name,
+                client_id = %client_id,
                 owner_id = %owner_id,
             );
         }
@@ -161,25 +161,25 @@ impl OwnerCapService {
 
     /// Snapshot of one specific envelope. Used by `GET
     /// /v1/clients/{id}/owners/{owner_id}/rate-limit`.
-    pub async fn get(&self, client_name: &ClientName, owner_id: &str) -> Option<OwnerRateLimitRow> {
+    pub async fn get(&self, client_id: &ClientId, owner_id: &str) -> Option<OwnerRateLimitRow> {
         self.inner
             .cache
             .read()
             .await
-            .get(client_name)
+            .get(client_id)
             .and_then(|per_client| per_client.get(owner_id))
             .cloned()
     }
 
-    /// Snapshot of every envelope under `client_name`. Used by the
+    /// Snapshot of every envelope under a client. Used by the
     /// `GET /v1/clients/{id}/owners` listing and by the gRPC
     /// `Welcome` push path (T029).
-    pub async fn list_for_client(&self, client_name: &ClientName) -> Vec<OwnerRateLimitRow> {
+    pub async fn list_for_client(&self, client_id: &ClientId) -> Vec<OwnerRateLimitRow> {
         self.inner
             .cache
             .read()
             .await
-            .get(client_name)
+            .get(client_id)
             .map(|per_client| per_client.values().cloned().collect())
             .unwrap_or_default()
     }
@@ -191,19 +191,19 @@ impl OwnerCapService {
     /// in-memory rule store. A non-zero count is a no-op.
     pub async fn gc_after_rule_removed(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         owner_id: &str,
         rules_remaining: usize,
     ) -> Result<bool, OwnerCapError> {
         if rules_remaining > 0 {
             return Ok(false);
         }
-        match self.delete(client_name, owner_id).await {
+        match self.delete(client_id, owner_id).await {
             Ok(removed) => {
                 if removed {
                     info!(
                         event = "owner_cap.gc_swept",
-                        client_name = %client_name,
+                        client_id = %client_id,
                         owner_id = %owner_id,
                     );
                 }
@@ -212,7 +212,7 @@ impl OwnerCapService {
             Err(e) => {
                 warn!(
                     event = "owner_cap.gc_failed",
-                    client_name = %client_name,
+                    client_id = %client_id,
                     owner_id = %owner_id,
                     error = %e,
                 );
@@ -272,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn t027_service_upsert_then_get_returns_envelope() {
         let svc = open_service();
-        let client = ClientName::new("edge-01").unwrap();
+        let client = ClientId::new();
         let row = svc
             .upsert(&client, "alice", full_envelope())
             .await
@@ -287,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn t027_service_delete_removes_from_cache_and_store() {
         let svc = open_service();
-        let client = ClientName::new("edge-01").unwrap();
+        let client = ClientId::new();
         svc.upsert(&client, "alice", full_envelope()).await.unwrap();
         assert!(svc.get(&client, "alice").await.is_some());
         let removed = svc.delete(&client, "alice").await.unwrap();
@@ -300,7 +300,7 @@ mod tests {
     #[tokio::test]
     async fn t027_service_validates_envelope() {
         let svc = open_service();
-        let client = ClientName::new("edge-01").unwrap();
+        let client = ClientId::new();
         let bad = RateLimit {
             bandwidth_in_bps: Some(0), // cap = 0 rejected
             ..Default::default()
@@ -314,8 +314,8 @@ mod tests {
     #[tokio::test]
     async fn t027_service_list_for_client_returns_owners_under_client() {
         let svc = open_service();
-        let edge = ClientName::new("edge-01").unwrap();
-        let core = ClientName::new("core-01").unwrap();
+        let edge = ClientId::new();
+        let core = ClientId::new();
         svc.upsert(&edge, "alice", full_envelope()).await.unwrap();
         svc.upsert(&edge, "bob", full_envelope()).await.unwrap();
         svc.upsert(&core, "alice", full_envelope()).await.unwrap();
@@ -328,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn t027_service_gc_sweeps_when_no_rules_remain() {
         let svc = open_service();
-        let client = ClientName::new("edge-01").unwrap();
+        let client = ClientId::new();
         svc.upsert(&client, "alice", full_envelope()).await.unwrap();
         // 1 rule remains — sweep is a no-op.
         let swept = svc
@@ -349,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn t027_service_gc_idempotent_when_envelope_missing() {
         let svc = open_service();
-        let client = ClientName::new("edge-01").unwrap();
+        let client = ClientId::new();
         // No envelope ever installed. Sweep with rules_remaining=0
         // returns false but does not error.
         let swept = svc
@@ -363,7 +363,7 @@ mod tests {
     async fn t027_service_hydrates_cache_from_sqlite_on_open() {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path()).unwrap());
-        let client = ClientName::new("edge-01").unwrap();
+        let client = ClientId::new();
         // Open svc, write, drop.
         {
             let svc = OwnerCapService::open(Arc::clone(&store)).unwrap();

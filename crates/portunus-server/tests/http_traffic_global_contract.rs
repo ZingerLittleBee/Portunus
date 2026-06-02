@@ -83,9 +83,18 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 /// Seed two 1m traffic samples in distinct (user, client) cells at the
 /// same minute boundary so the global aggregate must merge them.
 fn seed_two_users(state: &AppState, ts_minute: i64) {
-    samples::upsert_1m_delta(&state.store, "alice", "edge-a", ts_minute, 100, 200)
-        .expect("seed alice");
-    samples::upsert_1m_delta(&state.store, "bob", "edge-b", ts_minute, 300, 400).expect("seed bob");
+    samples::upsert_1m_delta(
+        &state.store,
+        "alice",
+        "edge-a",
+        "edge-a",
+        ts_minute,
+        100,
+        200,
+    )
+    .expect("seed alice");
+    samples::upsert_1m_delta(&state.store, "bob", "edge-b", "edge-b", ts_minute, 300, 400)
+        .expect("seed bob");
 }
 
 /// Pick a minute boundary that lies inside the 1m bucket's retention
