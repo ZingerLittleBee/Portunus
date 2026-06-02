@@ -274,6 +274,10 @@ pub async fn list_client_quotas(
 ) -> Result<Json<Vec<QuotaView>>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let cid = parse_client_id(&client_id)?;
+    // 015-client-stable-id (T037): a client-scoped route 404s for an
+    // unknown id rather than returning an empty 200 (which would imply
+    // the client exists with no quotas). Never leaks name collisions.
+    resolve_client_name(&state, cid)?;
     let rows = state.traffic_quotas.list_for_client(&cid.to_string());
     Ok(Json(rows.into_iter().map(QuotaView::from_row).collect()))
 }

@@ -249,6 +249,10 @@ pub async fn get_owners_under_client(
     Path(client_id): Path<String>,
 ) -> Result<Json<Vec<OwnerListEntry>>, ApiError> {
     let cid = parse_client_id(&client_id)?;
+    // 015-client-stable-id (T037): 404 for an unknown id rather than an
+    // empty 200 that would imply the client exists. Never leaks whether
+    // a colliding display name exists (Constitution V).
+    resolve_client_name(&state, cid)?;
     // Build the owner -> rule_count map from the in-memory rule store.
     use std::collections::BTreeMap;
     let rules = state.rules.list(Some(&cid)).await;
