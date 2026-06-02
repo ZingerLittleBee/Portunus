@@ -54,8 +54,8 @@ importers:
         specifier: 17.0.8
         version: 17.0.8(i18next@26.3.0(typescript@6.0.3))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)
       react-router-dom:
-        specifier: 6.27.0
-        version: 6.27.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: 7.16.0
+        version: 7.16.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       recharts:
         specifier: 3.8.1
         version: 3.8.1(@types/react@19.2.16)(react-dom@19.2.7(react@19.2.7))(react-is@18.3.1)(react@19.2.7)(redux@5.0.1)
@@ -1317,10 +1317,6 @@ packages:
         optional: true
       react-redux:
         optional: true
-
-  '@remix-run/router@1.20.0':
-    resolution: {integrity: sha512-mUnk8rPJBI9loFDZ+YzPGdeniYK+FTmRD1TMCz7ev2SNIozyKKpnGgsxO34u6Z4z/t0ITuu7voi/AshfsGsgFg==}
-    engines: {node: '>=14.0.0'}
 
   '@rolldown/binding-android-arm64@1.0.3':
     resolution: {integrity: sha512-454rs7jHngixp/NMxd5srYD57OnzSlZ/eFTETjORQHLwJG1lRtmNOJcBerZlfu4GjKqeq8aCCIQrMdHyhI51Hw==}
@@ -3495,18 +3491,22 @@ packages:
       '@types/react':
         optional: true
 
-  react-router-dom@6.27.0:
-    resolution: {integrity: sha512-+bvtFWMC0DgAFrfKXKG9Fc+BcXWRUO1aJIihbB79xaeq0v5UzfvnM5houGUm1Y461WVRcgAQ+Clh5rdb1eCx4g==}
-    engines: {node: '>=14.0.0'}
+  react-router-dom@7.16.0:
+    resolution: {integrity: sha512-kMUAbimWB5FVbF4Bce4bJsiKJWLIUHq/mEG8+CFDnCSgltptBiG5nguducmsJeGKytlCvQud9Qhzpn49iduTlA==}
+    engines: {node: '>=20.0.0'}
     peerDependencies:
-      react: '>=16.8'
-      react-dom: '>=16.8'
+      react: '>=18'
+      react-dom: '>=18'
 
-  react-router@6.27.0:
-    resolution: {integrity: sha512-YA+HGZXz4jaAkVoYBE98VQl+nVzI+cVI2Oj/06F5ZM+0u3TgedN9Y9kmMRo2mnkSK2nCpNQn0DVob4HCsY/WLw==}
-    engines: {node: '>=14.0.0'}
+  react-router@7.16.0:
+    resolution: {integrity: sha512-wArC8lVyJb3+jM9OpDyW6hLCizACWkvQR/sSGqSs+o5uEXEtGlqdZ4v8hENR3Jad6i+LRkK93q/+bQAcvl6V1A==}
+    engines: {node: '>=20.0.0'}
     peerDependencies:
-      react: '>=16.8'
+      react: '>=18'
+      react-dom: '>=18'
+    peerDependenciesMeta:
+      react-dom:
+        optional: true
 
   react-style-singleton@2.2.3:
     resolution: {integrity: sha512-b6jSvxvVnyptAiLjbkWLE/lOnR4lfTtDAl+eUC7RZy+QQWc6wRzIV2CE6xBuMmDxc2qIihtDCZD5NPOFl7fRBQ==}
@@ -3628,6 +3628,9 @@ packages:
   serve-static@2.2.1:
     resolution: {integrity: sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw==}
     engines: {node: '>= 18'}
+
+  set-cookie-parser@2.7.2:
+    resolution: {integrity: sha512-oeM1lpU/UvhTxw+g3cIfxXHyJRc/uidd3yK1P242gzHds0udQBYzs3y8j4gCCW+ZJ7ad0yctld8RYO+bdurlvw==}
 
   set-cookie-parser@3.1.0:
     resolution: {integrity: sha512-kjnC1DXBHcxaOaOXBHBeRtltsDG2nUiUni+jP92M9gYdW12rsmx92UsfpH7o5tDRs7I1ZZPSQJQGv3UaRfCiuw==}
@@ -5469,8 +5472,6 @@ snapshots:
     optionalDependencies:
       react: 19.2.7
       react-redux: 9.3.0(@types/react@19.2.16)(react@19.2.7)(redux@5.0.1)
-
-  '@remix-run/router@1.20.0': {}
 
   '@rolldown/binding-android-arm64@1.0.3':
     optional: true
@@ -7524,17 +7525,19 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.16
 
-  react-router-dom@6.27.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
+  react-router-dom@7.16.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
     dependencies:
-      '@remix-run/router': 1.20.0
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
-      react-router: 6.27.0(react@19.2.7)
+      react-router: 7.16.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
 
-  react-router@6.27.0(react@19.2.7):
+  react-router@7.16.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
     dependencies:
-      '@remix-run/router': 1.20.0
+      cookie: 1.1.1
       react: 19.2.7
+      set-cookie-parser: 2.7.2
+    optionalDependencies:
+      react-dom: 19.2.7(react@19.2.7)
 
   react-style-singleton@2.2.3(@types/react@19.2.16)(react@19.2.7):
     dependencies:
@@ -7713,6 +7716,8 @@ snapshots:
       send: 1.2.1
     transitivePeerDependencies:
       - supports-color
+
+  set-cookie-parser@2.7.2: {}
 
   set-cookie-parser@3.1.0: {}
 
