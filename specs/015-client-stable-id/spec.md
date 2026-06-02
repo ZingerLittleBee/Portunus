@@ -197,8 +197,11 @@ no rows are orphaned, and an already-enrolled client reconnects successfully.
   unique and MUST NOT warn on collision; identical display names are freely allowed because
   identity is provided solely by the identifier. Listings disambiguate duplicates by surfacing
   a short form of the identifier alongside the name.
-- **FR-014**: Log and metric correlation MUST be consistent across a rename: a renamed client
-  remains the same correlated entity. (See Assumptions for the chosen metric-label form.)
+- **FR-014**: Internal log and metric correlation MUST treat a renamed client as the same
+  logical entity (correlation keys on the stable identifier). Note: because the metric
+  *label value* is the human-readable name (see Assumptions), a rename does produce a new
+  metric series at the label layer; this is accepted and does not violate FR-014, whose
+  guarantee is about identifier-keyed correlation, not Prometheus series continuity.
 
 ### Key Entities *(include if feature involves data)*
 

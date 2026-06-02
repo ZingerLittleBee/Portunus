@@ -43,7 +43,7 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 ### Core identity types (`portunus-core`)
 
 - [ ] T003 [P] Rewrite `ClientName` validation unit tests in `crates/portunus-core/src/id.rs` to the relaxed contract (reject empty/whitespace-only, control chars, >255 bytes; accept uppercase/space/`.`/`_`/`-`/Unicode, verbatim) — tests MUST FAIL first
-- [ ] T004 Relax `ClientName::new` and replace `ClientNameError` variants with `Empty`/`TooLong(usize)`/`ControlChar` in `crates/portunus-core/src/id.rs` to pass T003
+- [ ] T004 Relax `ClientName::new` and replace `ClientNameError` variants with `Empty`/`TooLong(usize)`/`ControlChar` in `crates/portunus-core/src/id.rs` to pass T003. Also update existing DNS-label assertions that the relaxation breaks — at minimum `crates/portunus-server/tests/provisioning.rs::enroll_client_rejects_invalid_name` (and any sibling name-shape tests) — to the new contract (G1)
 - [ ] T005 [P] Add `ClientId(Ulid)` unit tests (Display, `FromStr` parse+validate, serde transparent round-trip, `Ord` sort) in `crates/portunus-core/src/id.rs` — MUST FAIL first
 - [ ] T006 Implement `ClientId(Ulid)` newtype (`Copy`, `Eq`, `Hash`, `Ord`, `Serialize`/`Deserialize`, `Display`, `FromStr`) in `crates/portunus-core/src/id.rs` to pass T005
 
@@ -59,7 +59,7 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 ### Persistence migration (`V011`)
 
 - [ ] T010 [P] Migration test in `crates/portunus-server/tests/migration_v011.rs`: from the T002 seed, run the refinery runner; assert every client has a `client_id`, every dependent row backfilled (zero orphans), no table retains a `client_name` PK/UNIQUE, and a second runner pass is a no-op (idempotent) — MUST FAIL first
-- [ ] T011 Implement `crates/portunus-server/src/store/migrations/V011__client_id.sql` plus the Rust-side ULID assignment step (mint a ULID per `client_tokens` row, then table-rebuild + name-join backfill for `client_tokens`, `rules`, `rate_limit_owner`, `traffic_quotas`, `traffic_usage_minute`, `traffic_usage_hour`, `client_enrollments`; recreate `rules_client_idx(client_id, listen_port)`) wired into `crates/portunus-server/src/store/mod.rs`; pass T010
+- [ ] T011 Implement `crates/portunus-server/src/store/migrations/V011__client_id.sql` plus the Rust-side ULID assignment step (mint a ULID per `client_tokens` row, then table-rebuild + name-join backfill for `client_tokens`, `rules`, `rate_limit_owner`, `traffic_quotas`, `traffic_usage_minute`, `traffic_usage_hour`, `client_enrollments`; recreate `rules_client_idx(client_id, listen_port)`) wired into `crates/portunus-server/src/store/mod.rs`; pass T010. **Decision needed first (U1)**: `refinery::embed_migrations!` runs SQL only and cannot mint ULIDs — pick one and record it here: (a) an application-side pre-step that fills `client_id` before the runner, or (b) a refinery Rust migration. Also resolve **U2**: when does a *new* enrollment row get its `client_id` (at enroll vs first-connect)? Document the chosen ordering and reflect it in T014/T040
 
 ### Store layer re-key (all on top of T011)
 
@@ -96,7 +96,7 @@ dots, underscores, Unicode); it is stored/shown verbatim and gets a distinct id.
 them verbatim with distinct ids; empty/256-byte/control-char names are rejected with a
 specific message.
 
-- [ ] T024 [P] [US1] Integration test (real sockets / operator API): friendly names accepted and round-trip verbatim; bad names rejected with rule-specific messages — `crates/portunus-server/tests/client_friendly_name.rs` — MUST FAIL first
+- [ ] T024 [P] [US1] Integration test (real sockets / operator API): friendly names accepted and round-trip verbatim; bad names rejected with rule-specific messages; creating a second client with an identical display name succeeds with no warning (G2 / FR-013) — `crates/portunus-server/tests/client_friendly_name.rs` — MUST FAIL first
 - [ ] T025 [US1] Surface relaxed creation in the operator create/enroll handler and return clear field-specific validation errors (FR-011) in `crates/portunus-server/src/operator/`
 - [ ] T026 [P] [US1] Web UI: client provisioning form accepts free-form names (drop any DNS-label restriction) and renders server validation errors — `webui/src/components/` (client provisioning dialog). DO NOT touch `webui/src/components/UserCreateForm.tsx:44` (that regex is for **userId**)
 - [ ] T027 [P] [US1] Web UI: `ClientsList` / `ClientDetail` render the display name verbatim plus a short id form — `webui/src/pages/` + `webui/src/components/`
@@ -113,7 +113,7 @@ drop a live session.
 another client already uses); id unchanged, all records still resolve, session keeps
 forwarding, duplicate rename accepted.
 
-- [ ] T029 [P] [US2] Integration test: rename preserves `client_id` and every dependent row; live gRPC session uninterrupted across rename; rename to a duplicate name succeeds — `crates/portunus-server/tests/client_rename.rs` — MUST FAIL first
+- [ ] T029 [P] [US2] Integration test: rename preserves `client_id` and every dependent row; live gRPC session uninterrupted across rename; rename to a duplicate name succeeds; and the rename emits an operator audit record (G3 / Constitution I+IV) — `crates/portunus-server/tests/client_rename.rs` — MUST FAIL first
 - [ ] T030 [US2] Add rename endpoint `PATCH /v1/clients/{client_id}` (`UPDATE client_tokens SET client_name=? WHERE client_id=?`, relaxed validation, audit-grade record) in `crates/portunus-server/src/operator/`
 - [ ] T031 [P] [US2] Add CLI `client rename --client-id <ULID> --name "<display>"` subcommand in `crates/portunus-server/src/operator/`
 - [ ] T032 [P] [US2] Web UI: rename control on `ClientDetail` calling `PATCH /v1/clients/{id}` — `webui/src/pages/` + `webui/src/components/`
