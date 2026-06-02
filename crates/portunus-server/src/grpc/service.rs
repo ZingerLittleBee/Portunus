@@ -69,6 +69,7 @@ impl Control for ControlService {
         let session_id = state
             .clients
             .register(
+                identity.client_id,
                 identity.client_name.clone(),
                 remote_addr,
                 cancel_token.clone(),
@@ -91,7 +92,7 @@ impl Control for ControlService {
                     let caps = capabilities_from_hello(&h.supported_protocols);
                     state
                         .clients
-                        .set_supported_protocols(&identity.client_name, session_id, caps.clone())
+                        .set_supported_protocols(&identity.client_id, session_id, caps.clone())
                         .await;
                     // 007-multi-target-failover (R-007): track the
                     // client binary version so the operator HTTP guard
@@ -100,7 +101,7 @@ impl Control for ControlService {
                         state
                             .clients
                             .set_client_version(
-                                &identity.client_name,
+                                &identity.client_id,
                                 session_id,
                                 h.client_version.clone(),
                             )
@@ -120,7 +121,7 @@ impl Control for ControlService {
             Some(Err(e)) => {
                 state
                     .clients
-                    .unregister(&identity.client_name, session_id)
+                    .unregister(&identity.client_id, session_id)
                     .await;
                 state.metrics.clients_connected.dec();
                 warn!(
@@ -133,7 +134,7 @@ impl Control for ControlService {
             None => {
                 state
                     .clients
-                    .unregister(&identity.client_name, session_id)
+                    .unregister(&identity.client_id, session_id)
                     .await;
                 state.metrics.clients_connected.dec();
                 return Err(Status::cancelled("client_dropped_before_hello"));
@@ -144,7 +145,7 @@ impl Control for ControlService {
             .clients
             .snapshot()
             .await
-            .get(&identity.client_name)
+            .get(&identity.client_id)
             .map_or_else(
                 || {
                     let mut s = HashSet::new();
@@ -178,7 +179,7 @@ impl Control for ControlService {
         if tx.send(Ok(welcome)).await.is_err() {
             state
                 .clients
-                .unregister(&identity.client_name, session_id)
+                .unregister(&identity.client_id, session_id)
                 .await;
             state.metrics.clients_connected.dec();
             return Err(Status::cancelled("client_dropped_before_welcome"));
@@ -245,7 +246,7 @@ impl Control for ControlService {
             }
             pump_state
                 .clients
-                .unregister(&pump_identity.client_name, session_id)
+                .unregister(&pump_identity.client_id, session_id)
                 .await;
             pump_state.metrics.clients_connected.dec();
             info!(
@@ -577,9 +578,9 @@ async fn replay_rules_for_client(
         .clients
         .snapshot()
         .await
-        .get(&identity.client_name)
+        .get(&identity.client_id)
         .map_or_else(HashSet::new, |c| c.supported_protocols.clone());
-    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    let client_version = state.clients.client_version_of(&identity.client_id).await;
     for rule in rules {
         if !matches!(rule.state, crate::rules::RuleState::Active) {
             continue;
@@ -620,7 +621,7 @@ async fn replay_traffic_quotas_for_client(
     identity: &ClientIdentity,
     outbound: &OutboundSender,
 ) {
-    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    let client_version = state.clients.client_version_of(&identity.client_id).await;
     if !version_at_least(client_version.as_deref(), 1, 4) {
         return;
     }
@@ -648,7 +649,7 @@ async fn replay_owner_caps_for_client(
     identity: &ClientIdentity,
     outbound: &OutboundSender,
 ) {
-    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    let client_version = state.clients.client_version_of(&identity.client_id).await;
     if !version_at_least(client_version.as_deref(), 0, 11) {
         // v0.10 (and earlier) clients silently drop the new
         // ServerMessage oneof variant; emitting nothing keeps the
@@ -971,11 +972,13 @@ mod tests {
         mpsc::Receiver<Result<ServerMessage, Status>>,
     ) {
         let client_name = portunus_core::ClientName::new(name.to_string()).unwrap();
+        let client_id = portunus_core::ClientId::new();
         let (tx, rx) = mpsc::channel(8);
         let waiters: StatusWaiters = Arc::new(Mutex::new(HashMap::new()));
         let session_id = state
             .clients
             .register(
+                client_id,
                 client_name.clone(),
                 None,
                 CancellationToken::new(),
@@ -987,15 +990,15 @@ mod tests {
         caps.insert(Protocol::Tcp);
         state
             .clients
-            .set_supported_protocols(&client_name, session_id, caps)
+            .set_supported_protocols(&client_id, session_id, caps)
             .await;
         state
             .clients
-            .set_client_version(&client_name, session_id, version.to_string())
+            .set_client_version(&client_id, session_id, version.to_string())
             .await;
         (
             ClientIdentity {
-                client_id: portunus_core::ClientId::new(),
+                client_id,
                 client_name,
             },
             tx,

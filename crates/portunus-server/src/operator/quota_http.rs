@@ -443,7 +443,7 @@ async fn require_client_supports_quota(
     state: &AppState,
     client: &ClientName,
 ) -> Result<(), ApiError> {
-    let version = state.clients.client_version_of(client).await;
+    let version = state.clients.client_version_by_name(client).await;
     if version_at_least(version.as_deref(), 1, 4) {
         Ok(())
     } else {
@@ -459,7 +459,7 @@ async fn require_client_supports_quota(
 }
 
 async fn push_quota_set(state: &AppState, client: &ClientName, row: &TrafficQuotaRow) {
-    let Some((outbound, _waiters)) = state.clients.handles(client).await else {
+    let Some((outbound, _waiters)) = state.clients.handles_by_name(client).await else {
         return;
     };
     let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
@@ -477,7 +477,7 @@ async fn push_quota_set(state: &AppState, client: &ClientName, row: &TrafficQuot
 }
 
 async fn push_quota_remove(state: &AppState, user_id: &str, client: &ClientName) {
-    let Some((outbound, _waiters)) = state.clients.handles(client).await else {
+    let Some((outbound, _waiters)) = state.clients.handles_by_name(client).await else {
         return;
     };
     let msg = crate::traffic_quotas::make_traffic_quota_remove_msg(

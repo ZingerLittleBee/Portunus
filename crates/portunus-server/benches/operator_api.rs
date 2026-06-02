@@ -81,22 +81,30 @@ fn build_router() -> (axum::Router, TempDir, Arc<AppState>) {
 /// real rules instead of bouncing on `client_not_connected`.
 async fn register_v09_client(state: &Arc<AppState>) {
     let client_name = ClientName::new(CLIENT.to_string()).expect("valid client");
+    let client_id = portunus_core::ClientId::new();
     let cancel = CancellationToken::new();
     let (outbound, _rx) = tokio::sync::mpsc::channel(8);
     let waiters = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
     let session_id = state
         .clients
-        .register(client_name.clone(), None, cancel, outbound, waiters)
+        .register(
+            client_id,
+            client_name.clone(),
+            None,
+            cancel,
+            outbound,
+            waiters,
+        )
         .await;
     let mut caps = std::collections::HashSet::new();
     caps.insert(ProtoProtocol::Tcp);
     state
         .clients
-        .set_supported_protocols(&client_name, session_id, caps)
+        .set_supported_protocols(&client_id, session_id, caps)
         .await;
     state
         .clients
-        .set_client_version(&client_name, session_id, "0.9.0".to_string())
+        .set_client_version(&client_id, session_id, "0.9.0".to_string())
         .await;
 }
 

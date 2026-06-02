@@ -12,7 +12,7 @@
 //! hash exposed).
 
 use chrono::{DateTime, Utc};
-use portunus_core::ClientName;
+use portunus_core::{ClientId, ClientName};
 use thiserror::Error;
 
 use crate::{CredentialId, GrantId, RbacError, UserId};
@@ -81,6 +81,8 @@ pub struct UserRemoveSummary {
 /// Public projection of one provisioned client. Token hash is NOT exposed.
 #[derive(Debug, Clone)]
 pub struct ProvisionedClient {
+    /// Stable, system-generated identity (015-client-stable-id).
+    pub client_id: ClientId,
     pub client_name: ClientName,
     pub issued_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,

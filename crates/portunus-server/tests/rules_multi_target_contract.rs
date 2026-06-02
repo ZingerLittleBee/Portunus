@@ -142,13 +142,21 @@ async fn register_fake_client(
     supports_udp: bool,
 ) {
     let client_name = ClientName::new(name.to_string()).expect("valid client");
+    let client_id = portunus_core::ClientId::new();
     let cancel = CancellationToken::new();
     let (outbound, _rx) = tokio::sync::mpsc::channel(8);
     let waiters = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
     let session_id = fixture
         .state
         .clients
-        .register(client_name.clone(), None, cancel, outbound, waiters)
+        .register(
+            client_id,
+            client_name.clone(),
+            None,
+            cancel,
+            outbound,
+            waiters,
+        )
         .await;
     let mut caps = std::collections::HashSet::new();
     caps.insert(ProtoProtocol::Tcp);
@@ -158,14 +166,14 @@ async fn register_fake_client(
     fixture
         .state
         .clients
-        .set_supported_protocols(&client_name, session_id, caps)
+        .set_supported_protocols(&client_id, session_id, caps)
         .await;
     if let Some(v) = client_version {
         // `set_client_version` is a 007-multi-target-failover addition.
         fixture
             .state
             .clients
-            .set_client_version(&client_name, session_id, v.to_string())
+            .set_client_version(&client_id, session_id, v.to_string())
             .await;
     }
 }

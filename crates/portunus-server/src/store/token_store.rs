@@ -45,29 +45,34 @@ impl SqliteTokenStore {
         self.store.with_conn(|c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT client_name, issued_at, revoked_at, client_address \
+                    "SELECT client_id, client_name, issued_at, revoked_at, client_address \
                      FROM client_tokens \
                      ORDER BY client_name ASC",
                 )
                 .map_err(map_rusqlite)?;
             let rows = stmt
                 .query_map([], |r| {
-                    let name: String = r.get(0)?;
-                    let issued: String = r.get(1)?;
-                    let revoked: Option<String> = r.get(2)?;
-                    let client_address: Option<String> = r.get(3)?;
-                    Ok((name, issued, revoked, client_address))
+                    let id: String = r.get(0)?;
+                    let name: String = r.get(1)?;
+                    let issued: String = r.get(2)?;
+                    let revoked: Option<String> = r.get(3)?;
+                    let client_address: Option<String> = r.get(4)?;
+                    Ok((id, name, issued, revoked, client_address))
                 })
                 .map_err(map_rusqlite)?;
             let mut out = Vec::new();
             for r in rows {
-                let (name, issued, revoked, client_address) = r.map_err(map_rusqlite)?;
+                let (id, name, issued, revoked, client_address) = r.map_err(map_rusqlite)?;
+                let client_id = id.parse::<ClientId>().map_err(|e| StoreError::Internal {
+                    message: format!("client_tokens has invalid client_id: {e}"),
+                })?;
                 let client_name = ClientName::new(name).map_err(|e| StoreError::Internal {
                     message: format!("client_tokens has invalid client_name: {e}"),
                 })?;
                 let issued_at = parse_ts(&issued)?;
                 let revoked_at = revoked.map(|s| parse_ts(&s)).transpose()?;
                 out.push(ProvisionedClient {
+                    client_id,
                     client_name,
                     issued_at,
                     revoked_at,

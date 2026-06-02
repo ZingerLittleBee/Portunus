@@ -587,7 +587,7 @@ fn enrollment_uri(state: &AppState, endpoint: &str, code: &str) -> String {
 pub async fn revoke(state: &AppState, raw_name: &str) -> Result<(), OperatorError> {
     let name = ClientName::from_str(raw_name)?;
     state.tokens.revoke(&name)?;
-    let disconnected = state.clients.disconnect(&name).await;
+    let disconnected = state.clients.disconnect_by_name(&name).await;
     info!(
         event = "audit.revoke",
         outcome = "success",
@@ -658,8 +658,9 @@ pub async fn list_clients(state: &AppState) -> Vec<ClientView> {
 
     let mut views = Vec::with_capacity(provisioned.len());
     for p in provisioned {
-        let conn = connected.get(&p.client_name);
+        let conn = connected.get(&p.client_id);
         views.push(ClientView {
+            client_id: p.client_id,
             client_name: p.client_name.clone(),
             provisioned_at: p.issued_at,
             revoked_at: p.revoked_at,
@@ -835,7 +836,7 @@ pub async fn push_rule(
 
     // Reject up-front if the client isn't connected — saves us from leaving a
     // Pending rule behind that would never be acked.
-    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+    let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 
@@ -847,7 +848,7 @@ pub async fn push_rule(
         let proto_wire = portunus_proto::v1::Protocol::Udp;
         let supported = state
             .clients
-            .supports(&client_name, proto_wire)
+            .supports_by_name(&client_name, proto_wire)
             .await
             .unwrap_or(false);
         if !supported {
@@ -1083,7 +1084,7 @@ pub async fn push_rule_multi_target(
     let target_host = first.host.clone();
     let target_range = PortRange::single(first.port);
 
-    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+    let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 
@@ -1093,7 +1094,7 @@ pub async fn push_rule_multi_target(
         let proto_wire = portunus_proto::v1::Protocol::Udp;
         let supported = state
             .clients
-            .supports(&client_name, proto_wire)
+            .supports_by_name(&client_name, proto_wire)
             .await
             .unwrap_or(false);
         if !supported {
@@ -1313,7 +1314,7 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
     // <id> --per-port` returns 404 (RuleNotFound) instead of stale data.
     state.per_port_stats.drop_rule(rule_id).await;
     let request_id = RequestId::new().to_string();
-    if let Some((outbound, _waiters)) = state.clients.handles(&removed.client_name).await {
+    if let Some((outbound, _waiters)) = state.clients.handles_by_name(&removed.client_name).await {
         let update = ServerMessage {
             payload: Some(server_message::Payload::RuleUpdate(RuleUpdate {
                 request_id: request_id.clone(),
@@ -1401,7 +1402,7 @@ pub async fn update_rule_rate_limit(
         .await
         .ok_or(OperatorError::RuleNotFound)?;
     let client_name = existing.client_name.clone();
-    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+    let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 

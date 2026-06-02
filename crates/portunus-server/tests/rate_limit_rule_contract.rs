@@ -133,6 +133,7 @@ async fn register_fake_client(
 ) -> Arc<tokio::sync::Mutex<Vec<portunus_proto::v1::RuleUpdate>>> {
     use portunus_proto::v1::server_message::Payload;
     let client_name = ClientName::new(name.to_string()).expect("valid client");
+    let client_id = portunus_core::ClientId::new();
     let cancel = CancellationToken::new();
     let (outbound, mut rx) = tokio::sync::mpsc::channel(8);
     let seen_updates = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -147,20 +148,27 @@ async fn register_fake_client(
     let session_id = fixture
         .state
         .clients
-        .register(client_name.clone(), None, cancel, outbound, waiters.clone())
+        .register(
+            client_id,
+            client_name.clone(),
+            None,
+            cancel,
+            outbound,
+            waiters.clone(),
+        )
         .await;
     let mut caps = std::collections::HashSet::new();
     caps.insert(ProtoProtocol::Tcp);
     fixture
         .state
         .clients
-        .set_supported_protocols(&client_name, session_id, caps)
+        .set_supported_protocols(&client_id, session_id, caps)
         .await;
     if let Some(v) = client_version {
         fixture
             .state
             .clients
-            .set_client_version(&client_name, session_id, v.to_string())
+            .set_client_version(&client_id, session_id, v.to_string())
             .await;
     }
 

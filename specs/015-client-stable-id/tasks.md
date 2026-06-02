@@ -71,8 +71,8 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Server runtime + control plane
 
-- [ ] T017 Switch `ConnectedClients` to `HashMap<ClientId, ConnectedClient>` (register/unregister/get/set_supported_protocols) in `crates/portunus-server/src/clients.rs`
-- [ ] T018 Use `identity.client_id` for registry + rule lookups (keep `client_name` for log fields/display) across `crates/portunus-server/src/grpc/service.rs`
+- [X] T017 Switch `ConnectedClients` to `HashMap<ClientId, ConnectedClient>` (register/unregister/get/set_supported_protocols) in `crates/portunus-server/src/clients.rs`
+- [X] T018 Use `identity.client_id` for registry + rule lookups (keep `client_name` for log fields/display) across `crates/portunus-server/src/grpc/service.rs`
 - [ ] T019 Update `crates/portunus-server/src/metrics.rs`: correlate internally by `client_id`, keep the Prometheus `client` label VALUE as the display name
 - [ ] T020 Re-path client-scoped operator HTTP routes to `/v1/clients/{client_id}/...` and switch CLI subcommands to `--client-id` across `crates/portunus-server/src/operator/` (owner-cap, rule, quota CLIs + handlers) — keep workspace compiling
 - [ ] T021 Update client-reference error messages to use the id (with name for display) in `crates/portunus-server/src/rules.rs` and operator error paths

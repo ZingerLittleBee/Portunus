@@ -127,7 +127,7 @@ pub async fn put_owner_rate_limit(
     // Capability gate: refuse when the target client's reported
     // version is below 0.11. An unknown / disconnected client gates
     // conservatively (mirrors the per-rule path).
-    let Some(client_version) = state.clients.client_version_of(&client_name).await else {
+    let Some(client_version) = state.clients.client_version_by_name(&client_name).await else {
         return Err(ApiError::from(
             OperatorError::RateLimitUnsupportedByClient {
                 client_name: client_name.clone(),
@@ -161,7 +161,7 @@ pub async fn put_owner_rate_limit(
     // delivery is best-effort: an unreachable client gets the cap on
     // its next reconnect via the welcome-replay path (T029). REST
     // success only requires the SQLite commit.
-    if let Some((outbound, _waiters)) = state.clients.handles(&client_name).await {
+    if let Some((outbound, _waiters)) = state.clients.handles_by_name(&client_name).await {
         let push = proto::ServerMessage {
             payload: Some(proto::server_message::Payload::OwnerRateLimitUpdate(
                 proto::OwnerRateLimitUpdate {
@@ -200,7 +200,7 @@ pub async fn delete_owner_rate_limit(
     // Push OwnerRateLimitUpdate{REMOVE}. Idempotent on the wire; a
     // best-effort send is sufficient (welcome-replay restores the
     // post-DELETE state on reconnect — i.e. the absence of an entry).
-    if let Some((outbound, _waiters)) = state.clients.handles(&client_name).await {
+    if let Some((outbound, _waiters)) = state.clients.handles_by_name(&client_name).await {
         let push = proto::ServerMessage {
             payload: Some(proto::server_message::Payload::OwnerRateLimitUpdate(
                 proto::OwnerRateLimitUpdate {

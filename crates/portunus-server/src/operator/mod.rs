@@ -36,7 +36,7 @@ pub mod webui;
 
 use serde::Serialize;
 
-use portunus_core::ClientName;
+use portunus_core::{ClientId, ClientName};
 
 pub(crate) fn operator_token_from_env() -> Option<String> {
     ["PORTUNUS_OPERATOR_TOKEN"]
@@ -50,6 +50,9 @@ pub(crate) fn operator_token_missing_message() -> &'static str {
 
 #[derive(Debug, Serialize)]
 pub struct ClientView {
+    /// Stable opaque identity (015-client-stable-id); the canonical
+    /// addressing key for operator API / Web UI routes.
+    pub client_id: ClientId,
     pub client_name: ClientName,
     pub provisioned_at: chrono::DateTime<chrono::Utc>,
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,

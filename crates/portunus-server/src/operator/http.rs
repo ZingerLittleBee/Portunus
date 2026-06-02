@@ -694,7 +694,7 @@ async fn push_multi_target(
     // decode `Rule.targets` and would activate a broken single-target
     // rule with empty `target_host`.
     if typed.len() >= 2
-        && let Some(v) = state.clients.client_version_of(&client_name).await
+        && let Some(v) = state.clients.client_version_by_name(&client_name).await
         && !version_at_least_0_7(&v)
     {
         return Err(OperatorError::MultiTargetUnsupportedByClient {
@@ -709,7 +709,7 @@ async fn push_multi_target(
     // decode the field and would silently fall through to the
     // pre-009 plain-TCP forwarding plane.
     if sni_pattern.is_some()
-        && let Some(v) = state.clients.client_version_of(&client_name).await
+        && let Some(v) = state.clients.client_version_by_name(&client_name).await
         && !version_at_least_0_9(&v)
     {
         return Err(OperatorError::SniUnsupportedByClient {
@@ -719,7 +719,7 @@ async fn push_multi_target(
         .into());
     }
     if typed.iter().any(|t| t.proxy_protocol.is_some()) {
-        let Some(v) = state.clients.client_version_of(&client_name).await else {
+        let Some(v) = state.clients.client_version_by_name(&client_name).await else {
             return Err(OperatorError::ProxyProtocolUnsupportedByClient {
                 client_name: client_name.clone(),
                 client_version: "unknown".into(),
@@ -741,7 +741,7 @@ async fn push_multi_target(
     // would activate uncapped, violating the operator-visible
     // contract. An unknown / missing client_version gates conservatively.
     if rate_limit.is_some() {
-        let Some(v) = state.clients.client_version_of(&client_name).await else {
+        let Some(v) = state.clients.client_version_by_name(&client_name).await else {
             return Err(OperatorError::RateLimitUnsupportedByClient {
                 client_name: client_name.clone(),
                 client_version: "unknown".into(),
@@ -843,7 +843,7 @@ async fn push_legacy_with_sni(
     debug_assert!(matches!(proto_wire, ProtocolWire::Tcp));
 
     // Capability gate (T028): client must be >= 0.9.0.
-    if let Some(v) = state.clients.client_version_of(&client_name).await
+    if let Some(v) = state.clients.client_version_by_name(&client_name).await
         && !version_at_least_0_9(&v)
     {
         return Err(OperatorError::SniUnsupportedByClient {

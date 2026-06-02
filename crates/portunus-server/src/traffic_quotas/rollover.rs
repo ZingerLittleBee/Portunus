@@ -92,7 +92,7 @@ async fn push_reset(state: &AppState, row: &TrafficQuotaRow) {
     let Ok(client) = ClientName::new(row.client_name.clone()) else {
         return;
     };
-    let Some((outbound, _waiters)) = state.clients.handles(&client).await else {
+    let Some((outbound, _waiters)) = state.clients.handles_by_name(&client).await else {
         return;
     };
     let msg = make_traffic_quota_set_msg(row, format!("quota-rollover-{}", ulid::Ulid::new()));

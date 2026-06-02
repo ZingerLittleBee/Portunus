@@ -41,8 +41,8 @@ fn fresh_store_has_current_schema() {
     let store = Store::open(dir.path()).expect("open fresh");
     let v = store.schema_version().expect("read schema version");
     assert_eq!(
-        v, 10,
-        "current target schema is 10 (V001 + V002 + V003 + V004 + V005 + V006 + V007 + V008 + V009 + V010)"
+        v, 11,
+        "current target schema is 11 (V001..V010 + V011 client_id re-key)"
     );
     assert_eq!(v, Store::target_schema_version());
 
@@ -61,6 +61,10 @@ fn fresh_store_has_current_schema() {
                 "client_enrollments",
                 "advertised_endpoint"
             ));
+            // V011 (015-client-stable-id): stable client_id re-key.
+            assert!(column_exists(conn, "client_tokens", "client_id"));
+            assert!(column_exists(conn, "rules", "client_id"));
+            assert!(column_exists(conn, "client_enrollments", "client_id"));
             Ok(())
         })
         .expect("inspect schema");
