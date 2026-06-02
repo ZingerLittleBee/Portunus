@@ -114,9 +114,9 @@ another client already uses); id unchanged, all records still resolve, session k
 forwarding, duplicate rename accepted.
 
 - [ ] T029 [P] [US2] Integration test: rename preserves `client_id` and every dependent row; live gRPC session uninterrupted across rename; rename to a duplicate name succeeds; and the rename emits an operator audit record (G3 / Constitution I+IV) — `crates/portunus-server/tests/client_rename.rs` — MUST FAIL first
-- [ ] T030 [US2] Add rename endpoint `PATCH /v1/clients/{client_id}` (`UPDATE client_tokens SET client_name=? WHERE client_id=?`, relaxed validation, audit-grade record) in `crates/portunus-server/src/operator/`
+- [X] T030 [US2] Add rename endpoint `PATCH /v1/clients/{client_id}` (`UPDATE client_tokens SET client_name=? WHERE client_id=?`, relaxed validation, audit-grade record) in `crates/portunus-server/src/operator/`
 - [ ] T031 [P] [US2] Add CLI `client rename --client-id <ULID> --name "<display>"` subcommand in `crates/portunus-server/src/operator/`
-- [ ] T032 [P] [US2] Web UI: rename control on `ClientDetail` calling `PATCH /v1/clients/{id}` — `webui/src/pages/` + `webui/src/components/`
+- [X] T032 [P] [US2] Web UI: rename control on `ClientDetail` calling `PATCH /v1/clients/{id}` — `webui/src/pages/` + `webui/src/components/`
 - [ ] T033 [US2] Checkpoint: rename a connected client; confirm session survives and records persist
 
 ---

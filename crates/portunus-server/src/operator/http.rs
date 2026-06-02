@@ -11,7 +11,7 @@ use axum::{
     http::StatusCode,
     middleware::from_fn_with_state,
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use portunus_auth::OperatorIdentity;
 use portunus_core::{PortRange, RuleId};
@@ -36,6 +36,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/v1/clients", get(get_clients))
         .route("/v1/clients/{name}", put(put_client).delete(delete_client))
+        // 015-client-stable-id (US2): identity-safe rename, addressed by
+        // the stable client_id (ULID). Additive alongside the legacy
+        // name-keyed routes above.
+        .route("/v1/clients/{client_id}/name", patch(patch_client_name))
         .route("/v1/clients/{name}/revoke", post(post_revoke))
         .route("/v1/clients/{name}/enrollment", post(post_client_reenrollment))
         .route("/v1/client-enrollments", post(post_client_enrollments))
@@ -273,6 +277,35 @@ async fn put_client(
 
 async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>> {
     Json(cli::list_clients(&state).await)
+}
+
+#[derive(Debug, Deserialize)]
+struct RenameClientBody {
+    client_name: String,
+}
+
+/// `PATCH /v1/clients/{client_id}/name` — 015-client-stable-id (US2).
+/// Identity-safe rename: the client is addressed by its stable id, so
+/// the display name change leaves rules / tokens / quotas / history and
+/// any live session intact. An unknown or malformed id is a 404.
+async fn patch_client_name(
+    State(state): State<Arc<AppState>>,
+    Path(client_id): Path<String>,
+    Json(body): Json<RenameClientBody>,
+) -> Result<Json<ClientView>, ApiError> {
+    let updated = cli::rename_client(&state, &client_id, &body.client_name)?;
+    let connected = state.clients.snapshot().await;
+    let conn = connected.get(&updated.client_id);
+    Ok(Json(ClientView {
+        client_id: updated.client_id,
+        client_name: updated.client_name,
+        provisioned_at: updated.issued_at,
+        revoked_at: updated.revoked_at,
+        connected: conn.is_some(),
+        client_address: updated.client_address,
+        remote_addr: conn.and_then(|c| c.remote_addr.map(|a| a.to_string())),
+        connected_at: conn.map(|c| c.connected_at),
+    }))
 }
 
 /// Superadmin-only mirror of the loopback `/metrics` endpoint.
@@ -1593,9 +1626,10 @@ impl From<OperatorError> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
-            OperatorError::RuleNotFound | OperatorError::ClientNotFound(_) => {
-                StatusCode::NOT_FOUND
-            }
+            OperatorError::RuleNotFound
+            | OperatorError::ClientNotFound(_)
+            | OperatorError::ClientIdNotFound(_)
+            | OperatorError::ClientIdInvalid => StatusCode::NOT_FOUND,
             // 005-multi-user-rbac: RBAC failures use the auth_layer's
             // shared status table (single source of truth).
             OperatorError::Rbac(rb) => crate::operator::auth_layer::rbac_status(rb),

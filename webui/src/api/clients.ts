@@ -75,6 +75,22 @@ export function useDeleteClient() {
   });
 }
 
+// 015-client-stable-id (US2): identity-safe rename, addressed by the
+// stable client_id. The id / token / rules / history are untouched.
+export function useRenameClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, clientName }: { clientId: string; clientName: string }) =>
+      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(clientId)}/name`, {
+        method: "PATCH",
+        body: JSON.stringify({ client_name: clientName }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
 export function useUpdateClient() {
   const qc = useQueryClient();
   return useMutation({

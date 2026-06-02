@@ -313,6 +313,73 @@ impl SqliteTokenStore {
             }
         })
     }
+
+    /// 015-client-stable-id (US2): change a client's free-form display
+    /// name. Addresses the client by its stable `client_id`, so the
+    /// rename leaves the identity — and every id-keyed row (rules,
+    /// tokens, quotas, traffic history) — untouched. Returns `NotFound`
+    /// when no row carries that id.
+    pub fn rename(
+        &self,
+        client_id: ClientId,
+        new_name: &ClientName,
+    ) -> Result<UpdateClientOutcome, StoreError> {
+        let rows = self.store.with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE client_tokens SET client_name = ? WHERE client_id = ?",
+                rusqlite::params![new_name.as_str(), client_id.to_string()],
+            )
+            .map_err(map_rusqlite)
+        })?;
+        if rows == 0 {
+            Ok(UpdateClientOutcome::NotFound)
+        } else {
+            Ok(UpdateClientOutcome::Updated)
+        }
+    }
+
+    /// Look up a single provisioned client by its stable `client_id`.
+    /// Unlike a name lookup this is unambiguous even when display names
+    /// collide (FR-013). Returns `None` when the id is unknown.
+    pub fn get_by_id(&self, client_id: ClientId) -> Result<Option<ProvisionedClient>, StoreError> {
+        self.store.with_conn(|c| {
+            let row = c
+                .query_row(
+                    "SELECT client_id, client_name, issued_at, revoked_at, client_address \
+                     FROM client_tokens WHERE client_id = ?",
+                    rusqlite::params![client_id.to_string()],
+                    |r| {
+                        let id: String = r.get(0)?;
+                        let name: String = r.get(1)?;
+                        let issued: String = r.get(2)?;
+                        let revoked: Option<String> = r.get(3)?;
+                        let client_address: Option<String> = r.get(4)?;
+                        Ok((id, name, issued, revoked, client_address))
+                    },
+                )
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(map_rusqlite(other)),
+                })?;
+            let Some((id, name, issued, revoked, client_address)) = row else {
+                return Ok(None);
+            };
+            let client_id = id.parse::<ClientId>().map_err(|e| StoreError::Internal {
+                message: format!("client_tokens has invalid client_id: {e}"),
+            })?;
+            let client_name = ClientName::new(name).map_err(|e| StoreError::Internal {
+                message: format!("client_tokens has invalid client_name: {e}"),
+            })?;
+            Ok(Some(ProvisionedClient {
+                client_id,
+                client_name,
+                issued_at: parse_ts(&issued)?,
+                revoked_at: revoked.map(|s| parse_ts(&s)).transpose()?,
+                client_address,
+            }))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +423,67 @@ mod tests {
         let token = s.issue(cn("edge-01")).unwrap();
         let id = s.verify(&token).unwrap();
         assert_eq!(id.client_name.as_str(), "edge-01");
+    }
+
+    #[test]
+    fn rename_keeps_client_id_and_token_stable() {
+        // 015-client-stable-id (US2): renaming changes only the display
+        // name; the client_id and the bearer token are unchanged, so the
+        // forwarder keeps authenticating and all id-keyed rows stay bound.
+        let (_d, s) = fresh();
+        let token = s.issue(cn("edge-01")).unwrap();
+        let before = s.verify(&token).unwrap();
+
+        let outcome = s.rename(before.client_id, &cn("Acme Prod – East")).unwrap();
+        assert_eq!(outcome, UpdateClientOutcome::Updated);
+
+        let after = s.verify(&token).unwrap();
+        assert_eq!(after.client_id, before.client_id, "identity is stable");
+        assert_eq!(after.client_name.as_str(), "Acme Prod – East");
+
+        let view = s.get_by_id(before.client_id).unwrap().expect("present");
+        assert_eq!(view.client_name.as_str(), "Acme Prod – East");
+    }
+
+    #[test]
+    fn rename_unknown_id_is_not_found() {
+        let (_d, s) = fresh();
+        let outcome = s
+            .rename(portunus_core::ClientId::new(), &cn("whatever"))
+            .unwrap();
+        assert_eq!(outcome, UpdateClientOutcome::NotFound);
+        assert!(
+            s.get_by_id(portunus_core::ClientId::new())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rename_allows_duplicate_display_names() {
+        // FR-013: two distinct clients may share a display name.
+        let (_d, s) = fresh();
+        let t1 = s.issue(cn("alpha")).unwrap();
+        let t2 = s.issue(cn("beta")).unwrap();
+        let id1 = s.verify(&t1).unwrap().client_id;
+        let id2 = s.verify(&t2).unwrap().client_id;
+        assert_eq!(
+            s.rename(id1, &cn("Shared")).unwrap(),
+            UpdateClientOutcome::Updated
+        );
+        assert_eq!(
+            s.rename(id2, &cn("Shared")).unwrap(),
+            UpdateClientOutcome::Updated
+        );
+        assert_eq!(
+            s.get_by_id(id1).unwrap().unwrap().client_name.as_str(),
+            "Shared"
+        );
+        assert_eq!(
+            s.get_by_id(id2).unwrap().unwrap().client_name.as_str(),
+            "Shared"
+        );
+        assert_ne!(id1, id2, "distinct identities preserved under shared name");
     }
 
     #[test]

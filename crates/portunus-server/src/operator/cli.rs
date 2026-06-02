@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use portunus_auth::{AuthError, Authenticator};
+use portunus_auth::{AuthError, Authenticator, ProvisionedClient};
 use portunus_core::{
-    ClientName, ClientNameError, Hostname, HostnameError, PortRange, PortRangeError, RequestId,
-    RuleId, Target, TargetError,
+    ClientId, ClientName, ClientNameError, Hostname, HostnameError, PortRange, PortRangeError,
+    RequestId, RuleId, Target, TargetError,
 };
 use portunus_proto::v1::{
     ActivationOutcome, Protocol as ProtoProto, Rule as ProtoRule, RuleAction, RuleUpdate,
@@ -52,6 +52,16 @@ pub enum OperatorError {
     /// generic `not_found` family with `RuleNotFound`).
     #[error("client_not_found: {0}")]
     ClientNotFound(ClientName),
+    /// Client mutation addressed by a `client_id` (ULID) that has no row
+    /// in `client_tokens` — used by the id-keyed operator surface
+    /// (015-client-stable-id, US3). Maps to HTTP 404 / exit 8.
+    #[error("client_not_found: {0}")]
+    ClientIdNotFound(ClientId),
+    /// A client_id path/arg that is not a parseable ULID. Maps to HTTP
+    /// 404 (an unknown id is indistinguishable from a malformed one to
+    /// the caller) / exit 8.
+    #[error("client_not_found: invalid client id")]
+    ClientIdInvalid,
     /// `client-delete` invoked against a still-active row. Operators
     /// must `revoke` first so the data-plane disconnect runs before the
     /// name vanishes. Maps to HTTP 409 / exit 5 (conflict family).
@@ -298,7 +308,10 @@ impl OperatorError {
             | Self::ClientNotRevoked(_) => 5,
             Self::ActivationFailed(_) => 6,
             Self::AckTimeout => 7,
-            Self::RuleNotFound | Self::ClientNotFound(_) => 8,
+            Self::RuleNotFound
+            | Self::ClientNotFound(_)
+            | Self::ClientIdNotFound(_)
+            | Self::ClientIdInvalid => 8,
             // 005: RBAC failures use the new operator-api table:
             // 4=auth, 5=rbac denial, 6=bootstrap_required, 2=already_bootstrapped, 3=validation.
             Self::Rbac(e) => match e {
@@ -344,7 +357,9 @@ impl OperatorError {
             | Self::ProxyProtocolValidation { code, .. }
             | Self::RateLimitValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
-            Self::ClientNotFound(_) => "client_not_found",
+            Self::ClientNotFound(_) | Self::ClientIdNotFound(_) | Self::ClientIdInvalid => {
+                "client_not_found"
+            }
             Self::ClientNotRevoked(_) => "client_not_revoked",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -647,6 +662,37 @@ pub fn update_client(
         }
         crate::store::token_store::UpdateClientOutcome::NotFound => {
             Err(OperatorError::ClientNotFound(name))
+        }
+    }
+}
+
+/// 015-client-stable-id (US2): rename a client's free-form display name,
+/// addressing it by its stable `client_id`. The id — and therefore all
+/// rules, tokens, quotas and traffic history keyed on it — is untouched,
+/// and a live session is NOT dropped. Duplicate display names are allowed
+/// (FR-013), so this never conflicts. Returns the updated client view.
+pub fn rename_client(
+    state: &AppState,
+    raw_id: &str,
+    raw_new_name: &str,
+) -> Result<ProvisionedClient, OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let new_name = ClientName::from_str(raw_new_name)?;
+    match state.tokens.rename(client_id, &new_name)? {
+        crate::store::token_store::UpdateClientOutcome::Updated => {
+            info!(
+                event = "audit.client_rename",
+                outcome = "success",
+                client_id = %client_id,
+                client_name = %new_name,
+            );
+            state
+                .tokens
+                .get_by_id(client_id)?
+                .ok_or(OperatorError::ClientIdNotFound(client_id))
+        }
+        crate::store::token_store::UpdateClientOutcome::NotFound => {
+            Err(OperatorError::ClientIdNotFound(client_id))
         }
     }
 }
