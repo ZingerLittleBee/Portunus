@@ -7,14 +7,23 @@ import { useUsersList } from "@/api/users";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
+import { UserCreateForm } from "@/components/UserCreateForm";
 import type { UserView } from "@/api/types";
 
 export function UsersList() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [filter, setFilter] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
   const { data, isLoading, error } = useUsersList();
 
   const filtered = useMemo(() => {
@@ -71,12 +80,26 @@ export function UsersList() {
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">{t("users.title")}</h1>
-        <Button asChild className="w-full sm:w-auto">
-          <Link to="/users/new">
-            <Plus className="mr-1 h-4 w-4" />
-            {t("users.newUser")}
-          </Link>
-        </Button>
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogTrigger asChild>
+            <Button className="w-full sm:w-auto">
+              <Plus className="mr-1 h-4 w-4" />
+              {t("users.newUser")}
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{t("userCreate.title")}</DialogTitle>
+            </DialogHeader>
+            <UserCreateForm
+              onSuccess={(userId) => {
+                setCreateOpen(false);
+                navigate(`/users/${userId}`);
+              }}
+              onCancel={() => setCreateOpen(false)}
+            />
+          </DialogContent>
+        </Dialog>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       <DataTable
