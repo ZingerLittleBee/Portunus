@@ -213,7 +213,7 @@ export function RulesList() {
               setParams(next);
             }}
           >
-            <SelectTrigger id="owner-filter" className="sm:w-[12rem]">
+            <SelectTrigger id="owner-filter" className="sm:w-48">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

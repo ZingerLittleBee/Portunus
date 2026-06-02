@@ -129,7 +129,7 @@ export function DataTable<Row>({
           ref={parentRef}
           tabIndex={0}
           onKeyDown={onKeyDown}
-          className="h-[480px] overflow-y-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-[480px] overflow-y-auto focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           role="rowgroup"
           aria-label={ariaLabel}
           style={{ minWidth: tableWidth }}

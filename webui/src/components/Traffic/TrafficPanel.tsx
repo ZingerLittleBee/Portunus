@@ -83,7 +83,7 @@ export function TrafficPanel({ userId, clientName, defaultRange = "24h", framed 
             value={range}
             onValueChange={(value) => setRange(value as RangeKey)}
           >
-            <SelectTrigger id="traffic-range" className="w-[9rem]">
+            <SelectTrigger id="traffic-range" className="w-36">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -103,7 +103,7 @@ export function TrafficPanel({ userId, clientName, defaultRange = "24h", framed 
             value={bucket}
             onValueChange={(value) => setBucket(value as BucketKey)}
           >
-            <SelectTrigger id="traffic-bucket" className="w-[9rem]">
+            <SelectTrigger id="traffic-bucket" className="w-36">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
