@@ -7,8 +7,10 @@
 //! at one batch interval (FR-005, SC-001).
 //!
 //! Mechanically: spawn the server, drive a known number of operator
-//! HTTP calls (each emits an audit row), wait one BATCH_MAX_DELAY for
-//! the writer to flush, then SIGKILL via `Child::kill`. Restart the
+//! HTTP calls that each emit an audit row (denials, since the v0.13
+//! "cut read noise" policy stopped auditing successful reads), wait one
+//! BATCH_MAX_DELAY for the writer to flush, then SIGKILL via
+//! `Child::kill`. Restart the
 //! server pointing at the same `--data-dir` and assert the previously
 //! committed rows are still readable.
 
@@ -101,11 +103,15 @@ fn audit_count(http: &str) -> usize {
 }
 
 fn drive_calls(http: &str, n: usize) {
+    // Since the v0.13 "cut read noise" policy, successful reads are no
+    // longer audited — only mutations and denials are. Drive denials with
+    // a bogus token so each call emits exactly one audit row, regardless of
+    // method.
     let url = format!("http://{http}/v1/clients");
     for _ in 0..n {
         let _ = reqwest::blocking::Client::new()
             .get(&url)
-            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("Authorization", "Bearer not-the-operator-token")
             .send();
     }
 }
