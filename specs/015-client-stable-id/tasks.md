@@ -42,10 +42,10 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Core identity types (`portunus-core`)
 
-- [ ] T003 [P] Rewrite `ClientName` validation unit tests in `crates/portunus-core/src/id.rs` to the relaxed contract (reject empty/whitespace-only, control chars, >255 bytes; accept uppercase/space/`.`/`_`/`-`/Unicode, verbatim) — tests MUST FAIL first
-- [ ] T004 Relax `ClientName::new` and replace `ClientNameError` variants with `Empty`/`TooLong(usize)`/`ControlChar` in `crates/portunus-core/src/id.rs` to pass T003. Also update existing DNS-label assertions that the relaxation breaks — at minimum `crates/portunus-server/tests/provisioning.rs::enroll_client_rejects_invalid_name` (and any sibling name-shape tests) — to the new contract (G1)
-- [ ] T005 [P] Add `ClientId(Ulid)` unit tests (Display, `FromStr` parse+validate, serde transparent round-trip, `Ord` sort) in `crates/portunus-core/src/id.rs` — MUST FAIL first
-- [ ] T006 Implement `ClientId(Ulid)` newtype (`Copy`, `Eq`, `Hash`, `Ord`, `Serialize`/`Deserialize`, `Display`, `FromStr`) in `crates/portunus-core/src/id.rs` to pass T005
+- [X] T003 [P] Rewrite `ClientName` validation unit tests in `crates/portunus-core/src/id.rs` to the relaxed contract (reject empty/whitespace-only, control chars, >255 bytes; accept uppercase/space/`.`/`_`/`-`/Unicode, verbatim) — tests MUST FAIL first
+- [X] T004 Relax `ClientName::new` and replace `ClientNameError` variants with `Empty`/`TooLong(usize)`/`ControlChar` in `crates/portunus-core/src/id.rs` to pass T003. Also update existing DNS-label assertions that the relaxation breaks — at minimum `crates/portunus-server/tests/provisioning.rs::enroll_client_rejects_invalid_name` (and any sibling name-shape tests) — to the new contract (G1)
+- [X] T005 [P] Add `ClientId(Ulid)` unit tests (Display, `FromStr` parse+validate, serde transparent round-trip, `Ord` sort) in `crates/portunus-core/src/id.rs` — MUST FAIL first
+- [X] T006 Implement `ClientId(Ulid)` newtype (`Copy`, `Eq`, `Hash`, `Ord`, `Serialize`/`Deserialize`, `Display`, `FromStr`) in `crates/portunus-core/src/id.rs` to pass T005
 
 ### Auth seam (`portunus-auth`)
 

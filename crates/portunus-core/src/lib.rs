@@ -19,7 +19,9 @@ pub mod target;
 
 pub use error::PortunusError;
 pub use hostname::{Hostname, HostnameError};
-pub use id::{ClientName, ClientNameError, RequestId, RuleId};
+pub use id::{
+    CLIENT_NAME_MAX_BYTES, ClientId, ClientName, ClientNameError, RequestId, RuleId,
+};
 pub use peek_histogram::PEEK_HISTOGRAM_BUCKETS_SECS;
 pub use port_range::{PortRange, PortRangeError};
 pub use protocol::{ParseProtocolError, Protocol};
