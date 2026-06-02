@@ -17,7 +17,7 @@ import {
   Shield,
   Sun,
   Users,
-  Zap,
+  Waypoints,
 } from "lucide-react";
 
 import { logout } from "@/api/auth";
@@ -114,8 +114,8 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <NavLink to="/" end>
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                  <Zap className="size-4" />
+                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary">
+                  <Waypoints className="size-4 text-primary-foreground" />
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold">{t("appTitle")}</span>
