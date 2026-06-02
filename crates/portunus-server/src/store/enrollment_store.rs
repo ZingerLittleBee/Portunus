@@ -29,55 +29,54 @@ impl ClientEnrollmentStore {
         let code_hash = fingerprint::hex(&token::hash_token(&code));
         let issued_at = input.now.to_rfc3339();
         let expires_at = input.expires_at.to_rfc3339();
-        let client_id = input.client_id.map(|id| id.to_string());
         let client_address = self.store.with_write_tx(|tx| {
             prune_stale_enrollments(tx, input.now)?;
-            let existing_client = client_for(tx, &input.client_name)?;
-            let client_address = match &input.target {
-                EnrollmentTarget::New { client_address } => {
-                    if matches!(existing_client, ExistingClient::Present { .. }) {
-                        return Ok(Err(CreateEnrollmentError::ClientAlreadyExists(
-                            input.client_name.clone(),
-                        )));
+            // 015-client-stable-id (FR-013): resolve the stable id this
+            // enrollment will carry. A brand-new client mints a fresh id
+            // NOW — a colliding display name is NOT an error, since names
+            // are free-form and non-unique. A re-enrollment resolves the
+            // existing client by its stable id (passed by the id-keyed
+            // operator route), falling back to a name lookup only for a
+            // legacy caller that supplies no id.
+            let (effective_client_id, client_address): (String, Option<String>) =
+                match &input.target {
+                    EnrollmentTarget::New { client_address } => {
+                        let id = input.client_id.unwrap_or_default();
+                        (id.to_string(), client_address.clone())
                     }
-                    client_address.clone()
-                }
-                EnrollmentTarget::Existing => match existing_client {
-                    ExistingClient::Present { client_address } => client_address,
-                    ExistingClient::Absent => {
-                        return Ok(Err(CreateEnrollmentError::ClientNotFound(
-                            input.client_name.clone(),
-                        )));
+                    EnrollmentTarget::Existing => {
+                        let resolved = match input.client_id {
+                            Some(id) => Some((id.to_string(), client_for_id(tx, id)?)),
+                            None => client_for_name_with_id(tx, &input.client_name)?,
+                        };
+                        match resolved {
+                            Some((id, ExistingClient::Present { client_address })) => {
+                                (id, client_address)
+                            }
+                            _ => {
+                                return Ok(Err(CreateEnrollmentError::ClientNotFound(
+                                    input.client_name.clone(),
+                                )));
+                            }
+                        }
                     }
-                },
-            };
-            // Supersede prior unconsumed enrollments for this client. When
-            // the id is known (re-enrollment) key on it so a renamed
-            // client's outstanding codes are still invalidated; otherwise
-            // (brand-new client, no id yet) fall back to the display name.
-            if let Some(id) = client_id.as_deref() {
-                tx.execute(
-                    "UPDATE client_enrollments \
-                     SET consumed_at = ? \
-                     WHERE client_id = ? AND consumed_at IS NULL",
-                    rusqlite::params![issued_at, id],
-                )
-                .map_err(map_rusqlite)?;
-            } else {
-                tx.execute(
-                    "UPDATE client_enrollments \
-                     SET consumed_at = ? \
-                     WHERE client_name = ? AND client_id IS NULL AND consumed_at IS NULL",
-                    rusqlite::params![issued_at, input.client_name.as_str()],
-                )
-                .map_err(map_rusqlite)?;
-            }
+                };
+            // Supersede prior unconsumed enrollments for this client, keyed
+            // on the now-known stable id so a renamed client's outstanding
+            // codes are still invalidated.
+            tx.execute(
+                "UPDATE client_enrollments \
+                 SET consumed_at = ? \
+                 WHERE client_id = ? AND consumed_at IS NULL",
+                rusqlite::params![issued_at, effective_client_id],
+            )
+            .map_err(map_rusqlite)?;
             tx.execute(
                 "INSERT INTO client_enrollments \
                  (client_id, client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
                  VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
                 rusqlite::params![
-                    client_id,
+                    effective_client_id,
                     input.client_name.as_str(),
                     client_address.as_deref(),
                     code_hash,
@@ -396,14 +395,17 @@ enum ExistingClient {
     Absent,
 }
 
-fn client_for(
+/// Resolve a client by its stable id (015-client-stable-id). This is the
+/// canonical re-enrollment lookup: a renamed client — or one sharing a
+/// display name with others — still resolves unambiguously.
+fn client_for_id(
     tx: &rusqlite::Transaction<'_>,
-    client_name: &ClientName,
+    client_id: ClientId,
 ) -> Result<ExistingClient, StoreError> {
     let client_address = tx
         .query_row(
-            "SELECT client_address FROM client_tokens WHERE client_name = ? LIMIT 1",
-            rusqlite::params![client_name.as_str()],
+            "SELECT client_address FROM client_tokens WHERE client_id = ?",
+            rusqlite::params![client_id.to_string()],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -412,6 +414,25 @@ fn client_for(
         Some(client_address) => ExistingClient::Present { client_address },
         None => ExistingClient::Absent,
     })
+}
+
+/// Legacy fallback for a re-enrollment that supplies no id: resolve the
+/// first client with this display name, returning both its id and
+/// address. Display names are non-unique (FR-013), so this is
+/// `LIMIT 1` / first-match; callers that need determinism pass the id.
+fn client_for_name_with_id(
+    tx: &rusqlite::Transaction<'_>,
+    client_name: &ClientName,
+) -> Result<Option<(String, ExistingClient)>, StoreError> {
+    let row = tx
+        .query_row(
+            "SELECT client_id, client_address FROM client_tokens WHERE client_name = ? LIMIT 1",
+            rusqlite::params![client_name.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(row.map(|(id, client_address)| (id, ExistingClient::Present { client_address })))
 }
 
 fn prune_stale_enrollments(

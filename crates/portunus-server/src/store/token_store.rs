@@ -99,30 +99,15 @@ impl SqliteTokenStore {
         let token = token::generate_token();
         let hash_hex = fingerprint::hex(&token::hash_token(&token));
         let issued_at = Utc::now().to_rfc3339();
-        let name_for_err = name.clone();
-        // 015-client-stable-id: mint the stable identity at issuance — this is
-        // the authoritative roster row, so the client first materializes here
-        // (direct-issue path). Display names may collide; the id never does.
+        // 015-client-stable-id (FR-013): mint the stable identity at issuance —
+        // this is the authoritative roster row, so the client first
+        // materializes here (direct-issue path). Display names are free-form
+        // and may collide; the id never does, so issuance does NOT reject a
+        // duplicate name — it simply creates a distinct client under a fresh id.
         let client_id = ClientId::new().to_string();
 
         self.store
             .with_write_tx(|tx| {
-                let exists: bool = tx
-                    .query_row(
-                        "SELECT 1 FROM client_tokens WHERE client_name = ? LIMIT 1",
-                        rusqlite::params![name.as_str()],
-                        |_| Ok(true),
-                    )
-                    .or_else(|e| match e {
-                        rusqlite::Error::QueryReturnedNoRows => Ok(false),
-                        other => Err(other),
-                    })
-                    .map_err(map_rusqlite)?;
-                if exists {
-                    return Err(StoreError::Conflict {
-                        detail: "client_already_exists".into(),
-                    });
-                }
                 tx.execute(
                     "INSERT INTO client_tokens \
                      (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
@@ -138,10 +123,7 @@ impl SqliteTokenStore {
                 .map_err(map_rusqlite)?;
                 Ok(())
             })
-            .map_err(|e| match e {
-                StoreError::Conflict { .. } => AuthError::ClientAlreadyExists(name_for_err),
-                other => store_err_to_auth(other),
-            })?;
+            .map_err(store_err_to_auth)?;
         Ok(token)
     }
 }
@@ -471,14 +453,24 @@ mod tests {
     }
 
     #[test]
-    fn issue_rejects_duplicate() {
+    fn issue_allows_duplicate_display_name() {
+        // 015-client-stable-id (FR-013): display names are non-unique.
+        // Issuing twice for the same name yields two distinct clients,
+        // each under its own stable id, with two separate tokens.
         let (_d, s) = fresh();
-        s.issue(cn("edge-01")).unwrap();
-        let err = s.issue(cn("edge-01")).unwrap_err();
-        match err {
-            AuthError::ClientAlreadyExists(n) => assert_eq!(n.as_str(), "edge-01"),
-            other => panic!("expected ClientAlreadyExists, got {other:?}"),
-        }
+        let t1 = s.issue(cn("edge-01")).unwrap();
+        let t2 = s.issue(cn("edge-01")).unwrap();
+        assert_ne!(t1, t2, "each issuance is a distinct client/token");
+        let id1 = s.verify(&t1).unwrap().client_id;
+        let id2 = s.verify(&t2).unwrap().client_id;
+        assert_ne!(id1, id2, "duplicate names get distinct stable ids");
+        let same_name = s
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.client_name.as_str() == "edge-01")
+            .count();
+        assert_eq!(same_name, 2);
     }
 
     #[test]
