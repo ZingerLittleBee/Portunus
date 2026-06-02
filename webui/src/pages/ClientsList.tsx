@@ -146,8 +146,8 @@ export function ClientsList() {
       header: t("clients.name"),
       render: (c) => (
         <Link
-          to={`/clients/${encodeURIComponent(c.client_name)}`}
-          className="font-mono text-primary hover:underline"
+          to={`/clients/${encodeURIComponent(c.client_id)}`}
+          className="text-primary hover:underline"
         >
           {c.client_name}
         </Link>

@@ -33,9 +33,13 @@ import type { ClientEnrollmentResponse, OwnerListEntry } from "@/api/types";
 export function ClientDetail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { clientName = "" } = useParams<{ clientName: string }>();
+  // 015-client-stable-id (US3): clients are addressed by their stable
+  // opaque id; the display name is derived for the still-name-keyed
+  // sub-resource APIs (owners / quotas / traffic / re-enroll).
+  const { clientId = "" } = useParams<{ clientId: string }>();
   const clients = useClientsList();
-  const client = clients.data?.find((c) => c.client_name === clientName);
+  const client = clients.data?.find((c) => c.client_id === clientId);
+  const clientName = client?.client_name ?? "";
   const { data: identity } = useQuery({
     queryKey: ME_QUERY_KEY,
     queryFn: fetchIdentity,
@@ -59,6 +63,23 @@ export function ClientDetail() {
     }
   }
 
+  // US3: an unknown id (e.g. a deleted client or a bad link) is a clear
+  // not-found rather than a blank shell. Wait for the list to load first.
+  if (clients.isSuccess && !client) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/clients")}>
+          <ArrowLeft className="h-4 w-4 mr-1" />
+          {t("clientDetail.back")}
+        </Button>
+        <EmptyState
+          title={t("clientDetail.notFoundTitle")}
+          description={t("clientDetail.notFoundBody")}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
@@ -66,7 +87,8 @@ export function ClientDetail() {
           <ArrowLeft className="h-4 w-4 mr-1" />
           {t("clientDetail.back")}
         </Button>
-        <h1 className="break-all font-mono text-2xl font-semibold">{clientName}</h1>
+        <h1 className="break-all text-2xl font-semibold">{clientName}</h1>
+        <code className="text-xs text-muted-foreground">{clientId}</code>
         {client?.connected && (
           <Badge variant={"success" as never}>{t("clients.connected")}</Badge>
         )}

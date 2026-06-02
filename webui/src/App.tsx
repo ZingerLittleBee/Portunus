@@ -228,7 +228,7 @@ export function App() {
         }
       />
       <Route
-        path="/clients/:clientName"
+        path="/clients/:clientId"
         element={
           <AuthGate>
             <Shell>

@@ -331,6 +331,8 @@
   },
   "clientDetail": {
     "back": "Back",
+    "notFoundTitle": "Client not found",
+    "notFoundBody": "No client matches this id. It may have been deleted, or the link is stale.",
     "tabOverview": "Overview",
     "tabOwnerQuotas": "Owner quotas",
     "overviewTitle": "Connection",

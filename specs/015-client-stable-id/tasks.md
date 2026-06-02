@@ -130,10 +130,10 @@ unknown id returns a clean not-found.
 `--client-id` command keeps working after rename; an unknown id → 404, not 5xx.
 
 - [ ] T034 [P] [US3] Tests: id-based detail route + `--client-id` command resolve after rename; unknown `client_id` → 404 (FR-012) — `crates/portunus-server/tests/client_addressing.rs` (+ a webui route smoke test) — MUST FAIL first
-- [ ] T035 [US3] Web UI: change route to `/clients/:clientId` (was `:clientName`) and key all client links/requests on the id — `webui/src/App.tsx:231` + callers
+- [X] T035 [US3] Web UI: change route to `/clients/:clientId` (was `:clientName`) and key all client links/requests on the id — `webui/src/App.tsx:231` + callers
 - [ ] T036 [P] [US3] Web UI: disambiguate duplicate display names with a short id in all client listings — `webui/src/pages/` + `webui/src/components/`
 - [ ] T037 [US3] Ensure all client-scoped operator routes return 404 for unknown `client_id` without leaking colliding-name existence (Constitution V) in `crates/portunus-server/src/operator/`
-- [ ] T038 [US3] Checkpoint: bookmark a client, rename it, reopen bookmark → same client
+- [X] T038 [US3] Checkpoint: bookmark a client, rename it, reopen bookmark → same client
 
 ---
 
@@ -157,7 +157,7 @@ re-run is a no-op; a legacy bundle (no id) reconnects and forwards.
 - [ ] T043 [P] Add a `CHANGELOG.md` entry: new `client_id` wire field, relaxed client-name rules, client rename (Constitution: user-visible change requires a CHANGELOG note)
 - [ ] T044 [P] Update docs for id-based addressing + rename + free-form names in `docs/content/`
 - [ ] T045 Run `cargo bench -p portunus-client --bench data_plane`; confirm flat vs the v0.1.0 baseline (Constitution II)
-- [ ] T046 [P] Web UI build budget: `cd webui && pnpm install --frozen-lockfile && pnpm build` (tsc + vite + size-limit ≤500 KB gz) green
+- [X] T046 [P] Web UI build budget: `cd webui && pnpm install --frozen-lockfile && pnpm build` (tsc + vite + size-limit ≤500 KB gz) green
 - [ ] T047 Run the full `quickstart.md` acceptance walkthrough (SC-001..SC-007)
 - [ ] T048 Final gate: `PORTUNUS_SKIP_WEBUI=1 cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
 

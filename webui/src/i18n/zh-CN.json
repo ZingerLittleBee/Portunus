@@ -331,6 +331,8 @@
   },
   "clientDetail": {
     "back": "返回",
+    "notFoundTitle": "未找到客户端",
+    "notFoundBody": "没有与此 id 匹配的客户端。它可能已被删除,或链接已失效。",
     "tabOverview": "概览",
     "tabOwnerQuotas": "所有者配额",
     "overviewTitle": "连接信息",

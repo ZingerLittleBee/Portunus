@@ -16,9 +16,12 @@ describe("ClientsList action column", () => {
 
     expect(source).toContain("pendingEdit");
     expect(source).toContain("openEdit(c)");
-    expect(source).toContain('value={pendingEdit?.client_name ?? ""}');
+    // 015-client-stable-id (US2): the display name is now editable
+    // (identity-safe rename addressed by client_id), not a disabled field.
+    expect(source).toContain("value={editName}");
     expect(source).toContain("value={editAddress}");
     expect(source).toContain("useUpdateClient");
+    expect(source).toContain("useRenameClient");
   });
 
   it("keeps destructive client actions behind confirmation dialogs", () => {

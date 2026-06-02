@@ -16,12 +16,12 @@ const HIDE_DELAY_MS = 700;
  */
 export function initScrollbarAutoHide(): () => void {
   const root = document.documentElement;
-  let hideTimer: ReturnType<typeof window.setTimeout> | undefined;
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
   const handleScroll = () => {
     root.setAttribute("data-scrolling", "");
-    if (hideTimer !== undefined) window.clearTimeout(hideTimer);
-    hideTimer = window.setTimeout(() => {
+    if (hideTimer !== undefined) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
       root.removeAttribute("data-scrolling");
     }, HIDE_DELAY_MS);
   };
