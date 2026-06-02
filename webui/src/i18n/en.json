@@ -389,7 +389,16 @@
     "outcomeFilterLabel": "Filter by outcome",
     "download": "Download as JSON",
     "emptyTitle": "No audit entries",
-    "emptyBody": "Operator allow / deny events will appear here as soon as they happen."
+    "emptyBody": "Operator allow / deny events will appear here as soon as they happen.",
+    "modeLive": "Live",
+    "modeHistory": "History",
+    "liveHint": "Auto-refreshing every 5s",
+    "historyHint": "Frozen snapshot — paginated",
+    "newer": "Newer",
+    "older": "Older",
+    "page": "Page {{n}}",
+    "loading": "Loading…",
+    "noMoreHistory": "No earlier entries"
   },
   "metrics": {
     "title": "Metrics",

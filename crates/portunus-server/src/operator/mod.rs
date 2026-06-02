@@ -7,6 +7,7 @@
 
 pub mod audit;
 pub mod audit_http;
+pub mod audit_retention;
 pub mod auth_layer;
 pub mod bootstrap;
 pub mod cli;

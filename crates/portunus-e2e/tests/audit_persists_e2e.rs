@@ -2,8 +2,10 @@
 //! retention across a server restart.
 //!
 //! 1. Spawn the server (fresh `--data-dir`).
-//! 2. Drive a few authenticated operator HTTP calls — each generates
-//!    an audit row via the `auth_layer` middleware.
+//! 2. Drive a few *denied* operator HTTP calls — each generates an
+//!    audit row via the `auth_layer` middleware. (Successful reads are
+//!    no longer audited; denials always are, so they are the reliable
+//!    way to seed audit rows over real HTTP.)
 //! 3. Snapshot `GET /v1/audit?limit=100`.
 //! 4. SIGTERM the server; respawn with the SAME `--data-dir`.
 //! 5. Re-snapshot `GET /v1/audit?limit=100` and assert the pre-restart
@@ -30,8 +32,15 @@ fn audit_get(http: &str) -> Value {
     resp.json().expect("audit json")
 }
 
-fn list_clients(http: &str) -> Value {
-    common::list_clients_http(http)
+/// Fire a request with a bogus bearer token. The auth_layer denies it
+/// (401) and records a `deny` audit row — our reliable seed now that
+/// successful reads are not audited.
+fn denied_request(http: &str) {
+    let url = format!("http://{http}/v1/clients");
+    let _ = reqwest::blocking::Client::new()
+        .get(url)
+        .header("Authorization", "Bearer not-a-valid-token")
+        .send();
 }
 
 /// Spawn `portunus-server serve` against an existing data dir
@@ -56,11 +65,11 @@ fn audit_rows_survive_server_restart() {
         .wait_listening(Duration::from_secs(15))
         .expect("server listening");
 
-    // Drive five authenticated calls. Each one walks the auth layer
-    // and produces an audit row; we don't care about the response
-    // bodies, only that the calls succeed.
+    // Drive five denied calls. Each one walks the auth layer and
+    // produces a `deny` audit row; we don't care about the response
+    // bodies, only that an audit row is recorded.
     for _ in 0..5 {
-        let _ = list_clients(&http);
+        denied_request(&http);
     }
     // Allow the durable writer (BATCH_MAX_DELAY = 100 ms) to flush.
     std::thread::sleep(Duration::from_millis(500));

@@ -10,7 +10,8 @@ export interface AuditQuery {
 
 export const auditKey = (q: AuditQuery) => ["audit", q] as const;
 
-export function useAuditLog(query: AuditQuery = {}) {
+export function useAuditLog(query: AuditQuery = {}, options: { enabled?: boolean } = {}) {
+  const enabled = options.enabled ?? true;
   const params = new URLSearchParams();
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.outcome) params.set("outcome", query.outcome);
@@ -18,7 +19,10 @@ export function useAuditLog(query: AuditQuery = {}) {
   return useQuery({
     queryKey: auditKey(query),
     queryFn: () => apiFetch<AuditEntry[]>(`/v1/audit${suffix}`),
-    refetchInterval: 5_000,
+    // Live tail polls; disabled (history mode) stops both the query and
+    // the 5s refetch so the view stays a frozen snapshot.
+    enabled,
+    refetchInterval: enabled ? 5_000 : false,
     staleTime: 2_500,
   });
 }
@@ -50,5 +54,13 @@ export async function fetchAuditEnvelope(query: AuditEnvelopeQuery): Promise<Aud
   if (query.until) params.set("until", query.until);
   if (query.cursor) params.set("cursor", query.cursor);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch<AuditEnvelope>(`/v1/audit${suffix}`);
+  const data = await apiFetch<AuditEnvelope | AuditEntry[]>(`/v1/audit${suffix}`);
+  // The server returns a bare array (v0.7 shape) when none of
+  // since/until/cursor is present, and the envelope otherwise. Normalize
+  // to the envelope shape so callers never accidentally read
+  // `Array.prototype.entries` off a bare array.
+  if (Array.isArray(data)) {
+    return { entries: data, count: data.length };
+  }
+  return data;
 }

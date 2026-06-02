@@ -8,6 +8,7 @@ use std::sync::Arc;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use portunus_server::clients::ConnectedClients;
+use portunus_server::operator::audit::{AuditEntry, AuditOutcome};
 use portunus_server::operator::http;
 use portunus_server::state::AppState;
 use tempfile::TempDir;
@@ -96,14 +97,28 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("body json")
 }
 
-/// Tickle the auth_layer N times to produce N audit-ring entries.
-async fn drive_traffic(router: &axum::Router, n: usize) {
+/// Seed N auditable `allow` rows directly through the ring fan-out.
+///
+/// This exercises the read endpoint independently of the auth_layer
+/// audit *policy* (which no longer records successful reads). Each row
+/// is a representative mutation (`POST /v1/rules`), the shape an allow
+/// row actually takes now. The middleware policy itself is locked by
+/// `successful_read_is_not_audited_but_deny_is`.
+fn seed_allow_rows(state: &Arc<AppState>, n: usize) {
     for _ in 0..n {
-        let _ = router
-            .clone()
-            .oneshot(req("GET", "/v1/users", Some(SUPERADMIN_TOKEN)))
-            .await
-            .expect("oneshot");
+        state.audit.push(AuditEntry {
+            timestamp: chrono::Utc::now(),
+            actor: "_legacy".into(),
+            role: Some(portunus_auth::OperatorRole::Superadmin),
+            method: "POST".into(),
+            path: "/v1/rules".into(),
+            outcome: AuditOutcome::Allow,
+            reason: None,
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
+        });
     }
 }
 
@@ -128,8 +143,8 @@ async fn empty_buffer_returns_empty_array() {
 
 #[tokio::test]
 async fn buffer_returns_at_most_limit_newest_first() {
-    let (router, _state, _alice, _d) = build_router_with_alice();
-    drive_traffic(&router, 5).await;
+    let (router, state, _alice, _d) = build_router_with_alice();
+    seed_allow_rows(&state, 5);
     flush_audit().await;
     let resp = router
         .oneshot(req("GET", "/v1/audit?limit=3", Some(SUPERADMIN_TOKEN)))
@@ -139,10 +154,10 @@ async fn buffer_returns_at_most_limit_newest_first() {
     let v = body_json(resp).await;
     let arr = v.as_array().expect("array");
     assert_eq!(arr.len(), 3);
-    // 008-sqlite-storage: the audit GET's own row is still in flight,
-    // so all three rows are the drive_traffic /v1/users hits.
+    // Reads are no longer audited, so the only rows are the seeded
+    // mutation rows.
     for row in arr {
-        assert_eq!(row["path"], "/v1/users");
+        assert_eq!(row["path"], "/v1/rules");
     }
 }
 
@@ -175,7 +190,7 @@ async fn invalid_limit_returns_422() {
 
 #[tokio::test]
 async fn outcome_filter_narrows_to_deny() {
-    let (router, _state, _alice, _d) = build_router_with_alice();
+    let (router, state, _alice, _d) = build_router_with_alice();
     // Generate one deny by hitting an endpoint with a bogus token.
     let _ = router
         .clone()
@@ -183,7 +198,7 @@ async fn outcome_filter_narrows_to_deny() {
         .await
         .expect("oneshot");
     // Plus a few allows.
-    drive_traffic(&router, 2).await;
+    seed_allow_rows(&state, 2);
     flush_audit().await;
 
     let resp = router
@@ -239,16 +254,10 @@ async fn missing_bearer_returns_401() {
 
 #[tokio::test]
 async fn audit_reflects_recent_actions_in_order() {
-    let (router, _, _alice, _d) = build_router_with_alice();
-    // Sequence: 2 allow GETs, 1 deny (bogus token), 1 allow read.
-    let _ = router
-        .clone()
-        .oneshot(req("GET", "/v1/clients", Some(SUPERADMIN_TOKEN)))
-        .await;
-    let _ = router
-        .clone()
-        .oneshot(req("GET", "/v1/rules", Some(SUPERADMIN_TOKEN)))
-        .await;
+    let (router, state, _alice, _d) = build_router_with_alice();
+    // Sequence: 2 auditable allows (mutations) + 1 deny (bogus token).
+    // Successful reads are intentionally absent from the audit log.
+    seed_allow_rows(&state, 2);
     let _ = router
         .clone()
         .oneshot(req("GET", "/v1/users", Some("not-a-token")))
@@ -261,14 +270,57 @@ async fn audit_reflects_recent_actions_in_order() {
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
     let arr = v.as_array().expect("array");
-    // 008-sqlite-storage: the audit GET's own row is still in flight
-    // and not part of this response, so we expect ≥3 (the three
-    // pre-flushed traffic rows above).
+    // 2 seeded allows + 1 deny.
     assert!(arr.len() >= 3, "expected ≥3 rows, got {}", arr.len());
     // The deny row sits in there.
     assert!(
         arr.iter()
             .any(|r| r["outcome"] == "deny" && r["path"] == "/v1/users"),
         "expected a deny row for /v1/users: {arr:?}"
+    );
+}
+
+/// Audit-scope policy: a *successful* read-only request produces NO
+/// audit row, but a *denied* request always does. This is the core of
+/// the noise-reduction change — the dashboard's own polling no longer
+/// floods the audit log.
+#[tokio::test]
+async fn successful_read_is_not_audited_but_deny_is() {
+    let (router, _state, _alice, _d) = build_router_with_alice();
+    // Several successful reads — none should be audited.
+    for _ in 0..5 {
+        let resp = router
+            .clone()
+            .oneshot(req("GET", "/v1/users", Some(SUPERADMIN_TOKEN)))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    // One denied read — must be audited.
+    let resp = router
+        .clone()
+        .oneshot(req("GET", "/v1/users", Some("not-a-real-token")))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    flush_audit().await;
+
+    let resp = router
+        .oneshot(req("GET", "/v1/audit?limit=100", Some(SUPERADMIN_TOKEN)))
+        .await
+        .expect("oneshot");
+    let v = body_json(resp).await;
+    let arr = v.as_array().expect("array");
+    // Exactly one row: the deny. The five successful GET /v1/users reads
+    // and the audit GET itself are all reads → not audited.
+    assert_eq!(
+        arr.len(),
+        1,
+        "only the deny should be audited, got {arr:?}"
+    );
+    assert_eq!(arr[0]["outcome"], "deny");
+    assert!(
+        arr.iter().all(|r| r["outcome"] == "deny"),
+        "no allow rows expected from reads: {arr:?}"
     );
 }

@@ -389,7 +389,16 @@
     "outcomeFilterLabel": "按结果筛选",
     "download": "下载为 JSON",
     "emptyTitle": "暂无审计记录",
-    "emptyBody": "operator 的 allow / deny 事件会在发生时实时出现在这里。"
+    "emptyBody": "operator 的 allow / deny 事件会在发生时实时出现在这里。",
+    "modeLive": "实时",
+    "modeHistory": "历史",
+    "liveHint": "每 5 秒自动刷新",
+    "historyHint": "已冻结快照 · 分页浏览",
+    "newer": "较新",
+    "older": "较早",
+    "page": "第 {{n}} 页",
+    "loading": "加载中…",
+    "noMoreHistory": "没有更早的记录"
   },
   "metrics": {
     "title": "指标",
