@@ -35,6 +35,7 @@ fn created_code_redeems_once_and_issues_client_token() {
     let now = Utc::now();
     let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: ClientName::new("edge-01").unwrap(),
             target: EnrollmentTarget::New {
                 client_address: Some("edge.example.com".into()),
@@ -76,6 +77,7 @@ fn expired_code_does_not_issue_client_token() {
     let now = Utc::now();
     let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: ClientName::new("edge-01").unwrap(),
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -103,6 +105,7 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
     let name = ClientName::new("edge-01").unwrap();
     let older = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -114,6 +117,7 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
         .expect("create older enrollment");
     let newer = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name,
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -156,6 +160,7 @@ fn existing_client_code_redeems_by_rotating_token_in_place() {
     let now = Utc::now();
     let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
@@ -198,6 +203,7 @@ fn new_client_enrollment_rejects_existing_client_inside_store_transaction() {
 
     let err = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -222,6 +228,7 @@ fn existing_client_enrollment_requires_existing_client_inside_store_transaction(
 
     let err = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
@@ -261,6 +268,7 @@ fn creating_enrollment_prunes_old_consumed_and_expired_rows() {
 
     enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: ClientName::new("edge-01").unwrap(),
             target: EnrollmentTarget::New {
                 client_address: None,

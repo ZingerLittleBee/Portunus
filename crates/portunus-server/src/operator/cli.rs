@@ -506,6 +506,9 @@ pub fn enroll_client(
     create_enrollment_command(
         state,
         name,
+        // Brand-new client: no stable id exists yet — it is minted at
+        // redeem (U2).
+        None,
         EnrollmentTarget::New {
             client_address: address,
         },
@@ -531,6 +534,7 @@ pub fn enroll_existing_client(
     create_enrollment_command(
         state,
         name,
+        None,
         EnrollmentTarget::Existing,
         ttl_secs,
         "audit.client_reenrollment_created",
@@ -541,6 +545,7 @@ pub fn enroll_existing_client(
 fn create_enrollment_command(
     state: &AppState,
     name: ClientName,
+    client_id: Option<ClientId>,
     target: EnrollmentTarget,
     ttl_secs: u64,
     event: &'static str,
@@ -568,6 +573,7 @@ fn create_enrollment_command(
     let enrollments = ClientEnrollmentStore::new(Arc::clone(&state.store));
     let created = enrollments.create(CreateEnrollment {
         client_name: name.clone(),
+        client_id,
         target,
         expires_at: now + ttl,
         now,
@@ -762,6 +768,7 @@ pub fn enroll_existing_client_by_id(
     create_enrollment_command(
         state,
         client.client_name,
+        Some(client_id),
         EnrollmentTarget::Existing,
         ttl_secs,
         "audit.client_reenrollment_created",
