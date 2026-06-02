@@ -36,12 +36,14 @@ export function useCreateClientEnrollment() {
   });
 }
 
+// 015-client-stable-id (US3): client-scoped operations address the client
+// by its stable client_id, not the mutable display name.
 export function useCreateClientReEnrollment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, ...body }: { name: string } & ClientReEnrollmentBody) =>
+    mutationFn: ({ clientId, ...body }: { clientId: string } & ClientReEnrollmentBody) =>
       apiFetch<ClientEnrollmentResponse>(
-        `/v1/clients/${encodeURIComponent(name)}/enrollment`,
+        `/v1/clients/${encodeURIComponent(clientId)}/enrollment`,
         {
           method: "POST",
           body: JSON.stringify(body),
@@ -56,8 +58,8 @@ export function useCreateClientReEnrollment() {
 export function useRevokeClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}/revoke`, { method: "POST" }),
+    mutationFn: (clientId: string) =>
+      apiFetch<void>(`/v1/clients/${encodeURIComponent(clientId)}/revoke`, { method: "POST" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
     },
@@ -67,8 +69,8 @@ export function useRevokeClient() {
 export function useDeleteClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    mutationFn: (clientId: string) =>
+      apiFetch<void>(`/v1/clients/${encodeURIComponent(clientId)}`, { method: "DELETE" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
     },
@@ -94,8 +96,8 @@ export function useRenameClient() {
 export function useUpdateClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, body }: { name: string; body: UpdateClientBody }) =>
-      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(name)}`, {
+    mutationFn: ({ clientId, body }: { clientId: string; body: UpdateClientBody }) =>
+      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(clientId)}`, {
         method: "PUT",
         body: JSON.stringify(body),
       }),

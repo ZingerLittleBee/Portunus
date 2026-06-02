@@ -82,12 +82,14 @@ describe("useCreateClientReEnrollment", () => {
       wrapper: wrapper(qc),
     });
 
-    result.current.mutate({ name: "edge-01", ttl_secs: 900 });
+    result.current.mutate({ clientId: "01HCLIENTID0000000000000000", ttl_secs: 900 });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[0]).toContain("/v1/clients/edge-01/enrollment");
+    expect(fetchMock.mock.calls[0]?.[0]).toContain(
+      "/v1/clients/01HCLIENTID0000000000000000/enrollment",
+    );
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       ttl_secs: 900,

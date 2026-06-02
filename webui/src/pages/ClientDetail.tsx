@@ -55,7 +55,7 @@ export function ClientDetail() {
   async function doReenroll() {
     setReenrollError(null);
     try {
-      const enrollment = await reenroll.mutateAsync({ name: clientName });
+      const enrollment = await reenroll.mutateAsync({ clientId });
       setReenrollment(enrollment);
       setConfirmOpen(false);
     } catch (err) {

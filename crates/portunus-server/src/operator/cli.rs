@@ -666,6 +666,109 @@ pub fn update_client(
     }
 }
 
+/// 015-client-stable-id (US3): revoke a client addressed by its stable
+/// `client_id`. Unambiguous under duplicate display names. Idempotent.
+pub async fn revoke_by_id(state: &AppState, raw_id: &str) -> Result<(), OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let client = state
+        .tokens
+        .get_by_id(client_id)?
+        .ok_or(OperatorError::ClientIdNotFound(client_id))?;
+    state.tokens.revoke_by_id(client_id)?;
+    let disconnected = state.clients.disconnect(&client_id).await;
+    info!(
+        event = "audit.revoke",
+        outcome = "success",
+        client_id = %client_id,
+        client_name = %client.client_name,
+        was_connected = disconnected,
+    );
+    Ok(())
+}
+
+/// Permanently remove a previously-revoked client addressed by `client_id`.
+pub fn delete_client_by_id(state: &AppState, raw_id: &str) -> Result<(), OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let client = state
+        .tokens
+        .get_by_id(client_id)?
+        .ok_or(OperatorError::ClientIdNotFound(client_id))?;
+    match state.tokens.delete_revoked_by_id(client_id)? {
+        crate::store::token_store::DeleteOutcome::Deleted => {
+            info!(
+                event = "audit.client_delete",
+                outcome = "success",
+                client_id = %client_id,
+                client_name = %client.client_name,
+            );
+            Ok(())
+        }
+        crate::store::token_store::DeleteOutcome::NotFound => {
+            Err(OperatorError::ClientIdNotFound(client_id))
+        }
+        crate::store::token_store::DeleteOutcome::StillActive => {
+            Err(OperatorError::ClientNotRevoked(client.client_name))
+        }
+    }
+}
+
+/// Update editable metadata for a client addressed by `client_id`. Returns
+/// the refreshed client view.
+pub fn update_client_by_id(
+    state: &AppState,
+    raw_id: &str,
+    client_address: Option<&str>,
+) -> Result<ProvisionedClient, OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let address = client_address.map(validate_client_address).transpose()?;
+    match state
+        .tokens
+        .update_client_address_by_id(client_id, address.as_deref())?
+    {
+        crate::store::token_store::UpdateClientOutcome::Updated => {
+            info!(
+                event = "audit.client_update",
+                outcome = "success",
+                client_id = %client_id,
+            );
+            state
+                .tokens
+                .get_by_id(client_id)?
+                .ok_or(OperatorError::ClientIdNotFound(client_id))
+        }
+        crate::store::token_store::UpdateClientOutcome::NotFound => {
+            Err(OperatorError::ClientIdNotFound(client_id))
+        }
+    }
+}
+
+/// 015-client-stable-id (US3): create a re-enrollment URI for an existing
+/// client addressed by `client_id`. Resolves the current display name for
+/// the (still name-based) enrollment record.
+pub fn enroll_existing_client_by_id(
+    state: &AppState,
+    raw_id: &str,
+    ttl_secs: u64,
+    req_host: Option<&str>,
+) -> Result<EnrollmentCommand, OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let client = state
+        .tokens
+        .get_by_id(client_id)?
+        .ok_or(OperatorError::ClientIdNotFound(client_id))?;
+    if ttl_secs == 0 {
+        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
+    }
+    create_enrollment_command(
+        state,
+        client.client_name,
+        EnrollmentTarget::Existing,
+        ttl_secs,
+        "audit.client_reenrollment_created",
+        req_host,
+    )
+}
+
 /// 015-client-stable-id (US2): rename a client's free-form display name,
 /// addressing it by its stable `client_id`. The id — and therefore all
 /// rules, tokens, quotas and traffic history keyed on it — is untouched,

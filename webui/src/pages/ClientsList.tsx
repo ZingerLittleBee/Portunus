@@ -89,7 +89,7 @@ export function ClientsList() {
       // BEFORE the rename so its key is valid.
       if (editAddress !== (pendingEdit.client_address ?? "")) {
         await update.mutateAsync({
-          name: pendingEdit.client_name,
+          clientId: pendingEdit.client_id,
           body: { address: editAddress },
         });
       }
@@ -111,7 +111,7 @@ export function ClientsList() {
     if (!pendingRevoke) return;
     setRevokeError(null);
     try {
-      await revoke.mutateAsync(pendingRevoke.client_name);
+      await revoke.mutateAsync(pendingRevoke.client_id);
       setPendingRevoke(null);
     } catch (err) {
       setRevokeError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
@@ -122,7 +122,7 @@ export function ClientsList() {
     if (!pendingDelete) return;
     setDeleteError(null);
     try {
-      await remove.mutateAsync(pendingDelete.client_name);
+      await remove.mutateAsync(pendingDelete.client_id);
       setPendingDelete(null);
     } catch (err) {
       setDeleteError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);

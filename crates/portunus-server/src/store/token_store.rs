@@ -338,6 +338,70 @@ impl SqliteTokenStore {
         }
     }
 
+    /// Revoke a client addressed by its stable `client_id` (idempotent).
+    /// 015-client-stable-id (US3): unambiguous even under duplicate display
+    /// names. Returns the number of rows revoked (0 if already revoked).
+    pub fn revoke_by_id(&self, client_id: ClientId) -> Result<usize, StoreError> {
+        let now = Utc::now().to_rfc3339();
+        self.store.with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE client_tokens SET revoked_at = ? \
+                 WHERE client_id = ? AND revoked_at IS NULL",
+                rusqlite::params![now, client_id.to_string()],
+            )
+            .map_err(map_rusqlite)
+        })
+    }
+
+    /// Update editable metadata for a client addressed by `client_id`.
+    pub fn update_client_address_by_id(
+        &self,
+        client_id: ClientId,
+        client_address: Option<&str>,
+    ) -> Result<UpdateClientOutcome, StoreError> {
+        let rows = self.store.with_write_tx(|tx| {
+            tx.execute(
+                "UPDATE client_tokens SET client_address = ? WHERE client_id = ?",
+                rusqlite::params![client_address, client_id.to_string()],
+            )
+            .map_err(map_rusqlite)
+        })?;
+        if rows == 0 {
+            Ok(UpdateClientOutcome::NotFound)
+        } else {
+            Ok(UpdateClientOutcome::Updated)
+        }
+    }
+
+    /// Permanently remove a previously-revoked client addressed by
+    /// `client_id`. Refuses to touch an active row (caller must revoke
+    /// first), mirroring [`Self::delete_revoked`].
+    pub fn delete_revoked_by_id(&self, client_id: ClientId) -> Result<DeleteOutcome, StoreError> {
+        self.store.with_write_tx(|tx| {
+            let revoked_at: Option<Option<String>> = match tx.query_row(
+                "SELECT revoked_at FROM client_tokens WHERE client_id = ?",
+                rusqlite::params![client_id.to_string()],
+                |r| r.get::<_, Option<String>>(0),
+            ) {
+                Ok(v) => Some(v),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(map_rusqlite(e)),
+            };
+            match revoked_at {
+                None => Ok(DeleteOutcome::NotFound),
+                Some(None) => Ok(DeleteOutcome::StillActive),
+                Some(Some(_)) => {
+                    tx.execute(
+                        "DELETE FROM client_tokens WHERE client_id = ?",
+                        rusqlite::params![client_id.to_string()],
+                    )
+                    .map_err(map_rusqlite)?;
+                    Ok(DeleteOutcome::Deleted)
+                }
+            }
+        })
+    }
+
     /// Look up a single provisioned client by its stable `client_id`.
     /// Unlike a name lookup this is unambiguous even when display names
     /// collide (FR-013). Returns `None` when the id is unknown.

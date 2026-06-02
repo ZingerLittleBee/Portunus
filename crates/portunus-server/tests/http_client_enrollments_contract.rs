@@ -175,10 +175,12 @@ async fn existing_client_enrollment_does_not_rotate_until_redeemed() {
     let (router, tokens, _alice_token, _dir) = build_router();
     let name = ClientName::new("edge-01").unwrap();
     let old_token = tokens.issue(name.clone()).expect("seed client");
+    // 015-client-stable-id (US3): re-enrollment is addressed by client_id.
+    let client_id = tokens.verify(&old_token).unwrap().client_id;
 
     let resp = router
         .oneshot(post(
-            "/v1/clients/edge-01/enrollment",
+            &format!("/v1/clients/{client_id}/enrollment"),
             json!({"ttl_secs": 300}),
         ))
         .await
