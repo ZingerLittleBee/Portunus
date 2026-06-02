@@ -13,7 +13,7 @@ pub use store_types::{IdentityStoreError, ProvisionedClient, UserRemoveSummary};
 
 use std::fmt;
 
-use portunus_core::ClientName;
+use portunus_core::{ClientId, ClientName};
 use thiserror::Error;
 
 /// Identity recovered from a verified credential.
@@ -24,6 +24,9 @@ use thiserror::Error;
 /// handlers) is what satisfies Constitution V's preservation requirement.
 #[derive(Debug, Clone)]
 pub struct ClientIdentity {
+    /// Stable opaque identity (canonical key; survives a display-name change).
+    pub client_id: ClientId,
+    /// Free-form display label (015-client-stable-id). Not an identity.
     pub client_name: ClientName,
     // Future: pub tenant_id: TenantId  (Constitution V, post-MVP).
 }

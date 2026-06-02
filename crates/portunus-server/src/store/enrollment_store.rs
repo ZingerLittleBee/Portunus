@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use portunus_auth::token;
-use portunus_core::{ClientName, fingerprint};
+use portunus_core::{ClientId, ClientName, fingerprint};
 use rusqlite::OptionalExtension;
 use thiserror::Error;
 
@@ -190,11 +190,15 @@ impl ClientEnrollmentStore {
                 )
                 .map_err(map_rusqlite)?;
             } else {
+                // 015-client-stable-id: a redeem of a fresh client is where it
+                // first materializes — mint its stable id here (U2).
+                let client_id = ClientId::new().to_string();
                 tx.execute(
                     "INSERT INTO client_tokens \
-                         (client_name, token_hash, issued_at, revoked_at, client_address) \
-                         VALUES (?, ?, ?, NULL, ?)",
+                         (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                         VALUES (?, ?, ?, ?, NULL, ?)",
                     rusqlite::params![
+                        client_id,
                         client_name.as_str(),
                         client_token_hash,
                         consumed_at,
@@ -415,9 +419,10 @@ mod tests {
             .with_write_tx(|tx| {
                 tx.execute(
                     "INSERT INTO client_tokens \
-                     (client_name, token_hash, issued_at, revoked_at, client_address) \
-                     VALUES (?, ?, ?, NULL, NULL)",
+                     (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, ?, NULL, NULL)",
                     rusqlite::params![
+                        ClientId::new().to_string(),
                         name,
                         fingerprint::hex(&token::hash_token(prior_token)),
                         now.to_rfc3339(),

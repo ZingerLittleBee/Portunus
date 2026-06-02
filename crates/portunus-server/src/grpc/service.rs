@@ -991,7 +991,14 @@ mod tests {
             .clients
             .set_client_version(&client_name, session_id, version.to_string())
             .await;
-        (ClientIdentity { client_name }, tx, rx)
+        (
+            ClientIdentity {
+                client_id: portunus_core::ClientId::new(),
+                client_name,
+            },
+            tx,
+            rx,
+        )
     }
 
     #[tokio::test]

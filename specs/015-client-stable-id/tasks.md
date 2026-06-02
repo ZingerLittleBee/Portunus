@@ -49,7 +49,7 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Auth seam (`portunus-auth`)
 
-- [ ] T007 Add `pub client_id: ClientId` to `ClientIdentity` (keep `client_name`) in `crates/portunus-auth/src/lib.rs`
+- [X] T007 Add `pub client_id: ClientId` to `ClientIdentity` (keep `client_name`) in `crates/portunus-auth/src/lib.rs`
 
 ### Wire contract (`proto` + `portunus-proto`)
 
@@ -63,7 +63,7 @@ Rust workspace under `crates/`; proto at `proto/portunus.proto`; SPA under `webu
 
 ### Store layer re-key (all on top of T011)
 
-- [ ] T012 Re-key `token_store`: key by `ClientId`, `verify(token) -> ClientIdentity { client_id, client_name }`, issue/revoke/delete by `client_id`, keep `client_name` as mutable display column; rewrite its unit tests in `crates/portunus-server/src/store/token_store.rs`
+- [X] T012 Re-key `token_store`: key by `ClientId`, `verify(token) -> ClientIdentity { client_id, client_name }`, issue/revoke/delete by `client_id`, keep `client_name` as mutable display column; rewrite its unit tests in `crates/portunus-server/src/store/token_store.rs`
 - [ ] T013 [P] Re-key `OwnerCap` + all SQL to `client_id` (`WHERE client_id = ?`, PK `(client_id, owner_id)`) in `crates/portunus-server/src/store/owner_cap_store.rs`
 - [ ] T014 [P] Re-key `client_enrollments` access to `client_id` in `crates/portunus-server/src/store/enrollment_store.rs`
 - [ ] T015 [P] Re-key rule rows to `client_id` (column + index) in `crates/portunus-server/src/store/operator_store.rs`

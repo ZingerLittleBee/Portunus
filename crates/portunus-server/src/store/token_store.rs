@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use portunus_auth::{
     AuthError, AuthFailureReason, Authenticator, ClientIdentity, ProvisionedClient, token,
 };
-use portunus_core::{ClientName, fingerprint};
+use portunus_core::{ClientId, ClientName, fingerprint};
 
 use crate::store::{Store, StoreError, map_rusqlite};
 
@@ -95,6 +95,10 @@ impl SqliteTokenStore {
         let hash_hex = fingerprint::hex(&token::hash_token(&token));
         let issued_at = Utc::now().to_rfc3339();
         let name_for_err = name.clone();
+        // 015-client-stable-id: mint the stable identity at issuance — this is
+        // the authoritative roster row, so the client first materializes here
+        // (direct-issue path). Display names may collide; the id never does.
+        let client_id = ClientId::new().to_string();
 
         self.store
             .with_write_tx(|tx| {
@@ -116,9 +120,9 @@ impl SqliteTokenStore {
                 }
                 tx.execute(
                     "INSERT INTO client_tokens \
-                     (client_name, token_hash, issued_at, revoked_at, client_address) \
-                     VALUES (?, ?, ?, NULL, ?)",
-                    rusqlite::params![name.as_str(), hash_hex, issued_at, client_address],
+                     (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, ?, NULL, ?)",
+                    rusqlite::params![client_id, name.as_str(), hash_hex, issued_at, client_address],
                 )
                 .map_err(map_rusqlite)?;
                 Ok(())
@@ -165,24 +169,27 @@ impl Authenticator for SqliteTokenStore {
             .store
             .with_conn(|c| {
                 let mut stmt = c
-                    .prepare("SELECT client_name, token_hash, revoked_at FROM client_tokens")
+                    .prepare(
+                        "SELECT client_id, client_name, token_hash, revoked_at FROM client_tokens",
+                    )
                     .map_err(map_rusqlite)?;
                 let rows = stmt
                     .query_map([], |r| {
-                        let name: String = r.get(0)?;
-                        let hash_hex: String = r.get(1)?;
-                        let revoked: Option<String> = r.get(2)?;
-                        Ok((name, hash_hex, revoked))
+                        let id: String = r.get(0)?;
+                        let name: String = r.get(1)?;
+                        let hash_hex: String = r.get(2)?;
+                        let revoked: Option<String> = r.get(3)?;
+                        Ok((id, name, hash_hex, revoked))
                     })
                     .map_err(map_rusqlite)?;
-                let mut matched: Option<(String, Option<String>)> = None;
+                let mut matched: Option<(String, String, Option<String>)> = None;
                 let needle = presented_hex.as_bytes();
                 for r in rows {
-                    let (name, hash_hex, revoked) = r.map_err(map_rusqlite)?;
+                    let (id, name, hash_hex, revoked) = r.map_err(map_rusqlite)?;
                     if hash_hex.len() == needle.len()
                         && fingerprint::ct_eq(hash_hex.as_bytes(), needle)
                     {
-                        matched = Some((name, revoked));
+                        matched = Some((id, name, revoked));
                     }
                 }
                 Ok(matched)
@@ -191,12 +198,18 @@ impl Authenticator for SqliteTokenStore {
 
         match result {
             None => Err(AuthError::Failed(AuthFailureReason::NotFound)),
-            Some((_, Some(_))) => Err(AuthError::Failed(AuthFailureReason::Revoked)),
-            Some((name, None)) => {
+            Some((_, _, Some(_))) => Err(AuthError::Failed(AuthFailureReason::Revoked)),
+            Some((id, name, None)) => {
+                let client_id = id.parse::<ClientId>().map_err(|e| {
+                    AuthError::StoreCorrupt(format!("client_tokens invalid client_id: {e}"))
+                })?;
                 let client_name = ClientName::new(name).map_err(|e| {
                     AuthError::StoreCorrupt(format!("client_tokens invalid client_name: {e}"))
                 })?;
-                Ok(ClientIdentity { client_name })
+                Ok(ClientIdentity {
+                    client_id,
+                    client_name,
+                })
             }
         }
     }
