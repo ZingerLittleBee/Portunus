@@ -5,14 +5,18 @@ working in this repository. Kept in sync with `CLAUDE.md`.
 
 ## Repository status
 
-Stable release line. Latest tag is **v1.7.0** (see `CHANGELOG.md`); the
-working branch is `main`. The SPECKIT block at the bottom of this file is
-auto-managed by speckit and lags the release line — it still describes
-`014-udp-centralized-demux` (v1.5.x) as the active feature even though
-v1.6.0–v1.7.0 (standalone stats TUI + forwarder hardening: UDP HOL,
-time-boxed PROXY prelude, bounded DNS cache, accept-loop backoff) have
-since shipped. Treat that block as historical design context, not the
-current workstream — verify against `git log` / `CHANGELOG.md`.
+Stable release line. Latest tag is **v1.9.1** (see `CHANGELOG.md`); the
+default branch is `main`. Everything through `014-udp-centralized-demux`
+has shipped (v1.5.x); v1.6.x–v1.9.1 since added the standalone stats TUI,
+forwarder hardening (UDP HOL, time-boxed PROXY prelude, bounded DNS
+cache, accept-loop backoff), the AGPL relicense + static `musl` Linux
+binaries, the Railway image-based deploy template, and a Web UI pass
+(in-dialog forms, split Live/History audit views).
+
+The current workstream is the **active feature** in the SPECKIT block at
+the bottom of this file — `015-client-stable-id` on branch
+`015-client-stable-id`. This is design/spec context, not yet released;
+verify any claim against `git log` / `CHANGELOG.md`.
 
 ## Architecture
 
@@ -137,76 +141,70 @@ plans (v0.1.0 – v0.11.0) remain in `specs/` for reference.
   perf gates).
 
 <!-- SPECKIT START -->
-Active feature: `014-udp-centralized-demux` on branch
-`014-udp-centralized-demux`. v1.5.x corrects the UDP data-plane
-flow-cap semantics and collapses per-flow receive buffers into a
-single per-rule centralized demux. The v0.4 per-port-listener model
-(each listen port held its own `recv` loop and `UdpFlowTable`) is
-replaced by a single `UdpRuleRuntime` supervising one listener task
-per port, a shared `UdpFlowRegistry` keyed by `(listen_port,
-source_addr)`, and a single idle-window reaper.
+Active feature: `015-client-stable-id` on branch
+`015-client-stable-id`. This is a v2.0-level, workspace-wide refactor
+that separates a client's **identity** from its **label**. Today the
+user-supplied `client_name` is overloaded as the unique identifier,
+the URL path segment, the SQLite primary key, and the log/metric
+correlation key, forcing a strict DNS-label rule on it. The refactor
+introduces a system-generated, stable, opaque `ClientId` (ULID, reusing
+the existing `ulid` crate already used by `RuleId`/`RequestId`) that
+takes over the identifier / URL / primary-key / correlation roles, and
+demotes `client_name` to a free-form display field.
 
-Key invariants:
-- **No operator surface change.** No new wire field, operator-API
-  field, Web UI control, or `--help` flag. The runtime is an
-  internal refactor; `udp_max_flows_per_rule` is the same setting,
-  just enforced correctly.
-- **Per-rule flow cap** (FR-002 / SC-002): `rule_cap` is a single
-  registry-wide counter. A range rule with `cap=N` admits at most
-  `N` concurrent flows across **all** listen ports, not `N × range_size`.
-- **`portunus_rule_active_flows` reflects registry size** (FR-014):
-  the gauge reads `registry.len()` directly; no more per-port
-  `AtomicU32` last-writer-wins drift.
-- **Upstream sockets are `connect()`-ed at flow creation** (SC-005):
-  multi-A target selection happens once at the `connect()` seam.
-  On Linux this enables ICMP error reflection (`ECONNREFUSED`,
-  `EHOSTUNREACH`, `ENETUNREACH`) — affected flows are evicted
-  immediately and the next datagram rebuilds the flow against a
-  freshly-selected target.
-- **No mid-flow multi-A fallback.** v0.4's `udp_send_to_fallback`
-  / `udp_send_to_exhausted` tracing paths are removed; the ICMP-
-  driven eviction provides equivalent coarse failover with
-  unambiguous connected-socket semantics.
-- **Receive-buffer memory** (SC-001a): per-rule recv buffer is
-  `O(1) × 64 KiB`, not `O(flows) × 64 KiB`. The listener task owns
-  the single 64 KiB heap buffer used by `recv_from`.
-- **Ordered shutdown** (FR-015): on cancellation the supervisor
-  stops accepting new flows, drains the registry, then joins
-  listener/reaper tasks. `rule.udp_shutdown_unexpected_exit`
-  fires only when a child task exits unexpectedly.
-- **Three pre-existing failure paths get explicit tracing events**
-  (FR-011/FR-013): `rule.udp_upstream_connect_failed`,
-  `rule.udp_addflow_dropped`, `rule.udp_flow_evicted_icmp`,
-  `rule.udp_reply_wouldblock`, `rule.udp_emsgsize`,
-  `rule.udp_runtime_started`, `rule.udp_shutdown_unexpected_exit`.
-  No new Prometheus metrics.
-- **No new workspace dependencies.** The runtime reuses existing
-  `tokio`, `tokio-util` (CancellationToken), `nix`, `tracing`.
-- **Constitution Principle II perf gate**: `criterion` bench
-  `udp_high_flow_count` validates SC-001a (RSS delta ≪ N × 64 KiB
-  at N=1000 concurrent flows, Linux perf host only — not CI) and
-  SC-004 (single-flow throughput / RTT scenarios stay within ±5 %).
-  v1.4.3 baseline captured before this branch.
-- **Constitution Principle III**: integration tests use real
-  loopback sockets (`udp_range_rule_cap_is_per_rule`,
-  `udp_smoke_icmp_evict`); `cargo test --workspace` is green on
-  both macOS and Linux. The pre-014 "macOS-only `udp_smoke` flake"
-  was actually a fresh-socket `try_send` → `WouldBlock` race that
-  silently dropped the first packet of every flow; the cold-path
-  step 9 now uses `send().await` so the first datagram is durable.
+Key decisions (resolved 2026-06-02, see `spec.md`):
+- **`client_name` is display-only.** Validation is relaxed to reject
+  only empty/whitespace-only names, control characters, and names over a
+  max length (assume ≤255); uppercase, spaces, dots, underscores, and
+  Unicode are all allowed. `portunus-core`'s `ClientName` keeps a
+  newtype but drops the DNS-label rule; a new `ClientId` newtype is
+  added alongside it.
+- **Rename is supported and identity-safe.** Changing a client's display
+  name leaves its `ClientId` — and therefore all rules, tokens, quotas,
+  and traffic history — intact, and does not drop a live session.
+- **Names are NOT unique.** Duplicate display names are freely allowed
+  (no warning); listings disambiguate via a short form of the id.
+- **Additive wire change.** `client_id` is added to the control-plane
+  schema (`EnrollClientRequest`, `CredentialBundle`,
+  `OwnerRateLimitUpdate`, `TrafficQuotaUpdate`) while `client_name` is
+  retained for display. `Hello`/`Welcome` carry no name today — client
+  identity is resolved from the bearer token — so the data-plane stream
+  is unaffected.
+- **Transparent upgrade, no re-enrollment.** A pre-upgrade credential
+  bundle (token, no id) still connects: the authenticated token resolves
+  to the client's newly-assigned `ClientId` server-side.
+- **SQLite V011 migration.** Seven `client_name`-keyed tables
+  (`client_tokens`, `rules`, `rate_limit_owner`, `traffic_quotas`,
+  `traffic_usage_minute`, `traffic_usage_hour`, `client_enrollments`)
+  are re-keyed to `client_id`. `client_tokens` is the source of truth:
+  assign an id per client there, then backfill the rest by name-join.
+  SQLite primary-key changes require the build-new-table + copy + rename
+  dance; the migration must be idempotent and crash-safe.
+- **Operator surface re-keys to id.** HTTP routes become
+  `/v1/clients/{id}/...`, CLI args and Web UI routes
+  (`/clients/:clientId`) address by id; `ConnectedClients` switches from
+  `HashMap<ClientName, _>` to keying on `ClientId`.
+- **Metric label stays name.** Prometheus `client="…"` labels keep the
+  human-readable name for dashboard readability; internal correlation
+  uses the id. A renamed client remains one logical entity.
 
-For technical context, project structure, dependency choices, and the
-Constitution Check, read the current plan:
-- `specs/014-udp-centralized-demux/plan.md`
-- `specs/014-udp-centralized-demux/spec.md` (FR-001..FR-017,
-  SC-001a..SC-006).
+For technical context, the migration strategy, and the Constitution
+Check, read the current plan once generated:
+- `specs/015-client-stable-id/spec.md` (FR-001..FR-014, SC-001..SC-007).
+- `specs/015-client-stable-id/plan.md` (pending `/speckit-plan`).
+- Background dossier: `docs/refactor-client-id-handoff.md`.
 
 Inherited baselines (do not re-derive):
+- v1.5.x — `specs/014-udp-centralized-demux/plan.md`. UDP centralized
+  demux: one `UdpRuleRuntime` per rule supervising a listener task per
+  port, a shared `UdpFlowRegistry` keyed by `(listen_port, source_addr)`,
+  per-rule flow cap, ICMP-driven flow eviction, `O(1)×64 KiB` recv
+  buffer. No operator-surface change. 015 re-keys the per-client store
+  layer but does not touch this UDP runtime.
 - v0.13.0 — `docs/superpowers/plans/2026-05-14-traffic-quotas-and-history.md`.
-  Per-rule and per-owner traffic quotas. v1.5.x's flow-creation
-  path consults the quota allow-list before installing a new
-  registry entry; quota exhaustion is a flow rejection, not a
-  mid-flow drop.
+  Per-rule and per-owner traffic quotas. The `traffic_quotas` /
+  `traffic_usage_*` tables are among the seven that 015's V011 migration
+  re-keys from `client_name` to `client_id`.
 - v0.12.0 — `specs/012-tcp-zero-copy-splice/plan.md`. Linux
   `splice(2)` fast path; TCP-only, untouched by v1.5.x.
 - v0.11.0 — `specs/011-rate-limiting-qos/plan.md`. Per-rule and
