@@ -189,9 +189,13 @@ Key decisions (resolved 2026-06-02, see `spec.md`):
   uses the id. A renamed client remains one logical entity.
 
 For technical context, the migration strategy, and the Constitution
-Check, read the current plan once generated:
+Check, read the plan and design artifacts:
+- `specs/015-client-stable-id/plan.md` (Technical Context + Constitution Check).
 - `specs/015-client-stable-id/spec.md` (FR-001..FR-014, SC-001..SC-007).
-- `specs/015-client-stable-id/plan.md` (pending `/speckit-plan`).
+- `specs/015-client-stable-id/research.md` (R-001..R-009: ULID, refinery V011,
+  SQLite PK-rebuild, additive wire, relaxed name rules).
+- `specs/015-client-stable-id/data-model.md`, `contracts/` (proto-delta,
+  operator-http, migration-v011), `quickstart.md`.
 - Background dossier: `docs/refactor-client-id-handoff.md`.
 
 Inherited baselines (do not re-derive):
