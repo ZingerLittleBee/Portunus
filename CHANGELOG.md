@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Stable client identity (`client_id`).** Every client now has a
+  system-generated, opaque ULID identity that is independent of its display
+  name. `client_name` is demoted to a free-form display field: uppercase,
+  spaces, dots, underscores and Unicode are all accepted (only empty /
+  whitespace-only / control-character / >255-byte names are rejected), and
+  duplicate display names are allowed.
+- **Identity-safe rename.** `PATCH /v1/clients/{client_id}/name` changes a
+  client's display name while preserving its id, bearer token, rules, quotas
+  and traffic history (and without dropping a live session). The Web UI client
+  edit dialog now allows renaming.
+- Web UI addresses clients by their stable id (`/clients/:clientId`), shows a
+  short id under each name to disambiguate duplicates, and renders a clear
+  "client not found" state for an unknown id.
+- SQLite `V011` migration re-keys `client_tokens` to a `client_id` primary key
+  and backfills a `client_id` column across the six dependent tables
+  (idempotent, crash-safe). Pre-upgrade credential bundles keep working — the
+  authenticated token resolves to the server-assigned id.
+- Additive control-plane `client_id` field on `CredentialBundle`,
+  `OwnerRateLimitUpdate`, and `TrafficQuotaUpdate` (legacy-tolerant decode).
+
+### Changed
+- The connected-client registry, gRPC service correlation, and operator
+  clients list are keyed on `client_id`; duplicate display names no longer
+  collide in the live-session map.
+
 ## [1.9.1] — 2026-06-02
 
 ### Added
