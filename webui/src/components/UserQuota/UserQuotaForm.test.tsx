@@ -9,8 +9,8 @@ import "@/i18n";
 afterEach(() => cleanup());
 
 const clients = [
-  { client_name: "edge-tokyo", connected: true },
-  { client_name: "edge-sg", connected: true },
+  { client_id: "01TOKYO0000000000000000000", client_name: "edge-tokyo", connected: true },
+  { client_id: "01SG00000000000000000000000", client_name: "edge-sg", connected: true },
 ];
 
 describe("UserQuotaForm", () => {
@@ -18,7 +18,7 @@ describe("UserQuotaForm", () => {
     render(
       <UserQuotaForm
         clients={clients}
-        disabledClientNames={new Set()}
+        disabledClientIds={new Set()}
         defaultValues={undefined}
         onSubmit={() => {}}
         onCancel={() => {}}
@@ -31,7 +31,7 @@ describe("UserQuotaForm", () => {
     render(
       <UserQuotaForm
         clients={clients}
-        disabledClientNames={new Set()}
+        disabledClientIds={new Set()}
         defaultValues={undefined}
         onSubmit={() => {}}
         onCancel={() => {}}
@@ -55,9 +55,9 @@ describe("UserQuotaForm", () => {
     render(
       <UserQuotaForm
         clients={clients}
-        disabledClientNames={new Set()}
+        disabledClientIds={new Set()}
         defaultValues={{
-          client_name: "edge-tokyo",
+          client_id: "01TOKYO0000000000000000000",
           listen_port_start: 5000,
           listen_port_end: 1000,
           protocols: ["tcp"],
@@ -75,9 +75,9 @@ describe("UserQuotaForm", () => {
     render(
       <UserQuotaForm
         clients={clients}
-        disabledClientNames={new Set()}
+        disabledClientIds={new Set()}
         defaultValues={{
-          client_name: "edge-tokyo",
+          client_id: "01TOKYO0000000000000000000",
           listen_port_start: 1000,
           listen_port_end: 2000,
           protocols: ["tcp"],

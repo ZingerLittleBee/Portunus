@@ -24,7 +24,7 @@ describe("parseBpsInput", () => {
 describe("accessEntrySchema", () => {
   it("requires at least one protocol", () => {
     const r = accessEntrySchema.safeParse({
-      client_name: "c1",
+      client_id: "c1",
       listen_port_start: 1000,
       listen_port_end: 2000,
       protocols: [],
@@ -35,7 +35,7 @@ describe("accessEntrySchema", () => {
 
   it("requires start <= end", () => {
     const r = accessEntrySchema.safeParse({
-      client_name: "c1",
+      client_id: "c1",
       listen_port_start: 2000,
       listen_port_end: 1000,
       protocols: ["tcp"],
@@ -46,7 +46,7 @@ describe("accessEntrySchema", () => {
 
   it("requires ports in 1..65535", () => {
     const r = accessEntrySchema.safeParse({
-      client_name: "c1",
+      client_id: "c1",
       listen_port_start: 0,
       listen_port_end: 100,
       protocols: ["tcp"],
@@ -57,7 +57,7 @@ describe("accessEntrySchema", () => {
 
   it("requires at least one cap > 0 when not unlimited", () => {
     const r = accessEntrySchema.safeParse({
-      client_name: "c1",
+      client_id: "c1",
       listen_port_start: 1000,
       listen_port_end: 2000,
       protocols: ["tcp"],
@@ -72,7 +72,7 @@ describe("accessEntrySchema", () => {
 
   it("accepts unlimited=true with all caps null", () => {
     const r = accessEntrySchema.safeParse({
-      client_name: "c1",
+      client_id: "c1",
       listen_port_start: 1000,
       listen_port_end: 2000,
       protocols: ["tcp", "udp"],
@@ -83,7 +83,7 @@ describe("accessEntrySchema", () => {
 
   it("rejects burst without matching rate", () => {
     const r = accessEntrySchema.safeParse({
-      client_name: "c1",
+      client_id: "c1",
       listen_port_start: 1000,
       listen_port_end: 2000,
       protocols: ["tcp"],

@@ -1,6 +1,6 @@
 // 013-traffic-quotas G2: stacked area chart for `bytes_in` / `bytes_out`
 // over a sample series returned by `/v1/users/{id}/traffic` or
-// `/v1/clients/{name}/traffic`.
+// `/v1/clients/{id}/traffic` (015-client-stable-id: keyed by client_id).
 
 import { useTranslation } from "react-i18next";
 import {

@@ -2,6 +2,7 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/api/client";
 import type {
+  ClientView,
   CreateGrantBody,
   DeleteGrantResponse,
   GrantView,
@@ -9,11 +10,16 @@ import type {
   OwnerRateLimitView,
   RateLimit,
 } from "@/api/types";
+import { CLIENTS_KEY } from "@/api/clients";
 import { userQuotasKey } from "@/api/quotas";
 
 export interface AccessEntry {
   grant_id: string;
   user_id: string;
+  /// 015-client-stable-id (US3): stable opaque id used to address the
+  /// client's owner-cap sub-resources. Resolved from the clients list by
+  /// display name; empty when the grant's client is no longer provisioned.
+  client_id: string;
   client_name: string;
   listen_port_start: number;
   listen_port_end: number;
@@ -33,10 +39,26 @@ function rangeWidth(g: GrantView): number {
   return g.listen_port_end - g.listen_port_start;
 }
 
+/// 015-client-stable-id (US3): build a display-name → client_id lookup
+/// from the clients list. Display names are non-unique, so the first
+/// match wins for any duplicate; callers that need exactness should hold
+/// an id directly rather than resolving by name.
+export function clientIdByName(
+  clients: ClientView[] | undefined,
+): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const c of clients ?? []) {
+    // TODO(015): ambiguous display name — first provisioned client wins.
+    if (!m.has(c.client_name)) m.set(c.client_name, c.client_id);
+  }
+  return m;
+}
+
 export function joinAccessEntries(
   grants: GrantView[],
   caps: OwnerRateLimitView[],
   quotas: MonthlyQuotaView[] = [],
+  idByName: Map<string, string> = new Map(),
 ): AccessEntry[] {
   // owner_id in OwnerRateLimitView is the same user namespace as user_id in GrantView.
   const capByPair = new Map<string, OwnerRateLimitView>();
@@ -73,6 +95,7 @@ export function joinAccessEntries(
     const entry: AccessEntry = {
       grant_id: primary.grant_id,
       user_id: primary.user_id,
+      client_id: idByName.get(primary.client) ?? "",
       client_name: primary.client,
       listen_port_start: primary.listen_port_start,
       listen_port_end: primary.listen_port_end,
@@ -106,6 +129,17 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
     enabled: userId.length > 0,
   });
 
+  // 015-client-stable-id (US3): the owner-cap sub-resources are addressed
+  // by the stable client_id, but grants/quotas only carry the display
+  // name. Resolve name → id from the clients list (first match wins on a
+  // duplicate name) before building any /v1/clients/{id}/... URL.
+  const clientsQ = useQuery({
+    queryKey: CLIENTS_KEY,
+    queryFn: () => apiFetch<ClientView[]>("/v1/clients"),
+    enabled: userId.length > 0,
+  });
+  const idByName = clientIdByName(clientsQ.data);
+
   // Filter wildcard grants — they cannot be edited via the user-centric
   // flow (no specific client to attach a cap to). The legacy /grants
   // surface is gone, so wildcard grants effectively become invisible
@@ -115,23 +149,23 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
     new Set(grants.map((g) => `${g.user_id}::${g.client}`)),
   ).map((k) => {
     const [u, c] = k.split("::");
-    return { user_id: u!, client_name: c! };
+    return { user_id: u!, client_name: c!, client_id: idByName.get(c!) ?? "" };
   });
 
   const capQueries = useQueries({
     queries: uniquePairs.map((p) => ({
-      queryKey: userAccessCapKey(p.user_id, p.client_name),
+      queryKey: userAccessCapKey(p.user_id, p.client_id),
       queryFn: async (): Promise<OwnerRateLimitView | null> => {
         try {
           return await apiFetch<OwnerRateLimitView>(
-            `/v1/clients/${encodeURIComponent(p.client_name)}/owners/${encodeURIComponent(p.user_id)}/rate-limit`,
+            `/v1/clients/${encodeURIComponent(p.client_id)}/owners/${encodeURIComponent(p.user_id)}/rate-limit`,
           );
         } catch (err) {
           if (err instanceof ApiError && err.status === 404) return null;
           throw err;
         }
       },
-      enabled: userId.length > 0,
+      enabled: userId.length > 0 && p.client_id.length > 0,
     })),
   });
 
@@ -153,21 +187,30 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   });
 
   const error =
-    grantsQ.error ?? capQueries.find((q) => q.error)?.error ?? quotasQ.error;
+    grantsQ.error ??
+    clientsQ.error ??
+    capQueries.find((q) => q.error)?.error ??
+    quotasQ.error;
 
   return {
     data: grantsQ.data
-      ? joinAccessEntries(grants, caps, quotasQ.data ?? [])
+      ? joinAccessEntries(grants, caps, quotasQ.data ?? [], idByName)
       : undefined,
     isLoading:
-      grantsQ.isLoading || (grants.length > 0 && capsLoading) || quotasQ.isLoading,
+      grantsQ.isLoading ||
+      clientsQ.isLoading ||
+      (grants.length > 0 && capsLoading) ||
+      quotasQ.isLoading,
     error,
   };
 }
 
 export interface CreateAccessEntryInput {
   user_id: string;
+  /// Display name — used for the still-name-keyed grant create body.
   client_name: string;
+  /// 015-client-stable-id (US3): stable id for the owner-cap URL.
+  client_id: string;
   listen_port_start: number;
   listen_port_end: number;
   protocols: ("tcp" | "udp")[];
@@ -215,7 +258,7 @@ export function useCreateAccessEntry(userId: string) {
       if (input.cap) {
         try {
           await apiFetch<OwnerRateLimitView>(
-            `/v1/clients/${encodeURIComponent(input.client_name)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`,
+            `/v1/clients/${encodeURIComponent(input.client_id)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`,
             { method: "PUT", body: JSON.stringify(input.cap) },
           );
         } catch (err) {
@@ -241,6 +284,7 @@ export function useCreateAccessEntry(userId: string) {
       return {
         grant_id: grant.grant_id,
         user_id: grant.user_id,
+        client_id: input.client_id,
         client_name: grant.client,
         listen_port_start: grant.listen_port_start,
         listen_port_end: grant.listen_port_end,
@@ -259,7 +303,10 @@ export function useCreateAccessEntry(userId: string) {
 
 export interface UpdateAccessEntryInput {
   user_id: string;
+  /// Display name — used for the still-name-keyed grant recreate body.
   client_name: string;
+  /// 015-client-stable-id (US3): stable id for the owner-cap URL.
+  client_id: string;
   /// The current grant id; replaced if port range or protocols change.
   grant_id: string;
   /// Old fields (to detect whether we need to delete+recreate the grant).
@@ -319,7 +366,7 @@ export function useUpdateAccessEntry(userId: string) {
       }
 
       // Cap: PUT if non-empty, DELETE if cap=undefined (unlimited).
-      const capUrl = `/v1/clients/${encodeURIComponent(input.client_name)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`;
+      const capUrl = `/v1/clients/${encodeURIComponent(input.client_id)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`;
       try {
         if (input.cap) {
           await apiFetch<OwnerRateLimitView>(capUrl, {
@@ -346,7 +393,8 @@ export function useUpdateAccessEntry(userId: string) {
 
 export interface DeleteAccessEntryInput {
   grant_id: string;
-  client_name: string;
+  /// 015-client-stable-id (US3): stable id for the owner-cap URL.
+  client_id: string;
   user_id: string;
   legacy_duplicate_ids?: string[];
 }
@@ -355,7 +403,7 @@ export function useDeleteAccessEntry(userId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: DeleteAccessEntryInput): Promise<void> => {
-      const capUrl = `/v1/clients/${encodeURIComponent(input.client_name)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`;
+      const capUrl = `/v1/clients/${encodeURIComponent(input.client_id)}/owners/${encodeURIComponent(input.user_id)}/rate-limit`;
       try {
         await apiFetch<void>(capUrl, { method: "DELETE" });
       } catch (err) {

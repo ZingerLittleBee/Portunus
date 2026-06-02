@@ -1,12 +1,15 @@
 // 013-traffic-quotas v1.4.0 — quota CRUD + status hooks.
 //
+// 015-client-stable-id (US3): every {client} path segment is the stable
+// client_id, not the mutable display name.
+//
 // Mirrors `crates/portunus-server/src/operator/quota_http.rs`:
 //   GET    /v1/users/{user_id}/quotas
-//   PUT    /v1/users/{user_id}/quotas/{client_name}
-//   PATCH  /v1/users/{user_id}/quotas/{client_name}
-//   DELETE /v1/users/{user_id}/quotas/{client_name}
-//   GET    /v1/users/{user_id}/quotas/{client_name}/status
-//   GET    /v1/clients/{client_name}/quotas
+//   PUT    /v1/users/{user_id}/quotas/{client_id}
+//   PATCH  /v1/users/{user_id}/quotas/{client_id}
+//   DELETE /v1/users/{user_id}/quotas/{client_id}
+//   GET    /v1/users/{user_id}/quotas/{client_id}/status
+//   GET    /v1/clients/{client_id}/quotas
 //
 // Cache-invalidation: any mutation invalidates the user's quota list and the
 // access-entries view (F2) so `quota` reads on AccessEntry refresh in lock-
@@ -22,10 +25,10 @@ import type {
 
 export const userQuotasKey = (userId: string) =>
   ["user-quotas", userId] as const;
-export const clientQuotasKey = (clientName: string) =>
-  ["client-quotas", clientName] as const;
-export const userQuotaStatusKey = (userId: string, clientName: string) =>
-  ["user-quota-status", userId, clientName] as const;
+export const clientQuotasKey = (clientId: string) =>
+  ["client-quotas", clientId] as const;
+export const userQuotaStatusKey = (userId: string, clientId: string) =>
+  ["user-quota-status", userId, clientId] as const;
 
 export function useUserQuotas(userId: string) {
   return useQuery({
@@ -38,29 +41,29 @@ export function useUserQuotas(userId: string) {
   });
 }
 
-export function useClientQuotas(clientName: string) {
+export function useClientQuotas(clientId: string) {
   return useQuery({
-    queryKey: clientQuotasKey(clientName),
+    queryKey: clientQuotasKey(clientId),
     queryFn: () =>
       apiFetch<MonthlyQuotaView[]>(
-        `/v1/clients/${encodeURIComponent(clientName)}/quotas`,
+        `/v1/clients/${encodeURIComponent(clientId)}/quotas`,
       ),
-    enabled: clientName.length > 0,
+    enabled: clientId.length > 0,
   });
 }
 
 export function useQuotaStatus(
   userId: string,
-  clientName: string,
+  clientId: string,
   enabled = true,
 ) {
   return useQuery({
-    queryKey: userQuotaStatusKey(userId, clientName),
+    queryKey: userQuotaStatusKey(userId, clientId),
     queryFn: () =>
       apiFetch<MonthlyQuotaView>(
-        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(clientName)}/status`,
+        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(clientId)}/status`,
       ),
-    enabled: enabled && userId.length > 0 && clientName.length > 0,
+    enabled: enabled && userId.length > 0 && clientId.length > 0,
     refetchInterval: 10_000,
   });
 }
@@ -68,66 +71,66 @@ export function useQuotaStatus(
 function invalidateAfterMutation(
   qc: ReturnType<typeof useQueryClient>,
   userId: string,
-  clientName: string,
+  clientId: string,
 ): void {
   qc.invalidateQueries({ queryKey: userQuotasKey(userId) });
-  qc.invalidateQueries({ queryKey: clientQuotasKey(clientName) });
+  qc.invalidateQueries({ queryKey: clientQuotasKey(clientId) });
   qc.invalidateQueries({ queryKey: ["access-entries", userId] });
-  qc.invalidateQueries({ queryKey: userQuotaStatusKey(userId, clientName) });
+  qc.invalidateQueries({ queryKey: userQuotaStatusKey(userId, clientId) });
 }
 
 export interface PutQuotaArgs {
-  client_name: string;
+  client_id: string;
   body: PutQuotaInput;
 }
 
 export function usePutQuota(userId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ client_name, body }: PutQuotaArgs) =>
+    mutationFn: async ({ client_id, body }: PutQuotaArgs) =>
       apiFetch<MonthlyQuotaView>(
-        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(client_name)}`,
+        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(client_id)}`,
         {
           method: "PUT",
           body: JSON.stringify(body),
         },
       ),
-    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_name),
+    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_id),
   });
 }
 
 export interface PatchQuotaArgs {
-  client_name: string;
+  client_id: string;
   body: PatchQuotaInput;
 }
 
 export function usePatchQuota(userId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ client_name, body }: PatchQuotaArgs) =>
+    mutationFn: async ({ client_id, body }: PatchQuotaArgs) =>
       apiFetch<MonthlyQuotaView>(
-        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(client_name)}`,
+        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(client_id)}`,
         {
           method: "PATCH",
           body: JSON.stringify(body),
         },
       ),
-    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_name),
+    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_id),
   });
 }
 
 export interface DeleteQuotaArgs {
-  client_name: string;
+  client_id: string;
 }
 
 export function useDeleteQuota(userId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ client_name }: DeleteQuotaArgs) =>
+    mutationFn: async ({ client_id }: DeleteQuotaArgs) =>
       apiFetch<void>(
-        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(client_name)}`,
+        `/v1/users/${encodeURIComponent(userId)}/quotas/${encodeURIComponent(client_id)}`,
         { method: "DELETE" },
       ),
-    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_name),
+    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_id),
   });
 }

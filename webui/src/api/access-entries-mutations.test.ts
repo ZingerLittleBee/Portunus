@@ -53,6 +53,7 @@ describe("useCreateAccessEntry", () => {
 
     result.current.mutate({
       user_id: "alice",
+      client_id: "01JCLIENTEDGE000000000000",
       client_name: "edge",
       listen_port_start: 1000,
       listen_port_end: 2000,
@@ -87,6 +88,7 @@ describe("useCreateAccessEntry", () => {
     const { result } = renderHook(() => useCreateAccessEntry("alice"), { wrapper: wrapper(qc) });
     result.current.mutate({
       user_id: "alice",
+      client_id: "01JCLIENTEDGE000000000000",
       client_name: "edge",
       listen_port_start: 1000,
       listen_port_end: 2000,
@@ -108,7 +110,7 @@ describe("useDeleteAccessEntry", () => {
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { result } = renderHook(() => useDeleteAccessEntry("alice"), { wrapper: wrapper(qc) });
-    result.current.mutate({ grant_id: "g1", user_id: "alice", client_name: "edge" });
+    result.current.mutate({ grant_id: "g1", user_id: "alice", client_id: "01JCLIENTEDGE000000000000" });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(fetchMock).toHaveBeenCalledTimes(2);

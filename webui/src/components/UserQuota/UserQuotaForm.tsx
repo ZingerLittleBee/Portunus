@@ -17,6 +17,9 @@ import { accessEntrySchema } from "./format";
 export type FormValues = z.infer<typeof accessEntrySchema>;
 
 export interface UserQuotaFormSubmitValue {
+  /// 015-client-stable-id (US3): stable id for URL addressing.
+  client_id: string;
+  /// Display name (resolved from the clients list) for grant body + toasts.
   client_name: string;
   listen_port_start: number;
   listen_port_end: number;
@@ -26,7 +29,7 @@ export interface UserQuotaFormSubmitValue {
 
 interface Props {
   clients: ClientLite[];
-  disabledClientNames: Set<string>;
+  disabledClientIds: Set<string>;
   /// Lock the client picker (used when editing an existing entry).
   lockClient?: boolean;
   // allow explicit undefined for exactOptionalPropertyTypes
@@ -40,7 +43,7 @@ interface Props {
 }
 
 const DEFAULTS: FormValues = {
-  client_name: "",
+  client_id: "",
   listen_port_start: 10_000,
   listen_port_end: 19_999,
   protocols: ["tcp", "udp"],
@@ -68,7 +71,7 @@ const schemaForResolver = accessEntrySchema as any;
 
 export function UserQuotaForm({
   clients,
-  disabledClientNames,
+  disabledClientIds,
   lockClient,
   defaultValues,
   onSubmit,
@@ -99,8 +102,11 @@ export function UserQuotaForm({
       if (v.new_connections_burst != null) c.new_connections_burst = v.new_connections_burst;
       cap = c;
     }
+    const clientName =
+      clients.find((c) => c.client_id === v.client_id)?.client_name ?? "";
     await onSubmit({
-      client_name: v.client_name,
+      client_id: v.client_id,
+      client_name: clientName,
       listen_port_start: v.listen_port_start,
       listen_port_end: v.listen_port_end,
       protocols: v.protocols,
@@ -116,21 +122,21 @@ export function UserQuotaForm({
       <div className="flex flex-col gap-2">
         <Label>{t("userQuota.form.client")}</Label>
         <Controller
-          name="client_name"
+          name="client_id"
           control={control}
           render={({ field }) => (
             <ClientCombobox
               clients={clients}
               value={field.value}
               onChange={field.onChange}
-              disabledClientNames={disabledClientNames}
+              disabledClientIds={disabledClientIds}
               disabled={lockClient ?? false}
               popoverContainer={popoverContainer}
             />
           )}
         />
-        {formState.errors.client_name && (
-          <p className="text-sm text-destructive">{formState.errors.client_name.message}</p>
+        {formState.errors.client_id && (
+          <p className="text-sm text-destructive">{formState.errors.client_id.message}</p>
         )}
       </div>
 

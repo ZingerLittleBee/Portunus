@@ -115,7 +115,7 @@ export function ClientDetail() {
         )}
       </div>
 
-      <ClientExhaustedBanner clientName={clientName} />
+      <ClientExhaustedBanner clientId={clientId} />
 
       <Tabs defaultValue="overview">
         <TabsList className="w-full justify-start overflow-x-auto">
@@ -156,10 +156,10 @@ export function ClientDetail() {
           )}
         </TabsContent>
         <TabsContent value="owners">
-          <OwnerQuotasTab clientName={clientName} />
+          <OwnerQuotasTab clientId={clientId} />
         </TabsContent>
         <TabsContent value="traffic">
-          <TrafficPanel clientName={clientName} />
+          <TrafficPanel clientId={clientId} />
         </TabsContent>
       </Tabs>
 
@@ -193,20 +193,20 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ClientExhaustedBanner({ clientName }: { clientName: string }) {
-  const quotas = useClientQuotas(clientName);
+function ClientExhaustedBanner({ clientId }: { clientId: string }) {
+  const quotas = useClientQuotas(clientId);
   const exhausted = (quotas.data ?? []).filter((q) => q.exhausted);
   return <ExhaustedBanner exhausted={exhausted} />;
 }
 
 interface OwnerQuotasTabProps {
-  clientName: string;
+  clientId: string;
 }
 
-export function OwnerQuotasTab({ clientName }: OwnerQuotasTabProps) {
+export function OwnerQuotasTab({ clientId }: OwnerQuotasTabProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const owners = useClientOwnersList(clientName);
+  const owners = useClientOwnersList(clientId);
 
   const columns: Column<OwnerListEntry>[] = [
     {

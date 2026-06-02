@@ -1,5 +1,6 @@
 // 013-traffic-quotas G3: time-range + bucket selector + chart panel.
-// XOR'd by user_id or client_name; both shapes use the same component.
+// XOR'd by user_id or client_id; both shapes use the same component.
+// 015-client-stable-id (US3): the client variant addresses the stable id.
 
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -38,8 +39,8 @@ interface BaseProps {
 
 type Props = BaseProps &
   (
-    | { userId: string; clientName?: never }
-    | { userId?: never; clientName: string }
+    | { userId: string; clientId?: never }
+    | { userId?: never; clientId: string }
   );
 
 function resolveBucket(range: RangeKey, bucket: BucketKey): TrafficBucket | undefined {
@@ -49,7 +50,7 @@ function resolveBucket(range: RangeKey, bucket: BucketKey): TrafficBucket | unde
   return range === "7d" ? "1h" : "1m";
 }
 
-export function TrafficPanel({ userId, clientName, defaultRange = "24h", framed = true }: Props) {
+export function TrafficPanel({ userId, clientId, defaultRange = "24h", framed = true }: Props) {
   const { t } = useTranslation();
   const [range, setRange] = useState<RangeKey>(defaultRange);
   const [bucket, setBucket] = useState<BucketKey>("auto");
@@ -65,7 +66,7 @@ export function TrafficPanel({ userId, clientName, defaultRange = "24h", framed 
   }, [now, range, bucket]);
 
   const userQ = useUserTraffic(userId ?? "", query);
-  const clientQ = useClientTraffic(clientName ?? "", query);
+  const clientQ = useClientTraffic(clientId ?? "", query);
   const result = userId ? userQ : clientQ;
 
   const samples = result.data?.samples ?? [];
