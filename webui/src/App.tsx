@@ -25,6 +25,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 // Lazy-load page modules so the initial route bundle stays small.
 const UsersList = lazy(() => import("@/pages/UsersList").then((m) => ({ default: m.UsersList })));
@@ -131,7 +132,8 @@ export function App() {
   }, []);
 
   return (
-    <AuthStatusGate>
+    <TooltipProvider>
+      <AuthStatusGate>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/onboarding" element={<OnboardingPage />} />
@@ -270,6 +272,7 @@ export function App() {
         <Route path="/forbidden" element={<PermissionDenied />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
-    </AuthStatusGate>
+      </AuthStatusGate>
+    </TooltipProvider>
   );
 }
