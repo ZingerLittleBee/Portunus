@@ -179,8 +179,12 @@ pub async fn post_credential_rotate(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
     Path((user_id, cred_id)): Path<(String, String)>,
-    Json(body): Json<RotateCredentialBody>,
+    // Rotation needs no input; the optional `label` override may be omitted.
+    // Accept a missing / empty body (no `Content-Type` required) instead of
+    // forcing callers to send an explicit `{}` (was a 400 `EOF while parsing`).
+    body: Option<Json<RotateCredentialBody>>,
 ) -> Result<Json<IssueCredentialResponse>, ApiError> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
     let target = parse_user_id(&user_id)?;
     check_owner_or_super(&identity, &target)?;
     let cid = parse_cred_id(&cred_id)?;
