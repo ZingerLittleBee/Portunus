@@ -14,7 +14,7 @@ import { useTranslation } from "react-i18next";
 
 import type { RateLimit } from "@/api/types";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 
 export interface RateLimitFormState {
   bandwidth_in_bps: string;
@@ -110,17 +110,17 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-border p-4">
-      <div className="space-y-1">
-        <Label className="text-sm font-medium">{t("rateLimitForm.title")}</Label>
-        {helper && <p className="text-xs text-muted-foreground">{helper}</p>}
-        <p className="text-xs text-muted-foreground">{t("rateLimitForm.help")}</p>
+    <div className="flex flex-col gap-3 rounded-md border border-border p-4">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">{t("rateLimitForm.title")}</p>
+        {helper && <FieldDescription className="text-xs">{helper}</FieldDescription>}
+        <FieldDescription className="text-xs">{t("rateLimitForm.help")}</FieldDescription>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="space-y-1">
-          <Label htmlFor="rl-bw-in" className="text-xs">
+        <Field>
+          <FieldLabel htmlFor="rl-bw-in" className="text-xs">
             {t("rateLimitForm.bandwidthIn")}
-          </Label>
+          </FieldLabel>
           <Input
             id="rl-bw-in"
             type="number"
@@ -130,11 +130,11 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
             disabled={disabled}
             onChange={(e) => setField("bandwidth_in_bps", e.target.value)}
           />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="rl-bw-out" className="text-xs">
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="rl-bw-out" className="text-xs">
             {t("rateLimitForm.bandwidthOut")}
-          </Label>
+          </FieldLabel>
           <Input
             id="rl-bw-out"
             type="number"
@@ -144,11 +144,11 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
             disabled={disabled}
             onChange={(e) => setField("bandwidth_out_bps", e.target.value)}
           />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="rl-conn-rate" className="text-xs">
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="rl-conn-rate" className="text-xs">
             {t("rateLimitForm.newConnectionsPerSec")}
-          </Label>
+          </FieldLabel>
           <Input
             id="rl-conn-rate"
             type="number"
@@ -158,11 +158,11 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
             disabled={disabled}
             onChange={(e) => setField("new_connections_per_sec", e.target.value)}
           />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="rl-conn-conc" className="text-xs">
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="rl-conn-conc" className="text-xs">
             {t("rateLimitForm.concurrentConnections")}
-          </Label>
+          </FieldLabel>
           <Input
             id="rl-conn-conc"
             type="number"
@@ -172,7 +172,7 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
             disabled={disabled}
             onChange={(e) => setField("concurrent_connections", e.target.value)}
           />
-        </div>
+        </Field>
       </div>
       <button
         type="button"
@@ -189,10 +189,10 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
       </button>
       {advancedOpen && (
         <div className="grid grid-cols-1 gap-3 border-l border-border pl-4 sm:grid-cols-2">
-          <div className="space-y-1">
-            <Label htmlFor="rl-bw-in-burst" className="text-xs">
+          <Field>
+            <FieldLabel htmlFor="rl-bw-in-burst" className="text-xs">
               {t("rateLimitForm.bandwidthInBurst")}
-            </Label>
+            </FieldLabel>
             <Input
               id="rl-bw-in-burst"
               type="number"
@@ -202,11 +202,11 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
               disabled={disabled}
               onChange={(e) => setField("bandwidth_in_burst", e.target.value)}
             />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="rl-bw-out-burst" className="text-xs">
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="rl-bw-out-burst" className="text-xs">
               {t("rateLimitForm.bandwidthOutBurst")}
-            </Label>
+            </FieldLabel>
             <Input
               id="rl-bw-out-burst"
               type="number"
@@ -216,11 +216,11 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
               disabled={disabled}
               onChange={(e) => setField("bandwidth_out_burst", e.target.value)}
             />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="rl-conn-rate-burst" className="text-xs">
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="rl-conn-rate-burst" className="text-xs">
               {t("rateLimitForm.newConnectionsBurst")}
-            </Label>
+            </FieldLabel>
             <Input
               id="rl-conn-rate-burst"
               type="number"
@@ -230,7 +230,7 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
               disabled={disabled}
               onChange={(e) => setField("new_connections_burst", e.target.value)}
             />
-          </div>
+          </Field>
           <div className="text-xs text-muted-foreground self-end pb-1">
             {t("rateLimitForm.burstHelp")}
           </div>

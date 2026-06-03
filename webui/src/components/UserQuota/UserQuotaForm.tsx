@@ -1,15 +1,24 @@
 // webui/src/components/UserQuota/UserQuotaForm.tsx
-import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm, Controller } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import type { z } from "zod";
 
 import type { RateLimit } from "@/api/types";
+import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
 import { cn } from "@/lib/cn";
 import { ClientCombobox, type ClientLite } from "./ClientCombobox";
 import { accessEntrySchema } from "./format";
@@ -63,12 +72,6 @@ function nullableInt(v: unknown): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
-// Cast needed: @hookform/resolvers 5.2.2 types were written for zod 4.0.x
-// (expects _zod.version.minor === 0) but zod 4.4.x has minor === 4.
-// The runtime works correctly; this cast papers over the type mismatch.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const schemaForResolver = accessEntrySchema as any;
-
 export function UserQuotaForm({
   clients,
   disabledClientIds,
@@ -83,7 +86,7 @@ export function UserQuotaForm({
 }: Props) {
   const { t } = useTranslation();
   const form = useForm<FormValues>({
-    resolver: zodResolver(schemaForResolver),
+    resolver: zResolver<FormValues>(accessEntrySchema),
     defaultValues: { ...DEFAULTS, ...defaultValues },
   });
   const { register, handleSubmit, watch, control, formState } = form;
@@ -117,158 +120,166 @@ export function UserQuotaForm({
   return (
     <form
       onSubmit={handleSubmit(submit)}
-      className={cn("flex flex-col gap-4", framed && "rounded-md border bg-card p-4")}
+      className={cn("flex flex-col", framed && "rounded-md border bg-card p-4")}
     >
-      <div className="flex flex-col gap-2">
-        <Label>{t("userQuota.form.client")}</Label>
-        <Controller
-          name="client_id"
-          control={control}
-          render={({ field }) => (
-            <ClientCombobox
-              clients={clients}
-              value={field.value}
-              onChange={field.onChange}
-              disabledClientIds={disabledClientIds}
-              disabled={lockClient ?? false}
-              popoverContainer={popoverContainer}
-            />
+      <FieldGroup>
+        <Field data-invalid={formState.errors.client_id ? true : undefined}>
+          <FieldLabel htmlFor="quota-client">{t("userQuota.form.client")}</FieldLabel>
+          <Controller
+            name="client_id"
+            control={control}
+            render={({ field }) => (
+              <ClientCombobox
+                clients={clients}
+                value={field.value}
+                onChange={field.onChange}
+                disabledClientIds={disabledClientIds}
+                disabled={lockClient ?? false}
+                popoverContainer={popoverContainer}
+              />
+            )}
+          />
+          {formState.errors.client_id && (
+            <FieldError errors={[formState.errors.client_id]} />
           )}
-        />
-        {formState.errors.client_id && (
-          <p className="text-sm text-destructive">{formState.errors.client_id.message}</p>
+        </Field>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field data-invalid={formState.errors.listen_port_start ? true : undefined}>
+            <FieldLabel htmlFor="port-start">{t("userQuota.form.portStart")}</FieldLabel>
+            <Input
+              id="port-start"
+              type="number"
+              min={1}
+              max={65535}
+              aria-invalid={formState.errors.listen_port_start ? true : undefined}
+              {...register("listen_port_start", { valueAsNumber: true })}
+            />
+          </Field>
+          <Field data-invalid={formState.errors.listen_port_end ? true : undefined}>
+            <FieldLabel htmlFor="port-end">{t("userQuota.form.portEnd")}</FieldLabel>
+            <Input
+              id="port-end"
+              type="number"
+              min={1}
+              max={65535}
+              aria-invalid={formState.errors.listen_port_end ? true : undefined}
+              {...register("listen_port_end", { valueAsNumber: true })}
+            />
+          </Field>
+        </div>
+        {formState.errors.listen_port_end && (
+          <FieldError errors={[formState.errors.listen_port_end]} />
         )}
-      </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="port-start">{t("userQuota.form.portStart")}</Label>
-          <Input
-            id="port-start"
-            type="number"
-            min={1}
-            max={65535}
-            {...register("listen_port_start", { valueAsNumber: true })}
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="port-end">{t("userQuota.form.portEnd")}</Label>
-          <Input
-            id="port-end"
-            type="number"
-            min={1}
-            max={65535}
-            {...register("listen_port_end", { valueAsNumber: true })}
-          />
-        </div>
-      </div>
-      {formState.errors.listen_port_end && (
-        <p className="text-sm text-destructive">{formState.errors.listen_port_end.message}</p>
-      )}
-
-      <div className="flex flex-col gap-2">
-        <Label>{t("userQuota.form.protocols")}</Label>
         <Controller
           name="protocols"
           control={control}
           render={({ field }) => (
-            <div className="flex gap-4">
-              {(["tcp", "udp"] as const).map((p) => (
-                <label key={p} className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={field.value.includes(p)}
-                    onCheckedChange={(checked) => {
-                      const next = checked
-                        ? Array.from(new Set([...field.value, p]))
-                        : field.value.filter((x) => x !== p);
-                      field.onChange(next);
-                    }}
-                  />
-                  {p.toUpperCase()}
-                </label>
-              ))}
-            </div>
+            <FieldSet>
+              <FieldLegend variant="label">{t("userQuota.form.protocols")}</FieldLegend>
+              <div className="flex gap-4">
+                {(["tcp", "udp"] as const).map((p) => (
+                  <Field orientation="horizontal" key={p} className="w-auto">
+                    <Checkbox
+                      id={`protocol-${p}`}
+                      checked={field.value.includes(p)}
+                      onCheckedChange={(checked) => {
+                        const next = checked
+                          ? Array.from(new Set([...field.value, p]))
+                          : field.value.filter((x) => x !== p);
+                        field.onChange(next);
+                      }}
+                    />
+                    <FieldLabel htmlFor={`protocol-${p}`} className="font-normal">
+                      {p.toUpperCase()}
+                    </FieldLabel>
+                  </Field>
+                ))}
+              </div>
+              {formState.errors.protocols && (
+                <FieldError errors={[formState.errors.protocols]} />
+              )}
+            </FieldSet>
           )}
         />
-        {formState.errors.protocols && (
-          <p className="text-sm text-destructive">{formState.errors.protocols.message}</p>
+
+        <Field orientation="horizontal" className="border-t pt-4">
+          <FieldContent>
+            <FieldLabel htmlFor="unlimited">{t("userQuota.form.unlimited")}</FieldLabel>
+            <FieldDescription>{t("userQuota.form.unlimitedHelp")}</FieldDescription>
+          </FieldContent>
+          <Controller
+            name="unlimited"
+            control={control}
+            render={({ field }) => (
+              <Switch id="unlimited" checked={field.value} onCheckedChange={field.onChange} />
+            )}
+          />
+        </Field>
+
+        {!unlimited && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field data-invalid={formState.errors.bandwidth_in_bps ? true : undefined}>
+              <FieldLabel htmlFor="bw-in">{t("userQuota.form.bandwidthIn")}</FieldLabel>
+              <Input
+                id="bw-in"
+                type="number"
+                min={1}
+                placeholder={t("userQuota.form.uncapped")}
+                aria-invalid={formState.errors.bandwidth_in_bps ? true : undefined}
+                {...register("bandwidth_in_bps", { setValueAs: nullableInt })}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="bw-out">{t("userQuota.form.bandwidthOut")}</FieldLabel>
+              <Input
+                id="bw-out"
+                type="number"
+                min={1}
+                placeholder={t("userQuota.form.uncapped")}
+                {...register("bandwidth_out_bps", { setValueAs: nullableInt })}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="conc">{t("userQuota.form.concurrent")}</FieldLabel>
+              <Input
+                id="conc"
+                type="number"
+                min={1}
+                placeholder={t("userQuota.form.uncapped")}
+                {...register("concurrent_connections", { setValueAs: nullableInt })}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="ncps">{t("userQuota.form.newConnPerSec")}</FieldLabel>
+              <Input
+                id="ncps"
+                type="number"
+                min={1}
+                placeholder={t("userQuota.form.uncapped")}
+                {...register("new_connections_per_sec", { setValueAs: nullableInt })}
+              />
+            </Field>
+            {formState.errors.bandwidth_in_bps && (
+              <FieldError className="sm:col-span-2" errors={[formState.errors.bandwidth_in_bps]} />
+            )}
+          </div>
         )}
-      </div>
 
-      <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <Label htmlFor="unlimited">{t("userQuota.form.unlimited")}</Label>
-          <p className="text-xs text-muted-foreground">{t("userQuota.form.unlimitedHelp")}</p>
+        {serverError && (
+          <FieldError>{serverError}</FieldError>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button type="submit" disabled={busy}>
+            {busy ? t("confirm.busy") : t("userQuota.form.save")}
+          </Button>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            {t("confirm.cancel")}
+          </Button>
         </div>
-        <Controller
-          name="unlimited"
-          control={control}
-          render={({ field }) => (
-            <Switch id="unlimited" checked={field.value} onCheckedChange={field.onChange} />
-          )}
-        />
-      </div>
-
-      {!unlimited && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="bw-in">{t("userQuota.form.bandwidthIn")}</Label>
-            <Input
-              id="bw-in"
-              type="number"
-              min={1}
-              placeholder={t("userQuota.form.uncapped")}
-              {...register("bandwidth_in_bps", { setValueAs: nullableInt })}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="bw-out">{t("userQuota.form.bandwidthOut")}</Label>
-            <Input
-              id="bw-out"
-              type="number"
-              min={1}
-              placeholder={t("userQuota.form.uncapped")}
-              {...register("bandwidth_out_bps", { setValueAs: nullableInt })}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="conc">{t("userQuota.form.concurrent")}</Label>
-            <Input
-              id="conc"
-              type="number"
-              min={1}
-              placeholder={t("userQuota.form.uncapped")}
-              {...register("concurrent_connections", { setValueAs: nullableInt })}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="ncps">{t("userQuota.form.newConnPerSec")}</Label>
-            <Input
-              id="ncps"
-              type="number"
-              min={1}
-              placeholder={t("userQuota.form.uncapped")}
-              {...register("new_connections_per_sec", { setValueAs: nullableInt })}
-            />
-          </div>
-          {formState.errors.bandwidth_in_bps && (
-            <p className="text-sm text-destructive sm:col-span-2">
-              {formState.errors.bandwidth_in_bps.message}
-            </p>
-          )}
-        </div>
-      )}
-
-      {serverError && <p className="text-sm text-destructive">{serverError}</p>}
-
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <Button type="submit" disabled={busy}>
-          {busy ? t("confirm.busy") : t("userQuota.form.save")}
-        </Button>
-        <Button type="button" variant="outline" onClick={onCancel}>
-          {t("confirm.cancel")}
-        </Button>
-      </div>
+      </FieldGroup>
     </form>
   );
 }

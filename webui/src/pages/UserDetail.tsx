@@ -23,9 +23,11 @@ import { canSeeUserDetail, type Identity } from "@/lib/permissions";
 import { PermissionDenied } from "@/components/PermissionDenied";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Field, FieldContent, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { TokenRevealModal } from "@/components/TokenRevealModal";
 
@@ -295,9 +297,9 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           }
         }}
       >
-        <div className="space-y-3">
-          <div className="space-y-2">
-            <Label htmlFor="reset-password">{t("userDetail.newPasswordOptional")}</Label>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="reset-password">{t("userDetail.newPasswordOptional")}</FieldLabel>
             <Input
               id="reset-password"
               type="password"
@@ -306,26 +308,38 @@ function UserDetailInner({ userId, identity }: InnerProps) {
               onChange={(e) => setNewPassword(e.target.value)}
               placeholder={t("userDetail.generateTemporary")}
             />
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          </Field>
+          <Field orientation="horizontal">
+            <Checkbox
+              id="require-password-change"
               checked={newPassword.length === 0 || temporaryPassword}
               disabled={newPassword.length === 0}
-              onChange={(e) => setTemporaryPassword(e.target.checked)}
+              onCheckedChange={(checked) => setTemporaryPassword(checked === true)}
             />
-            {t("userDetail.requirePasswordChange")}
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+            <FieldContent>
+              <FieldLabel htmlFor="require-password-change" className="font-normal">
+                {t("userDetail.requirePasswordChange")}
+              </FieldLabel>
+            </FieldContent>
+          </Field>
+          <Field orientation="horizontal">
+            <Checkbox
+              id="keep-api-tokens"
               checked={keepApiTokens}
-              onChange={(e) => setKeepApiTokens(e.target.checked)}
+              onCheckedChange={(checked) => setKeepApiTokens(checked === true)}
             />
-            {t("userDetail.keepApiTokens")}
-          </label>
-          {resetError && <p className="text-sm text-destructive">{resetError}</p>}
-        </div>
+            <FieldContent>
+              <FieldLabel htmlFor="keep-api-tokens" className="font-normal">
+                {t("userDetail.keepApiTokens")}
+              </FieldLabel>
+            </FieldContent>
+          </Field>
+          {resetError && (
+            <Alert variant="destructive">
+              <AlertDescription>{resetError}</AlertDescription>
+            </Alert>
+          )}
+        </FieldGroup>
       </ConfirmDialog>
     </div>
   );

@@ -1,12 +1,21 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useForm, useFieldArray, Controller } from "react-hook-form";
+import { z } from "zod";
 import { Plus, Trash2 } from "lucide-react";
 
 import { usePushRule } from "@/api/rules";
 import { ApiError } from "@/api/client";
+import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import {
   Select,
   SelectContent,
@@ -16,19 +25,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  FormTextField,
+  FormToggleField,
+} from "@/components/form/fields";
+import {
   EMPTY_RATE_LIMIT_FORM,
   RateLimitForm,
   formStateToRateLimit,
 } from "@/components/RateLimitForm";
 
-type FormMode = "single" | "multi";
 const PROXY_PROTOCOL_NONE = "__none";
 
-interface TargetRow {
-  host: string;
-  port: string;
-  proxyProtocol: "" | "v1" | "v2";
-}
+const isPort = (s: string) => /^\d{1,5}$/.test(s) && Number(s) >= 1 && Number(s) <= 65535;
 
 interface RuleFormProps {
   /** Called with the new rule id after a successful push. */
@@ -40,91 +48,153 @@ interface RuleFormProps {
 export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
   const { t } = useTranslation();
   const push = usePushRule();
-  const [client, setClient] = useState("client-a");
-  const [listenStart, setListenStart] = useState("30000");
-  const [listenEnd, setListenEnd] = useState("");
-  const [target, setTarget] = useState("127.0.0.1");
-  const [targetStart, setTargetStart] = useState("9000");
-  const [targetEnd, setTargetEnd] = useState("");
-  const [protocol, setProtocol] = useState<"tcp" | "udp">("tcp");
-  // 009-tls-sni-routing T084: optional TLS Server Name Indication
-  // selector. Server-side validation rejects this on UDP / range
-  // rules, so the input is rendered only when those constraints
-  // hold. The empty string maps to "absent" — the wire field is
-  // serialised only when non-empty.
-  const [sniPattern, setSniPattern] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const rateLimitSchema = z.object({
+    bandwidth_in_bps: z.string(),
+    bandwidth_out_bps: z.string(),
+    new_connections_per_sec: z.string(),
+    concurrent_connections: z.string(),
+    bandwidth_in_burst: z.string(),
+    bandwidth_out_burst: z.string(),
+    new_connections_burst: z.string(),
+  });
+
+  const schema = z
+    .object({
+      client: z.string().trim().min(1, t("rulePush.requiredField")),
+      listenStart: z.string().refine(isPort, t("rulePush.invalidPort")),
+      listenEnd: z.string().refine((s) => s === "" || isPort(s), t("rulePush.invalidPort")),
+      mode: z.enum(["single", "multi"]),
+      target: z.string(),
+      targetStart: z.string(),
+      targetEnd: z.string(),
+      targets: z.array(
+        z.object({
+          host: z.string(),
+          port: z.string(),
+          proxyProtocol: z.enum(["", "v1", "v2"]),
+        }),
+      ),
+      healthCheckInterval: z.string(),
+      protocol: z.enum(["tcp", "udp"]),
+      sniPattern: z.string(),
+      rateLimit: rateLimitSchema,
+    })
+    .superRefine((v, ctx) => {
+      if (v.mode === "single") {
+        if (!v.target.trim()) {
+          ctx.addIssue({ code: "custom", path: ["target"], message: t("rulePush.requiredField") });
+        }
+        if (!isPort(v.targetStart)) {
+          ctx.addIssue({ code: "custom", path: ["targetStart"], message: t("rulePush.invalidPort") });
+        }
+        if (v.targetEnd !== "" && !isPort(v.targetEnd)) {
+          ctx.addIssue({ code: "custom", path: ["targetEnd"], message: t("rulePush.invalidPort") });
+        }
+      } else {
+        v.targets.forEach((row, i) => {
+          if (!row.host.trim()) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["targets", i, "host"],
+              message: t("rulePush.requiredField"),
+            });
+          }
+          if (!isPort(row.port)) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["targets", i, "port"],
+              message: t("rulePush.invalidPort"),
+            });
+          }
+        });
+        if (v.healthCheckInterval !== "") {
+          const n = Number(v.healthCheckInterval);
+          if (!Number.isInteger(n) || n < 1 || n > 3600) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["healthCheckInterval"],
+              message: t("rulePush.invalidHealthCheckInterval"),
+            });
+          }
+        }
+      }
+    });
+
+  type RuleFormValues = z.infer<typeof schema>;
+
+  const form = useForm<RuleFormValues>({
+    resolver: zResolver<RuleFormValues>(schema),
+    defaultValues: {
+      client: "client-a",
+      listenStart: "30000",
+      listenEnd: "",
+      mode: "single",
+      target: "127.0.0.1",
+      targetStart: "9000",
+      targetEnd: "",
+      // 007-multi-target-failover T046: the legacy single-target shape stays
+      // the default to keep operator muscle memory intact.
+      targets: [
+        { host: "127.0.0.1", port: "9000", proxyProtocol: "" },
+        { host: "127.0.0.1", port: "9001", proxyProtocol: "" },
+      ],
+      healthCheckInterval: "",
+      protocol: "tcp",
+      sniPattern: "",
+      // 011-rate-limiting-qos T039: empty form = no rate_limit field on the
+      // wire (preserves SC-004 byte-stability for opt-out rules).
+      rateLimit: { ...EMPTY_RATE_LIMIT_FORM },
+    },
+  });
+  const { control, watch, formState, handleSubmit } = form;
+  const { fields, append, remove } = useFieldArray({ control, name: "targets" });
+
+  const mode = watch("mode");
+  const protocol = watch("protocol");
+  const listenEnd = watch("listenEnd");
+  // 009-tls-sni-routing T084: SNI is only valid on TCP single-port rules;
+  // UDP and port-range rules would be rejected at the API layer.
   const sniEligible = protocol === "tcp" && !listenEnd;
 
-  // 007-multi-target-failover T046: opt into the multi-target form. The
-  // legacy single-target shape stays the default to keep operator
-  // muscle memory intact.
-  const [mode, setMode] = useState<FormMode>("single");
-  const [targets, setTargets] = useState<TargetRow[]>([
-    { host: "127.0.0.1", port: "9000", proxyProtocol: "" },
-    { host: "127.0.0.1", port: "9001", proxyProtocol: "" },
-  ]);
-  const [healthCheckInterval, setHealthCheckInterval] = useState("");
-  // 011-rate-limiting-qos T039: optional QoS caps. Server validates
-  // (non-zero, burst-without-rate, range, capability gate). Empty
-  // form = no rate_limit field on the wire (preserves SC-004
-  // byte-stability for opt-out rules).
-  const [rateLimit, setRateLimit] = useState({ ...EMPTY_RATE_LIMIT_FORM });
-
-  function addTarget() {
-    setTargets((rows) => [...rows, { host: "", port: "", proxyProtocol: "" }]);
-  }
-  function removeTarget(idx: number) {
-    setTargets((rows) => (rows.length <= 1 ? rows : rows.filter((_, i) => i !== idx)));
-  }
-  function updateTarget(idx: number, key: keyof TargetRow, value: string) {
-    setTargets((rows) =>
-      rows.map((row, i) => (i === idx ? { ...row, [key]: value } : row)),
-    );
-  }
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  async function onSubmit(values: RuleFormValues) {
     setError(null);
     try {
-      const trimmedSni = sniPattern.trim();
-      const rl = formStateToRateLimit(rateLimit);
+      const trimmedSni = values.sniPattern.trim();
+      const rl = formStateToRateLimit(values.rateLimit);
       const baseBody = {
-        client,
-        listen_port: Number(listenStart),
-        ...(listenEnd ? { listen_port_end: Number(listenEnd) } : {}),
-        protocol,
-        // 009-tls-sni-routing T084: thread the SNI selector through
-        // the wire body. Empty / non-eligible inputs are omitted so
-        // the server applies its grammar-validated default (legacy
-        // shape).
+        client: values.client,
+        listen_port: Number(values.listenStart),
+        ...(values.listenEnd ? { listen_port_end: Number(values.listenEnd) } : {}),
+        protocol: values.protocol,
+        // 009-tls-sni-routing T084: empty / non-eligible inputs are omitted so
+        // the server applies its grammar-validated default (legacy shape).
         ...(sniEligible && trimmedSni ? { sni_pattern: trimmedSni } : {}),
-        // 011-rate-limiting-qos T039: omit rate_limit entirely when
-        // the operator left every cap blank. Preserves SC-004 wire
-        // byte-stability for v0.10-shaped rule pushes.
+        // 011-rate-limiting-qos T039: omit rate_limit entirely when every cap
+        // is blank. Preserves SC-004 wire byte-stability for v0.10 rule pushes.
         ...(rl ? { rate_limit: rl } : {}),
       };
       const body =
-        mode === "single"
+        values.mode === "single"
           ? {
               ...baseBody,
-              target_host: target,
-              target_port: Number(targetStart),
-              ...(targetEnd ? { target_port_end: Number(targetEnd) } : {}),
+              target_host: values.target,
+              target_port: Number(values.targetStart),
+              ...(values.targetEnd ? { target_port_end: Number(values.targetEnd) } : {}),
             }
           : {
               ...baseBody,
-              targets: targets.map((row, idx) => ({
+              targets: values.targets.map((row, idx) => ({
                 host: row.host,
                 port: Number(row.port),
                 priority: idx,
-                ...(protocol === "tcp" && row.proxyProtocol
+                ...(values.protocol === "tcp" && row.proxyProtocol
                   ? { proxy_protocol: row.proxyProtocol }
                   : {}),
               })),
-              ...(healthCheckInterval
-                ? { health_check_interval_secs: Number(healthCheckInterval) }
+              ...(values.healthCheckInterval
+                ? { health_check_interval_secs: Number(values.healthCheckInterval) }
                 : {}),
             };
       const res = await push.mutateAsync(body);
@@ -135,184 +205,194 @@ export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="client">{t("rules.client")}</Label>
-        <Input id="client" value={client} onChange={(e) => setClient(e.target.value)} required />
-      </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="ls">{t("rulePush.listenStart")}</Label>
-          <Input id="ls" type="number" value={listenStart} onChange={(e) => setListenStart(e.target.value)} required />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="le">{t("rulePush.listenEnd")}</Label>
-          <Input id="le" type="number" value={listenEnd} onChange={(e) => setListenEnd(e.target.value)} placeholder={t("rulePush.optional")} />
-        </div>
-      </div>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FieldGroup>
+        <FormTextField control={control} name="client" label={t("rules.client")} />
 
-      <div className="space-y-2">
-        <Label>{t("rulePush.targetMode")}</Label>
-        <div className="flex gap-3 text-sm">
-          {(["single", "multi"] as const).map((m) => (
-            <label key={m} className="flex items-center gap-2">
-              <input
-                type="radio"
-                checked={mode === m}
-                onChange={() => setMode(m)}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <FormTextField
+            control={control}
+            name="listenStart"
+            type="number"
+            label={t("rulePush.listenStart")}
+          />
+          <FormTextField
+            control={control}
+            name="listenEnd"
+            type="number"
+            label={t("rulePush.listenEnd")}
+            placeholder={t("rulePush.optional")}
+          />
+        </div>
+
+        <FormToggleField
+          control={control}
+          name="mode"
+          label={t("rulePush.targetMode")}
+          options={[
+            { value: "single", label: t("rulePush.targetMode_single") },
+            { value: "multi", label: t("rulePush.targetMode_multi") },
+          ]}
+        />
+
+        {mode === "single" ? (
+          <>
+            <FormTextField control={control} name="target" label={t("rulePush.targetHost")} />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FormTextField
+                control={control}
+                name="targetStart"
+                type="number"
+                label={t("rulePush.targetStart")}
               />
-              {t(`rulePush.targetMode_${m}`)}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {mode === "single" ? (
-        <>
-          <div className="space-y-2">
-            <Label htmlFor="target">{t("rulePush.targetHost")}</Label>
-            <Input id="target" value={target} onChange={(e) => setTarget(e.target.value)} required />
-          </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="ts">{t("rulePush.targetStart")}</Label>
-              <Input id="ts" type="number" value={targetStart} onChange={(e) => setTargetStart(e.target.value)} required />
+              <FormTextField
+                control={control}
+                name="targetEnd"
+                type="number"
+                label={t("rulePush.targetEnd")}
+                placeholder={t("rulePush.optional")}
+              />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="te">{t("rulePush.targetEnd")}</Label>
-              <Input id="te" type="number" value={targetEnd} onChange={(e) => setTargetEnd(e.target.value)} placeholder={t("rulePush.optional")} />
+          </>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <FieldLabel>{t("rulePush.targets")}</FieldLabel>
+            <div className="flex flex-col gap-2">
+              {fields.map((row, idx) => {
+                const rowErr = formState.errors.targets?.[idx];
+                return (
+                  <div
+                    key={row.id}
+                    className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-[1fr_120px_120px_72px_auto] sm:items-center sm:border-0 sm:p-0"
+                  >
+                    <Input
+                      placeholder={t("rulePush.targetHost")}
+                      aria-label={t("rulePush.targetHost")}
+                      aria-invalid={rowErr?.host ? true : undefined}
+                      {...form.register(`targets.${idx}.host`)}
+                    />
+                    <Input
+                      placeholder={t("rulePush.targetPort")}
+                      aria-label={t("rulePush.targetPort")}
+                      type="number"
+                      aria-invalid={rowErr?.port ? true : undefined}
+                      {...form.register(`targets.${idx}.port`)}
+                    />
+                    <Controller
+                      control={control}
+                      name={`targets.${idx}.proxyProtocol`}
+                      render={({ field }) => (
+                        <Select
+                          value={field.value || PROXY_PROTOCOL_NONE}
+                          onValueChange={(value) =>
+                            field.onChange(value === PROXY_PROTOCOL_NONE ? "" : value)
+                          }
+                          disabled={protocol !== "tcp"}
+                        >
+                          <SelectTrigger aria-label={t("rulePush.proxyProtocolDisabled")}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value={PROXY_PROTOCOL_NONE}>
+                                {t("rulePush.proxyProtocolDisabled")}
+                              </SelectItem>
+                              <SelectItem value="v1">{t("rulePush.proxyProtocolV1")}</SelectItem>
+                              <SelectItem value="v2">{t("rulePush.proxyProtocolV2")}</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      )}
+                    />
+                    <span className="text-sm text-muted-foreground sm:text-center">
+                      {t("rulePush.priority")} {idx}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => remove(idx)}
+                      disabled={fields.length <= 1}
+                      aria-label={t("rulePush.removeTarget")}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        </>
-      ) : (
-        <div className="space-y-3">
-          <Label>{t("rulePush.targets")}</Label>
-          <div className="space-y-2">
-            {targets.map((row, idx) => (
-              <div
-                key={idx}
-                className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-[1fr_120px_120px_72px_auto] sm:items-center sm:border-0 sm:p-0"
-              >
-                <Input
-                  placeholder={t("rulePush.targetHost")}
-                  value={row.host}
-                  onChange={(e) => updateTarget(idx, "host", e.target.value)}
-                  required
-                />
-                <Input
-                  placeholder={t("rulePush.targetPort")}
-                  type="number"
-                  value={row.port}
-                  onChange={(e) => updateTarget(idx, "port", e.target.value)}
-                  required
-                />
-                <Select
-                  value={row.proxyProtocol || PROXY_PROTOCOL_NONE}
-                  onValueChange={(value) =>
-                    updateTarget(
-                      idx,
-                      "proxyProtocol",
-                      value === PROXY_PROTOCOL_NONE ? "" : value,
-                    )
-                  }
-                  disabled={protocol !== "tcp"}
-                >
-                  <SelectTrigger aria-label={t("rulePush.proxyProtocolDisabled")}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value={PROXY_PROTOCOL_NONE}>
-                        {t("rulePush.proxyProtocolDisabled")}
-                      </SelectItem>
-                      <SelectItem value="v1">{t("rulePush.proxyProtocolV1")}</SelectItem>
-                      <SelectItem value="v2">{t("rulePush.proxyProtocolV2")}</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <span className="text-sm text-muted-foreground sm:text-center">
-                  {t("rulePush.priority")} {idx}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeTarget(idx)}
-                  disabled={targets.length <= 1}
-                  aria-label={t("rulePush.removeTarget")}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-          <Button type="button" variant="outline" size="sm" onClick={addTarget} className="w-full sm:w-auto">
-            <Plus className="h-4 w-4 mr-1" />
-            {t("rulePush.addTarget")}
-          </Button>
-          <div className="space-y-2">
-            <Label htmlFor="hci">{t("rulePush.healthCheckInterval")}</Label>
-            <Input
-              id="hci"
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => append({ host: "", port: "", proxyProtocol: "" })}
+              className="w-full sm:w-auto"
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              {t("rulePush.addTarget")}
+            </Button>
+            <FormTextField
+              control={control}
+              name="healthCheckInterval"
               type="number"
               min={1}
               max={3600}
-              value={healthCheckInterval}
-              onChange={(e) => setHealthCheckInterval(e.target.value)}
+              label={t("rulePush.healthCheckInterval")}
               placeholder={t("rulePush.healthCheckIntervalPlaceholder")}
+              description={t("rulePush.healthCheckIntervalHelp")}
             />
-            <p className="text-xs text-muted-foreground">
-              {t("rulePush.healthCheckIntervalHelp")}
-            </p>
           </div>
-        </div>
-      )}
+        )}
 
-      <div className="space-y-2">
-        <Label>{t("rules.protocol")}</Label>
-        <div className="flex gap-3 text-sm">
-          {(["tcp", "udp"] as const).map((p) => (
-            <label key={p} className="flex items-center gap-2">
-              <input type="radio" checked={protocol === p} onChange={() => setProtocol(p)} />
-              {p.toUpperCase()}
-            </label>
-          ))}
-        </div>
-      </div>
+        <FormToggleField
+          control={control}
+          name="protocol"
+          label={t("rules.protocol")}
+          options={[
+            { value: "tcp", label: "TCP" },
+            { value: "udp", label: "UDP" },
+          ]}
+        />
 
-      {/* 009-tls-sni-routing T084: SNI selector input. Only
-          rendered when the rule is TCP single-port; UDP and
-          port-range rules would be rejected at the API layer. */}
-      {sniEligible && (
-        <div className="space-y-2">
-          <Label htmlFor="sni">{t("rulePush.sniPattern")}</Label>
-          <Input
-            id="sni"
-            value={sniPattern}
-            onChange={(e) => setSniPattern(e.target.value)}
+        {/* 009-tls-sni-routing T084: SNI selector input. Only rendered when
+            the rule is TCP single-port; UDP and port-range rules would be
+            rejected at the API layer. */}
+        {sniEligible && (
+          <FormTextField
+            control={control}
+            name="sniPattern"
+            label={t("rulePush.sniPattern")}
             placeholder={t("rulePush.sniPatternPlaceholder")}
+            description={t("rulePush.sniPatternHelp")}
           />
-          <p className="text-xs text-muted-foreground">
-            {t("rulePush.sniPatternHelp")}
-          </p>
+        )}
+
+        <Field>
+          <FieldLabel>{t("rulePush.rateLimitTitle")}</FieldLabel>
+          <FieldDescription>{t("rulePush.rateLimitHelp")}</FieldDescription>
+          <Controller
+            control={control}
+            name="rateLimit"
+            render={({ field }) => (
+              <RateLimitForm state={field.value} onChange={field.onChange} />
+            )}
+          />
+        </Field>
+
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button type="submit" disabled={push.isPending}>
+            {push.isPending ? t("confirm.busy") : t("rulePush.submit")}
+          </Button>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            {t("confirm.cancel")}
+          </Button>
         </div>
-      )}
-
-      <div className="space-y-2">
-        <Label>{t("rulePush.rateLimitTitle")}</Label>
-        <p className="text-xs text-muted-foreground">{t("rulePush.rateLimitHelp")}</p>
-        <RateLimitForm state={rateLimit} onChange={setRateLimit} />
-      </div>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Button type="submit" disabled={push.isPending}>
-          {push.isPending ? t("confirm.busy") : t("rulePush.submit")}
-        </Button>
-        <Button type="button" variant="outline" onClick={onCancel}>
-          {t("confirm.cancel")}
-        </Button>
-      </div>
+      </FieldGroup>
     </form>
   );
 }

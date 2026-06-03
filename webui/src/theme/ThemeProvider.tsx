@@ -47,7 +47,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     const next = resolve(theme);
     setEffective(next);
-    document.documentElement.dataset.theme = next;
+    document.documentElement.classList.toggle("dark", next === "dark");
     writeStoredTheme(theme);
   }, [theme]);
 
@@ -57,7 +57,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const handler = () => {
       const next = resolve("system");
       setEffective(next);
-      document.documentElement.dataset.theme = next;
+      document.documentElement.classList.toggle("dark", next === "dark");
     };
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);

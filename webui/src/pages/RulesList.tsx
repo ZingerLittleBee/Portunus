@@ -213,12 +213,14 @@ export function RulesList() {
               setParams(next);
             }}
           >
-            <SelectTrigger id="owner-filter" className="sm:w-[12rem]">
+            <SelectTrigger id="owner-filter" className="sm:w-48">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                <SelectItem value={OWNER_FILTER_ALL}>—</SelectItem>
+                <SelectItem value={OWNER_FILTER_ALL}>
+                  {t("rules.ownerFilterAll")}
+                </SelectItem>
                 {(users.data ?? []).map((u) => (
                   <SelectItem key={u.user_id} value={u.user_id}>
                     {u.user_id}

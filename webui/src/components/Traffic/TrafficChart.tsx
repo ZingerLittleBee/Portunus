@@ -36,11 +36,11 @@ export function TrafficChart({ samples, height = 320 }: Props) {
   const chartConfig = {
     bytes_in: {
       label: t("traffic.bytesIn"),
-      color: "hsl(var(--chart-1, 220 70% 50%))",
+      color: "var(--chart-1)",
     },
     bytes_out: {
       label: t("traffic.bytesOut"),
-      color: "hsl(var(--chart-2, 12 76% 61%))",
+      color: "var(--chart-2)",
     },
   } satisfies ChartConfig;
 

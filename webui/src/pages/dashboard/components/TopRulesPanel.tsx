@@ -25,11 +25,11 @@ export function TopRulesPanel({ rules }: TopRulesPanelProps) {
   const chartConfig = {
     bytesIn: {
       label: t("traffic.bytesIn"),
-      color: "hsl(220 70% 50%)",
+      color: "var(--chart-1)",
     },
     bytesOut: {
       label: t("traffic.bytesOut"),
-      color: "hsl(160 84% 39%)",
+      color: "var(--chart-2)",
     },
   } satisfies ChartConfig;
 

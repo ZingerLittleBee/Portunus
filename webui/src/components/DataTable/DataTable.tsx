@@ -74,7 +74,7 @@ export function DataTable<Row>({
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     const last = sorted.length - 1;
     if (last < 0) return;
-    let next = focusedIndex;
+    let next: number;
     switch (e.key) {
       case "ArrowDown": next = Math.min(last, focusedIndex + 1); break;
       case "ArrowUp": next = Math.max(0, focusedIndex - 1); break;
@@ -129,7 +129,7 @@ export function DataTable<Row>({
           ref={parentRef}
           tabIndex={0}
           onKeyDown={onKeyDown}
-          className="h-[480px] overflow-y-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-[480px] overflow-y-auto focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           role="rowgroup"
           aria-label={ariaLabel}
           style={{ minWidth: tableWidth }}
