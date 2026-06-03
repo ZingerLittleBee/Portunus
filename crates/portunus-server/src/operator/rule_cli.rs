@@ -410,6 +410,93 @@ pub fn list(endpoint: &str, client_filter: Option<&str>, format: OutputFormat) -
     Ok(())
 }
 
+/// One row of `GET /v1/clients`. Mirrors the operator HTTP `ClientView`.
+#[derive(Debug, Deserialize)]
+struct ClientRow {
+    client_id: String,
+    client_name: String,
+    #[serde(default)]
+    connected: bool,
+    #[serde(default)]
+    client_address: Option<String>,
+    #[serde(default)]
+    remote_addr: Option<String>,
+    #[serde(default)]
+    connected_at: Option<DateTime<Utc>>,
+}
+
+/// `list-clients` over the loopback HTTP API. 015-client-stable-id: the
+/// previous in-process path opened the SQLite store directly, which fails
+/// with `store_in_use` while `serve` holds the write lock and — using an
+/// empty in-memory `ConnectedClients` — could never report live connection
+/// state. Routing through `GET /v1/clients` (like the rule subcommands)
+/// works against the running server and reports the real `connected` flag,
+/// the stable `client_id`, and the remote address.
+pub fn list_clients(endpoint: &str, format: OutputFormat) -> Result<(), u8> {
+    let url = format!("http://{endpoint}/v1/clients");
+    let resp = apply_auth(client()?.get(&url)).send().map_err(|e| {
+        eprintln!("error: http: {e}");
+        1
+    })?;
+    if !resp.status().is_success() {
+        return Err(extract_error(resp));
+    }
+    let rows: Vec<ClientRow> = resp.json().map_err(|e| {
+        eprintln!("error: parse: {e}");
+        1
+    })?;
+    match format {
+        OutputFormat::Json => {
+            // Re-serialize the raw rows so the JSON stays faithful to the API.
+            let v: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "client_id": r.client_id,
+                        "client_name": r.client_name,
+                        "connected": r.connected,
+                        "client_address": r.client_address,
+                        "remote_addr": r.remote_addr,
+                        "connected_at": r.connected_at,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&v).map_err(|_| 1u8)?);
+        }
+        OutputFormat::Text => {
+            use std::fmt::Write as _;
+            let mut s = String::new();
+            let _ = writeln!(
+                s,
+                "{:<26} {:<20} {:<12} {:<24} {:<20}",
+                "CLIENT_ID", "NAME", "STATE", "REMOTE_ADDR", "CONNECTED_AT"
+            );
+            for r in &rows {
+                let state = if r.connected {
+                    "connected"
+                } else {
+                    "disconnected"
+                };
+                let remote = r
+                    .remote_addr
+                    .clone()
+                    .or_else(|| r.client_address.clone())
+                    .unwrap_or_else(|| "-".to_string());
+                let since = r
+                    .connected_at
+                    .map_or_else(|| "-".to_string(), |t| t.to_rfc3339());
+                let _ = writeln!(
+                    s,
+                    "{:<26} {:<20} {:<12} {:<24} {:<20}",
+                    r.client_id, r.client_name, state, remote, since
+                );
+            }
+            print!("{s}");
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct StatsResponse {
     rule_id: u64,

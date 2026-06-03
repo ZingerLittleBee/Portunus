@@ -307,11 +307,24 @@ impl SqliteTokenStore {
         new_name: &ClientName,
     ) -> Result<UpdateClientOutcome, StoreError> {
         let rows = self.store.with_write_tx(|tx| {
-            tx.execute(
-                "UPDATE client_tokens SET client_name = ? WHERE client_id = ?",
-                rusqlite::params![new_name.as_str(), client_id.to_string()],
-            )
-            .map_err(map_rusqlite)
+            let n = tx
+                .execute(
+                    "UPDATE client_tokens SET client_name = ? WHERE client_id = ?",
+                    rusqlite::params![new_name.as_str(), client_id.to_string()],
+                )
+                .map_err(map_rusqlite)?;
+            // 015-client-stable-id: keep the denormalized `rules.client_name`
+            // column in lock-step with the canonical display name so that
+            // `/v1/rules` and the Web UI Rules page reflect the rename after a
+            // restart/hydration (client_id is the join key).
+            if n > 0 {
+                tx.execute(
+                    "UPDATE rules SET client_name = ? WHERE client_id = ?",
+                    rusqlite::params![new_name.as_str(), client_id.to_string()],
+                )
+                .map_err(map_rusqlite)?;
+            }
+            Ok(n)
         })?;
         if rows == 0 {
             Ok(UpdateClientOutcome::NotFound)

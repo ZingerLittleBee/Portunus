@@ -75,6 +75,9 @@ enum Cmd {
     ListClients {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+        /// Operator HTTP endpoint of the running server (loopback by default).
+        #[arg(long, default_value = "127.0.0.1:7080")]
+        http_endpoint: String,
     },
     /// Push a forwarding rule to a connected client. `<listen>` and the
     /// port portion of `<target>` accept either a single port (`18080`)
@@ -576,23 +579,16 @@ fn run(cli: Cli) -> Result<(), u8> {
                 }
             }
         }
-        Cmd::ListClients { format } => {
-            let state = build_offline_state(&data_dir, seed.clone())?;
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|_| 1u8)?;
-            let views = runtime.block_on(cli::list_clients(&state));
-            match format {
-                OutputFormat::Json => {
-                    let s = serde_json::to_string_pretty(&views).map_err(|_| 1u8)?;
-                    println!("{s}");
-                }
-                OutputFormat::Text => {
-                    print!("{}", cli::render_client_view_text(&views));
-                }
-            }
-            Ok(())
+        Cmd::ListClients {
+            format,
+            http_endpoint,
+        } => {
+            // 015-client-stable-id: route through the running server's
+            // operator HTTP API instead of opening the SQLite store
+            // in-process. The offline path failed with `store_in_use`
+            // while `serve` held the write lock and could never report
+            // live connection state (empty in-memory registry).
+            rule_cli::list_clients(&http_endpoint, format)
         }
         Cmd::PushRule {
             client,

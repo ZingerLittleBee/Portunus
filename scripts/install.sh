@@ -939,9 +939,15 @@ dns_points_here() {  # $1 domain ; uses detect_public_ip
 
 render_caddy_block() {  # $1 op-http port ; prints managed block
   local port="$1"
+  # The ACME contact email is emitted as a per-site `tls` directive rather
+  # than a global `{ email }` options block: a global block is only valid as
+  # the very first thing in a Caddyfile, so appending one after existing site
+  # blocks makes Caddy refuse to start ("Unexpected '}' ... no matching
+  # opening brace"). The `tls <email>` form is valid anywhere and keeps the
+  # managed block self-contained and position-independent.
   echo "# >>> portunus >>>"
-  [ -n "$ACME_EMAIL" ] && echo "{ email ${ACME_EMAIL} }"
   echo "${DOMAIN} {"
+  [ -n "$ACME_EMAIL" ] && echo "    tls ${ACME_EMAIL}"
   echo "    reverse_proxy 127.0.0.1:${port}"
   echo "}"
   echo "# <<< portunus <<<"
@@ -972,7 +978,17 @@ write_caddy_block() {
   sudo install -d -m 0755 "$(dirname "$CADDYFILE")"
   if [ -f "$CADDYFILE" ]; then
     sudo cp "$CADDYFILE" "${CADDYFILE}.portunus.$(date +%Y%m%d%H%M%S).bak"
-    sudo sed -i '/^# >>> portunus >>>$/,/^# <<< portunus <<<$/d' "$CADDYFILE"
+    # A fresh apt/dnf install ships a boilerplate Caddyfile whose `:80`
+    # file-server site binds port 80 (colliding with the ACME HTTP-01
+    # challenge / HTTP→HTTPS redirect Caddy needs for the domain) and carries
+    # no operator config. Replace it wholesale — the copy above is the backup.
+    # A user-authored Caddyfile is preserved; only the managed block is
+    # rewritten in place.
+    if sudo grep -q 'root \* /usr/share/caddy' "$CADDYFILE" 2>/dev/null; then
+      sudo sh -c ": > '$CADDYFILE'"
+    else
+      sudo sed -i '/^# >>> portunus >>>$/,/^# <<< portunus <<<$/d' "$CADDYFILE"
+    fi
   fi
   render_caddy_block "$port" | sudo tee -a "$CADDYFILE" >/dev/null
 }

@@ -818,6 +818,27 @@ impl ServerRuleStore {
         out
     }
 
+    /// 015-client-stable-id: refresh the denormalized `client_name` on every
+    /// in-memory rule owned by `client_id` after an identity-safe rename, so
+    /// live `/v1/rules` snapshots (and any reader of `Rule.client_name`)
+    /// reflect the new display name without waiting for a restart/hydration.
+    /// Returns the number of rules updated.
+    pub async fn rename_client(
+        &self,
+        client_id: &ClientId,
+        new_name: &portunus_core::ClientName,
+    ) -> usize {
+        let mut guard = self.inner.write().await;
+        let mut n = 0;
+        for rule in guard.rules.values_mut() {
+            if &rule.client_id == client_id {
+                rule.client_name = new_name.clone();
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Snapshot of every rule. `client_filter` narrows by stable id.
     pub async fn list(&self, client_filter: Option<&ClientId>) -> Vec<Rule> {
         let guard = self.inner.read().await;
