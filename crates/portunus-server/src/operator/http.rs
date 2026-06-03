@@ -298,6 +298,14 @@ async fn patch_client_name(
     Json(body): Json<RenameClientBody>,
 ) -> Result<Json<ClientView>, ApiError> {
     let updated = cli::rename_client(&state, &client_id, &body.client_name)?;
+    // 015-client-stable-id: the store write already re-synced the persisted
+    // `rules.client_name`; refresh the live in-memory rule snapshot too so
+    // `/v1/rules` and the Web UI Rules page reflect the new name immediately
+    // (without waiting for a restart/hydration).
+    state
+        .rules
+        .rename_client(&updated.client_id, &updated.client_name)
+        .await;
     let connected = state.clients.snapshot().await;
     let conn = connected.get(&updated.client_id);
     Ok(Json(ClientView {
