@@ -115,6 +115,7 @@ pub async fn enroll(raw_uri: &str, out: Option<PathBuf>) -> Result<PathBuf, Enro
     let preliminary = CredentialBundle::from_enrollment(
         1,
         ClientName::new("enrollment-probe")?,
+        None,
         parsed.endpoint.clone(),
         parsed.pin_sha256.clone(),
         parsed.server_cert_pem.clone(),
@@ -142,9 +143,20 @@ pub async fn enroll(raw_uri: &str, out: Option<PathBuf>) -> Result<PathBuf, Enro
         .map_err(|e| EnrollError::Rpc(e.message().to_string()))?
         .into_inner();
 
+    let client_id = if response.client_id.is_empty() {
+        None // pre-upgrade server: no id on the wire
+    } else {
+        Some(
+            response
+                .client_id
+                .parse()
+                .map_err(|e| EnrollError::Rpc(format!("invalid client_id in bundle: {e}")))?,
+        )
+    };
     let bundle = CredentialBundle::from_enrollment(
         response.version,
         ClientName::new(response.client_name)?,
+        client_id,
         response.server_endpoint,
         response.server_cert_sha256,
         response.server_cert_pem,

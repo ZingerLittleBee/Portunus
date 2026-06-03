@@ -65,14 +65,20 @@ Token 请求则不需要 CSRF 头。
 
 ### Clients
 
+Client 维度的路由以稳定 `client_id`（接入时分配的 ULID）寻址。`client_name`
+是自由格式的显示标签，**不是**标识符——允许重名，改名也不改变 id。未知或格式
+非法的 `client_id` 在所有 Client 维度路由上一律返回 `404`（绝不泄漏是否存在同名
+冲突）。
+
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
-| `POST` | `/v1/client-enrollments` | 为新 Client 创建一次性接入命令 |
-| `POST` | `/v1/clients/{name}/enrollment` | 为已有 Client 创建一次性重新接入命令 |
-| `GET` | `/v1/clients` | 列出 Client；超管可见全部 |
-| `PUT` | `/v1/clients/{name}` | 更新该 Client 的 advertised address；body 为 `{address}` |
-| `POST` | `/v1/clients/{name}/revoke` | 撤销 + 断线 |
-| `DELETE` | `/v1/clients/{name}` | 删除已撤销的 Client 行 |
+| `POST` | `/v1/client-enrollments` | 为新 Client 创建一次性接入命令。body 为 `{name, address?, ttl_secs?}`；`name` 自由格式 |
+| `POST` | `/v1/clients/{client_id}/enrollment` | 为已有 Client 创建一次性重新接入命令 |
+| `GET` | `/v1/clients` | 列出 Client（每行带 `client_id` + `client_name`）；超管可见全部 |
+| `PUT` | `/v1/clients/{client_id}` | 更新该 Client 的 advertised address；body 为 `{address}` |
+| `PATCH` | `/v1/clients/{client_id}/name` | 身份安全的改名；body 为 `{client_name}`。id 及所有依赖行不变，不中断活动会话 |
+| `POST` | `/v1/clients/{client_id}/revoke` | 撤销 + 断线 |
+| `DELETE` | `/v1/clients/{client_id}` | 删除已撤销的 Client 行 |
 
 ### Rules
 
@@ -135,13 +141,13 @@ Token 请求则不需要 CSRF 头。
 | 方法 | 路径 | 备注 |
 | --- | --- | --- |
 | `GET` | `/v1/users/{user_id}/quotas` | 列出某用户的配额 |
-| `PUT` | `/v1/users/{user_id}/quotas/{client_name}` | 设置月度配额 |
-| `PATCH` | `/v1/users/{user_id}/quotas/{client_name}` | 更新 `monthly_bytes` 和/或清零当期用量 |
-| `DELETE` | `/v1/users/{user_id}/quotas/{client_name}` | 删除配额 |
-| `GET` | `/v1/users/{user_id}/quotas/{client_name}/status` | 当期用量与上限对比 |
+| `PUT` | `/v1/users/{user_id}/quotas/{client_id}` | 设置月度配额 |
+| `PATCH` | `/v1/users/{user_id}/quotas/{client_id}` | 更新 `monthly_bytes` 和/或清零当期用量 |
+| `DELETE` | `/v1/users/{user_id}/quotas/{client_id}` | 删除配额 |
+| `GET` | `/v1/users/{user_id}/quotas/{client_id}/status` | 当期用量与上限对比 |
 | `GET` | `/v1/users/{user_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某用户的历史流量 |
-| `GET` | `/v1/clients/{client_name}/quotas` | 列出某 Client 的配额 |
-| `GET` | `/v1/clients/{client_name}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某 Client 的历史流量 |
+| `GET` | `/v1/clients/{client_id}/quotas` | 列出某 Client 的配额 |
+| `GET` | `/v1/clients/{client_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某 Client 的历史流量 |
 | `GET` | `/v1/traffic/global?from=<unix>&to=<unix>&bucket=<size>` | 所有规则的历史流量汇总 |
 
 ### Settings（v0.14+）

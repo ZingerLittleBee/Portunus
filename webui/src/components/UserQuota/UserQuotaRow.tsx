@@ -68,6 +68,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
     try {
       await update.mutateAsync({
         user_id: userId,
+        client_id: entry.client_id,
         client_name: v.client_name,
         grant_id: entry.grant_id,
         old: {
@@ -106,7 +107,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
       await del.mutateAsync({
         grant_id: entry.grant_id,
         user_id: userId,
-        client_name: entry.client_name,
+        client_id: entry.client_id,
         ...(entry.legacy_duplicates
           ? { legacy_duplicate_ids: entry.legacy_duplicates.map((g) => g.grant_id) }
           : {}),
@@ -265,10 +266,10 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           </DialogHeader>
           <UserQuotaForm
             clients={clients}
-            disabledClientNames={new Set()}
+            disabledClientIds={new Set()}
             lockClient
             defaultValues={{
-              client_name: entry.client_name,
+              client_id: entry.client_id,
               listen_port_start: entry.listen_port_start,
               listen_port_end: entry.listen_port_end,
               protocols: entry.protocols,

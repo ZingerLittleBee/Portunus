@@ -29,7 +29,9 @@ const portInt = z.number().int().min(1).max(65535);
 const positiveOrNull = z.number().int().positive().nullable().optional();
 
 const baseShape = {
-  client_name: z.string().min(1),
+  // 015-client-stable-id (US3): the form binds the stable client_id; the
+  // display name is looked up for labels only.
+  client_id: z.string().min(1),
   listen_port_start: portInt,
   listen_port_end: portInt,
   protocols: z.array(z.enum(["tcp", "udp"])).min(1),

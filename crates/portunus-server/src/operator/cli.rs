@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use portunus_auth::{AuthError, Authenticator};
+use portunus_auth::{AuthError, Authenticator, ProvisionedClient};
 use portunus_core::{
-    ClientName, ClientNameError, Hostname, HostnameError, PortRange, PortRangeError, RequestId,
-    RuleId, Target, TargetError,
+    ClientId, ClientName, ClientNameError, Hostname, HostnameError, PortRange, PortRangeError,
+    RequestId, RuleId, Target, TargetError,
 };
 use portunus_proto::v1::{
     ActivationOutcome, Protocol as ProtoProto, Rule as ProtoRule, RuleAction, RuleUpdate,
@@ -52,6 +52,16 @@ pub enum OperatorError {
     /// generic `not_found` family with `RuleNotFound`).
     #[error("client_not_found: {0}")]
     ClientNotFound(ClientName),
+    /// Client mutation addressed by a `client_id` (ULID) that has no row
+    /// in `client_tokens` — used by the id-keyed operator surface
+    /// (015-client-stable-id, US3). Maps to HTTP 404 / exit 8.
+    #[error("client_not_found: {0}")]
+    ClientIdNotFound(ClientId),
+    /// A client_id path/arg that is not a parseable ULID. Maps to HTTP
+    /// 404 (an unknown id is indistinguishable from a malformed one to
+    /// the caller) / exit 8.
+    #[error("client_not_found: invalid client id")]
+    ClientIdInvalid,
     /// `client-delete` invoked against a still-active row. Operators
     /// must `revoke` first so the data-plane disconnect runs before the
     /// name vanishes. Maps to HTTP 409 / exit 5 (conflict family).
@@ -298,7 +308,10 @@ impl OperatorError {
             | Self::ClientNotRevoked(_) => 5,
             Self::ActivationFailed(_) => 6,
             Self::AckTimeout => 7,
-            Self::RuleNotFound | Self::ClientNotFound(_) => 8,
+            Self::RuleNotFound
+            | Self::ClientNotFound(_)
+            | Self::ClientIdNotFound(_)
+            | Self::ClientIdInvalid => 8,
             // 005: RBAC failures use the new operator-api table:
             // 4=auth, 5=rbac denial, 6=bootstrap_required, 2=already_bootstrapped, 3=validation.
             Self::Rbac(e) => match e {
@@ -344,7 +357,9 @@ impl OperatorError {
             | Self::ProxyProtocolValidation { code, .. }
             | Self::RateLimitValidation { code, .. } => code,
             Self::ClientNotConnected(_) => "client_not_connected",
-            Self::ClientNotFound(_) => "client_not_found",
+            Self::ClientNotFound(_) | Self::ClientIdNotFound(_) | Self::ClientIdInvalid => {
+                "client_not_found"
+            }
             Self::ClientNotRevoked(_) => "client_not_revoked",
             Self::PortInUse { .. } => "port_in_use",
             Self::ActivationFailed(_) => "activation_failed",
@@ -491,6 +506,9 @@ pub fn enroll_client(
     create_enrollment_command(
         state,
         name,
+        // Brand-new client: no stable id exists yet — it is minted at
+        // redeem (U2).
+        None,
         EnrollmentTarget::New {
             client_address: address,
         },
@@ -516,6 +534,7 @@ pub fn enroll_existing_client(
     create_enrollment_command(
         state,
         name,
+        None,
         EnrollmentTarget::Existing,
         ttl_secs,
         "audit.client_reenrollment_created",
@@ -526,6 +545,7 @@ pub fn enroll_existing_client(
 fn create_enrollment_command(
     state: &AppState,
     name: ClientName,
+    client_id: Option<ClientId>,
     target: EnrollmentTarget,
     ttl_secs: u64,
     event: &'static str,
@@ -553,6 +573,7 @@ fn create_enrollment_command(
     let enrollments = ClientEnrollmentStore::new(Arc::clone(&state.store));
     let created = enrollments.create(CreateEnrollment {
         client_name: name.clone(),
+        client_id,
         target,
         expires_at: now + ttl,
         now,
@@ -587,7 +608,7 @@ fn enrollment_uri(state: &AppState, endpoint: &str, code: &str) -> String {
 pub async fn revoke(state: &AppState, raw_name: &str) -> Result<(), OperatorError> {
     let name = ClientName::from_str(raw_name)?;
     state.tokens.revoke(&name)?;
-    let disconnected = state.clients.disconnect(&name).await;
+    let disconnected = state.clients.disconnect_by_name(&name).await;
     info!(
         event = "audit.revoke",
         outcome = "success",
@@ -651,6 +672,141 @@ pub fn update_client(
     }
 }
 
+/// 015-client-stable-id (US3): revoke a client addressed by its stable
+/// `client_id`. Unambiguous under duplicate display names. Idempotent.
+pub async fn revoke_by_id(state: &AppState, raw_id: &str) -> Result<(), OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let client = state
+        .tokens
+        .get_by_id(client_id)?
+        .ok_or(OperatorError::ClientIdNotFound(client_id))?;
+    state.tokens.revoke_by_id(client_id)?;
+    let disconnected = state.clients.disconnect(&client_id).await;
+    info!(
+        event = "audit.revoke",
+        outcome = "success",
+        client_id = %client_id,
+        client_name = %client.client_name,
+        was_connected = disconnected,
+    );
+    Ok(())
+}
+
+/// Permanently remove a previously-revoked client addressed by `client_id`.
+pub fn delete_client_by_id(state: &AppState, raw_id: &str) -> Result<(), OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let client = state
+        .tokens
+        .get_by_id(client_id)?
+        .ok_or(OperatorError::ClientIdNotFound(client_id))?;
+    match state.tokens.delete_revoked_by_id(client_id)? {
+        crate::store::token_store::DeleteOutcome::Deleted => {
+            info!(
+                event = "audit.client_delete",
+                outcome = "success",
+                client_id = %client_id,
+                client_name = %client.client_name,
+            );
+            Ok(())
+        }
+        crate::store::token_store::DeleteOutcome::NotFound => {
+            Err(OperatorError::ClientIdNotFound(client_id))
+        }
+        crate::store::token_store::DeleteOutcome::StillActive => {
+            Err(OperatorError::ClientNotRevoked(client.client_name))
+        }
+    }
+}
+
+/// Update editable metadata for a client addressed by `client_id`. Returns
+/// the refreshed client view.
+pub fn update_client_by_id(
+    state: &AppState,
+    raw_id: &str,
+    client_address: Option<&str>,
+) -> Result<ProvisionedClient, OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let address = client_address.map(validate_client_address).transpose()?;
+    match state
+        .tokens
+        .update_client_address_by_id(client_id, address.as_deref())?
+    {
+        crate::store::token_store::UpdateClientOutcome::Updated => {
+            info!(
+                event = "audit.client_update",
+                outcome = "success",
+                client_id = %client_id,
+            );
+            state
+                .tokens
+                .get_by_id(client_id)?
+                .ok_or(OperatorError::ClientIdNotFound(client_id))
+        }
+        crate::store::token_store::UpdateClientOutcome::NotFound => {
+            Err(OperatorError::ClientIdNotFound(client_id))
+        }
+    }
+}
+
+/// 015-client-stable-id (US3): create a re-enrollment URI for an existing
+/// client addressed by `client_id`. Resolves the current display name for
+/// the (still name-based) enrollment record.
+pub fn enroll_existing_client_by_id(
+    state: &AppState,
+    raw_id: &str,
+    ttl_secs: u64,
+    req_host: Option<&str>,
+) -> Result<EnrollmentCommand, OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let client = state
+        .tokens
+        .get_by_id(client_id)?
+        .ok_or(OperatorError::ClientIdNotFound(client_id))?;
+    if ttl_secs == 0 {
+        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
+    }
+    create_enrollment_command(
+        state,
+        client.client_name,
+        Some(client_id),
+        EnrollmentTarget::Existing,
+        ttl_secs,
+        "audit.client_reenrollment_created",
+        req_host,
+    )
+}
+
+/// 015-client-stable-id (US2): rename a client's free-form display name,
+/// addressing it by its stable `client_id`. The id — and therefore all
+/// rules, tokens, quotas and traffic history keyed on it — is untouched,
+/// and a live session is NOT dropped. Duplicate display names are allowed
+/// (FR-013), so this never conflicts. Returns the updated client view.
+pub fn rename_client(
+    state: &AppState,
+    raw_id: &str,
+    raw_new_name: &str,
+) -> Result<ProvisionedClient, OperatorError> {
+    let client_id = ClientId::from_str(raw_id).map_err(|_| OperatorError::ClientIdInvalid)?;
+    let new_name = ClientName::from_str(raw_new_name)?;
+    match state.tokens.rename(client_id, &new_name)? {
+        crate::store::token_store::UpdateClientOutcome::Updated => {
+            info!(
+                event = "audit.client_rename",
+                outcome = "success",
+                client_id = %client_id,
+                client_name = %new_name,
+            );
+            state
+                .tokens
+                .get_by_id(client_id)?
+                .ok_or(OperatorError::ClientIdNotFound(client_id))
+        }
+        crate::store::token_store::UpdateClientOutcome::NotFound => {
+            Err(OperatorError::ClientIdNotFound(client_id))
+        }
+    }
+}
+
 /// `list-clients`. Joins the union of provisioned + currently-connected.
 pub async fn list_clients(state: &AppState) -> Vec<ClientView> {
     let provisioned = state.tokens.list().unwrap_or_default();
@@ -658,8 +814,9 @@ pub async fn list_clients(state: &AppState) -> Vec<ClientView> {
 
     let mut views = Vec::with_capacity(provisioned.len());
     for p in provisioned {
-        let conn = connected.get(&p.client_name);
+        let conn = connected.get(&p.client_id);
         views.push(ClientView {
+            client_id: p.client_id,
             client_name: p.client_name.clone(),
             provisioned_at: p.issued_at,
             revoked_at: p.revoked_at,
@@ -835,7 +992,13 @@ pub async fn push_rule(
 
     // Reject up-front if the client isn't connected — saves us from leaving a
     // Pending rule behind that would never be acked.
-    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+    let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
+        return Err(OperatorError::ClientNotConnected(client_name));
+    };
+    // 015-client-stable-id (T015): rules are keyed by the client's stable
+    // id. Resolve it from the live registry — the client is guaranteed
+    // connected here, so the lookup always succeeds.
+    let Some(client_id) = state.clients.client_id_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 
@@ -847,7 +1010,7 @@ pub async fn push_rule(
         let proto_wire = portunus_proto::v1::Protocol::Udp;
         let supported = state
             .clients
-            .supports(&client_name, proto_wire)
+            .supports_by_name(&client_name, proto_wire)
             .await
             .unwrap_or(false);
         if !supported {
@@ -861,6 +1024,7 @@ pub async fn push_rule(
     let rule = state
         .rules
         .push_range(
+            client_id,
             client_name.clone(),
             listen,
             target_host.to_string(),
@@ -1083,7 +1247,10 @@ pub async fn push_rule_multi_target(
     let target_host = first.host.clone();
     let target_range = PortRange::single(first.port);
 
-    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+    let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
+        return Err(OperatorError::ClientNotConnected(client_name));
+    };
+    let Some(client_id) = state.clients.client_id_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 
@@ -1093,7 +1260,7 @@ pub async fn push_rule_multi_target(
         let proto_wire = portunus_proto::v1::Protocol::Udp;
         let supported = state
             .clients
-            .supports(&client_name, proto_wire)
+            .supports_by_name(&client_name, proto_wire)
             .await
             .unwrap_or(false);
         if !supported {
@@ -1107,6 +1274,7 @@ pub async fn push_rule_multi_target(
     let rule = state
         .rules
         .push_range_with_targets(
+            client_id,
             client_name.clone(),
             listen,
             target_host.clone(),
@@ -1313,7 +1481,7 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
     // <id> --per-port` returns 404 (RuleNotFound) instead of stale data.
     state.per_port_stats.drop_rule(rule_id).await;
     let request_id = RequestId::new().to_string();
-    if let Some((outbound, _waiters)) = state.clients.handles(&removed.client_name).await {
+    if let Some((outbound, _waiters)) = state.clients.handles_by_name(&removed.client_name).await {
         let update = ServerMessage {
             payload: Some(server_message::Payload::RuleUpdate(RuleUpdate {
                 request_id: request_id.clone(),
@@ -1369,11 +1537,11 @@ pub async fn remove_rule(state: &AppState, rule_id: RuleId) -> Result<Rule, Oper
         .list_owned_by(&removed.owner_user_id)
         .await
         .into_iter()
-        .filter(|r| r.client_name == removed.client_name)
+        .filter(|r| r.client_id == removed.client_id)
         .count();
     if let Err(e) = state
         .owner_caps
-        .gc_after_rule_removed(&removed.client_name, owner.as_str(), rules_remaining)
+        .gc_after_rule_removed(&removed.client_id, owner.as_str(), rules_remaining)
         .await
     {
         warn!(
@@ -1401,7 +1569,7 @@ pub async fn update_rule_rate_limit(
         .await
         .ok_or(OperatorError::RuleNotFound)?;
     let client_name = existing.client_name.clone();
-    let Some((outbound, waiters)) = state.clients.handles(&client_name).await else {
+    let Some((outbound, waiters)) = state.clients.handles_by_name(&client_name).await else {
         return Err(OperatorError::ClientNotConnected(client_name));
     };
 
@@ -1505,16 +1673,19 @@ pub async fn rule_stats(
         .ok_or(OperatorError::RuleNotFound)
 }
 
-/// `list-rules [--client <name>]`.
+/// `list-rules [--client <name>]`. The `--client` / `?client=` filter
+/// stays a free-form display-name match for operator convenience (rules
+/// are keyed internally by `client_id`, but a human types the name). An
+/// empty/whitespace filter is treated as "no filter".
 pub async fn list_rules(
     state: &AppState,
     raw_client: Option<&str>,
 ) -> Result<Vec<Rule>, OperatorError> {
-    let filter = match raw_client {
-        Some(s) => Some(ClientName::from_str(s)?),
-        None => None,
-    };
-    Ok(state.rules.list(filter.as_ref()).await)
+    let mut rules = state.rules.list(None).await;
+    if let Some(name) = raw_client.map(str::trim).filter(|s| !s.is_empty()) {
+        rules.retain(|r| r.client_name.as_str() == name);
+    }
+    Ok(rules)
 }
 
 #[allow(dead_code)]

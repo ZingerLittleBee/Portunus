@@ -36,12 +36,14 @@ export function useCreateClientEnrollment() {
   });
 }
 
+// 015-client-stable-id (US3): client-scoped operations address the client
+// by its stable client_id, not the mutable display name.
 export function useCreateClientReEnrollment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, ...body }: { name: string } & ClientReEnrollmentBody) =>
+    mutationFn: ({ clientId, ...body }: { clientId: string } & ClientReEnrollmentBody) =>
       apiFetch<ClientEnrollmentResponse>(
-        `/v1/clients/${encodeURIComponent(name)}/enrollment`,
+        `/v1/clients/${encodeURIComponent(clientId)}/enrollment`,
         {
           method: "POST",
           body: JSON.stringify(body),
@@ -56,8 +58,8 @@ export function useCreateClientReEnrollment() {
 export function useRevokeClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}/revoke`, { method: "POST" }),
+    mutationFn: (clientId: string) =>
+      apiFetch<void>(`/v1/clients/${encodeURIComponent(clientId)}/revoke`, { method: "POST" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
     },
@@ -67,8 +69,24 @@ export function useRevokeClient() {
 export function useDeleteClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<void>(`/v1/clients/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    mutationFn: (clientId: string) =>
+      apiFetch<void>(`/v1/clients/${encodeURIComponent(clientId)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
+    },
+  });
+}
+
+// 015-client-stable-id (US2): identity-safe rename, addressed by the
+// stable client_id. The id / token / rules / history are untouched.
+export function useRenameClient() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, clientName }: { clientId: string; clientName: string }) =>
+      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(clientId)}/name`, {
+        method: "PATCH",
+        body: JSON.stringify({ client_name: clientName }),
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CLIENTS_KEY });
     },
@@ -78,8 +96,8 @@ export function useDeleteClient() {
 export function useUpdateClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, body }: { name: string; body: UpdateClientBody }) =>
-      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(name)}`, {
+    mutationFn: ({ clientId, body }: { clientId: string; body: UpdateClientBody }) =>
+      apiFetch<ClientView>(`/v1/clients/${encodeURIComponent(clientId)}`, {
         method: "PUT",
         body: JSON.stringify(body),
       }),
@@ -92,70 +110,73 @@ export function useUpdateClient() {
 // 011-rate-limiting-qos T040: per-owner rate-limit envelope CRUD on a
 // connected client. Backed by the operator endpoints implemented in
 // crates/portunus-server/src/operator/owner_cap.rs.
+//
+// 015-client-stable-id (US3): these owner sub-resources are addressed by
+// the stable client_id, not the mutable display name.
 
 export const CLIENT_OWNERS_KEY = (client: string) =>
   ["clients", client, "owners"] as const;
 export const CLIENT_OWNER_RATE_LIMIT_KEY = (client: string, owner: string) =>
   ["clients", client, "owners", owner, "rate-limit"] as const;
 
-export function useClientOwnersList(clientName: string) {
+export function useClientOwnersList(clientId: string) {
   return useQuery({
-    queryKey: CLIENT_OWNERS_KEY(clientName),
+    queryKey: CLIENT_OWNERS_KEY(clientId),
     queryFn: () =>
       apiFetch<OwnerListEntry[]>(
-        `/v1/clients/${encodeURIComponent(clientName)}/owners`,
+        `/v1/clients/${encodeURIComponent(clientId)}/owners`,
       ),
-    enabled: clientName.length > 0,
+    enabled: clientId.length > 0,
     refetchInterval: 10_000,
   });
 }
 
-export function useOwnerRateLimit(clientName: string, ownerId: string) {
+export function useOwnerRateLimit(clientId: string, ownerId: string) {
   return useQuery({
-    queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientName, ownerId),
+    queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientId, ownerId),
     queryFn: async (): Promise<OwnerRateLimitView | null> => {
       try {
         return await apiFetch<OwnerRateLimitView>(
-          `/v1/clients/${encodeURIComponent(clientName)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
+          `/v1/clients/${encodeURIComponent(clientId)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
         );
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) return null;
         throw err;
       }
     },
-    enabled: clientName.length > 0 && ownerId.length > 0,
+    enabled: clientId.length > 0 && ownerId.length > 0,
   });
 }
 
-export function usePutOwnerRateLimit(clientName: string) {
+export function usePutOwnerRateLimit(clientId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ ownerId, body }: { ownerId: string; body: RateLimit }) =>
       apiFetch<OwnerRateLimitView>(
-        `/v1/clients/${encodeURIComponent(clientName)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
+        `/v1/clients/${encodeURIComponent(clientId)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
         { method: "PUT", body: JSON.stringify(body) },
       ),
     onSuccess: (_data, { ownerId }) => {
-      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientName) });
+      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientId) });
       void qc.invalidateQueries({
-        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientName, ownerId),
+        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientId, ownerId),
       });
     },
   });
 }
 
-export function useDeleteOwnerRateLimit(clientName: string) {
+export function useDeleteOwnerRateLimit(clientId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (ownerId: string) =>
       apiFetch<void>(
-        `/v1/clients/${encodeURIComponent(clientName)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
+        `/v1/clients/${encodeURIComponent(clientId)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
         { method: "DELETE" },
       ),
     onSuccess: (_data, ownerId) => {
-      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientName) });
+      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientId) });
       void qc.invalidateQueries({
-        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientName, ownerId),
+        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientId, ownerId),
       });
     },
   });

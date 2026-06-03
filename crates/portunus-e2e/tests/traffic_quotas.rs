@@ -220,6 +220,12 @@ fn quota_hard_kill_then_recovery_via_reset() {
     }
     assert!(connected.is_some(), "edge-test must connect within 10s");
 
+    // 015-client-stable-id: the quota surface addresses clients by their
+    // stable id. Resolve it once now that the client is provisioned.
+    let edge_id = common::client_id_for_name(&http_addr, "edge-test");
+    let quota_path = format!("/v1/users/alice/quotas/{edge_id}");
+    let quota_status_path = format!("/v1/users/alice/quotas/{edge_id}/status");
+
     // ----- 2. Create alice + grant -----
     let (st, body) = post(
         &http_addr,
@@ -274,7 +280,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
     let quota_cap: i64 = 1024 * 1024; // 1 MiB
     let (st, body) = put(
         &http_addr,
-        "/v1/users/alice/quotas/edge-test",
+        &quota_path,
         SUPER,
         json!({"monthly_bytes": quota_cap}),
     );
@@ -341,7 +347,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
     // status endpoint with a generous wall clock to absorb scheduling
     // jitter on slow CI.
     let exhausted = common::wait_for(Duration::from_secs(15), || {
-        let (st, body) = get(&http_addr, "/v1/users/alice/quotas/edge-test/status", SUPER);
+        let (st, body) = get(&http_addr, &quota_status_path, SUPER);
         if !st.is_success() {
             return None;
         }
@@ -373,7 +379,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
     // ----- 7. PATCH clear_period_usage and verify recovery -----
     let (st, body) = patch(
         &http_addr,
-        "/v1/users/alice/quotas/edge-test",
+        &quota_path,
         SUPER,
         json!({"clear_period_usage": true}),
     );
@@ -398,7 +404,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
 
     // Sanity: server still reports a sane (non-exhausted) snapshot;
     // bytes_used has begun accumulating again.
-    let (st, body) = get(&http_addr, "/v1/users/alice/quotas/edge-test/status", SUPER);
+    let (st, body) = get(&http_addr, &quota_status_path, SUPER);
     assert_eq!(st, StatusCode::OK);
     assert_eq!(
         body["exhausted"].as_bool(),

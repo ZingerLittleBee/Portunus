@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use portunus_core::{ClientName, RuleId, peek_histogram::PEEK_HISTOGRAM_BUCKETS_SECS};
+use portunus_core::{ClientId, ClientName, RuleId, peek_histogram::PEEK_HISTOGRAM_BUCKETS_SECS};
 use prometheus::{
     CounterVec, Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
     TextEncoder, opts,
@@ -494,7 +494,11 @@ const STATS_BROADCAST_CAPACITY: usize = 16;
 
 /// 009-tls-sni-routing T080: typedef for the per-listener delta map
 /// (factors `clippy::type_complexity` out of `RuleStatsCache`).
-type SniListenerPrevMap = HashMap<(String, u16), SniListenerPrevEntry>;
+// 015-client-stable-id (T019): keyed on the stable `ClientId`, not the
+// display name. A rename keeps the same correlation key, so monotonic
+// per-listener deltas survive it intact (a name-keyed map would treat a
+// renamed client as brand-new and re-emit its full cumulative as a delta).
+type SniListenerPrevMap = HashMap<(ClientId, u16), SniListenerPrevEntry>;
 
 #[derive(Debug, Clone, Default)]
 struct SniListenerPrevEntry {
@@ -528,7 +532,10 @@ pub struct RuleStatsCache {
     /// cross-rule aggregation surfaced by the client's
     /// `OwnerRateLimitStatsRegistry` feeds into stable monotonic
     /// deltas in Prometheus.
-    owner_rate_limit_prev: Arc<RwLock<HashMap<(ClientName, String), OwnerRateLimitPrevEntry>>>,
+    // 015-client-stable-id (T019): keyed on `(ClientId, owner_id)` so a
+    // rename preserves the per-owner delta baseline (label value below
+    // stays the display name for dashboard readability).
+    owner_rate_limit_prev: Arc<RwLock<HashMap<(ClientId, String), OwnerRateLimitPrevEntry>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -937,6 +944,9 @@ impl RuleStatsCache {
     #[allow(clippy::too_many_arguments)]
     pub async fn observe_rate_limit_per_owner(
         &self,
+        // 015 (T019): stable correlation key. The emitted Prometheus
+        // `client` label below keeps `client_name` for readability.
+        client_id: ClientId,
         client_name: &ClientName,
         owner_id: &str,
         reject_totals: [u64; 6],
@@ -953,7 +963,7 @@ impl RuleStatsCache {
             "owner_conn_rate",
             "owner_udp_flow_rate",
         ];
-        let key = (client_name.clone(), owner_id.to_string());
+        let key = (client_id, owner_id.to_string());
         let mut guard = self.owner_rate_limit_prev.write().await;
         let entry = guard.entry(key).or_default();
         for (idx, &total) in reject_totals.iter().enumerate() {
@@ -994,6 +1004,9 @@ impl RuleStatsCache {
     #[allow(clippy::too_many_arguments)]
     pub async fn observe_sni_listener(
         &self,
+        // 015 (T019): stable correlation key; `client_name` stays the
+        // emitted Prometheus label value below.
+        client_id: ClientId,
         client_name: &ClientName,
         port: u16,
         sni_route_miss_total: u64,
@@ -1003,14 +1016,12 @@ impl RuleStatsCache {
         client_hello_peek_count: u64,
         metrics: &Metrics,
     ) {
-        let key = (client_name.as_str().to_string(), port);
+        let key = (client_id, port);
         let mut guard = self.sni_listener_prev.write().await;
-        let prev = guard
-            .entry(key.clone())
-            .or_insert_with(|| SniListenerPrevEntry {
-                peek_bucket_counts: vec![0; PEEK_HISTOGRAM_BUCKETS_SECS.len()],
-                ..SniListenerPrevEntry::default()
-            });
+        let prev = guard.entry(key).or_insert_with(|| SniListenerPrevEntry {
+            peek_bucket_counts: vec![0; PEEK_HISTOGRAM_BUCKETS_SECS.len()],
+            ..SniListenerPrevEntry::default()
+        });
         let miss_delta = sni_route_miss_total.saturating_sub(prev.miss_total);
         let parse_delta =
             client_hello_parse_failures_total.saturating_sub(prev.parse_failures_total);
@@ -1189,6 +1200,16 @@ mod tests {
 
     fn name(s: &str) -> ClientName {
         ClientName::from_str(s).unwrap()
+    }
+
+    // Deterministic ULID from a label so a test can re-use the same
+    // correlation key across ticks without depending on `ClientId::new()`.
+    fn cid(s: &str) -> ClientId {
+        let mut h: u128 = 0;
+        for b in s.bytes() {
+            h = h.wrapping_mul(31).wrapping_add(u128::from(b));
+        }
+        ClientId(ulid::Ulid::from(h))
     }
 
     #[tokio::test]
@@ -1740,6 +1761,7 @@ mod tests {
         let cache = RuleStatsCache::new();
         cache
             .observe_rate_limit_per_owner(
+                cid("edge-a"),
                 &name("edge-a"),
                 "alice",
                 [0, 0, 0, 7, 0, 2], // owner_concurrent=7, owner_udp_flow_rate=2
@@ -1784,6 +1806,7 @@ mod tests {
         let cache = RuleStatsCache::new();
         cache
             .observe_rate_limit_per_owner(
+                cid("edge-a"),
                 &name("edge-a"),
                 "alice",
                 [0, 0, 0, 5, 0, 0],
@@ -1795,6 +1818,7 @@ mod tests {
             .await;
         cache
             .observe_rate_limit_per_owner(
+                cid("edge-a"),
                 &name("edge-a"),
                 "alice",
                 [0, 0, 0, 8, 0, 0], // +3
@@ -1825,6 +1849,33 @@ mod tests {
                 "portunus_rate_limit_active_connections{client=\"edge-a\",owner=\"alice\",rule=\"\"} 4"
             ),
             "gauge must show latest value 4 in: {body}"
+        );
+    }
+
+    /// 015-client-stable-id (T019): per-listener prev-state is keyed on
+    /// the stable id, so a rename between ticks does NOT re-emit the full
+    /// cumulative as a delta. The post-rename series shows only the +2
+    /// increment, not a fresh 12 (which a name-keyed map would overcount).
+    #[tokio::test]
+    async fn listener_delta_survives_rename_via_stable_id() {
+        let metrics = Metrics::new().unwrap();
+        let cache = RuleStatsCache::new();
+        let id = cid("stable-edge");
+        // Tick 1 under the original display name: cumulative miss=10.
+        cache
+            .observe_sni_listener(id, &name("edge-old"), 443, 10, 0, &[], 0, 0, &metrics)
+            .await;
+        // Tick 2 after a rename — SAME id, new display name — cumulative
+        // miss=12. Delta against the id-keyed baseline is +2.
+        cache
+            .observe_sni_listener(id, &name("edge-new"), 443, 12, 0, &[], 0, 0, &metrics)
+            .await;
+        let body = String::from_utf8(metrics.render()).unwrap();
+        assert!(
+            body.contains(
+                "portunus_tls_sni_listener_miss_total{client=\"edge-new\",port=\"443\"} 2"
+            ),
+            "post-rename series must show the +2 delta, not a re-counted 12: {body}"
         );
     }
 

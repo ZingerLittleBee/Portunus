@@ -11,7 +11,7 @@ use axum::{
     http::StatusCode,
     middleware::from_fn_with_state,
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use portunus_auth::OperatorIdentity;
 use portunus_core::{PortRange, RuleId};
@@ -35,9 +35,13 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     let protected = Router::new()
         .route("/v1/clients", get(get_clients))
-        .route("/v1/clients/{name}", put(put_client).delete(delete_client))
-        .route("/v1/clients/{name}/revoke", post(post_revoke))
-        .route("/v1/clients/{name}/enrollment", post(post_client_reenrollment))
+        // 015-client-stable-id (US3): client-scoped routes address the
+        // client by its stable, opaque client_id (ULID), not its mutable
+        // display name. Unknown / malformed id -> 404.
+        .route("/v1/clients/{client_id}", put(put_client).delete(delete_client))
+        .route("/v1/clients/{client_id}/name", patch(patch_client_name))
+        .route("/v1/clients/{client_id}/revoke", post(post_revoke))
+        .route("/v1/clients/{client_id}/enrollment", post(post_client_reenrollment))
         .route("/v1/client-enrollments", post(post_client_enrollments))
         .route("/v1/rules", get(get_rules).post(post_rules))
         .route(
@@ -111,13 +115,13 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::operator::quota_http::list_user_quotas),
         )
         .route(
-            "/v1/users/{user_id}/quotas/{client_name}",
+            "/v1/users/{user_id}/quotas/{client_id}",
             put(crate::operator::quota_http::put_quota)
                 .patch(crate::operator::quota_http::patch_quota)
                 .delete(crate::operator::quota_http::delete_quota),
         )
         .route(
-            "/v1/users/{user_id}/quotas/{client_name}/status",
+            "/v1/users/{user_id}/quotas/{client_id}/status",
             get(crate::operator::quota_http::get_quota_status),
         )
         .route(
@@ -125,11 +129,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::operator::quota_http::get_user_traffic),
         )
         .route(
-            "/v1/clients/{client_name}/quotas",
+            "/v1/clients/{client_id}/quotas",
             get(crate::operator::quota_http::list_client_quotas),
         )
         .route(
-            "/v1/clients/{client_name}/traffic",
+            "/v1/clients/{client_id}/traffic",
             get(crate::operator::quota_http::get_client_traffic),
         )
         .route(
@@ -214,7 +218,7 @@ async fn post_client_reenrollment(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
     headers: axum::http::HeaderMap,
-    Path(name): Path<String>,
+    Path(client_id): Path<String>,
     Json(body): Json<ReEnrollmentBody>,
 ) -> Result<(StatusCode, Json<EnrollmentResponse>), ApiError> {
     crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
@@ -222,8 +226,12 @@ async fn post_client_reenrollment(
     let req_host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok());
-    let enrollment =
-        cli::enroll_existing_client(&state, &name, body.ttl_secs.unwrap_or(600), req_host)?;
+    let enrollment = cli::enroll_existing_client_by_id(
+        &state,
+        &client_id,
+        body.ttl_secs.unwrap_or(600),
+        req_host,
+    )?;
     Ok((
         StatusCode::CREATED,
         Json(EnrollmentResponse {
@@ -237,42 +245,71 @@ async fn post_client_reenrollment(
 
 async fn post_revoke(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(client_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    cli::revoke(&state, &name).await?;
+    cli::revoke_by_id(&state, &client_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_client(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(client_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    cli::delete_client(&state, &name)?;
+    cli::delete_client_by_id(&state, &client_id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn put_client(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(client_id): Path<String>,
     Json(body): Json<UpdateClientBody>,
 ) -> Result<Json<ClientView>, ApiError> {
-    cli::update_client(&state, &name, Some(&body.address))?;
-    let updated = cli::list_clients(&state)
-        .await
-        .into_iter()
-        .find(|client| client.client_name.as_str() == name)
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "client_not_found",
-                "client not found",
-            )
-        })?;
-    Ok(Json(updated))
+    let updated = cli::update_client_by_id(&state, &client_id, Some(&body.address))?;
+    let connected = state.clients.snapshot().await;
+    let conn = connected.get(&updated.client_id);
+    Ok(Json(ClientView {
+        client_id: updated.client_id,
+        client_name: updated.client_name,
+        provisioned_at: updated.issued_at,
+        revoked_at: updated.revoked_at,
+        connected: conn.is_some(),
+        client_address: updated.client_address,
+        remote_addr: conn.and_then(|c| c.remote_addr.map(|a| a.to_string())),
+        connected_at: conn.map(|c| c.connected_at),
+    }))
 }
 
 async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>> {
     Json(cli::list_clients(&state).await)
+}
+
+#[derive(Debug, Deserialize)]
+struct RenameClientBody {
+    client_name: String,
+}
+
+/// `PATCH /v1/clients/{client_id}/name` — 015-client-stable-id (US2).
+/// Identity-safe rename: the client is addressed by its stable id, so
+/// the display name change leaves rules / tokens / quotas / history and
+/// any live session intact. An unknown or malformed id is a 404.
+async fn patch_client_name(
+    State(state): State<Arc<AppState>>,
+    Path(client_id): Path<String>,
+    Json(body): Json<RenameClientBody>,
+) -> Result<Json<ClientView>, ApiError> {
+    let updated = cli::rename_client(&state, &client_id, &body.client_name)?;
+    let connected = state.clients.snapshot().await;
+    let conn = connected.get(&updated.client_id);
+    Ok(Json(ClientView {
+        client_id: updated.client_id,
+        client_name: updated.client_name,
+        provisioned_at: updated.issued_at,
+        revoked_at: updated.revoked_at,
+        connected: conn.is_some(),
+        client_address: updated.client_address,
+        remote_addr: conn.and_then(|c| c.remote_addr.map(|a| a.to_string())),
+        connected_at: conn.map(|c| c.connected_at),
+    }))
 }
 
 /// Superadmin-only mirror of the loopback `/metrics` endpoint.
@@ -694,7 +731,7 @@ async fn push_multi_target(
     // decode `Rule.targets` and would activate a broken single-target
     // rule with empty `target_host`.
     if typed.len() >= 2
-        && let Some(v) = state.clients.client_version_of(&client_name).await
+        && let Some(v) = state.clients.client_version_by_name(&client_name).await
         && !version_at_least_0_7(&v)
     {
         return Err(OperatorError::MultiTargetUnsupportedByClient {
@@ -709,7 +746,7 @@ async fn push_multi_target(
     // decode the field and would silently fall through to the
     // pre-009 plain-TCP forwarding plane.
     if sni_pattern.is_some()
-        && let Some(v) = state.clients.client_version_of(&client_name).await
+        && let Some(v) = state.clients.client_version_by_name(&client_name).await
         && !version_at_least_0_9(&v)
     {
         return Err(OperatorError::SniUnsupportedByClient {
@@ -719,7 +756,7 @@ async fn push_multi_target(
         .into());
     }
     if typed.iter().any(|t| t.proxy_protocol.is_some()) {
-        let Some(v) = state.clients.client_version_of(&client_name).await else {
+        let Some(v) = state.clients.client_version_by_name(&client_name).await else {
             return Err(OperatorError::ProxyProtocolUnsupportedByClient {
                 client_name: client_name.clone(),
                 client_version: "unknown".into(),
@@ -741,7 +778,7 @@ async fn push_multi_target(
     // would activate uncapped, violating the operator-visible
     // contract. An unknown / missing client_version gates conservatively.
     if rate_limit.is_some() {
-        let Some(v) = state.clients.client_version_of(&client_name).await else {
+        let Some(v) = state.clients.client_version_by_name(&client_name).await else {
             return Err(OperatorError::RateLimitUnsupportedByClient {
                 client_name: client_name.clone(),
                 client_version: "unknown".into(),
@@ -843,7 +880,7 @@ async fn push_legacy_with_sni(
     debug_assert!(matches!(proto_wire, ProtocolWire::Tcp));
 
     // Capability gate (T028): client must be >= 0.9.0.
-    if let Some(v) = state.clients.client_version_of(&client_name).await
+    if let Some(v) = state.clients.client_version_by_name(&client_name).await
         && !version_at_least_0_9(&v)
     {
         return Err(OperatorError::SniUnsupportedByClient {
@@ -1593,9 +1630,10 @@ impl From<OperatorError> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             OperatorError::AckTimeout => StatusCode::GATEWAY_TIMEOUT,
-            OperatorError::RuleNotFound | OperatorError::ClientNotFound(_) => {
-                StatusCode::NOT_FOUND
-            }
+            OperatorError::RuleNotFound
+            | OperatorError::ClientNotFound(_)
+            | OperatorError::ClientIdNotFound(_)
+            | OperatorError::ClientIdInvalid => StatusCode::NOT_FOUND,
             // 005-multi-user-rbac: RBAC failures use the auth_layer's
             // shared status table (single source of truth).
             OperatorError::Rbac(rb) => crate::operator::auth_layer::rbac_status(rb),

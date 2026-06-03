@@ -31,8 +31,8 @@ function trafficQs(q: TrafficQuery): string {
 
 export const userTrafficKey = (userId: string, q: TrafficQuery) =>
   ["user-traffic", userId, q] as const;
-export const clientTrafficKey = (clientName: string, q: TrafficQuery) =>
-  ["client-traffic", clientName, q] as const;
+export const clientTrafficKey = (clientId: string, q: TrafficQuery) =>
+  ["client-traffic", clientId, q] as const;
 
 export function useUserTraffic(userId: string, q: TrafficQuery) {
   return useQuery({
@@ -46,14 +46,16 @@ export function useUserTraffic(userId: string, q: TrafficQuery) {
   });
 }
 
-export function useClientTraffic(clientName: string, q: TrafficQuery) {
+// 015-client-stable-id (US3): the client traffic endpoint is addressed
+// by the stable client_id, not the mutable display name.
+export function useClientTraffic(clientId: string, q: TrafficQuery) {
   return useQuery({
-    queryKey: clientTrafficKey(clientName, q),
+    queryKey: clientTrafficKey(clientId, q),
     queryFn: () =>
       apiFetch<TrafficResponse>(
-        `/v1/clients/${encodeURIComponent(clientName)}/traffic?${trafficQs(q)}`,
+        `/v1/clients/${encodeURIComponent(clientId)}/traffic?${trafficQs(q)}`,
       ),
-    enabled: clientName.length > 0 && q.from < q.to,
+    enabled: clientId.length > 0 && q.from < q.to,
     placeholderData: keepPreviousData,
   });
 }

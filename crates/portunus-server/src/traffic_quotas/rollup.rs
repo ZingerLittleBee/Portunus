@@ -122,7 +122,7 @@ mod tests {
         b_in: i64,
         b_out: i64,
     ) {
-        samples::upsert_1m_delta(store, user, client, ts_minute, b_in, b_out).unwrap();
+        samples::upsert_1m_delta(store, user, client, client, ts_minute, b_in, b_out).unwrap();
     }
 
     #[test]

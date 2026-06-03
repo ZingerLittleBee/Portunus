@@ -40,13 +40,14 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
   const [serverError, setServerError] = useState<string | null>(null);
   const create = useCreateAccessEntry(userId);
 
-  const disabledClientNames = new Set(entries.map((e) => e.client_name));
+  const disabledClientIds = new Set(entries.map((e) => e.client_id));
 
   async function onAdd(v: UserQuotaFormSubmitValue) {
     setServerError(null);
     try {
       await create.mutateAsync({
         user_id: userId,
+        client_id: v.client_id,
         client_name: v.client_name,
         listen_port_start: v.listen_port_start,
         listen_port_end: v.listen_port_end,
@@ -101,11 +102,11 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
           <TableBody>
             {entries.map((e) => (
               <UserQuotaRow
-                key={`${e.user_id}::${e.client_name}`}
+                key={`${e.user_id}::${e.client_id}`}
                 userId={userId}
                 entry={e}
                 clients={clients}
-                clientOnline={clients.find((c) => c.client_name === e.client_name)?.connected ?? false}
+                clientOnline={clients.find((c) => c.client_id === e.client_id)?.connected ?? false}
                 readOnly={readOnly}
               />
             ))}
@@ -137,7 +138,7 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
           </DialogHeader>
           <UserQuotaForm
             clients={clients}
-            disabledClientNames={disabledClientNames}
+            disabledClientIds={disabledClientIds}
             onSubmit={onAdd}
             onCancel={() => {
               setAdding(false);

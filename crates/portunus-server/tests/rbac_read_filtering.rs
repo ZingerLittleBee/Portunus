@@ -18,7 +18,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use portunus_auth::{OperatorRole, User, UserId};
-use portunus_core::{ClientName, PortRange};
+use portunus_core::{ClientId, ClientName, PortRange};
 use portunus_server::clients::ConnectedClients;
 use portunus_server::operator::http;
 use portunus_server::rules::{Protocol, Rule, RuleState};
@@ -91,9 +91,11 @@ async fn build_fixture() -> Fixture {
 
     // Seed two rules directly into the rule store via push_range.
     let client_name = ClientName::new("client-a".to_string()).unwrap();
+    let client_id = ClientId::new();
     state
         .rules
         .push_range(
+            client_id,
             client_name.clone(),
             PortRange::new(50001, 50001).unwrap(),
             "127.0.0.1".to_string(),
@@ -108,6 +110,7 @@ async fn build_fixture() -> Fixture {
     state
         .rules
         .push_range(
+            client_id,
             client_name,
             PortRange::new(50002, 50002).unwrap(),
             "127.0.0.1".to_string(),

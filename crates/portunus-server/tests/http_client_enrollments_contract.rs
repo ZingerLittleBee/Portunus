@@ -117,7 +117,10 @@ async fn create_enrollment_returns_one_time_client_command_without_issuing_token
 }
 
 #[tokio::test]
-async fn create_enrollment_rejects_existing_client_name() {
+async fn create_enrollment_allows_duplicate_client_name() {
+    // 015-client-stable-id (FR-013): display names are free-form and
+    // non-unique, so enrolling a second client with an existing name
+    // succeeds (no warning) — it mints a fresh stable id at redeem.
     let (router, tokens, _alice_token, _dir) = build_router();
     tokens
         .issue(ClientName::new("edge-01").unwrap())
@@ -131,9 +134,9 @@ async fn create_enrollment_rejects_existing_client_name() {
         .await
         .expect("oneshot");
 
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    assert_eq!(body["error"]["code"], "client_already_exists");
+    assert_eq!(body["client_name"], "edge-01");
 }
 
 #[tokio::test]
@@ -175,10 +178,12 @@ async fn existing_client_enrollment_does_not_rotate_until_redeemed() {
     let (router, tokens, _alice_token, _dir) = build_router();
     let name = ClientName::new("edge-01").unwrap();
     let old_token = tokens.issue(name.clone()).expect("seed client");
+    // 015-client-stable-id (US3): re-enrollment is addressed by client_id.
+    let client_id = tokens.verify(&old_token).unwrap().client_id;
 
     let resp = router
         .oneshot(post(
-            "/v1/clients/edge-01/enrollment",
+            &format!("/v1/clients/{client_id}/enrollment"),
             json!({"ttl_secs": 300}),
         ))
         .await

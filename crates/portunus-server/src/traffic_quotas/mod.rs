@@ -17,6 +17,10 @@ pub mod store;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrafficQuotaRow {
     pub user_id: String,
+    /// 015-client-stable-id (T016): stable id — the canonical accounting
+    /// key. `client_name` is kept alongside as a display value echoed on
+    /// the `TrafficQuotaUpdate` wire frame.
+    pub client_id: String,
     pub client_name: String,
     pub monthly_bytes: i64,
     pub billing_anchor: i64,            // unix sec UTC
@@ -111,6 +115,7 @@ pub fn make_traffic_quota_set_msg(
                     period_ends_at_unix_sec: ends_at,
                     exhausted: row.is_exhausted(),
                 }),
+                client_id: row.client_id.clone(),
             },
         )),
     }
@@ -120,6 +125,7 @@ pub fn make_traffic_quota_set_msg(
 #[must_use]
 pub fn make_traffic_quota_remove_msg(
     user_id: String,
+    client_id: String,
     client_name: String,
     request_id: String,
 ) -> proto::ServerMessage {
@@ -131,6 +137,7 @@ pub fn make_traffic_quota_remove_msg(
                 client_name,
                 action: proto::TrafficQuotaAction::Remove as i32,
                 state: None,
+                client_id,
             },
         )),
     }
@@ -266,6 +273,7 @@ mod tests {
         // when exhausted". The wire signal carries the magnitude.
         let r = TrafficQuotaRow {
             user_id: "u".into(),
+            client_id: "01TESTCLIENTID00000000000C".into(),
             client_name: "c".into(),
             monthly_bytes: 100,
             billing_anchor: 0,

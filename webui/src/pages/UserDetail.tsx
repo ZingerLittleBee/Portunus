@@ -65,10 +65,23 @@ function UserDetailInner({ userId, identity }: InnerProps) {
   const patchQuota = usePatchQuota(userId);
   const exhaustedQuotas = (userQuotas.data ?? []).filter((q) => q.exhausted);
   const clientsQ = useClientsList();
+  // 015-client-stable-id (US3): carry the stable id so quota/cap edits can
+  // address the still-name-displaying client by id in the URL.
   const clientLites = (clientsQ.data ?? []).map((c) => ({
+    client_id: c.client_id,
     client_name: c.client_name,
     connected: c.connected,
   }));
+  // Resolve display name → stable id for quota mutations whose source row
+  // (MonthlyQuotaView) only carries the name. First match wins on a
+  // duplicate display name.
+  const clientIdByName = new Map<string, string>();
+  for (const c of clientsQ.data ?? []) {
+    // TODO(015): ambiguous display name — first provisioned client wins.
+    if (!clientIdByName.has(c.client_name)) {
+      clientIdByName.set(c.client_name, c.client_id);
+    }
+  }
   const isSuperadmin = identity?.role === "superadmin";
   const issue = useIssueCredential(userId);
   const revokeCred = useRevokeCredential(userId);
@@ -178,7 +191,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           isSuperadmin
             ? (q) =>
                 patchQuota.mutate({
-                  client_name: q.client_name,
+                  client_id: clientIdByName.get(q.client_name) ?? "",
                   body: { clear_period_usage: true },
                 })
             : undefined

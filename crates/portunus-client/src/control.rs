@@ -1246,6 +1246,7 @@ mod tests {
             owner_id: "alice".into(),
             rate_limit: Some(full_envelope()),
             action: OwnerRateLimitAction::Set as i32,
+            client_id: String::new(),
         };
         apply_owner_rate_limit_update(update, &mgr);
         assert!(mgr.get(&OwnerId::new("alice")).is_some());
@@ -1261,6 +1262,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: Some(full_envelope()),
                 action: OwnerRateLimitAction::Set as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1272,6 +1274,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: None,
                 action: OwnerRateLimitAction::Remove as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1290,6 +1293,7 @@ mod tests {
                 owner_id: "ghost".into(),
                 rate_limit: None,
                 action: OwnerRateLimitAction::Remove as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1309,6 +1313,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: Some(full_envelope()),
                 action: OwnerRateLimitAction::Set as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1320,6 +1325,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: None,
                 action: OwnerRateLimitAction::Set as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1340,6 +1346,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: Some(full_envelope()),
                 action: OwnerRateLimitAction::Set as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1353,6 +1360,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: Some(tighter),
                 action: OwnerRateLimitAction::Set as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1372,6 +1380,7 @@ mod tests {
                 owner_id: "alice".into(),
                 rate_limit: Some(full_envelope()),
                 action: OwnerRateLimitAction::Unspecified as i32,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1402,6 +1411,7 @@ mod tests {
             client_name: "edge-01".into(),
             action: TrafficQuotaAction::Set as i32,
             state: Some(quota_state(1_000, 750, false)),
+            client_id: String::new(),
         };
         apply_traffic_quota_update(update, &mgr);
         let h = mgr.lookup("alice").expect("installed");
@@ -1419,6 +1429,7 @@ mod tests {
                 client_name: "edge-01".into(),
                 action: TrafficQuotaAction::Set as i32,
                 state: Some(quota_state(1_000, 100, false)),
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1431,6 +1442,7 @@ mod tests {
                 client_name: "edge-01".into(),
                 action: TrafficQuotaAction::Set as i32,
                 state: Some(quota_state(10_000, 10_000, false)),
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1449,6 +1461,7 @@ mod tests {
                 client_name: "edge-01".into(),
                 action: TrafficQuotaAction::Set as i32,
                 state: Some(quota_state(1_000, 750, false)),
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1459,6 +1472,7 @@ mod tests {
                 client_name: "edge-01".into(),
                 action: TrafficQuotaAction::Remove as i32,
                 state: None,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1478,6 +1492,7 @@ mod tests {
                 client_name: "edge-01".into(),
                 action: TrafficQuotaAction::Set as i32,
                 state: None,
+                client_id: String::new(),
             },
             &mgr,
         );
@@ -1494,6 +1509,7 @@ mod tests {
                 client_name: "edge-01".into(),
                 action: TrafficQuotaAction::Unspecified as i32,
                 state: Some(quota_state(1_000, 750, false)),
+                client_id: String::new(),
             },
             &mgr,
         );

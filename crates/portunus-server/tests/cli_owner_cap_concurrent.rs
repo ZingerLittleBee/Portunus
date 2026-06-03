@@ -126,6 +126,23 @@ async fn build_harness() -> Harness {
 /// — this test only cares about the HTTP/CLI surface.
 async fn register_fake_client(harness: &Harness, name: &str, version: &str) {
     let client_name = ClientName::new(name.to_string()).expect("valid client");
+    // 015-client-stable-id: provision the client into the token store so
+    // the CLI's name→id resolution (via GET /v1/clients) finds it, then
+    // register the live session under that same stable id.
+    harness
+        .state
+        .tokens
+        .issue_with_address(client_name.clone(), None)
+        .expect("issue token");
+    let client_id = harness
+        .state
+        .tokens
+        .list()
+        .expect("list clients")
+        .into_iter()
+        .find(|p| p.client_name == client_name)
+        .expect("provisioned client present")
+        .client_id;
     let cancel = CancellationToken::new();
     let (outbound, _rx) = tokio::sync::mpsc::channel(8);
     let waiters: Arc<
@@ -134,19 +151,26 @@ async fn register_fake_client(harness: &Harness, name: &str, version: &str) {
     let session_id = harness
         .state
         .clients
-        .register(client_name.clone(), None, cancel, outbound, waiters)
+        .register(
+            client_id,
+            client_name.clone(),
+            None,
+            cancel,
+            outbound,
+            waiters,
+        )
         .await;
     let mut caps = HashSet::new();
     caps.insert(ProtoProtocol::Tcp);
     harness
         .state
         .clients
-        .set_supported_protocols(&client_name, session_id, caps)
+        .set_supported_protocols(&client_id, session_id, caps)
         .await;
     harness
         .state
         .clients
-        .set_client_version(&client_name, session_id, version.to_string())
+        .set_client_version(&client_id, session_id, version.to_string())
         .await;
 }
 

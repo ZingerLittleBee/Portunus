@@ -26,7 +26,7 @@ impl TrafficQuotaCache {
         let rows = quota_store::list_all(&store)?;
         let mut map = HashMap::with_capacity(rows.len());
         for row in rows {
-            map.insert((row.user_id.clone(), row.client_name.clone()), row);
+            map.insert((row.user_id.clone(), row.client_id.clone()), row);
         }
         Ok(Self {
             inner: Arc::new(Inner {
@@ -37,22 +37,22 @@ impl TrafficQuotaCache {
     }
 
     #[must_use]
-    pub fn get(&self, user_id: &str, client_name: &str) -> Option<TrafficQuotaRow> {
+    pub fn get(&self, user_id: &str, client_id: &str) -> Option<TrafficQuotaRow> {
         self.inner.cache.read().ok().and_then(|m| {
-            m.get(&(user_id.to_string(), client_name.to_string()))
+            m.get(&(user_id.to_string(), client_id.to_string()))
                 .cloned()
         })
     }
 
     #[must_use]
-    pub fn list_for_client(&self, client_name: &str) -> Vec<TrafficQuotaRow> {
+    pub fn list_for_client(&self, client_id: &str) -> Vec<TrafficQuotaRow> {
         self.inner
             .cache
             .read()
             .ok()
             .map(|m| {
                 m.values()
-                    .filter(|r| r.client_name == client_name)
+                    .filter(|r| r.client_id == client_id)
                     .cloned()
                     .collect()
             })
@@ -88,15 +88,15 @@ impl TrafficQuotaCache {
     pub fn upsert(&self, row: TrafficQuotaRow) -> Result<TrafficQuotaRow, StoreError> {
         quota_store::insert_or_replace(&self.inner.store, &row)?;
         if let Ok(mut m) = self.inner.cache.write() {
-            m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
+            m.insert((row.user_id.clone(), row.client_id.clone()), row.clone());
         }
         Ok(row)
     }
 
-    pub fn delete(&self, user_id: &str, client_name: &str) -> Result<bool, StoreError> {
-        let removed = quota_store::delete(&self.inner.store, user_id, client_name)?;
+    pub fn delete(&self, user_id: &str, client_id: &str) -> Result<bool, StoreError> {
+        let removed = quota_store::delete(&self.inner.store, user_id, client_id)?;
         if let Ok(mut m) = self.inner.cache.write() {
-            m.remove(&(user_id.to_string(), client_name.to_string()));
+            m.remove(&(user_id.to_string(), client_id.to_string()));
         }
         Ok(removed)
     }
@@ -112,17 +112,17 @@ impl TrafficQuotaCache {
     pub fn accumulate(
         &self,
         user_id: &str,
-        client_name: &str,
+        client_id: &str,
         delta: i64,
         now_unix_sec: i64,
     ) -> Result<Option<(TrafficQuotaRow, bool)>, StoreError> {
         let pre_exhausted = self
-            .get(user_id, client_name)
+            .get(user_id, client_id)
             .map(|r| r.exhausted_at.is_some());
         let updated = quota_store::accumulate_bytes_used(
             &self.inner.store,
             user_id,
-            client_name,
+            client_id,
             delta,
             now_unix_sec,
         )?;
@@ -130,13 +130,13 @@ impl TrafficQuotaCache {
             let post_exhausted = row.exhausted_at.is_some();
             let just_exhausted = post_exhausted && pre_exhausted == Some(false);
             if let Ok(mut m) = self.inner.cache.write() {
-                m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
+                m.insert((row.user_id.clone(), row.client_id.clone()), row.clone());
             }
             Ok(Some((row, just_exhausted)))
         } else {
             warn!(
                 event = "traffic_quota.accumulate_missing",
-                user_id, client_name, delta, "accumulate found no row; cache may be stale"
+                user_id, client_id, delta, "accumulate found no row; cache may be stale"
             );
             Ok(None)
         }
@@ -145,15 +145,14 @@ impl TrafficQuotaCache {
     pub fn clear_period_usage(
         &self,
         user_id: &str,
-        client_name: &str,
+        client_id: &str,
         now: i64,
     ) -> Result<Option<TrafficQuotaRow>, StoreError> {
-        let updated =
-            quota_store::clear_period_usage(&self.inner.store, user_id, client_name, now)?;
+        let updated = quota_store::clear_period_usage(&self.inner.store, user_id, client_id, now)?;
         if let Some(ref row) = updated
             && let Ok(mut m) = self.inner.cache.write()
         {
-            m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
+            m.insert((row.user_id.clone(), row.client_id.clone()), row.clone());
         }
         Ok(updated)
     }
@@ -161,21 +160,21 @@ impl TrafficQuotaCache {
     pub fn reset_period(
         &self,
         user_id: &str,
-        client_name: &str,
+        client_id: &str,
         new_period_started_at: i64,
         now: i64,
     ) -> Result<Option<TrafficQuotaRow>, StoreError> {
         let updated = quota_store::reset_period(
             &self.inner.store,
             user_id,
-            client_name,
+            client_id,
             new_period_started_at,
             now,
         )?;
         if let Some(ref row) = updated
             && let Ok(mut m) = self.inner.cache.write()
         {
-            m.insert((row.user_id.clone(), row.client_name.clone()), row.clone());
+            m.insert((row.user_id.clone(), row.client_id.clone()), row.clone());
         }
         Ok(updated)
     }
@@ -197,6 +196,7 @@ mod tests {
     fn sample_row() -> TrafficQuotaRow {
         TrafficQuotaRow {
             user_id: "alice".into(),
+            client_id: "edge-01".into(),
             client_name: "edge-01".into(),
             monthly_bytes: 1_000,
             billing_anchor: 0,

@@ -8,6 +8,7 @@ import { ApiError } from "@/api/client";
 import {
   useClientsList,
   useDeleteClient,
+  useRenameClient,
   useRevokeClient,
   useUpdateClient,
 } from "@/api/clients";
@@ -37,7 +38,7 @@ import { Label } from "@/components/ui/label";
 import { ClientProvisionForm } from "@/components/ClientProvisionForm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
-import { formatTimestamp } from "@/lib/format";
+import { formatTimestamp, shortId } from "@/lib/format";
 import type { ClientView } from "@/api/types";
 
 export function ClientsList() {
@@ -49,6 +50,7 @@ export function ClientsList() {
   });
   const clients = useClientsList();
   const update = useUpdateClient();
+  const rename = useRenameClient();
   const revoke = useRevokeClient();
   const remove = useDeleteClient();
   const canProvision = canProvisionClient(identity);
@@ -56,6 +58,7 @@ export function ClientsList() {
   const [showRevoked, setShowRevoked] = useState(false);
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [pendingEdit, setPendingEdit] = useState<ClientView | null>(null);
+  const [editName, setEditName] = useState("");
   const [editAddress, setEditAddress] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [pendingRevoke, setPendingRevoke] = useState<ClientView | null>(null);
@@ -72,6 +75,7 @@ export function ClientsList() {
 
   function openEdit(client: ClientView) {
     setPendingEdit(client);
+    setEditName(client.client_name);
     setEditAddress(client.client_address ?? "");
     setEditError(null);
   }
@@ -81,10 +85,22 @@ export function ClientsList() {
     if (!pendingEdit) return;
     setEditError(null);
     try {
-      await update.mutateAsync({
-        name: pendingEdit.client_name,
-        body: { address: editAddress },
-      });
+      // Address update is still addressed by the current name; run it
+      // BEFORE the rename so its key is valid.
+      if (editAddress !== (pendingEdit.client_address ?? "")) {
+        await update.mutateAsync({
+          clientId: pendingEdit.client_id,
+          body: { address: editAddress },
+        });
+      }
+      // 015-client-stable-id (US2): identity-safe rename addressed by
+      // the stable client_id. Skipped when the name is unchanged.
+      if (editName !== pendingEdit.client_name) {
+        await rename.mutateAsync({
+          clientId: pendingEdit.client_id,
+          clientName: editName,
+        });
+      }
       setPendingEdit(null);
     } catch (err) {
       setEditError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
@@ -95,7 +111,7 @@ export function ClientsList() {
     if (!pendingRevoke) return;
     setRevokeError(null);
     try {
-      await revoke.mutateAsync(pendingRevoke.client_name);
+      await revoke.mutateAsync(pendingRevoke.client_id);
       setPendingRevoke(null);
     } catch (err) {
       setRevokeError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
@@ -106,7 +122,7 @@ export function ClientsList() {
     if (!pendingDelete) return;
     setDeleteError(null);
     try {
-      await remove.mutateAsync(pendingDelete.client_name);
+      await remove.mutateAsync(pendingDelete.client_id);
       setPendingDelete(null);
     } catch (err) {
       setDeleteError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
@@ -129,12 +145,17 @@ export function ClientsList() {
       key: "name",
       header: t("clients.name"),
       render: (c) => (
-        <Link
-          to={`/clients/${encodeURIComponent(c.client_name)}`}
-          className="font-mono text-primary hover:underline"
-        >
-          {c.client_name}
-        </Link>
+        <div className="flex flex-col">
+          <Link
+            to={`/clients/${encodeURIComponent(c.client_id)}`}
+            className="text-primary hover:underline"
+          >
+            {c.client_name}
+          </Link>
+          {/* 015-client-stable-id (US3 / FR-013): a short id disambiguates
+              duplicate display names, which are now allowed. */}
+          <code className="text-xs text-muted-foreground">{shortId(c.client_id)}</code>
+        </div>
       ),
       sortable: true,
       sortValue: (c) => c.client_name,
@@ -253,7 +274,7 @@ export function ClientsList() {
       <DataTable
         rows={rows}
         columns={columns}
-        rowKey={(c) => c.client_name}
+        rowKey={(c) => c.client_id}
         emptyState={<EmptyState title={t("clients.emptyTitle")} description={t("clients.emptyBody")} />}
         ariaLabel={t("clients.title")}
       />
@@ -262,6 +283,7 @@ export function ClientsList() {
         onOpenChange={(open) => {
           if (!open) {
             setPendingEdit(null);
+            setEditName("");
             setEditAddress("");
             setEditError(null);
           }
@@ -277,10 +299,11 @@ export function ClientsList() {
               <Label htmlFor="client-edit-name">{t("clients.name")}</Label>
               <Input
                 id="client-edit-name"
-                value={pendingEdit?.client_name ?? ""}
-                disabled
-                className="font-mono"
+                value={editName}
+                onChange={(event) => setEditName(event.target.value)}
+                required
               />
+              <p className="text-xs text-muted-foreground">{t("clients.renameHint")}</p>
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="client-edit-address">{t("clientProvision.address")}</Label>
@@ -295,8 +318,8 @@ export function ClientsList() {
             </div>
             {editError && <p className="text-sm text-destructive">{editError}</p>}
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <Button type="submit" disabled={update.isPending}>
-                {update.isPending ? t("confirm.busy") : t("clients.editSave")}
+              <Button type="submit" disabled={update.isPending || rename.isPending}>
+                {update.isPending || rename.isPending ? t("confirm.busy") : t("clients.editSave")}
               </Button>
               <Button type="button" variant="outline" onClick={() => setPendingEdit(null)}>
                 {t("confirm.cancel")}

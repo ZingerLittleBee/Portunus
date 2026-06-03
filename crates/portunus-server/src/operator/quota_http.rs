@@ -3,14 +3,20 @@
 //!
 //! Routes (mounted under the auth_middleware layer in `operator/http.rs`):
 //!   - GET    /v1/users/{user_id}/quotas
-//!   - PUT    /v1/users/{user_id}/quotas/{client_name}
-//!   - PATCH  /v1/users/{user_id}/quotas/{client_name}
-//!   - DELETE /v1/users/{user_id}/quotas/{client_name}
-//!   - GET    /v1/users/{user_id}/quotas/{client_name}/status
+//!   - PUT    /v1/users/{user_id}/quotas/{client_id}
+//!   - PATCH  /v1/users/{user_id}/quotas/{client_id}
+//!   - DELETE /v1/users/{user_id}/quotas/{client_id}
+//!   - GET    /v1/users/{user_id}/quotas/{client_id}/status
 //!   - GET    /v1/users/{user_id}/traffic
-//!   - GET    /v1/clients/{client_name}/quotas
-//!   - GET    /v1/clients/{client_name}/traffic
+//!   - GET    /v1/clients/{client_id}/quotas
+//!   - GET    /v1/clients/{client_id}/traffic
 //!   - GET    /v1/traffic/global (superadmin-only)
+//!
+//! 015-client-stable-id (T016/T020): clients are addressed by their
+//! stable, opaque `client_id` (ULID), never the mutable display name.
+//! Accounting rows (`traffic_quotas`, `traffic_samples_*`) are keyed by
+//! `client_id`; `client_name` is carried alongside for display and
+//! echoed on the wire frame so a renamed client keeps its history.
 //!
 //! CRUD writes go through the in-memory `TrafficQuotaCache`, which
 //! fans them into SQLite. PUT/PATCH/DELETE also best-effort push a
@@ -26,7 +32,7 @@ use axum::{
 };
 use chrono::{TimeZone, Utc};
 use portunus_auth::{ClientScope, OperatorIdentity, OperatorRole, UserId};
-use portunus_core::ClientName;
+use portunus_core::{ClientId, ClientName};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::warn;
@@ -45,6 +51,7 @@ use crate::traffic_quotas::{TrafficQuotaRow, compute_period_end, period_start_at
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct QuotaView {
     pub user_id: String,
+    pub client_id: String,
     pub client_name: String,
     pub monthly_bytes: i64,
     pub billing_anchor: i64,
@@ -65,6 +72,7 @@ impl QuotaView {
         let exhausted = r.is_exhausted();
         Self {
             user_id: r.user_id,
+            client_id: r.client_id,
             client_name: r.client_name,
             monthly_bytes: r.monthly_bytes,
             billing_anchor: r.billing_anchor,
@@ -94,7 +102,8 @@ pub struct PatchQuotaBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TrafficQuery {
-    pub client_name: Option<String>,
+    /// Optional client filter, addressed by stable `client_id` (ULID).
+    pub client_id: Option<String>,
     pub user_id: Option<String>,
     pub from: i64,
     pub to: i64,
@@ -116,7 +125,7 @@ pub struct TrafficResponse {
 pub async fn put_quota(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
-    Path((user_id, client_name)): Path<(String, String)>,
+    Path((user_id, client_id)): Path<(String, String)>,
     Json(body): Json<PutQuotaBody>,
 ) -> Result<Json<QuotaView>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
@@ -127,9 +136,10 @@ pub async fn put_quota(
             "monthly_bytes must be >= 0",
         ));
     }
-    let client = parse_client_name(&client_name)?;
+    let cid = parse_client_id(&client_id)?;
+    let client = resolve_client_name(&state, cid)?;
     require_grant(&state, &user_id, &client)?;
-    require_client_supports_quota(&state, &client).await?;
+    require_client_supports_quota(&state, cid, &client).await?;
 
     let now = now_unix_sec();
     let anchor = body.billing_anchor.unwrap_or(now);
@@ -143,6 +153,7 @@ pub async fn put_quota(
     let started = period_start_at(anchor_dt, 0).timestamp();
     let row = TrafficQuotaRow {
         user_id: user_id.clone(),
+        client_id: cid.to_string(),
         client_name: client.as_str().to_string(),
         monthly_bytes: body.monthly_bytes,
         billing_anchor: anchor,
@@ -153,21 +164,21 @@ pub async fn put_quota(
         updated_at: now,
     };
     let saved = state.traffic_quotas.upsert(row).map_err(map_store_error)?;
-    push_quota_set(&state, &client, &saved).await;
+    push_quota_set(&state, cid, &saved).await;
     Ok(Json(QuotaView::from_row(saved)))
 }
 
 pub async fn patch_quota(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
-    Path((user_id, client_name)): Path<(String, String)>,
+    Path((user_id, client_id)): Path<(String, String)>,
     Json(body): Json<PatchQuotaBody>,
 ) -> Result<Json<QuotaView>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let client = parse_client_name(&client_name)?;
+    let cid = parse_client_id(&client_id)?;
     let mut row = state
         .traffic_quotas
-        .get(&user_id, client.as_str())
+        .get(&user_id, &cid.to_string())
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
@@ -191,25 +202,29 @@ pub async fn patch_quota(
     if body.clear_period_usage.unwrap_or(false)
         && let Some(updated) = state
             .traffic_quotas
-            .clear_period_usage(&user_id, client.as_str(), now)
+            .clear_period_usage(&user_id, &cid.to_string(), now)
             .map_err(map_store_error)?
     {
         row = updated;
     }
-    push_quota_set(&state, &client, &row).await;
+    push_quota_set(&state, cid, &row).await;
     Ok(Json(QuotaView::from_row(row)))
 }
 
 pub async fn delete_quota(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
-    Path((user_id, client_name)): Path<(String, String)>,
+    Path((user_id, client_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let client = parse_client_name(&client_name)?;
+    let cid = parse_client_id(&client_id)?;
+    // Resolve the current display name for the wire push; tolerate a
+    // missing client (already deleted) by falling back to the id string.
+    let display_name = resolve_client_name(&state, cid)
+        .map_or_else(|_| cid.to_string(), |c| c.as_str().to_string());
     let removed = state
         .traffic_quotas
-        .delete(&user_id, client.as_str())
+        .delete(&user_id, &cid.to_string())
         .map_err(map_store_error)?;
     if !removed {
         return Err(ApiError::new(
@@ -218,20 +233,20 @@ pub async fn delete_quota(
             "no quota for (user, client)",
         ));
     }
-    push_quota_remove(&state, &user_id, &client).await;
+    push_quota_remove(&state, &user_id, cid, &display_name).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn get_quota_status(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
-    Path((user_id, client_name)): Path<(String, String)>,
+    Path((user_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<QuotaView>, ApiError> {
     require_self_or_superadmin(&identity, &user_id)?;
-    let client = parse_client_name(&client_name)?;
+    let cid = parse_client_id(&client_id)?;
     state
         .traffic_quotas
-        .get(&user_id, client.as_str())
+        .get(&user_id, &cid.to_string())
         .map(|r| Json(QuotaView::from_row(r)))
         .ok_or_else(|| {
             ApiError::new(
@@ -255,10 +270,15 @@ pub async fn list_user_quotas(
 pub async fn list_client_quotas(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
-    Path(client_name): Path<String>,
+    Path(client_id): Path<String>,
 ) -> Result<Json<Vec<QuotaView>>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
-    let rows = state.traffic_quotas.list_for_client(&client_name);
+    let cid = parse_client_id(&client_id)?;
+    // 015-client-stable-id (T037): a client-scoped route 404s for an
+    // unknown id rather than returning an empty 200 (which would imply
+    // the client exists with no quotas). Never leaks name collisions.
+    resolve_client_name(&state, cid)?;
+    let rows = state.traffic_quotas.list_for_client(&cid.to_string());
     Ok(Json(rows.into_iter().map(QuotaView::from_row).collect()))
 }
 
@@ -269,9 +289,14 @@ pub async fn get_user_traffic(
     Query(q): Query<TrafficQuery>,
 ) -> Result<Json<TrafficResponse>, ApiError> {
     require_self_or_superadmin(&identity, &user_id)?;
+    // An optional client_id filter must be a well-formed ULID.
+    let client_id = match q.client_id.as_deref() {
+        Some(raw) => Some(parse_client_id(raw)?.to_string()),
+        None => None,
+    };
     serve_traffic(
         &state,
-        q.client_name.as_deref(),
+        client_id.as_deref(),
         Some(&user_id),
         q.from,
         q.to,
@@ -282,13 +307,14 @@ pub async fn get_user_traffic(
 pub async fn get_client_traffic(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<OperatorIdentity>,
-    Path(client_name): Path<String>,
+    Path(client_id): Path<String>,
     Query(q): Query<TrafficQuery>,
 ) -> Result<Json<TrafficResponse>, ApiError> {
     rbac::require_role(&identity, OperatorRole::Superadmin)?;
+    let cid = parse_client_id(&client_id)?;
     serve_traffic(
         &state,
-        Some(&client_name),
+        Some(&cid.to_string()),
         q.user_id.as_deref(),
         q.from,
         q.to,
@@ -314,7 +340,7 @@ pub async fn get_global_traffic(
 
 fn serve_traffic(
     state: &AppState,
-    client_name: Option<&str>,
+    client_id: Option<&str>,
     user_id: Option<&str>,
     from: i64,
     to: i64,
@@ -362,14 +388,15 @@ fn serve_traffic(
             ),
         ));
     }
-    let rows = samples::query_samples(&state.store, chosen, user_id, client_name, from, to)
-        .map_err(|e| {
+    let rows = samples::query_samples(&state.store, chosen, user_id, client_id, from, to).map_err(
+        |e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "store_error",
                 e.to_string(),
             )
-        })?;
+        },
+    )?;
     if rows.len() > 10_000 {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -404,14 +431,37 @@ fn require_self_or_superadmin(identity: &OperatorIdentity, user_id: &str) -> Res
     ))
 }
 
-fn parse_client_name(s: &str) -> Result<ClientName, ApiError> {
-    ClientName::new(s).map_err(|e| {
+/// 015-client-stable-id (T020): client-scoped quota routes address the
+/// client by its stable `client_id`. A malformed id is a 404 (the same
+/// surface an unknown id gets — never leak whether a colliding name
+/// exists, Constitution V / FR-012).
+fn parse_client_id(raw: &str) -> Result<ClientId, ApiError> {
+    ClientId::from_str(raw).map_err(|_| {
         ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_client_name",
-            e.to_string(),
+            StatusCode::NOT_FOUND,
+            "client_not_found",
+            format!("client `{raw}` not found"),
         )
     })
+}
+
+/// Resolve a client's current display name (as a validated `ClientName`)
+/// for grant / capability checks and wire rendering. An unknown id is a
+/// 404.
+fn resolve_client_name(state: &AppState, client_id: ClientId) -> Result<ClientName, ApiError> {
+    match state.tokens.get_by_id(client_id) {
+        Ok(Some(client)) => Ok(client.client_name),
+        Ok(None) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "client_not_found",
+            format!("client `{client_id}` not found"),
+        )),
+        Err(e) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            e.to_string(),
+        )),
+    }
 }
 
 /// 422 quota_target_not_found if no grant matches (user, client). A
@@ -441,9 +491,10 @@ fn require_grant(state: &AppState, user_id: &str, client: &ClientName) -> Result
 /// version is below 1.4.0 (or it is offline / never connected).
 async fn require_client_supports_quota(
     state: &AppState,
+    client_id: ClientId,
     client: &ClientName,
 ) -> Result<(), ApiError> {
-    let version = state.clients.client_version_of(client).await;
+    let version = state.clients.client_version_of(&client_id).await;
     if version_at_least(version.as_deref(), 1, 4) {
         Ok(())
     } else {
@@ -451,15 +502,16 @@ async fn require_client_supports_quota(
             StatusCode::UNPROCESSABLE_ENTITY,
             "quota_unsupported_by_client",
             format!(
-                "target client_version {} < 1.4.0",
+                "target client {} client_version {} < 1.4.0",
+                client,
                 version.as_deref().unwrap_or("unknown")
             ),
         ))
     }
 }
 
-async fn push_quota_set(state: &AppState, client: &ClientName, row: &TrafficQuotaRow) {
-    let Some((outbound, _waiters)) = state.clients.handles(client).await else {
+async fn push_quota_set(state: &AppState, client_id: ClientId, row: &TrafficQuotaRow) {
+    let Some((outbound, _waiters)) = state.clients.handles(&client_id).await else {
         return;
     };
     let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
@@ -470,25 +522,33 @@ async fn push_quota_set(state: &AppState, client: &ClientName, row: &TrafficQuot
         warn!(
             event = "traffic_quota.push_failed",
             user_id = %row.user_id,
-            client = %client,
+            client_id = %client_id,
             action = "set",
         );
     }
 }
 
-async fn push_quota_remove(state: &AppState, user_id: &str, client: &ClientName) {
-    let Some((outbound, _waiters)) = state.clients.handles(client).await else {
+async fn push_quota_remove(
+    state: &AppState,
+    user_id: &str,
+    client_id: ClientId,
+    client_name: &str,
+) {
+    let Some((outbound, _waiters)) = state.clients.handles(&client_id).await else {
         return;
     };
     let msg = crate::traffic_quotas::make_traffic_quota_remove_msg(
         user_id.to_string(),
-        client.as_str().to_string(),
+        client_id.to_string(),
+        client_name.to_string(),
         format!("quota-{}", ulid::Ulid::new()),
     );
     if outbound.send(Ok(msg)).await.is_err() {
         warn!(
             event = "traffic_quota.push_failed",
-            user_id, client = %client, action = "remove",
+            user_id,
+            client_id = %client_id,
+            action = "remove",
         );
     }
 }
@@ -523,6 +583,7 @@ mod tests {
     fn sample_row(monthly: i64, used: i64) -> TrafficQuotaRow {
         TrafficQuotaRow {
             user_id: "alice".into(),
+            client_id: "edge-01".into(),
             client_name: "edge-01".into(),
             monthly_bytes: monthly,
             billing_anchor: 0,
@@ -552,6 +613,7 @@ mod tests {
         let started = anchor.timestamp();
         let r = TrafficQuotaRow {
             user_id: "alice".into(),
+            client_id: "edge-01".into(),
             client_name: "edge-01".into(),
             monthly_bytes: 1_000,
             billing_anchor: anchor.timestamp(),
@@ -628,6 +690,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_client_id_rejects_malformed_with_404() {
+        let err = parse_client_id("not-a-ulid").unwrap_err();
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
     fn compute_period_end_falls_back_to_imax_when_unreachable() {
         // Billing anchor that won't match any period_start chain in <12000 steps:
         // pass a started timestamp far away from any anchor period_start.
@@ -649,8 +718,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = crate::store::Store::open(dir.path()).expect("open store");
         let ts = 1_700_000_000_i64 - (1_700_000_000_i64 % 60);
-        samples::upsert_1m_delta(&store, "alice", "edge-a", ts, 100, 200).unwrap();
-        samples::upsert_1m_delta(&store, "bob", "edge-b", ts, 300, 400).unwrap();
+        samples::upsert_1m_delta(&store, "alice", "edge-a", "edge-a", ts, 100, 200).unwrap();
+        samples::upsert_1m_delta(&store, "bob", "edge-b", "edge-b", ts, 300, 400).unwrap();
         let rows =
             samples::query_samples(&store, SampleBucket::M1, None, None, ts - 1, ts + 60).unwrap();
         assert_eq!(rows.len(), 1);

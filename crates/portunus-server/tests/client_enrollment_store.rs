@@ -35,6 +35,7 @@ fn created_code_redeems_once_and_issues_client_token() {
     let now = Utc::now();
     let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: ClientName::new("edge-01").unwrap(),
             target: EnrollmentTarget::New {
                 client_address: Some("edge.example.com".into()),
@@ -76,6 +77,7 @@ fn expired_code_does_not_issue_client_token() {
     let now = Utc::now();
     let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: ClientName::new("edge-01").unwrap(),
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -97,12 +99,17 @@ fn expired_code_does_not_issue_client_token() {
 }
 
 #[test]
-fn newer_code_for_same_client_invalidates_older_pending_code() {
+fn new_enrollments_for_same_name_are_independent_prospective_clients() {
+    // 015-client-stable-id (FR-013): two New enrollment codes for the same
+    // display name mint two distinct stable ids — neither supersedes the
+    // other, because the display name is not an identity. Both redeem into
+    // separate clients that merely happen to share a name.
     let (_dir, _store, enrollments, tokens) = fresh();
     let now = Utc::now();
     let name = ClientName::new("edge-01").unwrap();
     let older = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -114,7 +121,8 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
         .expect("create older enrollment");
     let newer = enrollments
         .create(CreateEnrollment {
-            client_name: name,
+            client_id: None,
+            client_name: name.clone(),
             target: EnrollmentTarget::New {
                 client_address: None,
             },
@@ -124,26 +132,30 @@ fn newer_code_for_same_client_invalidates_older_pending_code() {
         })
         .expect("create newer enrollment");
 
-    assert!(matches!(
-        enrollments.redeem(&older.code, now + Duration::seconds(2), || panic!(
-            "resolver must not run for persisted-endpoint rows"
-        )),
-        Err(RedeemEnrollmentError::AlreadyUsed)
-    ));
-
-    let issued = enrollments
+    // The older code is NOT invalidated by the newer one — they are
+    // independent prospective clients.
+    let issued_older = enrollments
+        .redeem(&older.code, now + Duration::seconds(2), || {
+            panic!("resolver must not run for persisted-endpoint rows")
+        })
+        .expect("older code still redeems");
+    let issued_newer = enrollments
         .redeem(&newer.code, now + Duration::seconds(2), || {
             panic!("resolver must not run for persisted-endpoint rows")
         })
         .expect("newer code redeems");
-    assert_eq!(
-        tokens
-            .verify(&issued.token)
-            .expect("issued token verifies")
-            .client_name
-            .as_str(),
-        "edge-01"
+
+    assert_ne!(
+        issued_older.client_id, issued_newer.client_id,
+        "each New enrollment mints its own stable id"
     );
+    let same_name = tokens
+        .list()
+        .expect("list tokens")
+        .into_iter()
+        .filter(|c| c.client_name == name)
+        .count();
+    assert_eq!(same_name, 2, "two distinct clients share the display name");
 }
 
 #[test]
@@ -156,6 +168,7 @@ fn existing_client_code_redeems_by_rotating_token_in_place() {
     let now = Utc::now();
     let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
@@ -190,14 +203,25 @@ fn existing_client_code_redeems_by_rotating_token_in_place() {
 }
 
 #[test]
-fn new_client_enrollment_rejects_existing_client_inside_store_transaction() {
+fn new_client_enrollment_allows_duplicate_display_name() {
+    // 015-client-stable-id (FR-013): a New enrollment for a display name
+    // that already exists is NOT rejected. Names are free-form and
+    // non-unique; the enrollment mints a fresh, distinct stable id.
     let (_dir, _store, enrollments, tokens) = fresh();
     let name = ClientName::new("edge-01").unwrap();
     tokens.issue(name.clone()).expect("seed client");
+    let seeded_id = tokens
+        .list()
+        .expect("list")
+        .into_iter()
+        .find(|c| c.client_name == name)
+        .expect("seeded client present")
+        .client_id;
     let now = Utc::now();
 
-    let err = enrollments
+    let created = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::New {
                 client_address: None,
@@ -206,12 +230,29 @@ fn new_client_enrollment_rejects_existing_client_inside_store_transaction() {
             now,
             advertised_endpoint: "public.example:7443".to_string(),
         })
-        .expect_err("new enrollment must reject existing client");
+        .expect("duplicate display name is allowed for a new client");
 
-    assert!(matches!(
-        err,
-        CreateEnrollmentError::ClientAlreadyExists(existing) if existing == name
-    ));
+    let issued = enrollments
+        .redeem(&created.code, now, || {
+            panic!("resolver must not run for persisted-endpoint rows")
+        })
+        .expect("redeem mints a fresh client");
+    assert_eq!(issued.client_name, name);
+    assert_ne!(
+        issued.client_id, seeded_id,
+        "the duplicate-named client must get its own stable id"
+    );
+    assert!(
+        !issued.rotated_existing,
+        "a New enrollment never rotates a same-named existing client"
+    );
+    let same_name = tokens
+        .list()
+        .expect("list")
+        .into_iter()
+        .filter(|c| c.client_name == name)
+        .count();
+    assert_eq!(same_name, 2, "two distinct clients now share the name");
 }
 
 #[test]
@@ -222,6 +263,7 @@ fn existing_client_enrollment_requires_existing_client_inside_store_transaction(
 
     let err = enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: name.clone(),
             target: EnrollmentTarget::Existing,
             expires_at: now + Duration::minutes(5),
@@ -261,6 +303,7 @@ fn creating_enrollment_prunes_old_consumed_and_expired_rows() {
 
     enrollments
         .create(CreateEnrollment {
+            client_id: None,
             client_name: ClientName::new("edge-01").unwrap(),
             target: EnrollmentTarget::New {
                 client_address: None,

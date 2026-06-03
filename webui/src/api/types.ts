@@ -293,6 +293,8 @@ export interface RuleStatsSnapshot {
 // -----------------------------------------------------------------------------
 
 export interface ClientView {
+  /** Stable opaque identity (015-client-stable-id); the addressing key. */
+  client_id: string;
   client_name: string;
   provisioned_at: string;
   revoked_at: string | null;
@@ -300,6 +302,10 @@ export interface ClientView {
   client_address: string | null;
   remote_addr: string | null;
   connected_at: string | null;
+}
+
+export interface RenameClientBody {
+  client_name: string;
 }
 
 export interface ClientEnrollmentBody {

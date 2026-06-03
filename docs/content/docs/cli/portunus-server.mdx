@@ -43,9 +43,10 @@ for offline maintenance and tests.
 
 | Subcommand | Purpose |
 | --- | --- |
-| `enroll-client <name> [--address <host>] [--ttl-secs <N>]` | Print a short-lived `portunus-client enroll ...` command. `--ttl-secs` defaults to 600; `--address` overrides the host clients dial |
+| `enroll-client <name> [--address <host>] [--ttl-secs <N>]` | Print a short-lived `portunus-client enroll ...` command. `--ttl-secs` defaults to 600; `--address` overrides the host clients dial. The name is a free-form display label (any case, spaces, dots, Unicode); duplicates are allowed |
 | `revoke <client_name>` | Revoke a client's bearer; immediate disconnect |
-| `list-clients [--format text\|json]` | Show connected status for every provisioned client |
+| `rename-client --client-id <ULID> --name "<display>"` | Change a client's free-form display name. Addressed by its stable id, so the id — and every rule, token, quota and traffic-history row keyed on it — is left intact; a live session is not dropped (v2.0+) |
+| `list-clients [--format text\|json]` | Show connected status for every provisioned client, including its stable `client_id` |
 
 ## Rules
 

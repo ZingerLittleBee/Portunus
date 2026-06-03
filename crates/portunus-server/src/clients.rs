@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
-use portunus_core::ClientName;
+use portunus_core::{ClientId, ClientName};
 use portunus_proto::v1::{Protocol, RuleStatus as ProtoRuleStatus, ServerMessage};
 use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -26,9 +26,9 @@ pub type StatusWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<ProtoRuleStat
 
 #[derive(Debug, Clone)]
 pub struct ConnectedClient {
-    // Indexed by ClientName in the map, so the field is technically redundant
-    // here — kept for symmetric snapshot consumers (operator API in US2/US3).
-    #[allow(dead_code)]
+    // The registry is keyed by the stable `ClientId` (015-client-stable-id).
+    // `client_name` is the free-form display name carried alongside for
+    // snapshot consumers (operator API) and the name-scan bridge methods.
     pub client_name: ClientName,
     pub remote_addr: Option<SocketAddr>,
     pub connected_at: DateTime<Utc>,
@@ -67,7 +67,7 @@ impl ConnectedClient {
 
 #[derive(Debug, Clone)]
 pub struct ConnectedClients {
-    inner: Arc<RwLock<HashMap<ClientName, ConnectedClient>>>,
+    inner: Arc<RwLock<HashMap<ClientId, ConnectedClient>>>,
     next_session: Arc<AtomicU64>,
     session_root: CancellationToken,
 }
@@ -89,11 +89,13 @@ impl ConnectedClients {
         Self::default()
     }
 
-    /// Insert a freshly-authenticated client. If a previous session for the
-    /// same name is still tracked, its `cancel_token` is fired so the old
-    /// stream tears down — only one live session per client at a time.
+    /// Insert a freshly-authenticated client, keyed by its stable
+    /// `client_id`. If a previous session for the same id is still tracked,
+    /// its `cancel_token` is fired so the old stream tears down — only one
+    /// live session per client at a time.
     pub async fn register(
         &self,
+        client_id: ClientId,
         client_name: ClientName,
         remote_addr: Option<SocketAddr>,
         cancel_token: CancellationToken,
@@ -108,7 +110,7 @@ impl ConnectedClients {
         let mut default_caps = HashSet::new();
         default_caps.insert(Protocol::Tcp);
         let entry = ConnectedClient {
-            client_name: client_name.clone(),
+            client_name,
             remote_addr,
             connected_at: Utc::now(),
             cancel_token,
@@ -119,7 +121,7 @@ impl ConnectedClients {
             client_version: None,
         };
         let mut guard = self.inner.write().await;
-        if let Some(prev) = guard.insert(client_name, entry) {
+        if let Some(prev) = guard.insert(client_id, entry) {
             prev.cancel_token.cancel();
         }
         session_id
@@ -133,12 +135,12 @@ impl ConnectedClients {
     /// client/session pair is no longer current.
     pub async fn set_supported_protocols(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         session_id: u64,
         caps: HashSet<Protocol>,
     ) -> bool {
         let mut guard = self.inner.write().await;
-        if let Some(existing) = guard.get_mut(client_name)
+        if let Some(existing) = guard.get_mut(client_id)
             && existing.session_id == session_id
         {
             existing.supported_protocols = caps;
@@ -150,9 +152,9 @@ impl ConnectedClients {
     /// Capability check used by the operator-side push-rule path. Looks
     /// up the connected client and asks whether it can activate
     /// `protocol`. Returns `None` when the client is not connected.
-    pub async fn supports(&self, client_name: &ClientName, protocol: Protocol) -> Option<bool> {
+    pub async fn supports(&self, client_id: &ClientId, protocol: Protocol) -> Option<bool> {
         let guard = self.inner.read().await;
-        guard.get(client_name).map(|c| c.supports(protocol))
+        guard.get(client_id).map(|c| c.supports(protocol))
     }
 
     /// Replace the registered client's `client_version` (called by the
@@ -162,12 +164,12 @@ impl ConnectedClients {
     /// 007-multi-target-failover (R-007).
     pub async fn set_client_version(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         session_id: u64,
         version: String,
     ) -> bool {
         let mut guard = self.inner.write().await;
-        if let Some(existing) = guard.get_mut(client_name)
+        if let Some(existing) = guard.get_mut(client_id)
             && existing.session_id == session_id
         {
             existing.client_version = Some(version);
@@ -180,43 +182,38 @@ impl ConnectedClients {
     /// Returns `None` when the client is not connected, OR when the
     /// client has not yet sent a Hello with `client_version`.
     /// 007-multi-target-failover (R-007).
-    pub async fn client_version_of(&self, client_name: &ClientName) -> Option<String> {
+    pub async fn client_version_of(&self, client_id: &ClientId) -> Option<String> {
         let guard = self.inner.read().await;
-        guard
-            .get(client_name)
-            .and_then(|c| c.client_version.clone())
+        guard.get(client_id).and_then(|c| c.client_version.clone())
     }
 
     /// Snapshot the (outbound, waiters) handles for a connected client, used
     /// by the operator path to push a `RuleUpdate` and await the matching
     /// `RuleStatus`.
-    pub async fn handles(
-        &self,
-        client_name: &ClientName,
-    ) -> Option<(OutboundSender, StatusWaiters)> {
+    pub async fn handles(&self, client_id: &ClientId) -> Option<(OutboundSender, StatusWaiters)> {
         let guard = self.inner.read().await;
         guard
-            .get(client_name)
+            .get(client_id)
             .map(|c| (c.outbound.clone(), c.status_waiters.clone()))
     }
 
-    /// Remove the named client iff `session_id` matches the value seen at
+    /// Remove the client iff `session_id` matches the value seen at
     /// `register` time. Guards against a reconnect overwriting our entry
     /// before the previous session's drop runs.
-    pub async fn unregister(&self, client_name: &ClientName, session_id: u64) {
+    pub async fn unregister(&self, client_id: &ClientId, session_id: u64) {
         let mut guard = self.inner.write().await;
-        if let Some(existing) = guard.get(client_name)
+        if let Some(existing) = guard.get(client_id)
             && existing.session_id == session_id
         {
-            guard.remove(client_name);
+            guard.remove(client_id);
         }
     }
 
     /// Fire the connected client's cancel token (if any) — used by the
     /// `revoke` operator action.
-    pub async fn disconnect(&self, client_name: &ClientName) -> bool {
+    pub async fn disconnect(&self, client_id: &ClientId) -> bool {
         let guard = self.inner.read().await;
-        if let Some(c) = guard.get(client_name) {
+        if let Some(c) = guard.get(client_id) {
             c.cancel_token.cancel();
             true
         } else {
@@ -224,7 +221,78 @@ impl ConnectedClients {
         }
     }
 
-    pub async fn snapshot(&self) -> HashMap<ClientName, ConnectedClient> {
+    /// Name-scan bridge for operator-side callers that only hold a
+    /// `client_name` sourced from a persisted row or a (legacy) name-keyed
+    /// URL path. The registry is bounded (≤100 entries, SC-004a) so the
+    /// linear scan is cheap. When duplicate display names are connected
+    /// (FR-013 now permits this) the first match wins — these push paths
+    /// target whichever live session currently holds the name, which
+    /// matches the pre-015 single-entry-per-name behaviour. Operator
+    /// addressing migrates to `client_id` end-to-end in US3 (T020).
+    pub async fn handles_by_name(
+        &self,
+        client_name: &ClientName,
+    ) -> Option<(OutboundSender, StatusWaiters)> {
+        let guard = self.inner.read().await;
+        guard
+            .values()
+            .find(|c| &c.client_name == client_name)
+            .map(|c| (c.outbound.clone(), c.status_waiters.clone()))
+    }
+
+    /// Name-scan bridge returning the stable `client_id` of a connected
+    /// client by display name. Used by the operator rule-push path to
+    /// stamp the rule with the client's id (rules are keyed by id, T015).
+    /// First match wins on duplicate display names — same semantics as
+    /// [`Self::handles_by_name`], and the push path already requires the
+    /// client to be connected.
+    pub async fn client_id_by_name(&self, client_name: &ClientName) -> Option<ClientId> {
+        let guard = self.inner.read().await;
+        guard
+            .iter()
+            .find(|(_, c)| &c.client_name == client_name)
+            .map(|(id, _)| *id)
+    }
+
+    /// Name-scan bridge mirroring [`Self::client_version_of`] for callers
+    /// that only hold a `client_name`. See [`Self::handles_by_name`].
+    pub async fn client_version_by_name(&self, client_name: &ClientName) -> Option<String> {
+        let guard = self.inner.read().await;
+        guard
+            .values()
+            .find(|c| &c.client_name == client_name)
+            .and_then(|c| c.client_version.clone())
+    }
+
+    /// Name-scan bridge mirroring [`Self::supports`]. See
+    /// [`Self::handles_by_name`].
+    pub async fn supports_by_name(
+        &self,
+        client_name: &ClientName,
+        protocol: Protocol,
+    ) -> Option<bool> {
+        let guard = self.inner.read().await;
+        guard
+            .values()
+            .find(|c| &c.client_name == client_name)
+            .map(|c| c.supports(protocol))
+    }
+
+    /// Name-scan bridge mirroring [`Self::disconnect`]. Fires the cancel
+    /// token of every live session whose display name matches (duplicate
+    /// names are now permitted, FR-013). Returns true if at least one
+    /// session was signalled. See [`Self::handles_by_name`].
+    pub async fn disconnect_by_name(&self, client_name: &ClientName) -> bool {
+        let guard = self.inner.read().await;
+        let mut any = false;
+        for c in guard.values().filter(|c| &c.client_name == client_name) {
+            c.cancel_token.cancel();
+            any = true;
+        }
+        any
+    }
+
+    pub async fn snapshot(&self) -> HashMap<ClientId, ConnectedClient> {
         self.inner.read().await.clone()
     }
 
@@ -300,8 +368,10 @@ mod tests {
     async fn register_defaults_to_tcp_only_until_set_supported_protocols() {
         let registry = ConnectedClients::new();
         let (tx, _rx) = mpsc::channel(1);
+        let id = ClientId::new();
         let session_id = registry
             .register(
+                id,
                 "edge-01".parse().unwrap(),
                 None,
                 CancellationToken::new(),
@@ -310,29 +380,30 @@ mod tests {
             )
             .await;
 
-        let name: ClientName = "edge-01".parse().unwrap();
-        assert_eq!(registry.supports(&name, Protocol::Tcp).await, Some(true));
-        assert_eq!(registry.supports(&name, Protocol::Udp).await, Some(false));
+        assert_eq!(registry.supports(&id, Protocol::Tcp).await, Some(true));
+        assert_eq!(registry.supports(&id, Protocol::Udp).await, Some(false));
 
         let mut caps = HashSet::new();
         caps.insert(Protocol::Tcp);
         caps.insert(Protocol::Udp);
         assert!(
             registry
-                .set_supported_protocols(&name, session_id, caps)
+                .set_supported_protocols(&id, session_id, caps)
                 .await
         );
 
-        assert_eq!(registry.supports(&name, Protocol::Tcp).await, Some(true));
-        assert_eq!(registry.supports(&name, Protocol::Udp).await, Some(true));
+        assert_eq!(registry.supports(&id, Protocol::Tcp).await, Some(true));
+        assert_eq!(registry.supports(&id, Protocol::Udp).await, Some(true));
     }
 
     #[tokio::test]
     async fn set_supported_protocols_rejects_stale_session() {
         let registry = ConnectedClients::new();
         let (tx, _rx) = mpsc::channel(1);
+        let id = ClientId::new();
         let _session_id = registry
             .register(
+                id,
                 "edge-01".parse().unwrap(),
                 None,
                 CancellationToken::new(),
@@ -341,12 +412,45 @@ mod tests {
             )
             .await;
 
-        let name: ClientName = "edge-01".parse().unwrap();
         let mut caps = HashSet::new();
         caps.insert(Protocol::Udp);
         // Session id 99 was never issued — must be rejected so a late
         // Hello from a torn-down session can't clobber a reconnect.
-        assert!(!registry.set_supported_protocols(&name, 99, caps).await);
-        assert_eq!(registry.supports(&name, Protocol::Udp).await, Some(false));
+        assert!(!registry.set_supported_protocols(&id, 99, caps).await);
+        assert_eq!(registry.supports(&id, Protocol::Udp).await, Some(false));
+    }
+
+    #[tokio::test]
+    async fn distinct_clients_with_same_display_name_coexist() {
+        // FR-013: duplicate display names are allowed. Two distinct ids
+        // sharing one client_name must both be tracked (no collision).
+        let registry = ConnectedClients::new();
+        let (tx_a, _ra) = mpsc::channel(1);
+        let (tx_b, _rb) = mpsc::channel(1);
+        let id_a = ClientId::new();
+        let id_b = ClientId::new();
+        let name: ClientName = "Acme Prod".parse().unwrap();
+        registry
+            .register(
+                id_a,
+                name.clone(),
+                None,
+                CancellationToken::new(),
+                tx_a,
+                Arc::default(),
+            )
+            .await;
+        registry
+            .register(
+                id_b,
+                name.clone(),
+                None,
+                CancellationToken::new(),
+                tx_b,
+                Arc::default(),
+            )
+            .await;
+        assert_eq!(registry.len().await, 2, "same name, distinct ids coexist");
+        assert!(registry.handles_by_name(&name).await.is_some());
     }
 }

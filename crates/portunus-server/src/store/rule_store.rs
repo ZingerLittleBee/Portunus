@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use portunus_auth::UserId;
-use portunus_core::{ClientName, RateLimit, RuleId, RuleTarget};
+use portunus_core::{ClientId, ClientName, RateLimit, RuleId, RuleTarget};
 use rusqlite::params;
 use tracing::warn;
 
@@ -36,14 +36,15 @@ impl SqliteRuleStore {
             let rl = rule.rate_limit.as_ref();
             tx.execute(
                 "INSERT INTO rules (
-                    id, client_name, listen_port, listen_port_end, target_host, target_port,
+                    id, client_id, client_name, listen_port, listen_port_end, target_host, target_port,
                     target_port_end, prefer_ipv6, protocol, state_kind, state_reason,
                     owner_user_id, health_check_interval_secs, created_at, updated_at, sni_pattern,
                     rl_bandwidth_in_bps, rl_bandwidth_out_bps, rl_new_connections_per_sec,
                     rl_concurrent_connections, rl_bandwidth_in_burst, rl_bandwidth_out_burst,
                     rl_new_connections_burst
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
+                    client_id = excluded.client_id,
                     client_name = excluded.client_name,
                     listen_port = excluded.listen_port,
                     listen_port_end = excluded.listen_port_end,
@@ -67,6 +68,7 @@ impl SqliteRuleStore {
                     rl_new_connections_burst = excluded.rl_new_connections_burst",
                 params![
                     rule.id.0,
+                    rule.client_id.to_string(),
                     rule.client_name.as_str(),
                     rule.listen_port,
                     rule.listen_port_end,
@@ -141,15 +143,22 @@ impl SqliteRuleStore {
 
     pub fn list_rules(&self) -> Result<Vec<Rule>, StoreError> {
         self.store.with_conn(|conn| {
+            // 015-client-stable-id (T015): a rule is only loadable when it
+            // carries BOTH a display name and a stable client_id (the new
+            // canonical key). V011 backfilled client_id for every existing
+            // rule, so a NULL id here means a corrupt / partially-written
+            // row — skip it the same way a missing name is skipped.
             let skipped_count: i64 = conn
-                .query_row("SELECT COUNT(*) FROM rules WHERE client_name IS NULL", [], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT COUNT(*) FROM rules WHERE client_name IS NULL OR client_id IS NULL",
+                    [],
+                    |row| row.get(0),
+                )
                 .map_err(map_rusqlite)?;
             if skipped_count > 0 {
                 warn!(
                     skipped_count,
-                    "skipping persisted rules with missing client_name"
+                    "skipping persisted rules with missing client_name or client_id"
                 );
             }
 
@@ -160,9 +169,9 @@ impl SqliteRuleStore {
                             owner_user_id, health_check_interval_secs, created_at, updated_at, sni_pattern,
                             rl_bandwidth_in_bps, rl_bandwidth_out_bps, rl_new_connections_per_sec,
                             rl_concurrent_connections, rl_bandwidth_in_burst, rl_bandwidth_out_burst,
-                            rl_new_connections_burst
+                            rl_new_connections_burst, client_id
                      FROM rules
-                     WHERE client_name IS NOT NULL
+                     WHERE client_name IS NOT NULL AND client_id IS NOT NULL
                      ORDER BY id ASC",
                 )
                 .map_err(map_rusqlite)?;
@@ -176,6 +185,14 @@ impl SqliteRuleStore {
                             Box::new(e),
                         )
                     })?;
+                    let client_id =
+                        row.get::<_, String>(23)?.parse::<ClientId>().map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                23,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?;
                     let protocol = match row.get::<_, String>(8)?.as_str() {
                         "udp" => Protocol::Udp,
                         _ => Protocol::Tcp,
@@ -213,6 +230,7 @@ impl SqliteRuleStore {
                     let rate_limit = build_rate_limit_from_row(row)?;
                     Ok(Rule {
                         id,
+                        client_id,
                         client_name,
                         listen_port: row.get(2)?,
                         listen_port_end: row.get(3)?,
@@ -370,6 +388,7 @@ mod tests {
         let rule_store = SqliteRuleStore::new(store);
         let rule = Rule {
             id: RuleId(42),
+            client_id: ClientId::new(),
             client_name: ClientName::new("edge-01".to_string()).unwrap(),
             listen_port: 443,
             listen_port_end: None,
@@ -427,6 +446,7 @@ mod tests {
         let rule_store = SqliteRuleStore::new(store);
         let rule = Rule {
             id: RuleId(101),
+            client_id: ClientId::new(),
             client_name: ClientName::new("edge-02".to_string()).unwrap(),
             listen_port: 443,
             listen_port_end: None,
@@ -476,6 +496,7 @@ mod tests {
         let rule_store = SqliteRuleStore::new(store);
         let rule = Rule {
             id: RuleId(102),
+            client_id: ClientId::new(),
             client_name: ClientName::new("edge-03".to_string()).unwrap(),
             listen_port: 80,
             listen_port_end: None,
@@ -515,6 +536,7 @@ mod tests {
         let rule_store = SqliteRuleStore::new(store);
         let rule = Rule {
             id: RuleId(103),
+            client_id: ClientId::new(),
             client_name: ClientName::new("edge-04".to_string()).unwrap(),
             listen_port: 443,
             listen_port_end: None,

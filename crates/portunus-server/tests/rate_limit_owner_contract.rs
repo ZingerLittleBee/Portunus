@@ -104,14 +104,42 @@ fn build_fixture() -> Fixture {
 /// the gRPC channel would have emitted, so PUT/DELETE can assert that
 /// `OwnerRateLimitUpdate` was sent. Optional `client_version` exercises
 /// the capability gate.
+/// 015-client-stable-id: provision a client into the token store (the
+/// authoritative roster) and return its server-assigned `client_id`
+/// (ULID string). The operator surface now addresses clients by this
+/// id, so tests resolve it once here and use it to build URLs.
+fn provision_client(fixture: &Fixture, name: &str) -> String {
+    let client_name = ClientName::new(name.to_string()).expect("valid client");
+    fixture
+        .state
+        .tokens
+        .issue_with_address(client_name.clone(), None)
+        .expect("issue token");
+    fixture
+        .state
+        .tokens
+        .list()
+        .expect("list clients")
+        .into_iter()
+        .find(|p| p.client_name == client_name)
+        .expect("provisioned client present")
+        .client_id
+        .to_string()
+}
+
 async fn register_fake_client(
     fixture: &Fixture,
     name: &str,
     client_version: Option<&str>,
-) -> tokio::sync::Mutex<
-    tokio::sync::mpsc::Receiver<Result<portunus_proto::v1::ServerMessage, tonic::Status>>,
-> {
+) -> (
+    String,
+    tokio::sync::Mutex<
+        tokio::sync::mpsc::Receiver<Result<portunus_proto::v1::ServerMessage, tonic::Status>>,
+    >,
+) {
     let client_name = ClientName::new(name.to_string()).expect("valid client");
+    let client_id_str = provision_client(fixture, name);
+    let client_id = portunus_core::ClientId::from_str(&client_id_str).expect("valid ulid");
     let cancel = CancellationToken::new();
     let (outbound, rx) = tokio::sync::mpsc::channel(8);
     let waiters: Arc<
@@ -120,23 +148,30 @@ async fn register_fake_client(
     let session_id = fixture
         .state
         .clients
-        .register(client_name.clone(), None, cancel, outbound, waiters)
+        .register(
+            client_id,
+            client_name.clone(),
+            None,
+            cancel,
+            outbound,
+            waiters,
+        )
         .await;
     let mut caps = HashSet::new();
     caps.insert(ProtoProtocol::Tcp);
     fixture
         .state
         .clients
-        .set_supported_protocols(&client_name, session_id, caps)
+        .set_supported_protocols(&client_id, session_id, caps)
         .await;
     if let Some(v) = client_version {
         fixture
             .state
             .clients
-            .set_client_version(&client_name, session_id, v.to_string())
+            .set_client_version(&client_id, session_id, v.to_string())
             .await;
     }
-    tokio::sync::Mutex::new(rx)
+    (client_id_str, tokio::sync::Mutex::new(rx))
 }
 
 async fn drain_owner_rate_limit_update(
@@ -202,11 +237,12 @@ async fn err_code(resp: axum::response::Response) -> String {
 #[tokio::test]
 async fn t024_get_returns_404_when_envelope_absent() {
     let f = build_fixture();
+    let cid = provision_client(&f, CLIENT);
     let resp = f
         .router
         .clone()
         .oneshot(req_get(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
         ))
         .await
@@ -218,12 +254,12 @@ async fn t024_get_returns_404_when_envelope_absent() {
 #[tokio::test]
 async fn t024_put_then_get_returns_envelope() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     let put_resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({
                 "bandwidth_in_bps": 5_242_880u64,
@@ -244,7 +280,7 @@ async fn t024_put_then_get_returns_envelope() {
         .router
         .clone()
         .oneshot(req_get(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
         ))
         .await
@@ -261,12 +297,12 @@ async fn t024_put_then_get_returns_envelope() {
 #[tokio::test]
 async fn t024_put_rejects_cap_zero() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"bandwidth_in_bps": 0u64}),
         ))
@@ -279,12 +315,12 @@ async fn t024_put_rejects_cap_zero() {
 #[tokio::test]
 async fn t024_put_rejects_burst_without_rate() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"bandwidth_in_burst": 10u64}),
         ))
@@ -300,13 +336,13 @@ async fn t024_put_rejects_burst_without_rate() {
 #[tokio::test]
 async fn t024_put_rejects_burst_out_of_range() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     // burst = rate * 100 → outside the [rate/100, rate*60] band.
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({
                 "bandwidth_in_bps": 1_000u64,
@@ -322,12 +358,12 @@ async fn t024_put_rejects_burst_out_of_range() {
 #[tokio::test]
 async fn t024_put_rejects_concurrent_connections_burst() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({
                 "concurrent_connections": 100,
@@ -350,12 +386,12 @@ async fn t024_put_rejects_concurrent_connections_burst() {
 #[tokio::test]
 async fn t024_put_rejects_pre_011_client_with_422() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.10.5")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.10.5")).await;
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"concurrent_connections": 5}),
         ))
@@ -368,8 +404,8 @@ async fn t024_put_rejects_pre_011_client_with_422() {
 #[tokio::test]
 async fn t070_concurrent_only_put_get_round_trip_v011_client() {
     let f = build_fixture();
-    let rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
-    let url = format!("/v1/clients/{CLIENT}/owners/alice/rate-limit");
+    let (cid, rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let url = format!("/v1/clients/{cid}/owners/alice/rate-limit");
 
     // PUT — set ONLY concurrent_connections; all other rate-limit
     // fields must remain absent in the response (no defaulting).
@@ -429,8 +465,8 @@ async fn t070_concurrent_only_put_get_round_trip_v011_client() {
 #[tokio::test]
 async fn t071_concurrent_put_returns_422_for_pre_011_client() {
     let f = build_fixture();
-    let rx = register_fake_client(&f, CLIENT, Some("0.10.0")).await;
-    let url = format!("/v1/clients/{CLIENT}/owners/alice/rate-limit");
+    let (cid, rx) = register_fake_client(&f, CLIENT, Some("0.10.0")).await;
+    let url = format!("/v1/clients/{cid}/owners/alice/rate-limit");
 
     let body = serde_json::json!({ "concurrent_connections": 100 });
     let put_resp = f
@@ -462,13 +498,14 @@ async fn t071_concurrent_put_returns_422_for_pre_011_client() {
 #[tokio::test]
 async fn t024_put_rejects_disconnected_client_with_422() {
     let f = build_fixture();
-    // No client connected — capability gate falls back to "unknown"
-    // which is below 0.11 by definition.
+    // Provisioned (so the id resolves) but NOT connected — the
+    // capability gate falls back to "unknown" which is below 0.11.
+    let cid = provision_client(&f, CLIENT);
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"concurrent_connections": 5}),
         ))
@@ -485,12 +522,12 @@ async fn t024_put_rejects_disconnected_client_with_422() {
 #[tokio::test]
 async fn t024_put_pushes_owner_rate_limit_update_set() {
     let f = build_fixture();
-    let rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     let resp = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"bandwidth_in_bps": 1_048_576u64}),
         ))
@@ -513,13 +550,13 @@ async fn t024_put_pushes_owner_rate_limit_update_set() {
 #[tokio::test]
 async fn t024_delete_pushes_owner_rate_limit_update_remove() {
     let f = build_fixture();
-    let rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     // Seed an envelope first.
     let _ = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"bandwidth_in_bps": 1_048_576u64}),
         ))
@@ -532,7 +569,7 @@ async fn t024_delete_pushes_owner_rate_limit_update_remove() {
         .router
         .clone()
         .oneshot(req_delete(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
         ))
         .await
@@ -556,8 +593,8 @@ async fn t024_delete_pushes_owner_rate_limit_update_remove() {
 #[tokio::test]
 async fn t024_delete_is_idempotent_on_replay() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
-    let url = format!("/v1/clients/{CLIENT}/owners/alice/rate-limit");
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let url = format!("/v1/clients/{cid}/owners/alice/rate-limit");
     // First DELETE on absent envelope returns 204 (idempotent contract).
     let resp1 = f
         .router
@@ -583,11 +620,12 @@ async fn t024_delete_is_idempotent_on_replay() {
 #[tokio::test]
 async fn t024_list_owners_returns_empty_when_no_rules_or_caps() {
     let f = build_fixture();
+    let cid = provision_client(&f, CLIENT);
     let resp = f
         .router
         .clone()
         .oneshot(req_get(
-            &format!("/v1/clients/{CLIENT}/owners"),
+            &format!("/v1/clients/{cid}/owners"),
             SUPERADMIN_TOKEN,
         ))
         .await
@@ -601,13 +639,13 @@ async fn t024_list_owners_returns_empty_when_no_rules_or_caps() {
 #[tokio::test]
 async fn t024_list_owners_marks_has_rate_limit_when_envelope_present() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
     // Seed alice's cap; no rules under alice.
     let _ = f
         .router
         .clone()
         .oneshot(req_put(
-            &format!("/v1/clients/{CLIENT}/owners/alice/rate-limit"),
+            &format!("/v1/clients/{cid}/owners/alice/rate-limit"),
             SUPERADMIN_TOKEN,
             serde_json::json!({"concurrent_connections": 10}),
         ))
@@ -617,7 +655,7 @@ async fn t024_list_owners_marks_has_rate_limit_when_envelope_present() {
         .router
         .clone()
         .oneshot(req_get(
-            &format!("/v1/clients/{CLIENT}/owners"),
+            &format!("/v1/clients/{cid}/owners"),
             SUPERADMIN_TOKEN,
         ))
         .await
@@ -638,8 +676,8 @@ async fn t024_list_owners_marks_has_rate_limit_when_envelope_present() {
 #[tokio::test]
 async fn t024_put_replaces_existing_envelope() {
     let f = build_fixture();
-    let _rx = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
-    let url = format!("/v1/clients/{CLIENT}/owners/alice/rate-limit");
+    let (cid, _rx) = register_fake_client(&f, CLIENT, Some("0.11.0")).await;
+    let url = format!("/v1/clients/{cid}/owners/alice/rate-limit");
     // First PUT.
     let _ = f
         .router

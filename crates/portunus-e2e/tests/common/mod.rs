@@ -561,9 +561,12 @@ pub fn list_rules_http(operator_http_addr: &str, client_filter: Option<&str>) ->
     resp.json().expect("parse JSON body")
 }
 
-/// Revoke a client via the running server's HTTP API.
+/// Revoke a client via the running server's HTTP API. 015-client-stable-id:
+/// client-scoped routes address the client by its stable `client_id`, so we
+/// resolve the id from the live clients list by display name first.
 pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode {
-    let url = format!("http://{operator_http_addr}/v1/clients/{name}/revoke");
+    let client_id = client_id_for_name(operator_http_addr, name);
+    let url = format!("http://{operator_http_addr}/v1/clients/{client_id}/revoke");
     let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
         .post(&url)
@@ -571,6 +574,41 @@ pub fn revoke_http(operator_http_addr: &str, name: &str) -> reqwest::StatusCode 
         .send()
         .expect("POST revoke");
     resp.status()
+}
+
+/// 015-client-stable-id (US2): identity-safe rename. Resolves the client's
+/// stable id from its current display name, then `PATCH`es the new name.
+/// Returns the HTTP status.
+pub fn rename_http(
+    operator_http_addr: &str,
+    current_name: &str,
+    new_name: &str,
+) -> reqwest::StatusCode {
+    let client_id = client_id_for_name(operator_http_addr, current_name);
+    let url = format!("http://{operator_http_addr}/v1/clients/{client_id}/name");
+    let (k, v) = auth_header();
+    let resp = reqwest::blocking::Client::new()
+        .patch(&url)
+        .header(k, v)
+        .json(&serde_json::json!({ "client_name": new_name }))
+        .send()
+        .expect("PATCH client name");
+    resp.status()
+}
+
+/// Resolve a client's stable `client_id` from its display name via the live
+/// `GET /v1/clients` list. Panics if no client carries that name.
+pub fn client_id_for_name(operator_http_addr: &str, name: &str) -> String {
+    let clients = list_clients_http(operator_http_addr);
+    clients
+        .as_array()
+        .and_then(|arr| {
+            arr.iter()
+                .find(|c| c["client_name"].as_str() == Some(name))
+                .and_then(|c| c["client_id"].as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| panic!("no client_id for client_name={name}"))
 }
 
 /// Fetch the rule-stats snapshot for `rule_id`. Returns `None` if the server

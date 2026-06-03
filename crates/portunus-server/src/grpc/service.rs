@@ -69,6 +69,7 @@ impl Control for ControlService {
         let session_id = state
             .clients
             .register(
+                identity.client_id,
                 identity.client_name.clone(),
                 remote_addr,
                 cancel_token.clone(),
@@ -91,7 +92,7 @@ impl Control for ControlService {
                     let caps = capabilities_from_hello(&h.supported_protocols);
                     state
                         .clients
-                        .set_supported_protocols(&identity.client_name, session_id, caps.clone())
+                        .set_supported_protocols(&identity.client_id, session_id, caps.clone())
                         .await;
                     // 007-multi-target-failover (R-007): track the
                     // client binary version so the operator HTTP guard
@@ -100,7 +101,7 @@ impl Control for ControlService {
                         state
                             .clients
                             .set_client_version(
-                                &identity.client_name,
+                                &identity.client_id,
                                 session_id,
                                 h.client_version.clone(),
                             )
@@ -120,7 +121,7 @@ impl Control for ControlService {
             Some(Err(e)) => {
                 state
                     .clients
-                    .unregister(&identity.client_name, session_id)
+                    .unregister(&identity.client_id, session_id)
                     .await;
                 state.metrics.clients_connected.dec();
                 warn!(
@@ -133,7 +134,7 @@ impl Control for ControlService {
             None => {
                 state
                     .clients
-                    .unregister(&identity.client_name, session_id)
+                    .unregister(&identity.client_id, session_id)
                     .await;
                 state.metrics.clients_connected.dec();
                 return Err(Status::cancelled("client_dropped_before_hello"));
@@ -144,7 +145,7 @@ impl Control for ControlService {
             .clients
             .snapshot()
             .await
-            .get(&identity.client_name)
+            .get(&identity.client_id)
             .map_or_else(
                 || {
                     let mut s = HashSet::new();
@@ -178,7 +179,7 @@ impl Control for ControlService {
         if tx.send(Ok(welcome)).await.is_err() {
             state
                 .clients
-                .unregister(&identity.client_name, session_id)
+                .unregister(&identity.client_id, session_id)
                 .await;
             state.metrics.clients_connected.dec();
             return Err(Status::cancelled("client_dropped_before_welcome"));
@@ -245,7 +246,7 @@ impl Control for ControlService {
             }
             pump_state
                 .clients
-                .unregister(&pump_identity.client_name, session_id)
+                .unregister(&pump_identity.client_id, session_id)
                 .await;
             pump_state.metrics.clients_connected.dec();
             info!(
@@ -362,6 +363,7 @@ async fn handle_client_message(
                 state
                     .traffic_aggregator
                     .record(
+                        identity.client_id.to_string().as_str(),
                         identity.client_name.as_str(),
                         rule_id,
                         owner.as_str(),
@@ -521,6 +523,7 @@ async fn handle_client_message(
                 state
                     .stats_cache
                     .observe_rate_limit_per_owner(
+                        identity.client_id,
                         &identity.client_name,
                         owner_stats.owner_id.as_str(),
                         reject_totals,
@@ -542,6 +545,7 @@ async fn handle_client_message(
                 state
                     .stats_cache
                     .observe_sni_listener(
+                        identity.client_id,
                         &identity.client_name,
                         port,
                         listener.sni_route_miss_total,
@@ -569,7 +573,9 @@ async fn replay_rules_for_client(
     identity: &ClientIdentity,
     outbound: &OutboundSender,
 ) {
-    let rules = state.rules.list(Some(&identity.client_name)).await;
+    // 015-client-stable-id (T015): replay by the stable id so a renamed
+    // client still receives every rule it owns on reconnect.
+    let rules = state.rules.list(Some(&identity.client_id)).await;
     if rules.is_empty() {
         return;
     }
@@ -577,9 +583,9 @@ async fn replay_rules_for_client(
         .clients
         .snapshot()
         .await
-        .get(&identity.client_name)
+        .get(&identity.client_id)
         .map_or_else(HashSet::new, |c| c.supported_protocols.clone());
-    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    let client_version = state.clients.client_version_of(&identity.client_id).await;
     for rule in rules {
         if !matches!(rule.state, crate::rules::RuleState::Active) {
             continue;
@@ -620,7 +626,7 @@ async fn replay_traffic_quotas_for_client(
     identity: &ClientIdentity,
     outbound: &OutboundSender,
 ) {
-    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    let client_version = state.clients.client_version_of(&identity.client_id).await;
     if !version_at_least(client_version.as_deref(), 1, 4) {
         return;
     }
@@ -648,17 +654,14 @@ async fn replay_owner_caps_for_client(
     identity: &ClientIdentity,
     outbound: &OutboundSender,
 ) {
-    let client_version = state.clients.client_version_of(&identity.client_name).await;
+    let client_version = state.clients.client_version_of(&identity.client_id).await;
     if !version_at_least(client_version.as_deref(), 0, 11) {
         // v0.10 (and earlier) clients silently drop the new
         // ServerMessage oneof variant; emitting nothing keeps the
         // wire byte-identical with the pre-0.11 contract.
         return;
     }
-    let envelopes = state
-        .owner_caps
-        .list_for_client(&identity.client_name)
-        .await;
+    let envelopes = state.owner_caps.list_for_client(&identity.client_id).await;
     if envelopes.is_empty() {
         return;
     }
@@ -666,10 +669,13 @@ async fn replay_owner_caps_for_client(
         let push = ServerMessage {
             payload: Some(server_message::Payload::OwnerRateLimitUpdate(
                 portunus_proto::v1::OwnerRateLimitUpdate {
-                    client_name: envelope.client_name.as_str().to_string(),
+                    // 015-client-stable-id: the wire carries the stable id
+                    // plus the client's current display name for readability.
+                    client_name: identity.client_name.as_str().to_string(),
                     owner_id: envelope.owner_id.clone(),
                     rate_limit: Some(rate_limit_to_proto(&envelope.rate_limit)),
                     action: portunus_proto::v1::OwnerRateLimitAction::Set as i32,
+                    client_id: envelope.client_id.to_string(),
                 },
             )),
         };
@@ -820,7 +826,9 @@ async fn apply_unsolicited_rule_status(
         );
         return;
     };
-    if existing.client_name != identity.client_name {
+    // 015-client-stable-id (T015): ownership is by stable id, not the
+    // mutable display name.
+    if existing.client_id != identity.client_id {
         warn!(
             event = "client.rule_status_wrong_client",
             client_name = %identity.client_name,
@@ -969,11 +977,13 @@ mod tests {
         mpsc::Receiver<Result<ServerMessage, Status>>,
     ) {
         let client_name = portunus_core::ClientName::new(name.to_string()).unwrap();
+        let client_id = portunus_core::ClientId::new();
         let (tx, rx) = mpsc::channel(8);
         let waiters: StatusWaiters = Arc::new(Mutex::new(HashMap::new()));
         let session_id = state
             .clients
             .register(
+                client_id,
                 client_name.clone(),
                 None,
                 CancellationToken::new(),
@@ -985,13 +995,20 @@ mod tests {
         caps.insert(Protocol::Tcp);
         state
             .clients
-            .set_supported_protocols(&client_name, session_id, caps)
+            .set_supported_protocols(&client_id, session_id, caps)
             .await;
         state
             .clients
-            .set_client_version(&client_name, session_id, version.to_string())
+            .set_client_version(&client_id, session_id, version.to_string())
             .await;
-        (ClientIdentity { client_name }, tx, rx)
+        (
+            ClientIdentity {
+                client_id,
+                client_name,
+            },
+            tx,
+            rx,
+        )
     }
 
     #[tokio::test]
@@ -1000,6 +1017,7 @@ mod tests {
         let (identity, outbound, mut rx) = register_client(&state, "edge-replay", "0.10.0").await;
         let rule = crate::rules::Rule {
             id: portunus_core::RuleId(7),
+            client_id: identity.client_id,
             client_name: identity.client_name.clone(),
             listen_port: 443,
             listen_port_end: None,
@@ -1048,6 +1066,7 @@ mod tests {
             register_client(&state, "edge-replay-old", "0.8.0").await;
         let rule = crate::rules::Rule {
             id: portunus_core::RuleId(8),
+            client_id: identity.client_id,
             client_name: identity.client_name.clone(),
             listen_port: 443,
             listen_port_end: None,
@@ -1103,6 +1122,7 @@ mod tests {
             .hydrate(vec![
                 crate::rules::Rule {
                     id: portunus_core::RuleId(9),
+                    client_id: identity.client_id,
                     client_name: identity.client_name.clone(),
                     listen_port: 443,
                     listen_port_end: None,
@@ -1129,6 +1149,7 @@ mod tests {
                 },
                 crate::rules::Rule {
                     id: portunus_core::RuleId(10),
+                    client_id: identity.client_id,
                     client_name: identity.client_name.clone(),
                     listen_port: 444,
                     listen_port_end: None,
@@ -1192,6 +1213,7 @@ mod tests {
             .rules
             .hydrate(vec![crate::rules::Rule {
                 id: portunus_core::RuleId(11),
+                client_id: portunus_core::ClientId::new(),
                 client_name: other_client,
                 listen_port: 443,
                 listen_port_end: None,
@@ -1263,12 +1285,12 @@ mod tests {
         // Seed two cap envelopes for this client.
         state
             .owner_caps
-            .upsert(&identity.client_name, "alice", cap_envelope())
+            .upsert(&identity.client_id, "alice", cap_envelope())
             .await
             .unwrap();
         state
             .owner_caps
-            .upsert(&identity.client_name, "bob", cap_envelope())
+            .upsert(&identity.client_id, "bob", cap_envelope())
             .await
             .unwrap();
 
@@ -1306,7 +1328,7 @@ mod tests {
             register_client(&state, "edge-owner-replay-old", "0.10.5").await;
         state
             .owner_caps
-            .upsert(&identity.client_name, "alice", cap_envelope())
+            .upsert(&identity.client_id, "alice", cap_envelope())
             .await
             .unwrap();
 
@@ -1341,7 +1363,7 @@ mod tests {
         let state = build_state();
         let (identity, outbound, mut rx) = register_client(&state, "edge-target", "0.11.0").await;
         // Cap on a DIFFERENT client must not leak.
-        let other = portunus_core::ClientName::new("edge-other".to_string()).unwrap();
+        let other = portunus_core::ClientId::new();
         state
             .owner_caps
             .upsert(&other, "alice", cap_envelope())

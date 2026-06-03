@@ -22,6 +22,7 @@ fn traffic_quota_update_set_roundtrips() {
         client_name: "edge-01".into(),
         action: TrafficQuotaAction::Set as i32,
         state: Some(state),
+        client_id: "01HCLIENTID0000000000000000".into(),
     };
     let msg = ServerMessage {
         payload: Some(server_message::Payload::TrafficQuotaUpdate(update.clone())),
@@ -45,6 +46,7 @@ fn traffic_quota_update_remove_has_no_state() {
         client_name: "edge-01".into(),
         action: TrafficQuotaAction::Remove as i32,
         state: None,
+        client_id: String::new(),
     };
     let encoded = update.encode_to_vec();
     let got = TrafficQuotaUpdate::decode(&encoded[..]).unwrap();

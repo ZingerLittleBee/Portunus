@@ -25,6 +25,7 @@ use tracing::{debug, error, warn};
 #[derive(Debug, Clone)]
 pub struct QuotaExhaustedEvent {
     pub user_id: String,
+    pub client_id: String,
     pub client_name: String,
 }
 
@@ -92,8 +93,10 @@ impl TrafficAggregator {
     /// Cumulative readings come straight from the wire; the aggregator
     /// computes its own deltas with a saturating_sub baseline-reset
     /// guard (mirrors `RuleStatsCache` rebaseline semantics).
+    #[allow(clippy::too_many_arguments)]
     pub async fn record(
         &self,
+        client_id: &str,
         client_name: &str,
         rule_id: RuleId,
         owner_user_id: &str,
@@ -128,6 +131,7 @@ impl TrafficAggregator {
         if let Err(e) = samples::upsert_1m_delta(
             &self.inner.store,
             owner_user_id,
+            client_id,
             client_name,
             ts_minute,
             i64::try_from(delta_in).unwrap_or(i64::MAX),
@@ -143,14 +147,14 @@ impl TrafficAggregator {
 
         // (b) If a quota row exists for this pair, accumulate + check
         // first-time exhausted.
-        if self.inner.cache.get(owner_user_id, client_name).is_none() {
+        if self.inner.cache.get(owner_user_id, client_id).is_none() {
             return;
         }
         let delta_total = i64::try_from(delta_in.saturating_add(delta_out)).unwrap_or(i64::MAX);
         match self
             .inner
             .cache
-            .accumulate(owner_user_id, client_name, delta_total, now_unix_sec)
+            .accumulate(owner_user_id, client_id, delta_total, now_unix_sec)
         {
             Ok(Some((row, just_exhausted))) => {
                 if let Some(metrics) = self.inner.metrics.as_ref() {
@@ -182,6 +186,7 @@ impl TrafficAggregator {
                         .exhaust_tx
                         .send(QuotaExhaustedEvent {
                             user_id: row.user_id.clone(),
+                            client_id: row.client_id.clone(),
                             client_name: row.client_name.clone(),
                         })
                         .await
@@ -253,6 +258,7 @@ mod tests {
     fn sample_quota(monthly: i64) -> TrafficQuotaRow {
         TrafficQuotaRow {
             user_id: "alice".into(),
+            client_id: "edge-01".into(),
             client_name: "edge-01".into(),
             monthly_bytes: monthly,
             billing_anchor: 0,
@@ -267,7 +273,8 @@ mod tests {
     #[tokio::test]
     async fn record_skips_empty_owner() {
         let (_d, _store, agg, mut rx) = build_agg();
-        agg.record("edge-01", RuleId(1), "", 100, 200, 60).await;
+        agg.record("edge-01", "edge-01", RuleId(1), "", 100, 200, 60)
+            .await;
         // No 1m row written.
         let rows = samples::query_samples(
             &agg.inner.store,
@@ -287,10 +294,10 @@ mod tests {
     async fn record_writes_minute_sample_with_delta() {
         let (_d, _store, agg, _rx) = build_agg();
         // First tick — delta = cumulative.
-        agg.record("edge-01", RuleId(1), "alice", 100, 200, 60)
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 100, 200, 60)
             .await;
         // Second tick — delta = (new - prev).
-        agg.record("edge-01", RuleId(1), "alice", 150, 250, 60)
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 150, 250, 60)
             .await;
         let rows = samples::query_samples(
             &agg.inner.store,
@@ -310,10 +317,11 @@ mod tests {
     #[tokio::test]
     async fn record_handles_client_rebaseline() {
         let (_d, _store, agg, _rx) = build_agg();
-        agg.record("edge-01", RuleId(1), "alice", 1_000, 2_000, 60)
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 1_000, 2_000, 60)
             .await;
         // Client restart: cumulative drops back to small numbers.
-        agg.record("edge-01", RuleId(1), "alice", 50, 100, 60).await;
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 50, 100, 60)
+            .await;
         let rows = samples::query_samples(
             &agg.inner.store,
             samples::SampleBucket::M1,
@@ -340,19 +348,19 @@ mod tests {
         let agg = TrafficAggregator::new(store.clone(), cache, tx);
 
         // Tick 1: 400 bytes total -> under quota.
-        agg.record("edge-01", RuleId(1), "alice", 200, 200, 60)
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 200, 200, 60)
             .await;
         assert!(rx2.try_recv().is_err());
 
         // Tick 2: cumulative jumps to 1_200 total -> crosses quota.
-        agg.record("edge-01", RuleId(1), "alice", 600, 600, 60)
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 600, 600, 60)
             .await;
         let evt = rx2.recv().await.unwrap();
         assert_eq!(evt.user_id, "alice");
         assert_eq!(evt.client_name, "edge-01");
 
         // Tick 3: more bytes after exhausted -> no second event.
-        agg.record("edge-01", RuleId(1), "alice", 1000, 1000, 60)
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 1000, 1000, 60)
             .await;
         assert!(rx2.try_recv().is_err());
     }
@@ -360,7 +368,8 @@ mod tests {
     #[tokio::test]
     async fn record_no_op_when_zero_delta() {
         let (_d, _store, agg, _rx) = build_agg();
-        agg.record("edge-01", RuleId(1), "alice", 0, 0, 60).await;
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 0, 0, 60)
+            .await;
         let rows = samples::query_samples(
             &agg.inner.store,
             samples::SampleBucket::M1,

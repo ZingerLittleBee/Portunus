@@ -40,13 +40,13 @@ function mockFetchByPath(routes: Record<string, MockResponseInit>) {
   });
 }
 
-function renderTab(clientName: string) {
+function renderTab(clientId: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   globalThis.localStorage?.clear?.();
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <OwnerQuotasTab clientName={clientName} />
+        <OwnerQuotasTab clientId={clientId} />
       </QueryClientProvider>
     </MemoryRouter>,
   );

@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
-use portunus_core::{ClientName, RateLimit};
+use std::str::FromStr;
+
+use portunus_core::{ClientId, RateLimit};
 use rusqlite::params;
 
 use crate::store::{Store, StoreError, map_rusqlite};
@@ -20,7 +22,9 @@ use crate::store::{Store, StoreError, map_rusqlite};
 /// One row of the `rate_limit_owner` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerRateLimitRow {
-    pub client_name: ClientName,
+    /// 015-client-stable-id (T013): keyed by the client's stable id; the
+    /// display name is resolved from `client_tokens` when needed.
+    pub client_id: ClientId,
     pub owner_id: String,
     pub rate_limit: RateLimit,
     /// Server-set on every PUT. Wire-shape `updated_at_unix_ms` so the
@@ -45,7 +49,7 @@ impl SqliteOwnerCapStore {
     /// replace the existing one's caps and bump `updated_at_unix_ms`.
     pub fn upsert(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         owner_id: &str,
         rl: &RateLimit,
         updated_at_unix_ms: u64,
@@ -53,13 +57,13 @@ impl SqliteOwnerCapStore {
         self.store.with_write_tx(|tx| {
             tx.execute(
                 "INSERT INTO rate_limit_owner (
-                    client_name, owner_id,
+                    client_id, owner_id,
                     rl_bandwidth_in_bps, rl_bandwidth_out_bps,
                     rl_new_connections_per_sec, rl_concurrent_connections,
                     rl_bandwidth_in_burst, rl_bandwidth_out_burst,
                     rl_new_connections_burst, updated_at_unix_ms
                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(client_name, owner_id) DO UPDATE SET
+                 ON CONFLICT(client_id, owner_id) DO UPDATE SET
                     rl_bandwidth_in_bps        = excluded.rl_bandwidth_in_bps,
                     rl_bandwidth_out_bps       = excluded.rl_bandwidth_out_bps,
                     rl_new_connections_per_sec = excluded.rl_new_connections_per_sec,
@@ -69,7 +73,7 @@ impl SqliteOwnerCapStore {
                     rl_new_connections_burst   = excluded.rl_new_connections_burst,
                     updated_at_unix_ms         = excluded.updated_at_unix_ms",
                 params![
-                    client_name.as_str(),
+                    client_id.to_string(),
                     owner_id,
                     rl.bandwidth_in_bps,
                     rl.bandwidth_out_bps,
@@ -87,12 +91,12 @@ impl SqliteOwnerCapStore {
     }
 
     /// Idempotent delete; returns `true` when the row existed.
-    pub fn delete(&self, client_name: &ClientName, owner_id: &str) -> Result<bool, StoreError> {
+    pub fn delete(&self, client_id: &ClientId, owner_id: &str) -> Result<bool, StoreError> {
         self.store.with_write_tx(|tx| {
             let n = tx
                 .execute(
-                    "DELETE FROM rate_limit_owner WHERE client_name = ? AND owner_id = ?",
-                    params![client_name.as_str(), owner_id],
+                    "DELETE FROM rate_limit_owner WHERE client_id = ? AND owner_id = ?",
+                    params![client_id.to_string(), owner_id],
                 )
                 .map_err(map_rusqlite)?;
             Ok(n > 0)
@@ -103,23 +107,23 @@ impl SqliteOwnerCapStore {
     /// exists; the caller maps that to an HTTP 404.
     pub fn get(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
         owner_id: &str,
     ) -> Result<Option<OwnerRateLimitRow>, StoreError> {
         self.store.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT client_name, owner_id,
+                    "SELECT client_id, owner_id,
                             rl_bandwidth_in_bps, rl_bandwidth_out_bps,
                             rl_new_connections_per_sec, rl_concurrent_connections,
                             rl_bandwidth_in_burst, rl_bandwidth_out_burst,
                             rl_new_connections_burst, updated_at_unix_ms
                      FROM rate_limit_owner
-                     WHERE client_name = ? AND owner_id = ?",
+                     WHERE client_id = ? AND owner_id = ?",
                 )
                 .map_err(map_rusqlite)?;
             let mut rows = stmt
-                .query(params![client_name.as_str(), owner_id])
+                .query(params![client_id.to_string(), owner_id])
                 .map_err(map_rusqlite)?;
             let Some(row) = rows.next().map_err(map_rusqlite)? else {
                 return Ok(None);
@@ -133,23 +137,23 @@ impl SqliteOwnerCapStore {
     /// reconnect-replay path (T029).
     pub fn list_for_client(
         &self,
-        client_name: &ClientName,
+        client_id: &ClientId,
     ) -> Result<Vec<OwnerRateLimitRow>, StoreError> {
         self.store.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT client_name, owner_id,
+                    "SELECT client_id, owner_id,
                             rl_bandwidth_in_bps, rl_bandwidth_out_bps,
                             rl_new_connections_per_sec, rl_concurrent_connections,
                             rl_bandwidth_in_burst, rl_bandwidth_out_burst,
                             rl_new_connections_burst, updated_at_unix_ms
                      FROM rate_limit_owner
-                     WHERE client_name = ?
+                     WHERE client_id = ?
                      ORDER BY owner_id ASC",
                 )
                 .map_err(map_rusqlite)?;
             let mut rows = stmt
-                .query(params![client_name.as_str()])
+                .query(params![client_id.to_string()])
                 .map_err(map_rusqlite)?;
             let mut out = Vec::new();
             while let Some(row) = rows.next().map_err(map_rusqlite)? {
@@ -167,13 +171,13 @@ impl SqliteOwnerCapStore {
         self.store.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT client_name, owner_id,
+                    "SELECT client_id, owner_id,
                             rl_bandwidth_in_bps, rl_bandwidth_out_bps,
                             rl_new_connections_per_sec, rl_concurrent_connections,
                             rl_bandwidth_in_burst, rl_bandwidth_out_burst,
                             rl_new_connections_burst, updated_at_unix_ms
                      FROM rate_limit_owner
-                     ORDER BY client_name ASC, owner_id ASC",
+                     ORDER BY client_id ASC, owner_id ASC",
                 )
                 .map_err(map_rusqlite)?;
             let mut rows = stmt.query([]).map_err(map_rusqlite)?;
@@ -187,10 +191,10 @@ impl SqliteOwnerCapStore {
 }
 
 fn row_to_envelope(row: &rusqlite::Row<'_>) -> Result<OwnerRateLimitRow, StoreError> {
-    let client_name =
-        ClientName::new(row.get::<_, String>(0).map_err(map_rusqlite)?).map_err(|e| {
+    let client_id =
+        ClientId::from_str(&row.get::<_, String>(0).map_err(map_rusqlite)?).map_err(|e| {
             StoreError::Internal {
-                message: format!("client_name: {e}"),
+                message: format!("client_id: {e}"),
             }
         })?;
     let owner_id: String = row.get(1).map_err(map_rusqlite)?;
@@ -206,7 +210,7 @@ fn row_to_envelope(row: &rusqlite::Row<'_>) -> Result<OwnerRateLimitRow, StoreEr
     let updated_at_i64: i64 = row.get(9).map_err(map_rusqlite)?;
     let updated_at_unix_ms = u64::try_from(updated_at_i64).unwrap_or(0);
     Ok(OwnerRateLimitRow {
-        client_name,
+        client_id,
         owner_id,
         rate_limit,
         updated_at_unix_ms,
@@ -218,6 +222,10 @@ mod tests {
     use super::*;
     use crate::store::Store;
     use tempfile::tempdir;
+
+    fn cid() -> ClientId {
+        ClientId::new()
+    }
 
     fn open_store() -> Arc<Store> {
         let dir = tempdir().unwrap();
@@ -245,7 +253,7 @@ mod tests {
     fn t027_upsert_inserts_then_replaces() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let client = ClientName::new("edge-01").unwrap();
+        let client = cid();
         cap_store
             .upsert(&client, "alice", &full_envelope(), 1_700_000_000_000)
             .expect("first upsert");
@@ -269,7 +277,7 @@ mod tests {
     fn t027_delete_removes_row_and_is_idempotent() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let client = ClientName::new("edge-01").unwrap();
+        let client = cid();
         cap_store
             .upsert(&client, "alice", &full_envelope(), 1_700_000_000_000)
             .unwrap();
@@ -285,7 +293,7 @@ mod tests {
     fn t027_get_returns_none_when_absent() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let client = ClientName::new("edge-01").unwrap();
+        let client = cid();
         assert!(cap_store.get(&client, "ghost").unwrap().is_none());
     }
 
@@ -293,7 +301,7 @@ mod tests {
     fn t027_list_for_client_orders_by_owner_id() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let client = ClientName::new("edge-01").unwrap();
+        let client = cid();
         cap_store
             .upsert(&client, "carol", &full_envelope(), 1)
             .unwrap();
@@ -309,11 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn t027_list_for_client_isolates_by_client_name() {
+    fn t027_list_for_client_isolates_by_client_id() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let edge = ClientName::new("edge-01").unwrap();
-        let core = ClientName::new("core-01").unwrap();
+        let edge = cid();
+        let core = cid();
         cap_store
             .upsert(&edge, "alice", &full_envelope(), 1)
             .unwrap();
@@ -323,6 +331,7 @@ mod tests {
         let edge_rows = cap_store.list_for_client(&edge).unwrap();
         assert_eq!(edge_rows.len(), 1);
         assert_eq!(edge_rows[0].owner_id, "alice");
+        assert_eq!(edge_rows[0].client_id, edge);
         let core_rows = cap_store.list_for_client(&core).unwrap();
         assert_eq!(core_rows.len(), 1);
     }
@@ -331,8 +340,8 @@ mod tests {
     fn t027_list_all_returns_every_client_owner_pair() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let edge = ClientName::new("edge-01").unwrap();
-        let core = ClientName::new("core-01").unwrap();
+        let edge = cid();
+        let core = cid();
         cap_store
             .upsert(&edge, "alice", &full_envelope(), 1)
             .unwrap();
@@ -342,20 +351,28 @@ mod tests {
             .unwrap();
         let all = cap_store.list_all().unwrap();
         assert_eq!(all.len(), 3);
-        // Ordered by client_name ASC then owner_id ASC.
-        assert_eq!(all[0].client_name.as_str(), "core-01");
-        assert_eq!(all[0].owner_id, "alice");
-        assert_eq!(all[1].client_name.as_str(), "edge-01");
-        assert_eq!(all[1].owner_id, "alice");
-        assert_eq!(all[2].client_name.as_str(), "edge-01");
-        assert_eq!(all[2].owner_id, "bob");
+        // Ordered by client_id ASC then owner_id ASC — assert membership
+        // and the per-client owner ordering without pinning the opaque id
+        // sort order.
+        let edge_owners: Vec<_> = all
+            .iter()
+            .filter(|r| r.client_id == edge)
+            .map(|r| r.owner_id.as_str())
+            .collect();
+        assert_eq!(edge_owners, vec!["alice", "bob"]);
+        let core_owners: Vec<_> = all
+            .iter()
+            .filter(|r| r.client_id == core)
+            .map(|r| r.owner_id.as_str())
+            .collect();
+        assert_eq!(core_owners, vec!["alice"]);
     }
 
     #[test]
     fn t027_check_constraint_rejects_zero_caps() {
         let store = open_store();
         let cap_store = SqliteOwnerCapStore::new(store);
-        let client = ClientName::new("edge-01").unwrap();
+        let client = cid();
         // Zero is rejected at the API boundary (T016) but the SQLite
         // CHECK constraint is the second line of defence — a hand-
         // crafted INSERT bypassing the validator must still fail.

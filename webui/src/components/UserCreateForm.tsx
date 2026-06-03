@@ -32,6 +32,7 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
   const [pendingQuota, setPendingQuota] = useState<UserQuotaFormSubmitValue | null>(null);
   const clientsQ = useClientsList();
   const clientLites = (clientsQ.data ?? []).map((c) => ({
+    client_id: c.client_id,
     client_name: c.client_name,
     connected: c.connected,
   }));
@@ -72,6 +73,7 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
         try {
           await createEntry.mutateAsync({
             user_id: res.user_id,
+            client_id: pendingQuota.client_id,
             client_name: pendingQuota.client_name,
             listen_port_start: pendingQuota.listen_port_start,
             listen_port_end: pendingQuota.listen_port_end,
@@ -143,7 +145,7 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
             <div className="mt-3">
               <UserQuotaForm
                 clients={clientLites}
-                disabledClientNames={new Set()}
+                disabledClientIds={new Set()}
                 onSubmit={(v) => {
                   setPendingQuota(v);
                 }}

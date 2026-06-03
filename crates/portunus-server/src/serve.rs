@@ -378,7 +378,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
                         .get(&evt.user_id, &evt.client_name)
                         && let Ok(client) = portunus_core::ClientName::new(evt.client_name.clone())
                         && let Some((outbound, _waiters)) =
-                            exhaust_state.clients.handles(&client).await
+                            exhaust_state.clients.handles_by_name(&client).await
                     {
                         let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
                             &row,

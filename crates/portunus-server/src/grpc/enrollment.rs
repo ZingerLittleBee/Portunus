@@ -73,7 +73,7 @@ impl ClientEnrollment for ClientEnrollmentService {
             rotated_existing = issued.rotated_existing,
         );
         if issued.rotated_existing {
-            let disconnected = self.state.clients.disconnect(&issued.client_name).await;
+            let disconnected = self.state.clients.disconnect(&issued.client_id).await;
             info!(
                 event = "client.enrollment_rotated",
                 client_name = %issued.client_name,
@@ -91,6 +91,7 @@ impl ClientEnrollment for ClientEnrollmentService {
             server_cert_sha256: self.state.server_cert_sha256.clone(),
             server_cert_pem: self.state.server_cert_pem.clone(),
             token: issued.token,
+            client_id: issued.client_id.to_string(),
         }))
     }
 }

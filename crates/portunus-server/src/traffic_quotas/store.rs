@@ -9,12 +9,13 @@ pub fn insert_or_replace(store: &Store, row: &TrafficQuotaRow) -> Result<(), Sto
     store.with_conn(|c| {
         c.execute(
             "INSERT OR REPLACE INTO traffic_quotas (
-                user_id, client_name, monthly_bytes, billing_anchor,
+                user_id, client_id, client_name, monthly_bytes, billing_anchor,
                 current_period_started_at, current_period_bytes_used,
                 exhausted_at, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 row.user_id,
+                row.client_id,
                 row.client_name,
                 row.monthly_bytes,
                 row.billing_anchor,
@@ -33,17 +34,17 @@ pub fn insert_or_replace(store: &Store, row: &TrafficQuotaRow) -> Result<(), Sto
 pub fn get(
     store: &Store,
     user_id: &str,
-    client_name: &str,
+    client_id: &str,
 ) -> Result<Option<TrafficQuotaRow>, StoreError> {
     store.with_conn(|c| {
         let row = c
             .query_row(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at
                  FROM traffic_quotas
-                 WHERE user_id = ?1 AND client_name = ?2",
-                params![user_id, client_name],
+                 WHERE user_id = ?1 AND client_id = ?2",
+                params![user_id, client_id],
                 row_to_quota,
             )
             .optional()
@@ -52,12 +53,12 @@ pub fn get(
     })
 }
 
-pub fn delete(store: &Store, user_id: &str, client_name: &str) -> Result<bool, StoreError> {
+pub fn delete(store: &Store, user_id: &str, client_id: &str) -> Result<bool, StoreError> {
     store.with_conn(|c| {
         let n = c
             .execute(
-                "DELETE FROM traffic_quotas WHERE user_id = ?1 AND client_name = ?2",
-                params![user_id, client_name],
+                "DELETE FROM traffic_quotas WHERE user_id = ?1 AND client_id = ?2",
+                params![user_id, client_id],
             )
             .map_err(map_rusqlite)?;
         Ok(n > 0)
@@ -68,7 +69,7 @@ pub fn list_for_user(store: &Store, user_id: &str) -> Result<Vec<TrafficQuotaRow
     store.with_conn(|c| {
         let mut stmt = c
             .prepare(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at
                  FROM traffic_quotas WHERE user_id = ?1",
@@ -83,21 +84,18 @@ pub fn list_for_user(store: &Store, user_id: &str) -> Result<Vec<TrafficQuotaRow
     })
 }
 
-pub fn list_for_client(
-    store: &Store,
-    client_name: &str,
-) -> Result<Vec<TrafficQuotaRow>, StoreError> {
+pub fn list_for_client(store: &Store, client_id: &str) -> Result<Vec<TrafficQuotaRow>, StoreError> {
     store.with_conn(|c| {
         let mut stmt = c
             .prepare(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at
-                 FROM traffic_quotas WHERE client_name = ?1",
+                 FROM traffic_quotas WHERE client_id = ?1",
             )
             .map_err(map_rusqlite)?;
         let rows: Vec<TrafficQuotaRow> = stmt
-            .query_map(params![client_name], row_to_quota)
+            .query_map(params![client_id], row_to_quota)
             .map_err(map_rusqlite)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(map_rusqlite)?;
@@ -109,7 +107,7 @@ pub fn list_all(store: &Store) -> Result<Vec<TrafficQuotaRow>, StoreError> {
     store.with_conn(|c| {
         let mut stmt = c
             .prepare(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at FROM traffic_quotas",
             )
@@ -130,7 +128,7 @@ pub fn list_all(store: &Store) -> Result<Vec<TrafficQuotaRow>, StoreError> {
 pub fn accumulate_bytes_used(
     store: &Store,
     user_id: &str,
-    client_name: &str,
+    client_id: &str,
     delta_bytes: i64,
     now_unix_sec: i64,
 ) -> Result<Option<TrafficQuotaRow>, StoreError> {
@@ -145,8 +143,8 @@ pub fn accumulate_bytes_used(
                             ELSE NULL
                         END,
                         updated_at = ?4
-                  WHERE user_id = ?1 AND client_name = ?2",
-                params![user_id, client_name, delta_bytes, now_unix_sec],
+                  WHERE user_id = ?1 AND client_id = ?2",
+                params![user_id, client_id, delta_bytes, now_unix_sec],
             )
             .map_err(map_rusqlite)?;
         if updated == 0 {
@@ -154,12 +152,12 @@ pub fn accumulate_bytes_used(
         }
         let row = c
             .query_row(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at
                  FROM traffic_quotas
-                 WHERE user_id = ?1 AND client_name = ?2",
-                params![user_id, client_name],
+                 WHERE user_id = ?1 AND client_id = ?2",
+                params![user_id, client_id],
                 row_to_quota,
             )
             .optional()
@@ -172,7 +170,7 @@ pub fn accumulate_bytes_used(
 pub fn reset_period(
     store: &Store,
     user_id: &str,
-    client_name: &str,
+    client_id: &str,
     new_period_started_at: i64,
     now_unix_sec: i64,
 ) -> Result<Option<TrafficQuotaRow>, StoreError> {
@@ -183,18 +181,18 @@ pub fn reset_period(
                     current_period_bytes_used = 0,
                     exhausted_at = NULL,
                     updated_at = ?4
-              WHERE user_id = ?1 AND client_name = ?2",
-            params![user_id, client_name, new_period_started_at, now_unix_sec],
+              WHERE user_id = ?1 AND client_id = ?2",
+            params![user_id, client_id, new_period_started_at, now_unix_sec],
         )
         .map_err(map_rusqlite)?;
         let row = c
             .query_row(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at
                  FROM traffic_quotas
-                 WHERE user_id = ?1 AND client_name = ?2",
-                params![user_id, client_name],
+                 WHERE user_id = ?1 AND client_id = ?2",
+                params![user_id, client_id],
                 row_to_quota,
             )
             .optional()
@@ -208,7 +206,7 @@ pub fn reset_period(
 pub fn clear_period_usage(
     store: &Store,
     user_id: &str,
-    client_name: &str,
+    client_id: &str,
     now_unix_sec: i64,
 ) -> Result<Option<TrafficQuotaRow>, StoreError> {
     store.with_conn(|c| {
@@ -217,18 +215,18 @@ pub fn clear_period_usage(
                 SET current_period_bytes_used = 0,
                     exhausted_at = NULL,
                     updated_at = ?3
-              WHERE user_id = ?1 AND client_name = ?2",
-            params![user_id, client_name, now_unix_sec],
+              WHERE user_id = ?1 AND client_id = ?2",
+            params![user_id, client_id, now_unix_sec],
         )
         .map_err(map_rusqlite)?;
         let row = c
             .query_row(
-                "SELECT user_id, client_name, monthly_bytes, billing_anchor,
+                "SELECT user_id, client_id, client_name, monthly_bytes, billing_anchor,
                         current_period_started_at, current_period_bytes_used,
                         exhausted_at, created_at, updated_at
                  FROM traffic_quotas
-                 WHERE user_id = ?1 AND client_name = ?2",
-                params![user_id, client_name],
+                 WHERE user_id = ?1 AND client_id = ?2",
+                params![user_id, client_id],
                 row_to_quota,
             )
             .optional()
@@ -240,14 +238,15 @@ pub fn clear_period_usage(
 fn row_to_quota(r: &rusqlite::Row) -> rusqlite::Result<TrafficQuotaRow> {
     Ok(TrafficQuotaRow {
         user_id: r.get(0)?,
-        client_name: r.get(1)?,
-        monthly_bytes: r.get(2)?,
-        billing_anchor: r.get(3)?,
-        current_period_started_at: r.get(4)?,
-        current_period_bytes_used: r.get(5)?,
-        exhausted_at: r.get(6)?,
-        created_at: r.get(7)?,
-        updated_at: r.get(8)?,
+        client_id: r.get(1)?,
+        client_name: r.get(2)?,
+        monthly_bytes: r.get(3)?,
+        billing_anchor: r.get(4)?,
+        current_period_started_at: r.get(5)?,
+        current_period_bytes_used: r.get(6)?,
+        exhausted_at: r.get(7)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
     })
 }
 
@@ -266,6 +265,9 @@ mod tests {
     fn sample_row() -> TrafficQuotaRow {
         TrafficQuotaRow {
             user_id: "alice".into(),
+            // Tests address rows by client_id; reuse the display string as
+            // the id so the existing get/delete/accumulate calls match.
+            client_id: "edge-01".into(),
             client_name: "edge-01".into(),
             monthly_bytes: 1_000_000,
             billing_anchor: 1_704_067_200,
@@ -377,12 +379,15 @@ mod tests {
         let (_d, store) = make_store();
         let mut a = sample_row();
         a.user_id = "alice".into();
+        a.client_id = "edge-01".into();
         a.client_name = "edge-01".into();
         let mut b = sample_row();
         b.user_id = "alice".into();
+        b.client_id = "edge-02".into();
         b.client_name = "edge-02".into();
         let mut c = sample_row();
         c.user_id = "bob".into();
+        c.client_id = "edge-01".into();
         c.client_name = "edge-01".into();
         insert_or_replace(&store, &a).unwrap();
         insert_or_replace(&store, &b).unwrap();

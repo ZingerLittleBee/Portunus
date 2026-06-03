@@ -109,6 +109,7 @@ async fn seed_rule(state: &AppState, owner: &str) -> RuleId {
     let rule = state
         .rules
         .push_range(
+            portunus_core::ClientId::new(),
             ClientName::from_str("client-a").expect("client name"),
             portunus_core::PortRange::single(30000),
             "127.0.0.1".to_string(),

@@ -77,11 +77,21 @@ export function trafficDirectionRows(totals: TrafficTotals): TrafficDirectionRow
   ];
 }
 
-function activeClientNames(clients: ClientView[] | undefined): string[] {
+// 015-client-stable-id (US3): the per-client traffic endpoint is keyed by
+// the stable id; we still label each bar with the friendly display name.
+interface ActiveClient {
+  client_id: string;
+  client_name: string;
+}
+
+function activeClients(clients: ClientView[] | undefined): ActiveClient[] {
   return (clients ?? [])
     .filter((client) => !client.revoked_at)
-    .map((client) => client.client_name)
-    .sort();
+    .map((client) => ({
+      client_id: client.client_id,
+      client_name: client.client_name,
+    }))
+    .sort((a, b) => a.client_name.localeCompare(b.client_name));
 }
 
 function visibleUsers(users: UserView[] | undefined): UserView[] {
@@ -98,7 +108,7 @@ export function useDashboardTrafficBreakdown(range: DashboardRange) {
   const clients = useClientsList();
   const users = useUsersList();
 
-  const clientNames = activeClientNames(clients.data);
+  const dashboardClients = activeClients(clients.data);
   const dashboardUsers = visibleUsers(users.data);
   const queryString = trafficQueryString(range);
 
@@ -108,14 +118,14 @@ export function useDashboardTrafficBreakdown(range: DashboardRange) {
       range.from,
       range.to,
       range.bucket,
-      clientNames,
+      dashboardClients.map((client) => client.client_id),
       dashboardUsers.map((user) => user.user_id),
     ],
     queryFn: async (): Promise<DashboardTrafficBreakdown> => {
       const [clientTraffic, userTraffic] = await Promise.all([
         Promise.all(
-          clientNames.map((clientName) =>
-            fetchTraffic(`/v1/clients/${encodeURIComponent(clientName)}/traffic?${queryString}`),
+          dashboardClients.map((client) =>
+            fetchTraffic(`/v1/clients/${encodeURIComponent(client.client_id)}/traffic?${queryString}`),
           ),
         ),
         Promise.all(
@@ -126,8 +136,12 @@ export function useDashboardTrafficBreakdown(range: DashboardRange) {
       ]);
 
       const clientsByTraffic = sortTrafficBreakdownItems(
-        clientNames.map((clientName, index) =>
-          trafficTotalsToItem(clientName, clientName, clientTraffic[index] ?? EMPTY_TOTALS),
+        dashboardClients.map((client, index) =>
+          trafficTotalsToItem(
+            client.client_id,
+            client.client_name,
+            clientTraffic[index] ?? EMPTY_TOTALS,
+          ),
         ),
       );
       const usersByTraffic = sortTrafficBreakdownItems(

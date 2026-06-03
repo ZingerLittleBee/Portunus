@@ -14,7 +14,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use portunus_core::ClientName;
+use std::str::FromStr;
+
+use portunus_core::ClientId;
 use portunus_proto::v1 as proto;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -94,19 +96,16 @@ pub async fn get_owner_rate_limit(
     State(state): State<Arc<AppState>>,
     Path((client_id, owner_id)): Path<(String, String)>,
 ) -> Result<Json<OwnerRateLimitView>, ApiError> {
-    let client_name = parse_client_name(&client_id)?;
-    let row = state
-        .owner_caps
-        .get(&client_name, &owner_id)
-        .await
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "owner_rate_limit_not_found",
-                format!("no rate-limit envelope for client={client_id} owner={owner_id}"),
-            )
-        })?;
-    Ok(Json(envelope_to_view(&row)))
+    let cid = parse_client_id(&client_id)?;
+    let display_name = resolve_client_name(&state, cid)?;
+    let row = state.owner_caps.get(&cid, &owner_id).await.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "owner_rate_limit_not_found",
+            format!("no rate-limit envelope for client={client_id} owner={owner_id}"),
+        )
+    })?;
+    Ok(Json(envelope_to_view(&row, &display_name)))
 }
 
 /// `PUT /v1/clients/{client_id}/owners/{owner_id}/rate-limit`
@@ -115,7 +114,17 @@ pub async fn put_owner_rate_limit(
     Path((client_id, owner_id)): Path<(String, String)>,
     Json(body): Json<OwnerRateLimitPutBody>,
 ) -> Result<Json<OwnerRateLimitView>, ApiError> {
-    let client_name = parse_client_name(&client_id)?;
+    let cid = parse_client_id(&client_id)?;
+    let display_name = resolve_client_name(&state, cid)?;
+    // The name came from `client_tokens`, so it always satisfies the
+    // relaxed `ClientName` contract; surface a 500 if it somehow does not.
+    let client_name = portunus_core::ClientName::new(display_name.clone()).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            format!("stored client_name invalid: {e}"),
+        )
+    })?;
     // Reserved-burst rejection mirrors the per-rule path so operators
     // get the same stable subcategory across both surfaces.
     if body.concurrent_connections_burst.is_some() {
@@ -127,7 +136,7 @@ pub async fn put_owner_rate_limit(
     // Capability gate: refuse when the target client's reported
     // version is below 0.11. An unknown / disconnected client gates
     // conservatively (mirrors the per-rule path).
-    let Some(client_version) = state.clients.client_version_of(&client_name).await else {
+    let Some(client_version) = state.clients.client_version_of(&cid).await else {
         return Err(ApiError::from(
             OperatorError::RateLimitUnsupportedByClient {
                 client_name: client_name.clone(),
@@ -154,34 +163,35 @@ pub async fn put_owner_rate_limit(
     };
     let row = state
         .owner_caps
-        .upsert(&client_name, &owner_id, envelope)
+        .upsert(&cid, &owner_id, envelope)
         .await
         .map_err(map_cap_error)?;
     // Push OwnerRateLimitUpdate{SET} to the connected client. Wire
     // delivery is best-effort: an unreachable client gets the cap on
     // its next reconnect via the welcome-replay path (T029). REST
     // success only requires the SQLite commit.
-    if let Some((outbound, _waiters)) = state.clients.handles(&client_name).await {
+    if let Some((outbound, _waiters)) = state.clients.handles(&cid).await {
         let push = proto::ServerMessage {
             payload: Some(proto::server_message::Payload::OwnerRateLimitUpdate(
                 proto::OwnerRateLimitUpdate {
-                    client_name: client_name.as_str().to_string(),
+                    client_name: display_name.clone(),
                     owner_id: owner_id.clone(),
                     rate_limit: Some(rate_limit_to_proto(&row.rate_limit)),
                     action: proto::OwnerRateLimitAction::Set as i32,
+                    client_id: cid.to_string(),
                 },
             )),
         };
         if outbound.send(Ok(push)).await.is_err() {
             warn!(
                 event = "owner_cap.push_failed",
-                client_name = %client_name,
+                client_id = %cid,
                 owner_id = %owner_id,
                 action = "set",
             );
         }
     }
-    Ok(Json(envelope_to_view(&row)))
+    Ok(Json(envelope_to_view(&row, &display_name)))
 }
 
 /// `DELETE /v1/clients/{client_id}/owners/{owner_id}/rate-limit`
@@ -189,30 +199,34 @@ pub async fn delete_owner_rate_limit(
     State(state): State<Arc<AppState>>,
     Path((client_id, owner_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let client_name = parse_client_name(&client_id)?;
+    let cid = parse_client_id(&client_id)?;
+    // Resolve the current display name for the wire push; tolerate a
+    // missing client (already deleted) by falling back to the id string.
+    let display_name = resolve_client_name(&state, cid).unwrap_or_else(|_| cid.to_string());
     let removed = state
         .owner_caps
-        .delete(&client_name, &owner_id)
+        .delete(&cid, &owner_id)
         .await
         .map_err(map_cap_error)?;
     // Push OwnerRateLimitUpdate{REMOVE}. Idempotent on the wire; a
     // best-effort send is sufficient (welcome-replay restores the
     // post-DELETE state on reconnect — i.e. the absence of an entry).
-    if let Some((outbound, _waiters)) = state.clients.handles(&client_name).await {
+    if let Some((outbound, _waiters)) = state.clients.handles(&cid).await {
         let push = proto::ServerMessage {
             payload: Some(proto::server_message::Payload::OwnerRateLimitUpdate(
                 proto::OwnerRateLimitUpdate {
-                    client_name: client_name.as_str().to_string(),
+                    client_name: display_name,
                     owner_id: owner_id.clone(),
                     rate_limit: None,
                     action: proto::OwnerRateLimitAction::Remove as i32,
+                    client_id: cid.to_string(),
                 },
             )),
         };
         if outbound.send(Ok(push)).await.is_err() {
             warn!(
                 event = "owner_cap.push_failed",
-                client_name = %client_name,
+                client_id = %cid,
                 owner_id = %owner_id,
                 action = "remove",
             );
@@ -234,10 +248,14 @@ pub async fn get_owners_under_client(
     State(state): State<Arc<AppState>>,
     Path(client_id): Path<String>,
 ) -> Result<Json<Vec<OwnerListEntry>>, ApiError> {
-    let client_name = parse_client_name(&client_id)?;
+    let cid = parse_client_id(&client_id)?;
+    // 015-client-stable-id (T037): 404 for an unknown id rather than an
+    // empty 200 that would imply the client exists. Never leaks whether
+    // a colliding display name exists (Constitution V).
+    resolve_client_name(&state, cid)?;
     // Build the owner -> rule_count map from the in-memory rule store.
     use std::collections::BTreeMap;
-    let rules = state.rules.list(Some(&client_name)).await;
+    let rules = state.rules.list(Some(&cid)).await;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for rule in rules {
         *counts.entry(rule.owner_user_id.to_string()).or_insert(0) += 1;
@@ -245,7 +263,7 @@ pub async fn get_owners_under_client(
     // Fold the cap rows so an owner with a cap but no rules still
     // appears (e.g. immediately after the last rule was removed and
     // before the GC sweep ran).
-    let cap_rows = state.owner_caps.list_for_client(&client_name).await;
+    let cap_rows = state.owner_caps.list_for_client(&cid).await;
     let mut capped: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &cap_rows {
         capped.insert(row.owner_id.clone());
@@ -269,14 +287,36 @@ pub async fn get_owners_under_client(
 // Helpers
 // ----------------------------------------------------------------------
 
-fn parse_client_name(raw: &str) -> Result<ClientName, ApiError> {
-    ClientName::new(raw).map_err(|e| {
+/// 015-client-stable-id (T020): client-scoped owner-cap routes address
+/// the client by its stable `client_id`. A malformed id is a 404 (the
+/// same surface an unknown id gets — never leak whether a colliding name
+/// exists, Constitution V / FR-012).
+fn parse_client_id(raw: &str) -> Result<ClientId, ApiError> {
+    ClientId::from_str(raw).map_err(|_| {
         ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "validation.client_name_invalid",
-            format!("client_name `{raw}`: {e}"),
+            StatusCode::NOT_FOUND,
+            "client_not_found",
+            format!("client `{raw}` not found"),
         )
     })
+}
+
+/// Resolve a client's current display name for wire / view rendering.
+/// An unknown id is a 404.
+fn resolve_client_name(state: &AppState, client_id: ClientId) -> Result<String, ApiError> {
+    match state.tokens.get_by_id(client_id) {
+        Ok(Some(client)) => Ok(client.client_name.as_str().to_string()),
+        Ok(None) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "client_not_found",
+            format!("client `{client_id}` not found"),
+        )),
+        Err(e) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            e.to_string(),
+        )),
+    }
 }
 
 fn map_cap_error(e: OwnerCapError) -> ApiError {
@@ -326,9 +366,9 @@ fn rate_limit_to_proto(rl: &portunus_core::RateLimit) -> proto::RateLimit {
     }
 }
 
-fn envelope_to_view(row: &OwnerRateLimitRow) -> OwnerRateLimitView {
+fn envelope_to_view(row: &OwnerRateLimitRow, client_name: &str) -> OwnerRateLimitView {
     OwnerRateLimitView {
-        client_name: row.client_name.as_str().to_string(),
+        client_name: client_name.to_string(),
         owner_id: row.owner_id.clone(),
         rate_limit: RateLimitView {
             bandwidth_in_bps: row.rate_limit.bandwidth_in_bps,

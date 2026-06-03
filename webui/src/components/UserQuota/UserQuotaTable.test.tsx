@@ -19,6 +19,7 @@ const entries: AccessEntry[] = [
   {
     grant_id: "g1",
     user_id: "alice",
+    client_id: "01TOKYO0000000000000000000",
     client_name: "edge-tokyo",
     listen_port_start: 1000,
     listen_port_end: 2000,
@@ -29,6 +30,7 @@ const entries: AccessEntry[] = [
   {
     grant_id: "g2",
     user_id: "alice",
+    client_id: "01SG00000000000000000000000",
     client_name: "edge-sg",
     listen_port_start: 3000,
     listen_port_end: 4000,
@@ -44,8 +46,8 @@ describe("UserQuotaTable", () => {
         userId="alice"
         entries={entries}
         clients={[
-          { client_name: "edge-tokyo", connected: true },
-          { client_name: "edge-sg", connected: false },
+          { client_id: "01TOKYO0000000000000000000", client_name: "edge-tokyo", connected: true },
+          { client_id: "01SG00000000000000000000000", client_name: "edge-sg", connected: false },
         ]}
         readOnly={false}
       />,
@@ -104,8 +106,8 @@ describe("UserQuotaTable", () => {
         userId="alice"
         entries={entries}
         clients={[
-          { client_name: "edge-tokyo", connected: true },
-          { client_name: "edge-sg", connected: false },
+          { client_id: "01TOKYO0000000000000000000", client_name: "edge-tokyo", connected: true },
+          { client_id: "01SG00000000000000000000000", client_name: "edge-sg", connected: false },
         ]}
         readOnly={false}
       />,

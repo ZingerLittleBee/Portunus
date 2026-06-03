@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use portunus_auth::token;
-use portunus_core::{ClientName, fingerprint};
+use portunus_core::{ClientId, ClientName, fingerprint};
 use rusqlite::OptionalExtension;
 use thiserror::Error;
 
@@ -31,37 +31,52 @@ impl ClientEnrollmentStore {
         let expires_at = input.expires_at.to_rfc3339();
         let client_address = self.store.with_write_tx(|tx| {
             prune_stale_enrollments(tx, input.now)?;
-            let existing_client = client_for(tx, &input.client_name)?;
-            let client_address = match &input.target {
-                EnrollmentTarget::New { client_address } => {
-                    if matches!(existing_client, ExistingClient::Present { .. }) {
-                        return Ok(Err(CreateEnrollmentError::ClientAlreadyExists(
-                            input.client_name.clone(),
-                        )));
+            // 015-client-stable-id (FR-013): resolve the stable id this
+            // enrollment will carry. A brand-new client mints a fresh id
+            // NOW — a colliding display name is NOT an error, since names
+            // are free-form and non-unique. A re-enrollment resolves the
+            // existing client by its stable id (passed by the id-keyed
+            // operator route), falling back to a name lookup only for a
+            // legacy caller that supplies no id.
+            let (effective_client_id, client_address): (String, Option<String>) =
+                match &input.target {
+                    EnrollmentTarget::New { client_address } => {
+                        let id = input.client_id.unwrap_or_default();
+                        (id.to_string(), client_address.clone())
                     }
-                    client_address.clone()
-                }
-                EnrollmentTarget::Existing => match existing_client {
-                    ExistingClient::Present { client_address } => client_address,
-                    ExistingClient::Absent => {
-                        return Ok(Err(CreateEnrollmentError::ClientNotFound(
-                            input.client_name.clone(),
-                        )));
+                    EnrollmentTarget::Existing => {
+                        let resolved = match input.client_id {
+                            Some(id) => Some((id.to_string(), client_for_id(tx, id)?)),
+                            None => client_for_name_with_id(tx, &input.client_name)?,
+                        };
+                        match resolved {
+                            Some((id, ExistingClient::Present { client_address })) => {
+                                (id, client_address)
+                            }
+                            _ => {
+                                return Ok(Err(CreateEnrollmentError::ClientNotFound(
+                                    input.client_name.clone(),
+                                )));
+                            }
+                        }
                     }
-                },
-            };
+                };
+            // Supersede prior unconsumed enrollments for this client, keyed
+            // on the now-known stable id so a renamed client's outstanding
+            // codes are still invalidated.
             tx.execute(
                 "UPDATE client_enrollments \
                  SET consumed_at = ? \
-                 WHERE client_name = ? AND consumed_at IS NULL",
-                rusqlite::params![issued_at, input.client_name.as_str()],
+                 WHERE client_id = ? AND consumed_at IS NULL",
+                rusqlite::params![issued_at, effective_client_id],
             )
             .map_err(map_rusqlite)?;
             tx.execute(
                 "INSERT INTO client_enrollments \
-                 (client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
-                 VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                 (client_id, client_name, client_address, code_hash, issued_at, expires_at, consumed_at, advertised_endpoint) \
+                 VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
                 rusqlite::params![
+                    effective_client_id,
                     input.client_name.as_str(),
                     client_address.as_deref(),
                     code_hash,
@@ -98,7 +113,7 @@ impl ClientEnrollmentStore {
         self.store.with_write_tx(|tx| {
             let mut stmt = tx
                 .prepare(
-                    "SELECT id, client_name, client_address, code_hash, expires_at, consumed_at, advertised_endpoint \
+                    "SELECT id, client_id, client_name, client_address, code_hash, expires_at, consumed_at, advertised_endpoint \
                          FROM client_enrollments",
                 )
                 .map_err(map_rusqlite)?;
@@ -106,12 +121,13 @@ impl ClientEnrollmentStore {
                 .query_map([], |row| {
                     Ok(EnrollmentRow {
                         id: row.get(0)?,
-                        client_name: row.get(1)?,
-                        client_address: row.get(2)?,
-                        code_hash: row.get(3)?,
-                        expires_at: row.get(4)?,
-                        consumed_at: row.get(5)?,
-                        advertised_endpoint: row.get(6)?,
+                        client_id: row.get(1)?,
+                        client_name: row.get(2)?,
+                        client_address: row.get(3)?,
+                        code_hash: row.get(4)?,
+                        expires_at: row.get(5)?,
+                        consumed_at: row.get(6)?,
+                        advertised_endpoint: row.get(7)?,
                     })
                 })
                 .map_err(map_rusqlite)?;
@@ -164,45 +180,115 @@ impl ClientEnrollmentStore {
                 },
             };
 
-            let existing_client: bool = tx
-                .query_row(
-                    "SELECT 1 FROM client_tokens WHERE client_name = ? LIMIT 1",
-                    rusqlite::params![client_name.as_str()],
-                    |_| Ok(true),
-                )
-                .or_else(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(false),
-                    other => Err(other),
-                })
-                .map_err(map_rusqlite)?;
-            if existing_client {
-                tx.execute(
-                    "UPDATE client_tokens \
-                     SET token_hash = ?, issued_at = ?, revoked_at = NULL, \
-                         client_address = COALESCE(?, client_address) \
-                     WHERE client_name = ?",
-                    rusqlite::params![
-                        client_token_hash,
-                        consumed_at,
-                        row.client_address.as_deref(),
-                        client_name.as_str()
-                    ],
-                )
-                .map_err(map_rusqlite)?;
-            } else {
-                tx.execute(
-                    "INSERT INTO client_tokens \
-                         (client_name, token_hash, issued_at, revoked_at, client_address) \
-                         VALUES (?, ?, ?, NULL, ?)",
-                    rusqlite::params![
-                        client_name.as_str(),
-                        client_token_hash,
-                        consumed_at,
-                        row.client_address.as_deref()
-                    ],
-                )
-                .map_err(map_rusqlite)?;
-            }
+            // 015-client-stable-id (T014): resolve the stable id. Prefer the
+            // id persisted on the enrollment row (re-enrollment) — keying the
+            // token rotation on the id keeps it identity-safe across a rename
+            // that happened between create and redeem. Fall back to a
+            // name-based lookup for legacy rows (NULL client_id) and brand-new
+            // clients, minting a fresh id only when the client truly does not
+            // exist yet (U2).
+            let (client_id, client_name, existing_client): (String, ClientName, bool) =
+                if let Some(id) = row.client_id.clone() {
+                    let current: Option<String> = tx
+                        .query_row(
+                            "SELECT client_name FROM client_tokens WHERE client_id = ?",
+                            rusqlite::params![id],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(map_rusqlite)?;
+                    if let Some(current_name) = current {
+                        // Rotate the existing client's token by id; return its
+                        // CURRENT display name (post-rename).
+                        tx.execute(
+                            "UPDATE client_tokens \
+                             SET token_hash = ?, issued_at = ?, revoked_at = NULL, \
+                                 client_address = COALESCE(?, client_address) \
+                             WHERE client_id = ?",
+                            rusqlite::params![
+                                client_token_hash,
+                                consumed_at,
+                                row.client_address.as_deref(),
+                                id
+                            ],
+                        )
+                        .map_err(map_rusqlite)?;
+                        let resolved =
+                            ClientName::new(current_name).map_err(|e| StoreError::Corruption {
+                                detail: format!("client_tokens invalid client_name: {e}"),
+                            })?;
+                        (id, resolved, true)
+                    } else {
+                        // The client was deleted between create and redeem;
+                        // re-materialize it under the SAME id so its rules /
+                        // quotas / history (keyed on the id) reattach.
+                        tx.execute(
+                            "INSERT INTO client_tokens \
+                                 (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                                 VALUES (?, ?, ?, ?, NULL, ?)",
+                            rusqlite::params![
+                                id,
+                                client_name.as_str(),
+                                client_token_hash,
+                                consumed_at,
+                                row.client_address.as_deref()
+                            ],
+                        )
+                        .map_err(map_rusqlite)?;
+                        (id, client_name, false)
+                    }
+                } else {
+                    let existing: bool = tx
+                        .query_row(
+                            "SELECT 1 FROM client_tokens WHERE client_name = ? LIMIT 1",
+                            rusqlite::params![client_name.as_str()],
+                            |_| Ok(true),
+                        )
+                        .or_else(|e| match e {
+                            rusqlite::Error::QueryReturnedNoRows => Ok(false),
+                            other => Err(other),
+                        })
+                        .map_err(map_rusqlite)?;
+                    if existing {
+                        let id: String = tx
+                            .query_row(
+                                "SELECT client_id FROM client_tokens WHERE client_name = ?",
+                                rusqlite::params![client_name.as_str()],
+                                |r| r.get(0),
+                            )
+                            .map_err(map_rusqlite)?;
+                        tx.execute(
+                            "UPDATE client_tokens \
+                             SET token_hash = ?, issued_at = ?, revoked_at = NULL, \
+                                 client_address = COALESCE(?, client_address) \
+                             WHERE client_name = ?",
+                            rusqlite::params![
+                                client_token_hash,
+                                consumed_at,
+                                row.client_address.as_deref(),
+                                client_name.as_str()
+                            ],
+                        )
+                        .map_err(map_rusqlite)?;
+                        (id, client_name, true)
+                    } else {
+                        let id = ClientId::new().to_string();
+                        tx.execute(
+                            "INSERT INTO client_tokens \
+                                 (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                                 VALUES (?, ?, ?, ?, NULL, ?)",
+                            rusqlite::params![
+                                id,
+                                client_name.as_str(),
+                                client_token_hash,
+                                consumed_at,
+                                row.client_address.as_deref()
+                            ],
+                        )
+                        .map_err(map_rusqlite)?;
+                        (id, client_name, false)
+                    }
+                };
 
             tx.execute(
                 "UPDATE client_enrollments SET consumed_at = ? WHERE id = ?",
@@ -210,7 +296,14 @@ impl ClientEnrollmentStore {
             )
             .map_err(map_rusqlite)?;
 
+            let client_id = client_id.parse::<ClientId>().map_err(|e| {
+                StoreError::Corruption {
+                    detail: format!("client_tokens invalid client_id: {e}"),
+                }
+            })?;
+
             Ok(Ok(IssuedClientCredential {
+                client_id,
                 client_name,
                 token: client_token,
                 rotated_existing: existing_client,
@@ -223,6 +316,12 @@ impl ClientEnrollmentStore {
 #[derive(Debug, Clone)]
 pub struct CreateEnrollment {
     pub client_name: ClientName,
+    /// 015-client-stable-id (T014): the stable id of the client this
+    /// enrollment targets, when it already exists (re-enrollment). `None`
+    /// for a brand-new client — its id is minted at redeem (U2). Persisted
+    /// on the row so a rename between create and redeem stays identity-safe:
+    /// redeem resolves the client by this id, not by the (now-stale) name.
+    pub client_id: Option<ClientId>,
     pub target: EnrollmentTarget,
     pub expires_at: DateTime<Utc>,
     pub now: DateTime<Utc>,
@@ -245,6 +344,7 @@ pub struct CreatedEnrollment {
 
 #[derive(Debug, Clone)]
 pub struct IssuedClientCredential {
+    pub client_id: ClientId,
     pub client_name: ClientName,
     pub token: String,
     pub rotated_existing: bool,
@@ -281,6 +381,7 @@ pub enum RedeemEnrollmentError {
 
 struct EnrollmentRow {
     id: i64,
+    client_id: Option<String>,
     client_name: String,
     client_address: Option<String>,
     code_hash: String,
@@ -294,14 +395,17 @@ enum ExistingClient {
     Absent,
 }
 
-fn client_for(
+/// Resolve a client by its stable id (015-client-stable-id). This is the
+/// canonical re-enrollment lookup: a renamed client — or one sharing a
+/// display name with others — still resolves unambiguously.
+fn client_for_id(
     tx: &rusqlite::Transaction<'_>,
-    client_name: &ClientName,
+    client_id: ClientId,
 ) -> Result<ExistingClient, StoreError> {
     let client_address = tx
         .query_row(
-            "SELECT client_address FROM client_tokens WHERE client_name = ? LIMIT 1",
-            rusqlite::params![client_name.as_str()],
+            "SELECT client_address FROM client_tokens WHERE client_id = ?",
+            rusqlite::params![client_id.to_string()],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -310,6 +414,25 @@ fn client_for(
         Some(client_address) => ExistingClient::Present { client_address },
         None => ExistingClient::Absent,
     })
+}
+
+/// Legacy fallback for a re-enrollment that supplies no id: resolve the
+/// first client with this display name, returning both its id and
+/// address. Display names are non-unique (FR-013), so this is
+/// `LIMIT 1` / first-match; callers that need determinism pass the id.
+fn client_for_name_with_id(
+    tx: &rusqlite::Transaction<'_>,
+    client_name: &ClientName,
+) -> Result<Option<(String, ExistingClient)>, StoreError> {
+    let row = tx
+        .query_row(
+            "SELECT client_id, client_address FROM client_tokens WHERE client_name = ? LIMIT 1",
+            rusqlite::params![client_name.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(row.map(|(id, client_address)| (id, ExistingClient::Present { client_address })))
 }
 
 fn prune_stale_enrollments(
@@ -385,6 +508,7 @@ mod tests {
         let created = es
             .create(CreateEnrollment {
                 client_name: ClientName::from_str("edge-1").unwrap(),
+                client_id: None,
                 target: EnrollmentTarget::New {
                     client_address: None,
                 },
@@ -415,9 +539,10 @@ mod tests {
             .with_write_tx(|tx| {
                 tx.execute(
                     "INSERT INTO client_tokens \
-                     (client_name, token_hash, issued_at, revoked_at, client_address) \
-                     VALUES (?, ?, ?, NULL, NULL)",
+                     (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, ?, NULL, NULL)",
                     rusqlite::params![
+                        ClientId::new().to_string(),
                         name,
                         fingerprint::hex(&token::hash_token(prior_token)),
                         now.to_rfc3339(),
@@ -440,6 +565,82 @@ mod tests {
             })
             .unwrap();
         fingerprint::hex(&token::hash_token(prior_token))
+    }
+
+    /// 015-client-stable-id (T014): a re-enrollment created against an
+    /// existing client carries its stable id. If the client is RENAMED
+    /// between create and redeem, the redeem must rotate that same client's
+    /// token (resolved by id) and return the CURRENT name — never fork a
+    /// brand-new client under the stale name.
+    #[test]
+    fn reenrollment_with_id_survives_a_rename_between_create_and_redeem() {
+        let store = test_store();
+        let es = ClientEnrollmentStore::new(Arc::clone(&store));
+        let now = Utc::now();
+
+        // Seed an existing client "old-name" with a stable id.
+        let client_id = ClientId::new();
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO client_tokens \
+                     (client_id, client_name, token_hash, issued_at, revoked_at, client_address) \
+                     VALUES (?, ?, ?, ?, NULL, NULL)",
+                    rusqlite::params![
+                        client_id.to_string(),
+                        "old-name",
+                        fingerprint::hex(&token::hash_token("seed-token")),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+
+        // Operator creates a re-enrollment addressed by id.
+        let created = es
+            .create(CreateEnrollment {
+                client_name: ClientName::from_str("old-name").unwrap(),
+                client_id: Some(client_id),
+                target: EnrollmentTarget::Existing,
+                expires_at: now + chrono::Duration::seconds(300),
+                now,
+                advertised_endpoint: "public.example:7443".to_string(),
+            })
+            .unwrap();
+
+        // Client is renamed before the code is redeemed.
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "UPDATE client_tokens SET client_name = ? WHERE client_id = ?",
+                    rusqlite::params!["new-name", client_id.to_string()],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+
+        let issued = es
+            .redeem(&created.code, Utc::now(), || {
+                panic!("persisted-endpoint row must not call the legacy resolver")
+            })
+            .unwrap();
+
+        // Same identity, rotated (not forked), current display name.
+        assert_eq!(issued.client_id, client_id);
+        assert_eq!(issued.client_name.as_str(), "new-name");
+        assert!(issued.rotated_existing);
+
+        // Exactly one client row — no fork under the stale name.
+        let client_count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM client_tokens", [], |r| r.get(0))
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(client_count, 1, "redeem must not fork a new client");
     }
 
     #[test]
