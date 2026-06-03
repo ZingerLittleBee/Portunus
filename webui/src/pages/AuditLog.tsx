@@ -196,7 +196,7 @@ export function AuditLog() {
         rowKey={(e) => `${e.timestamp}-${e.actor}-${e.path}-${e.outcome}`}
         toolbar={
           <Select value={outcomeFilter} onValueChange={(value) => handleOutcomeChange(value as OutcomeFilter)}>
-            <SelectTrigger className="w-[10rem]" aria-label={t("audit.outcomeFilterLabel")}>
+            <SelectTrigger className="w-40" aria-label={t("audit.outcomeFilterLabel")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

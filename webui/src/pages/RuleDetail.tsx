@@ -74,7 +74,7 @@ export function RuleDetail() {
           </CardTitle>
           <div className="flex items-center gap-2">
             <Badge
-              variant={live.source === "sse" ? ("success" as never) : "warning"}
+              variant={live.source === "sse" ? "success" : "warning"}
               title={t("ruleDetail.reconnects", { count: live.reconnectAttempts })}
             >
               {live.source === "sse" ? (

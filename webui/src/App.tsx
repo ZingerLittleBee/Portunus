@@ -25,6 +25,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 // Lazy-load page modules so the initial route bundle stays small.
 const UsersList = lazy(() => import("@/pages/UsersList").then((m) => ({ default: m.UsersList })));
@@ -78,7 +79,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-3 backdrop-blur sm:px-4">
+        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-3 backdrop-blur-sm sm:px-4">
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 hidden h-4 sm:block" />
           <PageBreadcrumb />
@@ -131,7 +132,8 @@ export function App() {
   }, []);
 
   return (
-    <AuthStatusGate>
+    <TooltipProvider>
+      <AuthStatusGate>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/onboarding" element={<OnboardingPage />} />
@@ -270,6 +272,7 @@ export function App() {
         <Route path="/forbidden" element={<PermissionDenied />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
-    </AuthStatusGate>
+      </AuthStatusGate>
+    </TooltipProvider>
   );
 }

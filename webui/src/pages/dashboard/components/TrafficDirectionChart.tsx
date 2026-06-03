@@ -28,7 +28,7 @@ export function TrafficDirectionChart({ rows, isLoading, error }: TrafficDirecti
   const chartConfig = {
     bytes: {
       label: t("dashboard.totalTransferred"),
-      color: "hsl(262 83% 58%)",
+      color: "var(--chart-3)",
     },
   } satisfies ChartConfig;
 

@@ -60,7 +60,7 @@ export function ClientCombobox({
           <ChevronsUpDown className="ml-2 size-4 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent container={popoverContainer} className="w-[--radix-popover-trigger-width] p-0">
+      <PopoverContent container={popoverContainer} className="w-(--radix-popover-trigger-width) p-0">
         <Command>
           <CommandInput placeholder={t("userQuota.combobox.search")} />
           <CommandList>
