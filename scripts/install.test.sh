@@ -276,6 +276,27 @@ if $SH "$script" --compose-dir "$sa_tmp" config get advertised-endpoint >/dev/nu
 fi
 rm -rf "$sa_tmp"
 
+# --- acme-email validation (security: Caddyfile directive injection) ---
+# A well-formed single-line email passes the predicate hook.
+$SH "$script" --valid-email "ops@example.com" || fail "valid acme-email rejected"
+$SH "$script" --valid-email "first.last+tag@sub.example.co" || fail "valid plus-tagged acme-email rejected"
+# Injection vectors are rejected: a newline (carrying extra Caddy directives),
+# embedded whitespace, Caddy metacharacters, and a dotless / malformed domain.
+inj="$(printf 'x@y.com\n    reverse_proxy 127.0.0.1:9999')"
+if $SH "$script" --valid-email "$inj" >/dev/null 2>&1; then fail "newline-injection acme-email accepted"; fi
+if $SH "$script" --valid-email "a b@example.com" >/dev/null 2>&1; then fail "whitespace acme-email accepted"; fi
+if $SH "$script" --valid-email 'a@b{}.com' >/dev/null 2>&1; then fail "brace acme-email accepted"; fi
+if $SH "$script" --valid-email "a@b" >/dev/null 2>&1; then fail "dotless-domain acme-email accepted"; fi
+if $SH "$script" --valid-email "a@@b.com" >/dev/null 2>&1; then fail "double-at acme-email accepted"; fi
+if $SH "$script" --valid-email "" >/dev/null 2>&1; then fail "empty acme-email accepted by predicate"; fi
+# Enforcement: a malicious --acme-email aborts before any side effect, on the
+# same dry-run path a clean value passes.
+if $SH "$script" server install --domain example.com --acme-email "$inj" --version 1.0.0 --dry-run >/dev/null 2>&1; then
+  fail "injection acme-email survived validation"
+fi
+$SH "$script" server install --domain example.com --acme-email "ops@example.com" --version 1.0.0 --dry-run >/dev/null 2>&1 \
+  || fail "clean acme-email rejected by validation"
+
 # --- shellcheck (skipped if not installed, but must pass if present) ---
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s sh -S warning "$script" || fail "shellcheck warnings"

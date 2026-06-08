@@ -772,6 +772,7 @@ parse_args() {
       --detect-ip) detect_public_ip; printf '%s %s\n' "$DETECTED_IP" "$DETECTED_PROV"; exit 0 ;;
       --reset-lang) rm -f "$LANG_CACHE" 2>/dev/null || true; echo "language preference reset ($LANG_CACHE); next interactive run will ask again"; exit 0 ;;
       --valid-fqdn) shift; valid_fqdn "${1:-}" && exit 0 || exit 1 ;;
+      --valid-email) shift; valid_email "${1:-}" && exit 0 || exit 1 ;;
       --render-caddy) shift; DOMAIN="${1:-}"; render_caddy_block "${2:-7080}"; exit 0 ;;
       --render-dropin) render_dropin; exit 0 ;;
       --detect-init) detect_init; printf '%s\n' "$INIT"; exit 0 ;;
@@ -811,6 +812,11 @@ main() {
   detect_platform
   resolve_version_static
   [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
+  # Reject a malformed ACME email before it can reach the root-written
+  # Caddyfile as a `tls <email>` directive (Caddy directive injection).
+  if [ -n "$ACME_EMAIL" ] && ! valid_email "$ACME_EMAIL"; then
+    die "invalid --acme-email '$ACME_EMAIL' — expected a single-line address like ops@example.com"
+  fi
   apply_advertised_default
   apply_install_defaults
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
@@ -904,6 +910,23 @@ valid_fqdn() {
     .*|-*|*.|*-|*..*) return 1 ;;
   esac
   case "$1" in *.*) return 0 ;; *) return 1 ;; esac
+}
+
+valid_email() {
+  # Single-line ACME contact email. Rejects empty, embedded whitespace,
+  # newlines, control characters, and Caddyfile metacharacters so the
+  # value cannot inject directives when emitted into the managed Caddy
+  # block (`tls <email>`). Structural check only — no deliverability
+  # guarantee. Mirrors valid_fqdn for the domain part.
+  case "$1" in
+    ""|*[!a-zA-Z0-9.@_+-]*) return 1 ;;   # empty or an illegal character
+    @*|*@|*@*@*) return 1 ;;               # empty local/domain, or not exactly one @
+  esac
+  case "${1#*@}" in
+    .*|-*|*.|*-|*..*) return 1 ;;
+    *.*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 op_http_port() {  # echo the loopback port Caddy must proxy to
