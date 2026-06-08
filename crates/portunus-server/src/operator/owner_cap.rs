@@ -10,12 +10,13 @@
 use std::sync::Arc;
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
 };
 use std::str::FromStr;
 
+use portunus_auth::{OperatorIdentity, OperatorRole};
 use portunus_core::ClientId;
 use portunus_proto::v1 as proto;
 use serde::{Deserialize, Serialize};
@@ -94,8 +95,10 @@ pub struct OwnerListEntry {
 /// `GET /v1/clients/{client_id}/owners/{owner_id}/rate-limit`
 pub async fn get_owner_rate_limit(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((client_id, owner_id)): Path<(String, String)>,
 ) -> Result<Json<OwnerRateLimitView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let cid = parse_client_id(&client_id)?;
     let display_name = resolve_client_name(&state, cid)?;
     let row = state.owner_caps.get(&cid, &owner_id).await.ok_or_else(|| {
@@ -111,9 +114,11 @@ pub async fn get_owner_rate_limit(
 /// `PUT /v1/clients/{client_id}/owners/{owner_id}/rate-limit`
 pub async fn put_owner_rate_limit(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((client_id, owner_id)): Path<(String, String)>,
     Json(body): Json<OwnerRateLimitPutBody>,
 ) -> Result<Json<OwnerRateLimitView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let cid = parse_client_id(&client_id)?;
     let display_name = resolve_client_name(&state, cid)?;
     // The name came from `client_tokens`, so it always satisfies the
@@ -197,8 +202,10 @@ pub async fn put_owner_rate_limit(
 /// `DELETE /v1/clients/{client_id}/owners/{owner_id}/rate-limit`
 pub async fn delete_owner_rate_limit(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path((client_id, owner_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    crate::operator::rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let cid = parse_client_id(&client_id)?;
     // Resolve the current display name for the wire push; tolerate a
     // missing client (already deleted) by falling back to the id string.
@@ -246,8 +253,10 @@ pub async fn delete_owner_rate_limit(
 /// number of `Active`/`Pending`/`Failed` rules under that owner.
 pub async fn get_owners_under_client(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_id): Path<String>,
 ) -> Result<Json<Vec<OwnerListEntry>>, ApiError> {
+    crate::operator::rbac::require_role(&identity, OperatorRole::Superadmin)?;
     let cid = parse_client_id(&client_id)?;
     // 015-client-stable-id (T037): 404 for an unknown id rather than an
     // empty 200 that would imply the client exists. Never leaks whether

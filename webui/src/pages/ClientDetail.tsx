@@ -18,7 +18,7 @@ import { useClientQuotas } from "@/api/quotas";
 import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
 import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
-import { canProvisionClient } from "@/lib/permissions";
+import { canProvisionClient, isSuperadmin } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -46,6 +46,11 @@ export function ClientDetail() {
     staleTime: 60_000,
   });
   const canReEnroll = canProvisionClient(identity);
+  // The owner-quotas tab lists owners/caps across tenants for this
+  // client; the backend gates GET /v1/clients/{id}/owners superadmin-only,
+  // so hide the tab from non-superadmins instead of rendering one that
+  // polls a guaranteed 403.
+  const showOwnerQuotas = isSuperadmin(identity);
   const reenroll = useCreateClientReEnrollment();
 
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -120,7 +125,9 @@ export function ClientDetail() {
       <Tabs defaultValue="overview">
         <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="overview">{t("clientDetail.tabOverview")}</TabsTrigger>
-          <TabsTrigger value="owners">{t("clientDetail.tabOwnerQuotas")}</TabsTrigger>
+          {showOwnerQuotas && (
+            <TabsTrigger value="owners">{t("clientDetail.tabOwnerQuotas")}</TabsTrigger>
+          )}
           <TabsTrigger value="traffic">{t("traffic.tab")}</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="space-y-4">
@@ -155,9 +162,11 @@ export function ClientDetail() {
             <EnrollmentInstallGuide enrollment={reenrollment} mode="reenroll" />
           )}
         </TabsContent>
-        <TabsContent value="owners">
-          <OwnerQuotasTab clientId={clientId} />
-        </TabsContent>
+        {showOwnerQuotas && (
+          <TabsContent value="owners">
+            <OwnerQuotasTab clientId={clientId} />
+          </TabsContent>
+        )}
         <TabsContent value="traffic">
           <TrafficPanel clientId={clientId} />
         </TabsContent>

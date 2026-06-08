@@ -245,25 +245,34 @@ async fn post_client_reenrollment(
 
 async fn post_revoke(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
     cli::revoke_by_id(&state, &client_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_client(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
     cli::delete_client_by_id(&state, &client_id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn put_client(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_id): Path<String>,
     Json(body): Json<UpdateClientBody>,
 ) -> Result<Json<ClientView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
     let updated = cli::update_client_by_id(&state, &client_id, Some(&body.address))?;
     let connected = state.clients.snapshot().await;
     let conn = connected.get(&updated.client_id);
@@ -294,9 +303,12 @@ struct RenameClientBody {
 /// any live session intact. An unknown or malformed id is a 404.
 async fn patch_client_name(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
     Path(client_id): Path<String>,
     Json(body): Json<RenameClientBody>,
 ) -> Result<Json<ClientView>, ApiError> {
+    crate::operator::rbac::require_role(&identity, portunus_auth::OperatorRole::Superadmin)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "role_required", "superadmin only"))?;
     let updated = cli::rename_client(&state, &client_id, &body.client_name)?;
     // 015-client-stable-id: the store write already re-synced the persisted
     // `rules.client_name`; refresh the live in-memory rule snapshot too so
