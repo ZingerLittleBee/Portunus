@@ -109,33 +109,37 @@ portunus-client
 
 `install.sh client` installs the hardened `portunus-client.service` by
 default (runs as the `portunus-client` user,
-`--bundle /etc/portunus/client.bundle.json`). Provision the bundle:
+`--bundle /etc/portunus/client.bundle.json`). Pass `--enroll` to install,
+enroll, place the bundle, and start the service in one command:
 
 ```sh
-portunus-client enroll 'portunus://...' --out ./client.bundle.json
-sudo install -o root -g portunus-client -m 0640 \
-  ./client.bundle.json /etc/portunus/client.bundle.json
-sudo systemctl enable --now portunus-client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
 ```
+
+`--enroll` places the bundle at `/etc/portunus/client.bundle.json`
+(`root:portunus-client 0640`) and calls `systemctl enable --now
+portunus-client` automatically.
 
 See the [systemd deployment guide](/en/docs/deployment/systemd).
 
 ## Docker
 
-The client image entrypoint is already `portunus-client`. Run both the
-one-shot enroll and the long-lived container as your host user so the
-`0600` bundle is written and read by one identity:
+The client image self-enrolls on first boot when `PORTUNUS_ENROLL_URI` is
+set. Mount a volume at `/etc/portunus` so the written bundle persists
+across container restarts:
 
 ```sh
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/zingerlittlebee/portunus-client \
-  enroll 'portunus://...' --out /work/client.bundle.json
-
 docker run -d --name portunus-client --network host \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
   ghcr.io/zingerlittlebee/portunus-client
 ```
+
+On first boot the container writes
+`/etc/portunus/client.bundle.json` into the volume and then starts
+forwarding. On subsequent starts `PORTUNUS_ENROLL_URI` is ignored if a
+bundle already exists.
 
 See the [Docker deployment guide](/en/docs/deployment/docker).
 

@@ -274,52 +274,38 @@ For production, running the client as a container is recommended — see Docker 
 
 ### Enroll and start
 
-Ask an operator for an enrollment command. The no-downtime path is the Web UI
-**Clients** page (or the `POST /v1/client-enrollments` API) while the server
-runs. The `enroll-client` CLI command instead opens the SQLite store directly
-and needs the server **stopped** first (a running server holds an exclusive
-lock and the command exits `store_in_use`) — see
-[Operator commands](/en/docs/deployment/docker#operator-commands) for the
-host-binary and Docker forms. Then on the edge host:
+Ask an operator for an enrollment URI (Web UI **Clients** page → **Connect
+client**, or the `POST /v1/client-enrollments` API). Then on the edge host,
+one command installs, enrolls, places the bundle, and starts the service:
 
 ```sh
-portunus-client enroll 'portunus://...' --out ./client.bundle.json
-portunus-client --bundle ./client.bundle.json
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
 ```
+
+`--enroll` places the bundle at `/etc/portunus/client.bundle.json`
+(`root:portunus-client 0640`) and enables the service automatically.
 
 See [Client Configuration — Enroll](/en/docs/configuration/client#enroll) for
 bundle resolution order, `0600` permissions, and default locations.
 
 ### Docker
 
-Run both the one-shot enroll and the long-lived container as your host user so
-the `0600` bundle is written and read by one identity:
+The client image self-enrolls on first boot when `PORTUNUS_ENROLL_URI` is
+set. Mount a named volume at `/etc/portunus` so the written bundle persists:
 
 ```sh
-# One-shot: redeem the enrollment command into a host file.
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/zingerlittlebee/portunus-client \
-  enroll 'portunus://...' --out /work/client.bundle.json
-
-# Long-lived forwarder.
 docker run -d --name portunus-client --network host \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
   ghcr.io/zingerlittlebee/portunus-client
 ```
 
-<Callout type="warn">
-**Same-host trial?** When the server's advertised endpoint is the default
-`127.0.0.1:7443`, the one-shot enroll container cannot reach it over Docker's
-bridge network (`transport error`, no bundle written) — add `--network host`
-to the `enroll` command too (the long-lived container above already uses it),
-or set a reachable [advertised endpoint](/en/docs/features/advertised-endpoint).
-Also make sure the `enroll` step actually wrote `client.bundle.json` **before**
-the long-lived `docker run`: Docker turns a missing bind-mount source path into
-a **directory**, which the client then rejects with `Is a directory`.
-</Callout>
+On first boot the container writes `/etc/portunus/client.bundle.json` into
+the volume and then starts forwarding. On subsequent starts
+`PORTUNUS_ENROLL_URI` is ignored if a bundle already exists.
 
-Compose equivalent (`compose.client.yaml`), after the bundle exists:
+Compose equivalent (`compose.client.yaml`):
 
 ```yaml
 services:
@@ -327,23 +313,21 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
-    user: "${HOST_UID}:${HOST_GID}"
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
     volumes:
-      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
+      - portunus-client:/etc/portunus
     restart: unless-stopped
-```
 
-Start it with:
-
-```sh
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d
+volumes:
+  portunus-client:
 ```
 
 `--network host` is recommended for the client because forwarded listen ports
 are created later by operator rules. If you avoid host networking, publish each
 forwarded port explicitly.
 
-See [Client Configuration](/en/docs/configuration/client#docker) for why both commands run as your host user, and [Deploy with Docker](/en/docs/deployment/docker) for production notes.
+See [Client Configuration](/en/docs/configuration/client#docker) and [Deploy with Docker](/en/docs/deployment/docker) for production notes.
 
 For a source build:
 
@@ -412,8 +396,9 @@ in `/usr/local/bin`).
 <Callout type="warn">
 The `portunus-client` unit runs as the unprivileged `portunus-client` service
 user, which **cannot** read a root-owned `0600` bundle (the unit boot-loops
-with `bundle_load_failed … Permission denied`). After enrolling, place the
-bundle with the service-user group instead of copying it as root:
+with `bundle_load_failed … Permission denied`). The `--enroll` flag handles
+placement automatically (`root:portunus-client 0640`). If you place a bundle
+manually, use:
 
 ```sh
 sudo install -o root -g portunus-client -m 0640 \

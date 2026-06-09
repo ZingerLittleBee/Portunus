@@ -228,7 +228,10 @@ fn test_self_bootstrap_enrolls_and_connects() {
     });
 
     let edge = view.expect("edge-boot should be reported connected within 10s");
-    assert_eq!(edge.get("client_name").and_then(|n| n.as_str()), Some("edge-boot"));
+    assert_eq!(
+        edge.get("client_name").and_then(|n| n.as_str()),
+        Some("edge-boot")
+    );
     assert!(
         bundle_path.is_file(),
         "self-bootstrap should have written the bundle"

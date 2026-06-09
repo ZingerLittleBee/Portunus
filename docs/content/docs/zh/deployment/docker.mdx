@@ -161,34 +161,20 @@ Web onboarding 创建的是初始化时选择的 ID，例如 `admin`。
 
 ## Client
 
-客户端镜像的入口点已经是 `portunus-client`。镜像默认以 nonroot（UID 65532）
-运行，既写不了宿主属主的挂载，也读不了宿主 UID 写出的 0600 文件。因此一次性
-enroll 和长驻容器都要以你的宿主用户身份运行：bundle 默认权限是 0600，由同一
-身份写出、再由同一身份读取。
+设置 `PORTUNUS_ENROLL_URI` 后，客户端镜像首次启动会自动完成接入。
+挂载一个 named volume 到 `/etc/portunus`，让写出的 bundle 在容器重启后保留：
 
 ```sh
-# 一次性：把 enrollment 命令兑换为宿主文件。
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/zingerlittlebee/portunus-client \
-  enroll 'portunus://...' --out /work/client.bundle.json
-
-# 长驻转发容器。
 docker run -d --name portunus-client --network host \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
   ghcr.io/zingerlittlebee/portunus-client
 ```
 
-<Callout type="warn">
-**同机试用？** 当 Server 的 advertised endpoint 是默认的 `127.0.0.1:7443` 时，
-一次性接入容器在 Docker bridge 网络下连不到它（报 `transport error`，不会写出
-bundle）——需要给 `enroll` 命令也加上 `--network host`，或设置一个可达的
-[advertised endpoint](/zh/docs/features/advertised-endpoint)。另外请确认 `enroll`
-步骤在长驻 `docker run` **之前**确实写出了 `client.bundle.json`：Docker 会把不存在
-的 bind-mount 源路径创建成一个**目录**，client 随后会以 `Is a directory` 拒绝它。
-</Callout>
+首次启动时，容器会把 `/etc/portunus/client.bundle.json` 写入 volume，
+然后开始转发。后续启动时，若 bundle 已存在，`PORTUNUS_ENROLL_URI` 会被忽略。
 
-Compose 等价写法（`compose.client.yaml`），bundle 已存在后：
+Compose 等价写法（`compose.client.yaml`）：
 
 ```yaml
 services:
@@ -196,17 +182,20 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
-    user: "${HOST_UID}:${HOST_GID}"
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
     volumes:
-      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
+      - portunus-client:/etc/portunus
     restart: unless-stopped
+
+volumes:
+  portunus-client:
 ```
 
-用 `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d`
+用 `PORTUNUS_ENROLL_URI='portunus://...' docker compose -f compose.client.yaml up -d`
 启动。`portunus-client` 用 host networking 最省心：operator 推送的规则会在 edge
-宿主机上绑定 listener，而 Docker 事先并不知道这些端口。`install.sh client --deploy docker`
-会为你生成完全相同的 `compose.yml` —— 先 enroll 一次让 `./client.bundle.json` 存在
-（否则会拒绝执行）。二进制与 enroll 详情见 [Client 配置](/zh/docs/configuration/client)。
+宿主机上绑定 listener，而 Docker 事先并不知道这些端口。二进制与 enroll 详情见
+[Client 配置](/zh/docs/configuration/client)。
 
 ## 备份与迁移
 
