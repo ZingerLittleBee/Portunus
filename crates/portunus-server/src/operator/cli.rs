@@ -595,12 +595,11 @@ fn create_enrollment_command(
 }
 
 fn enrollment_uri(state: &AppState, endpoint: &str, code: &str) -> String {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-
-    let cert = URL_SAFE_NO_PAD.encode(state.server_cert_pem.as_bytes());
+    // Pin-only: the client trusts the server cert by its SHA-256
+    // fingerprint, so the certificate itself is not embedded in the URI.
     format!(
-        "portunus://{}/enroll?pin=sha256:{}&code={}&cert={}",
-        endpoint, state.server_cert_sha256, code, cert
+        "portunus://{}/enroll?pin=sha256:{}&code={}",
+        endpoint, state.server_cert_sha256, code
     )
 }
 

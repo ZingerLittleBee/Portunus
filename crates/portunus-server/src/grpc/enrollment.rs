@@ -88,8 +88,9 @@ impl ClientEnrollment for ClientEnrollmentService {
             version: 1,
             client_name: issued.client_name.to_string(),
             server_endpoint,
+            // Pin only — the client verifies the handshake cert against
+            // this SHA-256; the full certificate is never sent.
             server_cert_sha256: self.state.server_cert_sha256.clone(),
-            server_cert_pem: self.state.server_cert_pem.clone(),
             token: issued.token,
             client_id: issued.client_id.to_string(),
         }))
@@ -153,7 +154,7 @@ mod tests {
             Some("public.example:443"),
         )
         .expect("create enrollment");
-        // uri: portunus://public.example:7443/enroll?...&code=CODE&cert=...
+        // uri: portunus://public.example:7443/enroll?pin=sha256:...&code=CODE
         let code = cmd
             .uri
             .split("code=")

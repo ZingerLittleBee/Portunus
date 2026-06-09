@@ -12,7 +12,6 @@ fn credential_bundle_client_id_roundtrips() {
         client_name: "Acme Prod – East".into(),
         server_endpoint: "control.example:7443".into(),
         server_cert_sha256: "a".repeat(64),
-        server_cert_pem: "pem".into(),
         token: "tok".into(),
         client_id: "01HCLIENTID0000000000000000".into(),
     };
@@ -32,7 +31,6 @@ fn legacy_credential_bundle_without_client_id_still_decodes() {
         client_name: "edge-01".into(),
         server_endpoint: "control.example:7443".into(),
         server_cert_sha256: "a".repeat(64),
-        server_cert_pem: "pem".into(),
         token: "tok".into(),
         client_id: String::new(), // not present on the wire
     };

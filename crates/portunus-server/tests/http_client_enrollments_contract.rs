@@ -106,12 +106,12 @@ async fn create_enrollment_returns_one_time_client_command_without_issuing_token
     assert!(command.starts_with("portunus-client enroll 'portunus://public.example:7443/enroll?"));
     assert!(command.contains("pin=sha256:"));
     assert!(command.contains("code="));
-    assert!(command.contains("cert="));
+    assert!(!command.contains("cert="), "pin-only URI must not embed cert");
     let uri = body["uri"].as_str().expect("uri");
     assert!(uri.starts_with("portunus://public.example:7443/enroll?"));
     assert!(uri.contains("pin=sha256:"));
     assert!(uri.contains("code="));
-    assert!(uri.contains("cert="));
+    assert!(!uri.contains("cert="), "pin-only URI must not embed cert");
     assert_eq!(command, format!("portunus-client enroll '{uri}'"));
     assert!(tokens.list().expect("list tokens").is_empty());
 }
