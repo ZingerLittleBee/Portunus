@@ -61,6 +61,12 @@ enum Cmd {
     },
 }
 
+fn current_thread_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// Decide whether to self-enroll on startup. Returns the URI to redeem
 /// only when no bundle is present yet AND a non-empty `PORTUNUS_ENROLL_URI`
 /// was supplied. A bundle that already exists always wins — the one-time
@@ -87,10 +93,7 @@ fn main() -> ExitCode {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     if let Some(Cmd::Enroll { uri, out }) = cli.cmd {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
+        let runtime = match current_thread_runtime() {
             Ok(rt) => rt,
             Err(e) => {
                 error!(event = "client.runtime_failed", error = %e);
@@ -125,22 +128,21 @@ fn main() -> ExitCode {
     // resolved path before loading. The Docker image always passes
     // `--bundle /etc/portunus/client.bundle.json`, so the target path is
     // known; on subsequent boots the persisted bundle wins.
+    // resolve_bundle_path returns Ok for an explicit --bundle even when the
+    // file is absent, so is_file() is the real existence gate here.
     if let Some(uri) = self_enroll_uri(
         bundle_path.is_file(),
         std::env::var("PORTUNUS_ENROLL_URI").ok(),
     ) {
         info!(event = "client.self_bootstrap", path = %bundle_path.display());
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
+        let runtime = match current_thread_runtime() {
             Ok(rt) => rt,
             Err(e) => {
                 error!(event = "client.runtime_failed", error = %e);
                 return ExitCode::from(1);
             }
         };
-        if let Err(e) = rt.block_on(enroll::enroll(&uri, Some(bundle_path.clone()))) {
+        if let Err(e) = runtime.block_on(enroll::enroll(&uri, Some(bundle_path.clone()))) {
             eprintln!("error: {e}");
             error!(
                 event = "client.self_bootstrap_failed",
@@ -217,6 +219,7 @@ mod tests {
     #[test]
     fn skips_when_bundle_present() {
         assert_eq!(self_enroll_uri(true, Some("portunus://x".into())), None);
+        assert_eq!(self_enroll_uri(true, None), None);
     }
 
     #[test]
