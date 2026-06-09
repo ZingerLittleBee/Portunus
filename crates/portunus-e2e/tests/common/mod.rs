@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-fn fresh_tempdir(label: &str) -> TempDir {
+pub fn fresh_tempdir(label: &str) -> TempDir {
     TempDir::new().unwrap_or_else(|e| panic!("tempdir for {label}: {e}"))
 }
 
@@ -267,9 +267,10 @@ pub fn list_clients_http(operator_http_addr: &str) -> serde_json::Value {
     resp.json().expect("parse JSON body")
 }
 
-/// Enroll a client via the running server's HTTP + unauthenticated gRPC APIs.
-/// Returns the path to the written `<name>.bundle.json`.
-pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
+/// Create an enrollment via the operator HTTP API and return its one-time
+/// `portunus://…` URI **without** redeeming it (so the caller can drive
+/// self-bootstrap). Mirrors the URI extraction in `provision_client_http`.
+pub fn create_enrollment_uri(operator_http_addr: &str, name: &str) -> String {
     let endpoint = format!("http://{operator_http_addr}/v1/client-enrollments");
     let (k, v) = auth_header();
     let resp = reqwest::blocking::Client::new()
@@ -284,10 +285,16 @@ pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
     );
     let enrollment: serde_json::Value = resp.json().expect("parse enrollment JSON");
     let command = enrollment["command"].as_str().expect("enrollment command");
-    let uri = command
+    command
         .split_once('\'')
         .and_then(|(_, rest)| rest.rsplit_once('\'').map(|(uri, _)| uri.to_string()))
-        .expect("extract enrollment URI");
+        .expect("extract enrollment URI")
+}
+
+/// Enroll a client via the running server's HTTP + unauthenticated gRPC APIs.
+/// Returns the path to the written `<name>.bundle.json`.
+pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
+    let uri = create_enrollment_uri(operator_http_addr, name);
     let out_dir = fresh_tempdir("bundle out").keep();
     let path = out_dir.join(format!("{name}.bundle.json"));
     let status = cmd_for("portunus-client")
@@ -302,6 +309,25 @@ pub fn provision_client_http(operator_http_addr: &str, name: &str) -> PathBuf {
         "portunus-client enroll failed: {status:?}"
     );
     path
+}
+
+/// Launch `portunus-client --bundle <path>` with `PORTUNUS_ENROLL_URI` set
+/// and no bundle on disk yet, exercising the first-boot self-bootstrap path.
+pub fn spawn_client_self_enroll(bundle_path: &Path, enroll_uri: &str) -> ClientHandle {
+    let mut cmd = cmd_for("portunus-client");
+    cmd.arg("--bundle")
+        .arg(bundle_path)
+        .env("PORTUNUS_ENROLL_URI", enroll_uri)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("RUST_LOG", rust_log_env());
+    let mut child = cmd.spawn().expect("spawn portunus-client");
+    let stderr = child.stderr.take().expect("client stderr piped");
+    let stderr_lines = capture_stderr(stderr);
+    ClientHandle {
+        child,
+        stderr_lines,
+    }
 }
 
 /// Push a rule via the running server's HTTP API. Returns the

@@ -198,6 +198,43 @@ fn test_user_story_1_acceptance() {
     );
 }
 
+#[test]
+fn test_self_bootstrap_enrolls_and_connects() {
+    let server = common::spawn_server(&[]);
+    let (_grpc, http) = server
+        .wait_listening(Duration::from_secs(5))
+        .expect("server should log listening event within 5s");
+
+    // Create an enrollment but do NOT redeem it — hand the URI to the
+    // client via PORTUNUS_ENROLL_URI and let it self-bootstrap.
+    let uri = common::create_enrollment_uri(&http, "edge-boot");
+    let dir = common::fresh_tempdir("self-bootstrap");
+    let bundle_path = dir.path().join("client.bundle.json");
+    assert!(!bundle_path.exists(), "bundle must be absent before boot");
+
+    let _client = common::spawn_client_self_enroll(&bundle_path, &uri);
+
+    let view = common::wait_for(Duration::from_secs(10), || {
+        let arr = common::list_clients_http(&http);
+        let edge = arr
+            .as_array()?
+            .iter()
+            .find(|v| v.get("client_name").and_then(|n| n.as_str()) == Some("edge-boot"))?;
+        if edge.get("connected")?.as_bool()? {
+            Some(edge.clone())
+        } else {
+            None
+        }
+    });
+
+    let edge = view.expect("edge-boot should be reported connected within 10s");
+    assert_eq!(edge.get("client_name").and_then(|n| n.as_str()), Some("edge-boot"));
+    assert!(
+        bundle_path.is_file(),
+        "self-bootstrap should have written the bundle"
+    );
+}
+
 /// Spawn a tiny in-process TCP echo server and return its `(host, port)`.
 fn spawn_echo() -> (String, u16) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind echo");
