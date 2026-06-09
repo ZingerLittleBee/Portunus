@@ -61,6 +61,30 @@ enum Cmd {
     },
 }
 
+fn current_thread_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
+/// Decide whether to self-enroll on startup. Returns the URI to redeem
+/// only when no bundle is present yet AND a non-empty `PORTUNUS_ENROLL_URI`
+/// was supplied. A bundle that already exists always wins — the one-time
+/// enrollment code is spent after first use, so a present bundle is loaded
+/// as-is. Used by the Docker image to onboard on first boot.
+fn self_enroll_uri(bundle_present: bool, env_uri: Option<String>) -> Option<String> {
+    if bundle_present {
+        return None;
+    }
+    let uri = env_uri?;
+    let trimmed = uri.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing();
@@ -69,10 +93,7 @@ fn main() -> ExitCode {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     if let Some(Cmd::Enroll { uri, out }) = cli.cmd {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
+        let runtime = match current_thread_runtime() {
             Ok(rt) => rt,
             Err(e) => {
                 error!(event = "client.runtime_failed", error = %e);
@@ -102,6 +123,35 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // Self-bootstrap (Docker first boot): when the resolved bundle is
+    // absent but PORTUNUS_ENROLL_URI is set, redeem it once into the
+    // resolved path before loading. The Docker image always passes
+    // `--bundle /etc/portunus/client.bundle.json`, so the target path is
+    // known; on subsequent boots the persisted bundle wins.
+    // resolve_bundle_path returns Ok for an explicit --bundle even when the
+    // file is absent, so is_file() is the real existence gate here.
+    if let Some(uri) = self_enroll_uri(
+        bundle_path.is_file(),
+        std::env::var("PORTUNUS_ENROLL_URI").ok(),
+    ) {
+        info!(event = "client.self_bootstrap", path = %bundle_path.display());
+        let runtime = match current_thread_runtime() {
+            Ok(rt) => rt,
+            Err(e) => {
+                error!(event = "client.runtime_failed", error = %e);
+                return ExitCode::from(1);
+            }
+        };
+        if let Err(e) = runtime.block_on(enroll::enroll(&uri, Some(bundle_path.clone()))) {
+            eprintln!("error: {e}");
+            error!(
+                event = "client.self_bootstrap_failed",
+                error = %e,
+                path = %bundle_path.display()
+            );
+            return ExitCode::from(1);
+        }
+    }
     let bundle = match CredentialBundle::read_from(&bundle_path) {
         Ok(b) => Arc::new(b),
         Err(e) => {
@@ -160,4 +210,37 @@ fn init_tracing() {
         .with(json_layer)
         .with(RedactionLayer::new())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::self_enroll_uri;
+
+    #[test]
+    fn skips_when_bundle_present() {
+        assert_eq!(self_enroll_uri(true, Some("portunus://x".into())), None);
+        assert_eq!(self_enroll_uri(true, None), None);
+    }
+
+    #[test]
+    fn returns_uri_when_absent_and_set() {
+        assert_eq!(
+            self_enroll_uri(false, Some("portunus://x".into())),
+            Some("portunus://x".to_string())
+        );
+    }
+
+    #[test]
+    fn none_when_absent_and_unset() {
+        assert_eq!(self_enroll_uri(false, None), None);
+    }
+
+    #[test]
+    fn trims_and_rejects_blank() {
+        assert_eq!(self_enroll_uri(false, Some("   ".into())), None);
+        assert_eq!(
+            self_enroll_uri(false, Some("  portunus://x  ".into())),
+            Some("portunus://x".to_string())
+        );
+    }
 }

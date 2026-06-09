@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -46,6 +46,7 @@ CONFIG_VALUE=""
 ASSUME_YES="no"
 PURGE="no"
 DRY_RUN="no"
+ENROLL_URI=""     # --enroll '<uri>' (client/binary only): one-time enrollment URI
 LANG_CODE="${PORTUNUS_LANG:-}"
 tag=""
 artifact_version=""
@@ -159,6 +160,8 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:https_public_note) _f="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。" ;;
     zh:adv_from_domain) _f="  对外通告地址：%s（由域名推导）" ;;
     zh:config_na_standalone) _f="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml" ;;
+    zh:enroll_placed) _f="已将注册凭据写入 %s" ;;
+    zh:enroll_failed) _f="客户端注册失败；二进制与服务已安装，请用新的注册链接重试。" ;;
     *:menu_title) _f="Portunus Manager" ;;
     *:menu_install) _f="  [1] Install" ;;
     *:menu_uninstall) _f="  [2] Uninstall" ;;
@@ -231,6 +234,8 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
     *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
     *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
+    *:enroll_placed) _f="Enrollment bundle placed at %s" ;;
+    *:enroll_failed) _f="Enrollment failed; the binary and service are installed — retry with a fresh enroll link." ;;
     zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
     *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
     zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
@@ -375,6 +380,36 @@ apply_config_path() {
   fi
 }
 
+# Enroll the client and place its bundle where the service reads it.
+# Runs after the binary + service unit are installed; dies on failure so we
+# never enable a service that would crash-loop on a missing bundle.
+# Re-enrollment: if the service is already active, restart it so the new
+# credentials take effect (a fresh install is started by the caller).
+place_client_bundle() {
+  _uri="$1"
+  ensure_svc_user client   # idempotent: guarantees portunus-client + /etc/portunus
+  # Stage the bundle (it holds a bearer token) in a tracked temp dir: the
+  # EXIT trap removes it on normal exit, and the explicit rm -rf below
+  # clears it on every success/failure path. (A hard kill mid-enroll could
+  # leave it; it is mode 0600 inside a 0700 mktemp -d.)
+  _tmpd="$(mktemp -d)" || die "failed to create temp dir for bundle"
+  track_tmp "$_tmpd"
+  _tmp="$_tmpd/client.bundle.json"
+  if ! "${BIN_DIR}/portunus-client" enroll "$_uri" --out "$_tmp" >/dev/null; then
+    rm -rf "$_tmpd"
+    die "$(t enroll_failed)"
+  fi
+  ${SUDO:-} install -o root -g portunus-client -m 0640 "$_tmp" /etc/portunus/client.bundle.json \
+    || { rm -rf "$_tmpd"; die "failed to place client bundle"; }
+  rm -rf "$_tmpd"
+  if command -v systemctl >/dev/null 2>&1 && ${SUDO:-} systemctl is-active --quiet portunus-client 2>/dev/null; then
+    ${SUDO:-} systemctl restart portunus-client || true
+  elif command -v rc-service >/dev/null 2>&1 && rc-service portunus-client status >/dev/null 2>&1; then
+    ${SUDO:-} rc-service portunus-client restart || true
+  fi
+  t enroll_placed "/etc/portunus/client.bundle.json"; echo
+}
+
 # systemd drop-in body for a custom standalone config path (empty otherwise).
 render_config_dropin() {
   _r="$1"; _p="$2"
@@ -480,6 +515,7 @@ print_plan() {
   checksums="portunus-${artifact_version:-<latest>}-checksums.txt"
   echo "portunus install (dry-run)"
   echo "role:             ${ROLE}"
+  [ "$ROLE" = client ] && [ -n "$ENROLL_URI" ] && echo "enroll_uri:       ${ENROLL_URI%%\?*} (code redacted)"
   echo "os:               ${os}"
   echo "arch:             ${arch}"
   echo "target:           ${target}"
@@ -633,11 +669,11 @@ write_compose_env() {
   : > "$f"
   [ -n "$ADVERTISED" ]      && echo "PORTUNUS_ADVERTISED_ENDPOINT=${ADVERTISED}" >> "$f"
   [ -n "$OP_HTTP_LISTEN" ]  && echo "PORTUNUS_OPERATOR_HTTP_LISTEN=${OP_HTTP_LISTEN}" >> "$f"
-  # The client compose runs as the host user so the 0600 bundle written by
-  # `enroll` is readable inside the container (interpolated by compose).
   if [ "$ROLE" = "client" ]; then
-    echo "HOST_UID=$(id -u)" >> "$f"
-    echo "HOST_GID=$(id -g)" >> "$f"
+    # First boot self-enrolls from this URI; paste the one-time enroll URI
+    # from the Web UI Clients page (or `portunus-server enroll-client`).
+    echo "# set PORTUNUS_ENROLL_URI before 'docker compose up' (one-time URI)" >> "$f"
+    echo "PORTUNUS_ENROLL_URI=" >> "$f"
   fi
   echo "→ wrote $f"
 }
@@ -668,19 +704,9 @@ write_compose_file() {
     return 0
   fi
   if [ "$ROLE" = "client" ]; then
-    # The client image's default entrypoint is already
-    # `portunus-client --bundle /etc/portunus/client.bundle.json`, so we
-    # do NOT override command. Host networking lets pushed-rule listeners
-    # bind on the edge host (their ports are unknown until the operator
-    # creates rules). The bundle must already exist — a missing bind-mount
-    # source is created by Docker as a bogus *directory*, which the client
-    # rejects with "Is a directory". Mirror the standalone author-it-first
-    # contract and point at the one-shot enroll.
-    if [ ! -f "$dir/client.bundle.json" ]; then
-      die "create ${dir}/client.bundle.json first — enroll once, then re-run:
-  docker run --rm --network host -v \"${dir}:/work\" ghcr.io/zingerlittlebee/portunus-client:${artifact_version:-latest} enroll '<portunus://…enroll URI>' --out /work/client.bundle.json
-(get the enroll URI from the Web UI Clients page or 'portunus-server enroll-client')"
-    fi
+    # The client image self-enrolls on first boot from PORTUNUS_ENROLL_URI
+    # (set it in .env) into the named volume at /etc/portunus, then runs.
+    # Host networking lets pushed-rule listeners bind on the edge host.
     [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
     cat > "$f" <<YAML
 services:
@@ -688,10 +714,14 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:${artifact_version:-latest}
     container_name: portunus-client
     network_mode: host
-    user: "\${HOST_UID:-0}:\${HOST_GID:-0}"
+    environment:
+      - PORTUNUS_ENROLL_URI=\${PORTUNUS_ENROLL_URI:-}
     volumes:
-      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
+      - portunus-client:/etc/portunus
     restart: unless-stopped
+
+volumes:
+  portunus-client:
 YAML
     echo "→ wrote $f"
     return 0
@@ -760,12 +790,13 @@ parse_args() {
       --systemd) : ;;  # back-compat no-op: the service is installed by default now
       --no-service) NO_SERVICE="yes" ;;
       --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
+      --enroll) shift; [ $# -gt 0 ] || die "--enroll needs a value"; ENROLL_URI="$1" ;;
       --yes) ASSUME_YES="yes" ;;
       --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--enroll '<uri>' (client)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
@@ -812,6 +843,8 @@ main() {
   detect_platform
   resolve_version_static
   [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
+  [ -n "$ENROLL_URI" ] && [ "$ROLE" != client ] && die "--enroll is client-only"
+  [ -n "$ENROLL_URI" ] && [ "$DEPLOY" = docker ] && die "--enroll is binary-only (for Docker pass PORTUNUS_ENROLL_URI to the container)"
   # Reject a malformed ACME email before it can reach the root-written
   # Caddyfile as a `tls <email>` directive (Caddy directive injection).
   if [ -n "$ACME_EMAIL" ] && ! valid_email "$ACME_EMAIL"; then
@@ -1264,6 +1297,9 @@ dispatch_verb() {
         # and config are already on disk, so even if enable/start fails the
         # deploy is recoverable via uninstall/upgrade/status.
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+        if [ "$ROLE" = client ] && [ -n "$ENROLL_URI" ]; then
+          place_client_bundle "$ENROLL_URI"
+        fi
         if service_should_start; then svc enable_start "$ROLE"; fi
       fi
       if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then

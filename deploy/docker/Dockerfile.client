@@ -8,14 +8,22 @@ ARG TARGETARCH
 FROM debian:12-slim AS abi-check
 ARG TARGETARCH
 COPY docker-bin/${TARGETARCH}/portunus-client /usr/local/bin/portunus-client
-RUN /usr/local/bin/portunus-client --version
+RUN /usr/local/bin/portunus-client --version \
+ && mkdir -p /etc/portunus && chown 65532:65532 /etc/portunus
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
 ARG TARGETARCH
 COPY --from=abi-check /usr/local/bin/portunus-client /usr/local/bin/portunus-client
+# Self-enrollment (PORTUNUS_ENROLL_URI on first boot) writes the bundle
+# here. An empty named volume mounted at /etc/portunus inherits this
+# nonroot ownership so the unprivileged process can create the bundle.
+# (A bind mount keeps host ownership — chown the host dir to 65532 first.)
+COPY --from=abi-check --chown=65532:65532 /etc/portunus /etc/portunus
 
-# Bundle is mounted read-only at /etc/portunus/client.bundle.json.
+# The bundle lives at /etc/portunus/client.bundle.json. With
+# `-e PORTUNUS_ENROLL_URI=…` and a writable volume at /etc/portunus, the
+# container self-enrolls on first boot; otherwise mount a ready bundle.
 # Forwarding rules pushed by the operator may bind any port the kernel allows;
 # host networking (or explicit `-p` per rule) is required for traffic to reach
 # the listener from outside the container.

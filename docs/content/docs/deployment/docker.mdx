@@ -175,37 +175,22 @@ example `admin`.
 
 ## Client
 
-The client image's entrypoint is already `portunus-client`, so pass
-`enroll …` as arguments to override the default `CMD`. Run **both** the
-one-shot enroll and the long-lived container as your host user — the
-image defaults to `nonroot` (UID 65532), which cannot write a
-host-owned bind mount nor read a host-UID `0600` bundle:
+The client image self-enrolls on first boot when `PORTUNUS_ENROLL_URI` is
+set. Mount a named volume at `/etc/portunus` so the bundle persists across
+restarts:
 
 ```sh
-# One-shot: redeem the enrollment command into a host file.
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/zingerlittlebee/portunus-client \
-  enroll 'portunus://...' --out /work/client.bundle.json
-
-# Long-lived forwarder.
 docker run -d --name portunus-client --network host \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
   ghcr.io/zingerlittlebee/portunus-client
 ```
 
-<Callout type="warn">
-**Same-host trial?** When the server's advertised endpoint is the default
-`127.0.0.1:7443`, the one-shot enroll container cannot reach it over Docker's
-bridge network (`transport error`, no bundle written) — add `--network host`
-to the `enroll` command too, or set a reachable
-[advertised endpoint](/en/docs/features/advertised-endpoint). And confirm the
-`enroll` step wrote `client.bundle.json` **before** the long-lived `docker run`:
-a missing bind-mount source path is created by Docker as a **directory**, which
-the client rejects with `Is a directory`.
-</Callout>
+On first boot the container writes `/etc/portunus/client.bundle.json` into
+the volume and then starts forwarding. On subsequent starts
+`PORTUNUS_ENROLL_URI` is ignored if a bundle already exists.
 
-Compose equivalent (`compose.client.yaml`), after the bundle exists:
+Compose equivalent (`compose.client.yaml`):
 
 ```yaml
 services:
@@ -213,19 +198,21 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
-    user: "${HOST_UID}:${HOST_GID}"
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
     volumes:
-      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
+      - portunus-client:/etc/portunus
     restart: unless-stopped
+
+volumes:
+  portunus-client:
 ```
 
-Start it with `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f
+Start it with `PORTUNUS_ENROLL_URI='portunus://...' docker compose -f
 compose.client.yaml up -d`. Host networking is the least surprising mode
 for `portunus-client`: pushed rules bind listeners on the edge host and
 Docker cannot know those ports before the operator creates the rules.
-`install.sh client --deploy docker` writes exactly this `compose.yml` for
-you — enroll once first so `./client.bundle.json` exists (it refuses
-otherwise). Binary and enroll details:
+Binary and enroll details:
 [Client Configuration](/en/docs/configuration/client).
 
 ## Backup & migration

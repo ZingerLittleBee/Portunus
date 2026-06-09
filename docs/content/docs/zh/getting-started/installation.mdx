@@ -264,48 +264,37 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 ### 接入并启动
 
-向操作员申请一条接入命令。不停机的做法是用 Web UI **Clients** 页面（或
-`POST /v1/client-enrollments` API），它们可在 Server 运行时使用。而 `enroll-client`
-CLI 命令会直接打开 SQLite 存储，因此需要先**停止** Server（运行中的 Server 持有独占
-锁，该命令会以 `store_in_use` 退出）——宿主二进制与 Docker 两种形式参见
-[操作员命令](/zh/docs/deployment/docker#操作员命令)。然后在边缘主机上：
+向操作员申请接入 URI（Web UI **Clients** 页面 → **Connect client**，或
+`POST /v1/client-enrollments` API）。然后在边缘主机上，一条命令即可完成
+安装、接入、放置 bundle 并启动服务：
 
 ```sh
-portunus-client enroll 'portunus://...' --out ./client.bundle.json
-portunus-client --bundle ./client.bundle.json
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
 ```
+
+`--enroll` 会把 bundle 放置到 `/etc/portunus/client.bundle.json`
+（`root:portunus-client 0640`），并自动启用服务。
 
 参见 [Client 配置 — 接入](/zh/docs/configuration/client#接入enroll)，
 了解 bundle 解析顺序、`0600` 权限和默认路径。
 
 ### Docker
 
-以宿主用户身份运行一次性接入容器和长驻容器，确保 `0600` 的 bundle 由同一身份写入和读取：
+设置 `PORTUNUS_ENROLL_URI` 后，客户端镜像首次启动会自动完成接入。
+挂载一个 named volume 到 `/etc/portunus`，让写出的 bundle 在容器重启后保留：
 
 ```sh
-# 一次性：把接入命令兑换为宿主文件。
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
-  ghcr.io/zingerlittlebee/portunus-client \
-  enroll 'portunus://...' --out /work/client.bundle.json
-
-# 长驻转发容器。
 docker run -d --name portunus-client --network host \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
   ghcr.io/zingerlittlebee/portunus-client
 ```
 
-<Callout type="warn">
-**同机试用？** 当 Server 的 advertised endpoint 是默认的 `127.0.0.1:7443` 时，
-一次性接入容器在 Docker bridge 网络下连不到它（报 `transport error`，且不会写出
-bundle）——这时需要给 `enroll` 命令也加上 `--network host`（上面的长驻容器已经用了它），
-或设置一个可达的 [advertised endpoint](/zh/docs/features/advertised-endpoint)。
-另外请确认 `enroll` 步骤确实在长驻 `docker run` **之前**写出了
-`client.bundle.json`：Docker 会把不存在的 bind-mount 源路径创建成一个**目录**，
-随后 client 会以 `Is a directory` 拒绝它。
-</Callout>
+首次启动时，容器会把 `/etc/portunus/client.bundle.json` 写入 volume，
+然后开始转发。后续启动时，若 bundle 已存在，`PORTUNUS_ENROLL_URI` 会被忽略。
 
-Compose 等价写法（`compose.client.yaml`），在 bundle 已存在的情况下：
+Compose 等价写法（`compose.client.yaml`）：
 
 ```yaml
 services:
@@ -313,23 +302,22 @@ services:
     image: ghcr.io/zingerlittlebee/portunus-client:latest
     container_name: portunus-client
     network_mode: host
-    user: "${HOST_UID}:${HOST_GID}"
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
     volumes:
-      - ./client.bundle.json:/etc/portunus/client.bundle.json:ro
+      - portunus-client:/etc/portunus
     restart: unless-stopped
+
+volumes:
+  portunus-client:
 ```
 
-用以下命令启动：
-
-```sh
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f compose.client.yaml up -d
-```
-
+用 `PORTUNUS_ENROLL_URI='portunus://...' docker compose -f compose.client.yaml up -d` 启动。
 Client 推荐使用 `--network host`，因为转发监听端口是在后续 operator 推送规则时
 动态创建的。若不使用 host networking，就得为每个转发监听端口显式做端口发布。
 
-参见 [Client 配置](/zh/docs/configuration/client#docker) 了解为何两条命令都要以
-宿主用户身份运行，以及 [Docker 部署](/zh/docs/deployment/docker) 了解生产注意事项。
+参见 [Client 配置](/zh/docs/configuration/client#docker) 和
+[Docker 部署](/zh/docs/deployment/docker) 了解生产注意事项。
 
 如果从源码编译：
 
@@ -394,7 +382,8 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 <Callout type="warn">
 `portunus-client` unit 以非特权的 `portunus-client` 服务用户运行，**无法**读取
 属主为 root 的 `0600` bundle（unit 会以 `bundle_load_failed … Permission denied`
-不断重启）。enroll 之后，请把 bundle 放到服务用户所属的组下，而不要以 root 直接拷贝：
+不断重启）。使用 `--enroll` 时，`install.sh` 会自动以正确的权限放置 bundle
+（`root:portunus-client 0640`）。如需手动放置，请使用：
 
 ```sh
 sudo install -o root -g portunus-client -m 0640 \

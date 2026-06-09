@@ -147,15 +147,10 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 5. 创建首个 Client（Web UI Clients 页面，或 CLI）：
 portunus-server --data-dir /var/lib/portunus enroll-client edge-01
 
-# 6. 在边缘主机：安装并接入，然后放置 bundle
+# 6. 在边缘主机：一条命令完成安装、接入并启动
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
-  | sudo sh -s -- client
-portunus-client enroll 'portunus://...' --out ./client.bundle.json
-sudo install -o root -g portunus-client -m 0640 \
-  ./client.bundle.json /etc/portunus/client.bundle.json
-
-# 7. 在边缘主机上启用 client unit
-sudo systemctl enable --now portunus-client
+  | sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
+# --enroll 会放置 bundle（root:portunus-client 0640）并启用服务。
 ```
 
 setup token 30 分钟后过期，并且在 onboarding 完成前每次 server 启动都会轮换。

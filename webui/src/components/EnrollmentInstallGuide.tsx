@@ -5,7 +5,6 @@ import { Check, Clock, Copy, Terminal } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ClientEnrollmentResponse } from "@/api/types";
 
@@ -14,12 +13,6 @@ const INSTALL_URL =
 const IMAGE = "ghcr.io/zingerlittlebee/portunus-client";
 
 type Mode = "provision" | "reenroll";
-
-interface Step {
-  key: string;
-  title: string;
-  command: string;
-}
 
 function useCountdown(expiresAt: string) {
   const target = useMemo(() => new Date(expiresAt).getTime(), [expiresAt]);
@@ -69,27 +62,6 @@ function CommandBlock({ testId, command }: { testId: string; command: string }) 
   );
 }
 
-function StepList({
-  steps,
-  startIndex,
-}: {
-  steps: Step[];
-  startIndex: number;
-}) {
-  return (
-    <ol className="space-y-4">
-      {steps.map((s, i) => (
-        <li key={s.key} className="min-w-0 space-y-2">
-          <Label>
-            {startIndex + i}. {s.title}
-          </Label>
-          <CommandBlock testId={`guide-step-${s.key}`} command={s.command} />
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 export function EnrollmentInstallGuide({
   enrollment,
   mode,
@@ -105,43 +77,8 @@ export function EnrollmentInstallGuide({
   const { expired, remaining } = useCountdown(enrollment.expires_at);
   const reenroll = mode === "reenroll";
 
-  // Both deploy forms install via `install.sh`. The binary form lays down
-  // the release binary + a hardened systemd/OpenRC service (the default);
-  // Docker runs the published image directly (install.sh's `--deploy docker`
-  // is server/standalone-only — it emits a server-shaped compose).
-  const binarySteps: Step[] = [
-    {
-      key: "binary-install",
-      title: t("clientProvision.guide.stepInstall"),
-      command: `curl -fsSL ${INSTALL_URL} | sh -s -- client`,
-    },
-    {
-      key: "binary-enroll",
-      title: t("clientProvision.guide.stepEnrollSystemd"),
-      command: `${enrollment.command} --out ./client.bundle.json
-sudo install -o root -g portunus-client -m 0640 ./client.bundle.json /etc/portunus/client.bundle.json`,
-    },
-    {
-      key: "binary-enable",
-      title: t("clientProvision.guide.stepEnableSystemd"),
-      command: "sudo systemctl enable --now portunus-client",
-    },
-  ];
-  const dockerSteps: Step[] = [
-    {
-      key: "docker-enroll",
-      title: t("clientProvision.guide.stepEnrollDocker"),
-      command: `docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" ${IMAGE} enroll '${enrollment.uri}' --out /work/client.bundle.json`,
-    },
-    {
-      key: "docker-run",
-      title: t("clientProvision.guide.stepRunDocker"),
-      command: `docker run -d --name portunus-client --network host --user "$(id -u):$(id -g)" -v "$PWD/client.bundle.json:/etc/portunus/client.bundle.json:ro" ${IMAGE}`,
-    },
-  ];
-
-  const visibleBinary = reenroll ? binarySteps.slice(1) : binarySteps;
-  const binaryStart = reenroll ? 2 : 1;
+  const binaryCommand = `curl -fsSL ${INSTALL_URL} | sh -s -- client --enroll '${enrollment.uri}'`;
+  const dockerCommand = `docker run -d --name portunus-client --network host -e PORTUNUS_ENROLL_URI='${enrollment.uri}' -v portunus-client:/etc/portunus ${IMAGE}`;
 
   const header = (
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -165,26 +102,22 @@ sudo install -o root -g portunus-client -m 0640 ./client.bundle.json /etc/portun
 
   const body = (
     <>
-      {reenroll && (
-        <p className="text-xs text-muted-foreground">
-          {t("clientProvision.guide.skipNote", { step: 2 })}
-        </p>
-      )}
       <Tabs defaultValue="binary" className="min-w-0">
         <TabsList>
           <TabsTrigger value="binary">{t("clientProvision.guide.tabBinary")}</TabsTrigger>
           <TabsTrigger value="docker">{t("clientProvision.guide.tabDocker")}</TabsTrigger>
         </TabsList>
         <TabsContent value="binary" className="pt-4">
-          <StepList steps={visibleBinary} startIndex={binaryStart} />
+          <CommandBlock testId="guide-command-binary" command={binaryCommand} />
         </TabsContent>
-        <TabsContent value="docker" className="space-y-3 pt-4">
-          <p className="text-xs text-muted-foreground">
-            {t("clientProvision.guide.dockerNote")}
-          </p>
-          <StepList steps={dockerSteps} startIndex={1} />
+        <TabsContent value="docker" className="pt-4">
+          <CommandBlock testId="guide-command-docker" command={dockerCommand} />
         </TabsContent>
       </Tabs>
+      <p className="text-xs text-muted-foreground">{t("clientProvision.guide.codeNote")}</p>
+      {reenroll && (
+        <p className="text-xs text-muted-foreground">{t("clientProvision.guide.reenrollNote")}</p>
+      )}
     </>
   );
 

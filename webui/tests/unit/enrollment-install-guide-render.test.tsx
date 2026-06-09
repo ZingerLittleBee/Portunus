@@ -29,22 +29,21 @@ function mk(overrides: Partial<ClientEnrollmentResponse> = {}): ClientEnrollment
 }
 
 describe("EnrollmentInstallGuide", () => {
-  it("renders the binary and docker tabs and the enroll command verbatim", () => {
+  it("renders the binary tab as a single install.sh --enroll command", () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="provision" />);
     expect(screen.getByRole("tab", { name: "Binary" })).toBeDefined();
     expect(screen.getByRole("tab", { name: "Docker" })).toBeDefined();
     expect(screen.queryByRole("tab", { name: "systemd" })).toBeNull();
-    const enroll = screen.getByTestId("guide-step-binary-enroll").textContent ?? "";
-    expect(enroll).toContain("portunus-client enroll 'portunus://host:7443/enroll?code=abc'");
+    const binary = screen.getByTestId("guide-command-binary").textContent ?? "";
+    expect(binary).toContain("sh -s -- client --enroll 'portunus://host:7443/enroll?code=abc'");
   });
 
-  it("uses the bare uri (not the wrapped command) in the Docker tab", async () => {
+  it("renders the docker tab as a single docker run with PORTUNUS_ENROLL_URI", async () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="provision" />);
     await userEvent.click(screen.getByRole("tab", { name: "Docker" }));
-    const docker = screen.getByTestId("guide-step-docker-enroll").textContent ?? "";
-    expect(docker).toContain("enroll 'portunus://host:7443/enroll?code=abc'");
-    expect(docker).toContain('--user "$(id -u):$(id -g)"');
-    expect(docker).not.toContain("portunus-client enroll 'portunus-client");
+    const docker = screen.getByTestId("guide-command-docker").textContent ?? "";
+    expect(docker).toContain("PORTUNUS_ENROLL_URI='portunus://host:7443/enroll?code=abc'");
+    expect(docker).toContain("-v portunus-client:/etc/portunus");
   });
 
   it("shows a live countdown that reaches the expired state", () => {
@@ -55,12 +54,12 @@ describe("EnrollmentInstallGuide", () => {
     expect(screen.getByText(/expired/i)).toBeDefined();
   });
 
-  it("collapses the install step in reenroll mode", () => {
+  it("shows a re-enroll note only in reenroll mode", () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="reenroll" />);
-    expect(screen.getByText(/Already installed on this host/i)).toBeDefined();
+    expect(screen.getByText(/docker volume rm/i)).toBeDefined();
   });
 
-  it("copies a step command to the clipboard", () => {
+  it("copies a command to the clipboard", () => {
     render(<EnrollmentInstallGuide enrollment={mk()} mode="provision" />);
     const firstCopy = screen.getAllByRole("button", { name: /copy/i })[0] as HTMLElement;
     fireEvent.click(firstCopy);

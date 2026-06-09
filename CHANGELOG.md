@@ -5,6 +5,11 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- One-command client onboarding: `install.sh --enroll '<uri>'` installs, enrolls, places the bundle (`/etc/portunus/client.bundle.json`, `root:portunus-client 0640`), and starts the service in a single command. The Docker image self-enrolls on first boot from `PORTUNUS_ENROLL_URI` into a mounted volume. The Web UI "Connect client" dialog now shows one command per tab.
+
 ## [2.0.0] — 2026-06-03
 
 ### Added
