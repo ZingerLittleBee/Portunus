@@ -16,8 +16,9 @@ FROM gcr.io/distroless/static-debian12:nonroot
 ARG TARGETARCH
 COPY --from=abi-check /usr/local/bin/portunus-client /usr/local/bin/portunus-client
 # Self-enrollment (PORTUNUS_ENROLL_URI on first boot) writes the bundle
-# here. A bind- or named-volume mounted at /etc/portunus inherits this
+# here. An empty named volume mounted at /etc/portunus inherits this
 # nonroot ownership so the unprivileged process can create the bundle.
+# (A bind mount keeps host ownership — chown the host dir to 65532 first.)
 COPY --from=abi-check --chown=65532:65532 /etc/portunus /etc/portunus
 
 # The bundle lives at /etc/portunus/client.bundle.json. With
