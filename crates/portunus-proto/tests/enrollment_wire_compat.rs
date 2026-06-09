@@ -31,7 +31,6 @@ fn credential_bundle_roundtrips() {
         client_name: "edge-01".into(),
         server_endpoint: "control.example.com:7443".into(),
         server_cert_sha256: "a".repeat(64),
-        server_cert_pem: "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n".into(),
         token: "client-token".into(),
         client_id: "01HCLIENTID0000000000000000".into(),
     };
@@ -42,7 +41,6 @@ fn credential_bundle_roundtrips() {
         (0x12, "client_name"),
         (0x1a, "server_endpoint"),
         (0x22, "server_cert_sha256"),
-        (0x2a, "server_cert_pem"),
         (0x32, "token"),
     ] {
         assert!(
