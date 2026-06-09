@@ -61,6 +61,24 @@ enum Cmd {
     },
 }
 
+/// Decide whether to self-enroll on startup. Returns the URI to redeem
+/// only when no bundle is present yet AND a non-empty `PORTUNUS_ENROLL_URI`
+/// was supplied. A bundle that already exists always wins — the one-time
+/// enrollment code is spent after first use, so a present bundle is loaded
+/// as-is. Used by the Docker image to onboard on first boot.
+fn self_enroll_uri(bundle_present: bool, env_uri: Option<String>) -> Option<String> {
+    if bundle_present {
+        return None;
+    }
+    let uri = env_uri?;
+    let trimmed = uri.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing();
@@ -160,4 +178,36 @@ fn init_tracing() {
         .with(json_layer)
         .with(RedactionLayer::new())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::self_enroll_uri;
+
+    #[test]
+    fn skips_when_bundle_present() {
+        assert_eq!(self_enroll_uri(true, Some("portunus://x".into())), None);
+    }
+
+    #[test]
+    fn returns_uri_when_absent_and_set() {
+        assert_eq!(
+            self_enroll_uri(false, Some("portunus://x".into())),
+            Some("portunus://x".to_string())
+        );
+    }
+
+    #[test]
+    fn none_when_absent_and_unset() {
+        assert_eq!(self_enroll_uri(false, None), None);
+    }
+
+    #[test]
+    fn trims_and_rejects_blank() {
+        assert_eq!(self_enroll_uri(false, Some("   ".into())), None);
+        assert_eq!(
+            self_enroll_uri(false, Some("  portunus://x  ".into())),
+            Some("portunus://x".to_string())
+        );
+    }
 }
