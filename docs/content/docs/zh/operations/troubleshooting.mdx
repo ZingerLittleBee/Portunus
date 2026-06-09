@@ -9,14 +9,16 @@ icon: Stethoscope
 
 ## Client 无法连接
 
-### `control.tls_pinned_mismatch`
+### `control.connect_failed`（TLS / 证书指纹不匹配）
 
 ```json
-{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+{"event":"control.connect_failed","error":"…"}
 ```
 
-server 的叶证书指纹与 bundle 中的 `server_cert_sha256` 不匹配。
-**client 非零退出**，server 端不会有任何日志（TLS 握手根本没完成）。
+server 的叶证书指纹与 bundle 中的 `server_cert_sha256` 不匹配，因此 TLS
+握手中止。没有专门的 pin 不匹配事件 —— 失败会以 `control.connect_failed`
+的形式出现，证书 / TLS 细节放在其 `error=` 字段里。**client 不会退出**，
+而是按退避重试。server 端不会有任何日志（TLS 握手根本没完成）。
 
 **修复**：server 证书重新生成后，用 `enroll-client` 重新生成接入命令；
 或在 server 端恢复原来的 `server.crt` + `server.key`。

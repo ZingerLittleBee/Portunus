@@ -10,15 +10,18 @@ cause.
 
 ## Client cannot connect
 
-### `control.tls_pinned_mismatch`
+### `control.connect_failed` (TLS / certificate fingerprint mismatch)
 
 ```json
-{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+{"event":"control.connect_failed","error":"…"}
 ```
 
 The server's leaf certificate fingerprint does not match the bundle's
-`server_cert_sha256`. **The client exits non-zero** and the server logs
-nothing (the TLS handshake never completed).
+`server_cert_sha256`, so the TLS handshake aborts. There is no dedicated
+pin-mismatch event — the failure surfaces as `control.connect_failed`
+with the certificate/TLS detail in its `error=` field. **The client does
+not exit**; it retries with backoff. The server logs nothing (the TLS
+handshake never completed).
 
 **Fix**: generate a fresh enrollment command with `enroll-client` after the
 server's cert was regenerated, or restore the original `server.crt` +

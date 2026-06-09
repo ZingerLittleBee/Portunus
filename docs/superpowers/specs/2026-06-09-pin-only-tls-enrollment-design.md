@@ -217,7 +217,14 @@ authority). `read_from` simply validates the pin is well-formed
 - `crates/portunus-server/src/operator/cli.rs`
 - `crates/portunus-server/src/grpc/enrollment.rs`
 - Tests across `portunus-proto`, `portunus-client`, `portunus-server`, `portunus-e2e`
-- Doc/comment touch-ups (`grpc/enrollment.rs` URI comment, any cert= references)
+- Doc/comment touch-ups (`grpc/enrollment.rs` URI comment, any cert=
+  references) plus the published docs under `docs/content/docs/` — the
+  EN/ZH client configuration, `portunus-client` CLI, advertised-endpoint,
+  and troubleshooting pages: drop `server_cert_pem` from the bundle
+  example, drop `&cert=` from the enrollment URI, and replace the stale
+  `control.tls_pinned[_mismatch]` events (a pin mismatch now surfaces as
+  `control.connect_failed` and the client retries with backoff rather
+  than exiting).
 
 No Web UI change: the `接入客户端` dialog renders the server-provided
 `command`/`uri` verbatim, so it shrinks automatically.

@@ -54,9 +54,9 @@ pub struct ServeOptions {
     pub operator_http_listen: Option<SocketAddr>,
 }
 
-/// Host portion of an advertised `host:port` (or bare host). Mirrors the
-/// client's `extract_host` exactly so the cert SAN host and the client's
-/// TLS verification host can never diverge.
+/// Host portion of an advertised `host:port` (or bare host), used only to
+/// populate the server certificate SAN. The pin-only client does not verify
+/// hostname, so this no longer needs to mirror any client-side host extraction.
 fn advertised_host(ep: &str) -> Option<String> {
     let ep = ep.trim();
     if ep.is_empty() {

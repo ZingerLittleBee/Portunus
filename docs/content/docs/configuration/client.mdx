@@ -66,13 +66,14 @@ supplied.
   "client_name": "edge-01",
   "server_endpoint": "host-A.example.com:7443",
   "server_cert_sha256": "f5e7c2a1...",
-  "server_cert_pem": "-----BEGIN CERTIFICATE-----\n...",
   "token": "<bearer>"
 }
 ```
 
-`server_cert_pem` is the pinned leaf certificate; the client checks that
-its SHA-256 matches `server_cert_sha256` before connecting.
+`server_cert_sha256` is a 64-hex SHA-256 of the server's leaf certificate
+DER and is the bundle's **sole trust anchor**. At the TLS handshake the
+client computes SHA-256 over the presented leaf certificate DER and
+rejects the connection unless it equals this pin.
 
 <Callout type="warn">
   Edit `server_endpoint` if the address the edge host reaches the
@@ -164,14 +165,11 @@ The client validates the server certificate by **SHA-256 fingerprint**
 core security guarantee — even if the server's IP / DNS is hijacked,
 the wrong cert is rejected before any token leaves the client.
 
-A mismatch logs:
-
-```json
-{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
-```
-
-…and the client exits non-zero. The server logs **nothing** because the
-TLS handshake never completed.
+A mismatch surfaces as a TLS handshake failure: the client logs
+`control.connect_failed` with the certificate/TLS error in its `error=`
+field and **retries with backoff** (non-terminal — the client does not
+exit). The server logs **nothing** because the TLS handshake never
+completed.
 
 ## Resource limits
 

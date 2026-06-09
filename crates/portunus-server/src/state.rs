@@ -34,8 +34,9 @@ pub struct AppState {
     pub settings: std::sync::Arc<crate::store::settings_store::SqliteSettingsStore>,
     /// Lowercase 64-char hex SHA-256 of the server leaf cert DER.
     pub server_cert_sha256: String,
-    /// PEM-encoded server leaf certificate (carried in bundles so the
-    /// client can trust exactly this cert without a CA chain).
+    /// PEM-encoded server leaf certificate. Used at startup to derive the SAN
+    /// set and the `server_cert_sha256` pin; the certificate itself is never
+    /// sent to clients — they trust only the pin.
     pub server_cert_pem: String,
     /// Process-wide Prometheus collectors. Cheap to clone (`Arc` internal).
     pub metrics: Arc<Metrics>,

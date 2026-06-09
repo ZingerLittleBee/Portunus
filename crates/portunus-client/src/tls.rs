@@ -25,6 +25,37 @@ pub enum TlsError {
     Transport(String),
 }
 
+/// Stable, greppable message surfaced when the server's leaf certificate
+/// fingerprint does not match the pinned value. It is carried as a rustls
+/// `CertificateError::Other` so the message flows through tonic's transport
+/// error chain into the client's `control.connect_failed` log line, letting
+/// tests assert on the *cause* (pin mismatch) rather than the generic
+/// connect-failed event name.
+pub(crate) const PIN_MISMATCH_MESSAGE: &str =
+    "server certificate fingerprint does not match the pinned value";
+
+/// Error type whose `Display` is the stable [`PIN_MISMATCH_MESSAGE`].
+///
+/// The message is held as a field (rather than a unit struct) so it surfaces
+/// in BOTH the `Display` and the derived `Debug` rendering. `rustls::Error`'s
+/// top-level `std::error::Error::source()` is an empty impl, so the inner
+/// cause is NOT reachable via the source chain — but `rustls::Error`'s
+/// `Display`/`Debug` embed the `CertificateError::Other(OtherError(_))`
+/// Debug form, which renders this struct's field. The client's
+/// `control.connect_failed` log line includes `error=%e` over a
+/// `format_chain` that captures `debug={e:?}`, so the message reaches the
+/// log line.
+#[derive(Debug)]
+struct PinMismatch(&'static str);
+
+impl std::fmt::Display for PinMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for PinMismatch {}
+
 /// A rustls verifier that accepts exactly the certificate whose DER
 /// SHA-256 equals `expected_sha256`. Hostname and CA-chain checks are
 /// intentionally skipped — the pin is the whole trust decision.
@@ -37,7 +68,7 @@ pub struct PinnedCertVerifier {
 impl PinnedCertVerifier {
     /// Build a verifier for a 64-char lowercase-hex SHA-256 pin.
     pub fn new(pin: &str) -> Result<Self, TlsError> {
-        if pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !portunus_core::fingerprint::is_valid_sha256_hex(pin) {
             return Err(TlsError::BadPin);
         }
         // The process installs aws-lc-rs as the default provider in main();
@@ -65,8 +96,12 @@ impl ServerCertVerifier for PinnedCertVerifier {
         if got.eq_ignore_ascii_case(&self.expected_sha256) {
             Ok(ServerCertVerified::assertion())
         } else {
+            // Carry a stable, human-readable cause so the failure is
+            // distinguishable from any other transport error downstream.
             Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::ApplicationVerificationFailure,
+                rustls::CertificateError::Other(rustls::OtherError(Arc::new(PinMismatch(
+                    PIN_MISMATCH_MESSAGE,
+                )))),
             ))
         }
     }
@@ -172,6 +207,13 @@ mod tests {
         assert!(
             matches!(res, Err(rustls::Error::InvalidCertificate(_))),
             "mismatched fingerprint must be rejected, got {res:?}"
+        );
+        // The rejection must carry the stable pin-mismatch message so
+        // downstream logs (and e2e tests) can assert on the cause.
+        let err = res.unwrap_err();
+        assert!(
+            err.to_string().contains(PIN_MISMATCH_MESSAGE),
+            "mismatch error must surface the stable marker, got: {err}"
         );
     }
 

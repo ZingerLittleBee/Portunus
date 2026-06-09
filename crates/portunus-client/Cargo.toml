@@ -36,7 +36,6 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
-base64 = { workspace = true }
 tokio-stream = { workspace = true }
 # `async fn` in trait still uses async-trait under the hood for trait
 # objects (the resolver layer holds `Arc<R>` generically but tests use

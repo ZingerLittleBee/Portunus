@@ -28,6 +28,12 @@ impl EnrollmentUri {
         if endpoint.is_empty() {
             return Err(EnrollmentUriError::MissingField("endpoint"));
         }
+        // The endpoint is the dial authority (host:port) only — a leftover
+        // path segment before `/enroll` (e.g. `host:7443/extra/enroll`) must
+        // not be silently folded into the authority, so reject any `/`.
+        if endpoint.contains('/') {
+            return Err(EnrollmentUriError::BadPath);
+        }
 
         let mut pin: Option<String> = None;
         let mut code: Option<String> = None;
@@ -40,7 +46,7 @@ impl EnrollmentUri {
                     let value = value
                         .strip_prefix("sha256:")
                         .ok_or(EnrollmentUriError::BadPin)?;
-                    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    if !portunus_core::fingerprint::is_valid_sha256_hex(value) {
                         return Err(EnrollmentUriError::BadPin);
                     }
                     pin = Some(value.to_ascii_lowercase());
@@ -200,6 +206,20 @@ mod tests {
         assert!(matches!(
             EnrollmentUri::parse(&uri).unwrap_err(),
             EnrollmentUriError::MissingField("code")
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_embedded_path_segment() {
+        // A path prefix before `/enroll` must not be folded into the dial
+        // authority; it is rejected with a clean error rather than panicking.
+        let uri = format!(
+            "portunus://control.example.com:7443/extra/enroll?pin=sha256:{}&code=join-code",
+            "a".repeat(64)
+        );
+        assert!(matches!(
+            EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUriError::BadPath
         ));
     }
 

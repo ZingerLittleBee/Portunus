@@ -178,11 +178,19 @@ fn test_user_story_1_acceptance() {
             .then_some(())
     });
     let reached_session = bad_pin_client.stderr_contains("control.connected");
+    // The connect_failed line must name the SPECIFIC cause — a TLS certificate
+    // fingerprint (pin) mismatch — not merely the generic connect-failed event.
+    let saw_pin_cause = bad_pin_client
+        .stderr_contains("server certificate fingerprint does not match the pinned value");
     bad_pin_client.child.kill().ok();
     let _ = bad_pin_client.child.wait();
     assert!(
         saw_failure.is_some(),
         "scenario 4: client should log control.connect_failed on pin mismatch"
+    );
+    assert!(
+        saw_pin_cause,
+        "scenario 4: control.connect_failed must name the pin/fingerprint mismatch cause"
     );
     assert!(
         !reached_session,

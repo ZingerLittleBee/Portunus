@@ -124,12 +124,24 @@ fn test_pin_mismatch_rejected() {
             .any(|c| c["client_name"] == "edge-01" && c["connected"] == Value::Bool(true))
     });
 
+    // The control.connect_failed line must name the SPECIFIC cause — a TLS
+    // certificate fingerprint (pin) mismatch — not just the generic
+    // connect-failed event (which fires for any non-terminal transport
+    // failure). The PinnedCertVerifier surfaces this stable marker string
+    // through the rustls -> tonic transport error chain.
+    let saw_pin_cause =
+        client.stderr_contains("server certificate fingerprint does not match the pinned value");
+
     client.child.kill().ok();
     let _ = client.child.wait();
 
     assert!(
         saw_failure.is_some(),
         "client should log control.connect_failed under a mismatched pin"
+    );
+    assert!(
+        saw_pin_cause,
+        "control.connect_failed must name the pin/fingerprint mismatch cause"
     );
     assert!(
         !reached_session,

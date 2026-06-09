@@ -83,7 +83,7 @@ impl CredentialBundle {
     /// fingerprint.
     fn validate_pin(&self) -> std::io::Result<()> {
         let pin = &self.server_cert_sha256;
-        if pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !portunus_core::fingerprint::is_valid_sha256_hex(pin) {
             return Err(std::io::Error::other(format!(
                 "bundle has malformed server_cert_sha256 pin: {pin:?}"
             )));

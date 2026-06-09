@@ -49,6 +49,13 @@ fn credential_bundle_roundtrips() {
         );
     }
 
+    // field 5 (server_cert_pem) is reserved after the pin-only migration; the
+    // cert PEM must never reach the wire. tag = (5 << 3) | 2 = 0x2a.
+    assert!(
+        !bytes.contains(&0x2a),
+        "field 5 (server_cert_pem, tag 0x2a) must be absent from the wire after pin-only migration"
+    );
+
     let decoded = CredentialBundle::decode(bytes.as_slice()).expect("decode");
     assert_eq!(decoded, bundle);
 }
