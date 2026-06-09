@@ -46,6 +46,7 @@ CONFIG_VALUE=""
 ASSUME_YES="no"
 PURGE="no"
 DRY_RUN="no"
+ENROLL_URI=""     # --enroll '<uri>' (client/binary only): one-time enrollment URI
 LANG_CODE="${PORTUNUS_LANG:-}"
 tag=""
 artifact_version=""
@@ -480,6 +481,7 @@ print_plan() {
   checksums="portunus-${artifact_version:-<latest>}-checksums.txt"
   echo "portunus install (dry-run)"
   echo "role:             ${ROLE}"
+  [ "$ROLE" = client ] && [ -n "$ENROLL_URI" ] && echo "enroll_uri:       ${ENROLL_URI%%\?*} (code redacted)"
   echo "os:               ${os}"
   echo "arch:             ${arch}"
   echo "target:           ${target}"
@@ -760,12 +762,13 @@ parse_args() {
       --systemd) : ;;  # back-compat no-op: the service is installed by default now
       --no-service) NO_SERVICE="yes" ;;
       --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
+      --enroll) shift; [ $# -gt 0 ] || die "--enroll needs a value"; ENROLL_URI="$1" ;;
       --yes) ASSUME_YES="yes" ;;
       --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--enroll '<uri>' (client)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
@@ -812,6 +815,8 @@ main() {
   detect_platform
   resolve_version_static
   [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
+  [ -n "$ENROLL_URI" ] && [ "$ROLE" != client ] && die "--enroll is client-only"
+  [ -n "$ENROLL_URI" ] && [ "$DEPLOY" = docker ] && die "--enroll is binary-only (for Docker pass PORTUNUS_ENROLL_URI to the container)"
   # Reject a malformed ACME email before it can reach the root-written
   # Caddyfile as a `tls <email>` directive (Caddy directive injection).
   if [ -n "$ACME_EMAIL" ] && ! valid_email "$ACME_EMAIL"; then

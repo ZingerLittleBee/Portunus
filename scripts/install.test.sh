@@ -230,6 +230,26 @@ $SH "$script" standalone --version 1.4.1 --config /etc/portunus/my.toml --dry-ru
 if $SH "$script" server --config /etc/portunus/x.toml --dry-run >/dev/null 2>&1; then fail "server --config must error"; fi
 if $SH "$script" client --config /etc/portunus/x.toml --dry-run >/dev/null 2>&1; then fail "client --config must error"; fi
 
+# --- --enroll: client dry-run plan surfaces a redacted enroll_uri ---
+o="$($SH "$script" client --enroll 'portunus://example.com:7443/enroll?pin=sha256:abc&code=secret' --version 1.0.0 --dry-run)" || fail "--enroll dry-run exit"
+echo "$o" | grep -q '^enroll_uri:[[:space:]]*portunus://example.com:7443/enroll' || fail "enroll_uri line in plan"
+echo "$o" | grep -q 'code=secret' && fail "enroll_uri must NOT leak the code"
+
+# --- --enroll: rejected for non-client roles ---
+if $SH "$script" server --enroll 'portunus://x:1/enroll?code=y' --version 1.0.0 --dry-run >/dev/null 2>&1; then
+  fail "--enroll must error for non-client roles"
+fi
+
+# --- --enroll: rejected with --deploy docker (Docker uses PORTUNUS_ENROLL_URI) ---
+if $SH "$script" client --enroll 'portunus://x:1/enroll?code=y' --deploy docker --version 1.0.0 --dry-run >/dev/null 2>&1; then
+  fail "--enroll must error with --deploy docker"
+fi
+
+# --- --enroll: requires a value ---
+if $SH "$script" client --enroll >/dev/null 2>&1; then
+  fail "--enroll with no value must error"
+fi
+
 # --- --detect-init prints one of the known init systems ---
 oi="$($SH "$script" --detect-init)" || fail "--detect-init exit"
 case "$oi" in systemd|openrc|none) : ;; *) fail "--detect-init bad value '$oi'" ;; esac
