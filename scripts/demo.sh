@@ -350,7 +350,7 @@ edge_connected() {
 }
 
 start_edges() {
-  local u edge bundle code
+  local u edge bundle code enroll_resp uri
   for ((u = 1; u <= USERS; u++)); do
     edge="${EDGE_NAMES[u]}"
     bundle="${DATA_DIR}/${edge}.bundle.json"
@@ -362,13 +362,28 @@ start_edges() {
        && jq -e '.token' "${bundle}" >/dev/null 2>&1; then
       log "reusing existing bundle for ${edge}"
     else
-      code="$(curl -s -o "${bundle}" -w '%{http_code}' \
+      # v2.0 (015-client-stable-id) replaced one-shot client provisioning
+      # with a two-step enrollment: POST /v1/client-enrollments mints a
+      # one-time enrollment, then the client's `enroll` subcommand redeems
+      # the returned URI and writes the bundle. `address` is the public host
+      # (bare, no port). The URI's embedded gRPC endpoint falls back to
+      # 127.0.0.1:7443 (no advertised endpoint), matching this demo server.
+      enroll_resp="${DATA_DIR}/${edge}.enroll.json"
+      code="$(curl -s -o "${enroll_resp}" -w '%{http_code}' \
         -X POST -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
         -H 'Content-Type: application/json' \
         -d "{\"name\":\"${edge}\",\"address\":\"127.0.0.1\"}" \
-        "http://${HTTP_ENDPOINT}/v1/clients")" || true
+        "http://${HTTP_ENDPOINT}/v1/client-enrollments")" || true
       [[ "${code}" == 2?? ]] \
-        || die "provision ${edge} failed (HTTP ${code:-curl-error}); see ${bundle}"
+        || die "enroll ${edge} failed (HTTP ${code:-curl-error}); see ${enroll_resp}"
+      uri="$(jq -r '.uri // empty' "${enroll_resp}")"
+      [[ -n "${uri}" ]] \
+        || die "enroll ${edge}: no uri in response; see ${enroll_resp}"
+      # Redeem the one-time URI into the client bundle (gRPC, TLS-pinned).
+      "${CLIENT_BIN}" enroll "${uri}" --out "${bundle}" \
+        >>"${DATA_DIR}/${edge}.log" 2>&1 \
+        || { tail -n 30 "${DATA_DIR}/${edge}.log" >&2; \
+             die "enroll redeem ${edge} failed; see ${DATA_DIR}/${edge}.log"; }
     fi
 
     local extra_env=()
@@ -483,13 +498,25 @@ seed_demo_traffic_history() {
   local db="${DATA_DIR}/state.db"
   [[ -f "${db}" ]] || die "cannot seed traffic history; missing ${db}"
 
+  # V011 (015-client-stable-id) re-keyed traffic_samples_* from client_name
+  # to the stable client_id. Resolve each demo edge's id from the live API so
+  # the seeded rows match the new (user_id, client_id, ts_minute) primary key.
+  local clients_json
+  clients_json="$(curl -s -H "Authorization: Bearer ${SUPERADMIN_TOKEN}" \
+    "http://${HTTP_ENDPOINT}/v1/clients")" \
+    || die "cannot list clients for traffic seed"
+
   local -a entries=()
-  local g u edge profile
+  local g u edge profile cid
   for g in "${!RULE_LISTEN[@]}"; do
     u="${RULE_USER[g]}"
     edge="${RULE_EDGE[g]}"
     profile="$(traffic_profile_for_index "${g}")"
-    entries+=("user${u}:${edge}:${profile}")
+    cid="$(printf '%s' "${clients_json}" \
+      | jq -r --arg n "${edge}" \
+          'first(.[] | select(.client_name == $n) | .client_id) // empty')"
+    [[ -n "${cid}" ]] || die "traffic seed: no client_id for ${edge}"
+    entries+=("user${u}:${cid}:${edge}:${profile}")
   done
 
   python3 - "${db}" "${DEMO_TRAFFIC_SEED_MINUTES}" "${entries[@]+"${entries[@]}"}" <<'PY'
@@ -523,19 +550,19 @@ conn.execute("PRAGMA busy_timeout = 10000")
 for minute_index in range(minutes):
     ts = start + minute_index * 60
     for rule_index, raw in enumerate(entries):
-        user_id, client_name, profile = raw.split(":", 2)
+        user_id, client_id, client_name, profile = raw.split(":", 3)
         bytes_in = shaped_bytes(profile, minute_index, rule_index)
         bytes_out = bytes_in
         conn.execute(
             """
             INSERT INTO traffic_samples_1m
-                (user_id, client_name, ts_minute, bytes_in, bytes_out)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(user_id, client_name, ts_minute) DO UPDATE
+                (user_id, client_id, client_name, ts_minute, bytes_in, bytes_out)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(user_id, client_id, ts_minute) DO UPDATE
                 SET bytes_in = bytes_in + excluded.bytes_in,
                     bytes_out = bytes_out + excluded.bytes_out
             """,
-            (user_id, client_name, ts, bytes_in, bytes_out),
+            (user_id, client_id, client_name, ts, bytes_in, bytes_out),
         )
 conn.commit()
 conn.close()
