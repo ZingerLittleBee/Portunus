@@ -34,7 +34,10 @@ fn enroll_client_prints_one_time_command() {
     assert!(stdout.contains("portunus-client enroll 'portunus://"));
     assert!(stdout.contains("pin=sha256:"));
     assert!(stdout.contains("code="));
-    assert!(!stdout.contains("cert="), "pin-only URI must not embed cert");
+    assert!(
+        !stdout.contains("cert="),
+        "pin-only URI must not embed cert"
+    );
 }
 
 #[test]

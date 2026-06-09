@@ -4,8 +4,8 @@
 //! to the right cause:
 //! - T022: missing bearer metadata → `UNAUTHENTICATED` reason `missing_token`.
 //! - T023: revoked-token client → `UNAUTHENTICATED` reason `token_revoked`.
-//! - T024: pin mismatch → client refuses TLS (no token sent), exits with
-//!   `server_cert_mismatch` / `bundle pin mismatch`.
+//! - T024: pin mismatch → the pinned TLS handshake fails, so the client
+//!   never reaches a session and never sends its bearer token.
 
 mod common;
 
@@ -84,11 +84,11 @@ fn test_revoked_token_rejected() {
 
 #[test]
 fn test_pin_mismatch_rejected() {
-    // The bundle's `verify_pin_consistency()` re-derives the SHA-256 of the
-    // embedded cert PEM and compares to the recorded fingerprint; if we flip
-    // the fingerprint, the client refuses to load the bundle and exits 1
-    // BEFORE making any TCP connection — which is exactly the property we
-    // want (no token leak even on tampered bundles).
+    // Pin-only model: the bundle carries only the SHA-256 pin (no cert
+    // PEM), so a tampered-but-still-hex fingerprint loads fine. The TLS
+    // handshake then rejects the server's real certificate (whose
+    // fingerprint != the tampered pin), so the client never reaches a
+    // connected session — and therefore never sends its bearer token.
 
     let server = common::spawn_server(&[]);
     let (_grpc, http) = server
@@ -106,16 +106,37 @@ fn test_pin_mismatch_rejected() {
     std::fs::write(&bad_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
 
     let mut client = common::spawn_client(&bad_path, &[]);
-    let status = common::wait_for(Duration::from_secs(5), || {
-        client.child.try_wait().ok().flatten()
+
+    // The pinned handshake must fail; the client logs it and retries (it
+    // does not exit, since a transport failure is non-terminal).
+    let saw_failure = common::wait_for(Duration::from_secs(8), || {
+        client
+            .stderr_contains("control.connect_failed")
+            .then_some(())
     });
-    let status = status.expect("client must exit within 5s");
+
+    // It must never have reached a live session: no Welcome, so the bearer
+    // token was never transmitted to the server.
+    let reached_session = client.stderr_contains("control.connected");
+    let clients = common::list_clients_http(&http);
+    let server_sees_connected = clients.as_array().is_some_and(|arr| {
+        arr.iter()
+            .any(|c| c["client_name"] == "edge-01" && c["connected"] == Value::Bool(true))
+    });
+
+    client.child.kill().ok();
+    let _ = client.child.wait();
+
     assert!(
-        !status.success(),
-        "client must exit non-zero, got {status:?}"
+        saw_failure.is_some(),
+        "client should log control.connect_failed under a mismatched pin"
     );
     assert!(
-        client.stderr_contains("pin mismatch") || client.stderr_contains("bundle_load_failed"),
-        "client stderr should mention pin mismatch / bundle_load_failed"
+        !reached_session,
+        "client must never reach control.connected under a mismatched pin"
+    );
+    assert!(
+        !server_sees_connected,
+        "server must not see the client as connected under a mismatched pin"
     );
 }

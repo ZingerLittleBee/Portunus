@@ -66,9 +66,8 @@ pub async fn connect_once(
     // layer via PinnedCertVerifier — no CA chain, no hostname check, no
     // embedded PEM. SHA-256 collision resistance makes pinning the
     // fingerprint as strong as shipping the whole certificate.
-    let endpoint =
-        crate::tls::pinned_endpoint(&bundle.server_endpoint, &bundle.server_cert_sha256)
-            .map_err(|e| ControlError::Tls(e.to_string()))?;
+    let endpoint = crate::tls::pinned_endpoint(&bundle.server_endpoint, &bundle.server_cert_sha256)
+        .map_err(|e| ControlError::Tls(e.to_string()))?;
 
     let channel = endpoint
         .connect()
