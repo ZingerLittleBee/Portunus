@@ -325,13 +325,8 @@
       "tabDocker": "Docker",
       "copy": "Copy",
       "copied": "Copied",
-      "skipNote": "Already installed on this host? Skip to step {{step}}.",
-      "stepInstall": "Install the binary and service",
-      "stepEnrollSystemd": "Redeem the command, then place the bundle",
-      "stepEnableSystemd": "Enable and start the service",
-      "stepEnrollDocker": "Enroll once into a host volume",
-      "stepRunDocker": "Run the long-lived container",
-      "dockerNote": "install.sh --deploy docker is server/standalone-only; for a client run the published image directly. Both commands run as your host user so the 0600 bundle is writable and readable by one identity."
+      "codeNote": "This command carries a single-use enrollment code that expires soon — run it once on the edge host.",
+      "reenrollNote": "Re-running replaces this client's credentials. On Docker, recreate the container with a fresh volume first: docker rm -f portunus-client && docker volume rm portunus-client."
     }
   },
   "clientDetail": {
