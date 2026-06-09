@@ -4,6 +4,7 @@ mod bundle;
 mod control;
 mod enroll;
 mod port_groups;
+mod tls;
 mod wire;
 
 use std::path::PathBuf;

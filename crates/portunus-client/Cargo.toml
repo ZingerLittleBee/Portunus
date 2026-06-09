@@ -50,3 +50,4 @@ async-trait = "0.1"
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 assert_cmd = { workspace = true }
+rcgen = { workspace = true }
