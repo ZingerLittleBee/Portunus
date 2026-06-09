@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -160,6 +160,8 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:https_public_note) _f="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。" ;;
     zh:adv_from_domain) _f="  对外通告地址：%s（由域名推导）" ;;
     zh:config_na_standalone) _f="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml" ;;
+    zh:enroll_placed) _f="已将注册凭据写入 %s" ;;
+    zh:enroll_failed) _f="客户端注册失败；二进制与服务已安装，请用新的注册链接重试。" ;;
     *:menu_title) _f="Portunus Manager" ;;
     *:menu_install) _f="  [1] Install" ;;
     *:menu_uninstall) _f="  [2] Uninstall" ;;
@@ -232,6 +234,8 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
     *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
     *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
+    *:enroll_placed) _f="Enrollment bundle placed at %s" ;;
+    *:enroll_failed) _f="Enrollment failed; the binary and service are installed — retry with a fresh enroll link." ;;
     zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
     *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
     zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
@@ -374,6 +378,34 @@ apply_config_path() {
     ${SUDO:-} su -s /bin/sh "$_u" -c "test -r '$_p'" 2>/dev/null \
       || echo "warning: $_u may not be able to read $_p (check directory permissions)" >&2
   fi
+}
+
+# Enroll the client and place its bundle where the service reads it.
+# Runs after the binary + service unit are installed; dies on failure so we
+# never enable a service that would crash-loop on a missing bundle.
+# Re-enrollment: if the service is already active, restart it so the new
+# credentials take effect (a fresh install is started by the caller).
+place_client_bundle() {
+  _uri="$1"
+  ensure_svc_user client   # idempotent: guarantees portunus-client + /etc/portunus
+  # The bundle holds a bearer token; use a tracked temp DIR so the EXIT
+  # cleanup trap removes it even on SIGKILL between write and install.
+  _tmpd="$(mktemp -d)" || die "failed to create temp dir for bundle"
+  track_tmp "$_tmpd"
+  _tmp="$_tmpd/client.bundle.json"
+  if ! "${BIN_DIR}/portunus-client" enroll "$_uri" --out "$_tmp"; then
+    rm -rf "$_tmpd"
+    die "$(t enroll_failed)"
+  fi
+  ${SUDO:-} install -o root -g portunus-client -m 0640 "$_tmp" /etc/portunus/client.bundle.json \
+    || { rm -rf "$_tmpd"; die "failed to place client bundle"; }
+  rm -rf "$_tmpd"
+  if command -v systemctl >/dev/null 2>&1 && ${SUDO:-} systemctl is-active --quiet portunus-client 2>/dev/null; then
+    ${SUDO:-} systemctl restart portunus-client || true
+  elif command -v rc-service >/dev/null 2>&1 && rc-service portunus-client status >/dev/null 2>&1; then
+    ${SUDO:-} rc-service portunus-client restart || true
+  fi
+  t enroll_placed "/etc/portunus/client.bundle.json"; echo
 }
 
 # systemd drop-in body for a custom standalone config path (empty otherwise).
@@ -1269,6 +1301,9 @@ dispatch_verb() {
         # and config are already on disk, so even if enable/start fails the
         # deploy is recoverable via uninstall/upgrade/status.
         meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+        if [ "$ROLE" = client ] && [ -n "$ENROLL_URI" ]; then
+          place_client_bundle "$ENROLL_URI"
+        fi
         if service_should_start; then svc enable_start "$ROLE"; fi
       fi
       if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then

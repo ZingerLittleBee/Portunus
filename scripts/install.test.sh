@@ -110,6 +110,12 @@ rm -rf "$cdtmp"
 o="$($SH "$script" --lang en --print-i18n next_systemd)"; printf '%s\n' "$o" | grep -qi 'systemctl' || fail "en next_systemd"
 o="$($SH "$script" --lang zh --print-i18n next_docker)"; printf '%s\n' "$o" | grep -q 'docker compose' || fail "zh next_docker"
 
+# --- new enroll i18n keys resolve (not echoed back as the bare key) ---
+for key in enroll_placed enroll_failed; do
+  en="$($SH "$script" --lang en --print-i18n "$key")"; [ "$en" != "$key" ] || fail "en i18n missing: $key"
+  zh="$($SH "$script" --lang zh --print-i18n "$key")"; [ "$zh" != "$key" ] || fail "zh i18n missing: $key"
+done
+
 # --- P2: light host:port validation ---
 $SH "$script" --valid-endpoint "host.example:7443" || fail "valid endpoint rejected"
 $SH "$script" --valid-endpoint "" || fail "blank endpoint must be allowed (auto)"
