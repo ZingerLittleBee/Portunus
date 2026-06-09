@@ -120,6 +120,36 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // Self-bootstrap (Docker first boot): when the resolved bundle is
+    // absent but PORTUNUS_ENROLL_URI is set, redeem it once into the
+    // resolved path before loading. The Docker image always passes
+    // `--bundle /etc/portunus/client.bundle.json`, so the target path is
+    // known; on subsequent boots the persisted bundle wins.
+    if let Some(uri) = self_enroll_uri(
+        bundle_path.is_file(),
+        std::env::var("PORTUNUS_ENROLL_URI").ok(),
+    ) {
+        info!(event = "client.self_bootstrap", path = %bundle_path.display());
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                error!(event = "client.runtime_failed", error = %e);
+                return ExitCode::from(1);
+            }
+        };
+        if let Err(e) = rt.block_on(enroll::enroll(&uri, Some(bundle_path.clone()))) {
+            eprintln!("error: {e}");
+            error!(
+                event = "client.self_bootstrap_failed",
+                error = %e,
+                path = %bundle_path.display()
+            );
+            return ExitCode::from(1);
+        }
+    }
     let bundle = match CredentialBundle::read_from(&bundle_path) {
         Ok(b) => Arc::new(b),
         Err(e) => {
