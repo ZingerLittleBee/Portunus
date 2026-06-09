@@ -46,11 +46,15 @@ message EnrollClientRequest {
 }
 
 message CredentialBundle {
+  reserved 5;
+  reserved "server_cert_pem";
   uint32 version = 1;
   string client_name = 2;
   string server_endpoint = 3;
+  // SHA-256 of the server leaf cert DER (lowercase hex). This pin is the
+  // single source of TLS trust — the full certificate is never sent; the
+  // client verifies the handshake cert against this fingerprint.
   string server_cert_sha256 = 4;
-  string server_cert_pem = 5;
   string token = 6;
   // 015-client-stable-id: stable opaque ULID identity. Additive — a
   // pre-upgrade bundle without this field still authenticates (identity is

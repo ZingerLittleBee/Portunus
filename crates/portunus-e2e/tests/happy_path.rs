@@ -158,9 +158,10 @@ fn test_user_story_1_acceptance() {
     let pin_mismatch_path = server.data_dir.path().join("pin-mismatch.bundle.json");
     let mut tampered: Value =
         serde_json::from_str(&std::fs::read_to_string(&bundle).unwrap()).unwrap();
-    // Flip one byte of the fingerprint hex to force the bundle's pin check
-    // (CredentialBundle::verify_pin_consistency) to fire — the client refuses
-    // to dial out at all.
+    // Pin-only model: a tampered-but-still-hex fingerprint loads fine, but the
+    // pinned TLS handshake rejects the server's real certificate, so the client
+    // never reaches a session (its bearer token is never sent). The handshake
+    // failure is non-terminal, so the client retries rather than exiting.
     let original = tampered["server_cert_sha256"].as_str().unwrap().to_string();
     let mut chars: Vec<char> = original.chars().collect();
     chars[0] = if chars[0] == '0' { 'f' } else { '0' };
@@ -171,20 +172,29 @@ fn test_user_story_1_acceptance() {
     )
     .unwrap();
     let mut bad_pin_client = common::spawn_client(&pin_mismatch_path, &[]);
-    // Client should exit non-zero quickly because the bundle fails pin check
-    // at load time.
-    let exit = common::wait_for(Duration::from_secs(5), || {
-        bad_pin_client.child.try_wait().ok().flatten()
+    let saw_failure = common::wait_for(Duration::from_secs(8), || {
+        bad_pin_client
+            .stderr_contains("control.connect_failed")
+            .then_some(())
     });
-    let status = exit.expect("client must exit on pin mismatch within 5s");
+    let reached_session = bad_pin_client.stderr_contains("control.connected");
+    // The connect_failed line must name the SPECIFIC cause — a TLS certificate
+    // fingerprint (pin) mismatch — not merely the generic connect-failed event.
+    let saw_pin_cause = bad_pin_client
+        .stderr_contains("server certificate fingerprint does not match the pinned value");
+    bad_pin_client.child.kill().ok();
+    let _ = bad_pin_client.child.wait();
     assert!(
-        !status.success(),
-        "scenario 4: client must exit non-zero on pin mismatch, got {status:?}"
+        saw_failure.is_some(),
+        "scenario 4: client should log control.connect_failed on pin mismatch"
     );
     assert!(
-        bad_pin_client.stderr_contains("bundle_load_failed")
-            || bad_pin_client.stderr_contains("pin mismatch"),
-        "scenario 4: client stderr should report pin mismatch / bundle_load_failed"
+        saw_pin_cause,
+        "scenario 4: control.connect_failed must name the pin/fingerprint mismatch cause"
+    );
+    assert!(
+        !reached_session,
+        "scenario 4: client must never reach control.connected on pin mismatch"
     );
 }
 

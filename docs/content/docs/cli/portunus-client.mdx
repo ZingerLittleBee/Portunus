@@ -95,16 +95,16 @@ JSON lines by default:
 ```json
 {"event":"process.start"}
 {"event":"control.connecting","endpoint":"…:7443"}
-{"event":"control.tls_pinned","fingerprint_sha256":"f5e7c2a1..."}
 {"event":"control.connected"}
 {"event":"rule.received","rule_id":1,"listen_port":18080}
 {"event":"rule.activated","rule_id":1,"listen_port":18080}
 ```
 
-A pin mismatch:
+A pin mismatch surfaces as a TLS handshake failure — there is no
+dedicated pin event. The client logs `control.connect_failed` with the
+certificate/TLS detail in its `error=` field and **retries with backoff**
+(it does not exit):
 
 ```json
-{"event":"control.tls_pinned_mismatch","expected":"…","got":"…"}
+{"event":"control.connect_failed","error":"…"}
 ```
-
-…and the client exits non-zero.

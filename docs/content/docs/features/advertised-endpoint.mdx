@@ -9,7 +9,7 @@ reach the **gRPC control plane** (default port `7443`,
 `control_listen`). It is the authority embedded in the enrollment URI:
 
 ```
-portunus://<advertised-endpoint>/enroll?pin=…&code=…&cert=…
+portunus://<advertised-endpoint>/enroll?pin=sha256:<64hex>&code=<code>
 ```
 
 It is **not** the operator HTTP / Web UI port (`7080`). Those stay

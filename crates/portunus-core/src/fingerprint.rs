@@ -47,6 +47,14 @@ pub fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Returns true iff s is exactly 64 ASCII hex digits (a SHA-256 hex pin).
+/// Shared by the enrollment URI parser, the credential-bundle validator,
+/// and the TLS pin verifier so the trust surfaces cannot silently diverge.
+#[must_use]
+pub fn is_valid_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Constant-time equality for hash-sized byte arrays. Used in token verify
 /// and pinning compare paths.
 #[must_use]
@@ -103,5 +111,17 @@ mod tests {
         let a = blake3_32(b"hello");
         let b = blake3_32(b"hello");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn is_valid_sha256_hex_accepts_and_rejects() {
+        // 64 hex chars, lowercase and uppercase both accepted.
+        assert!(is_valid_sha256_hex(&"a".repeat(64)));
+        assert!(is_valid_sha256_hex(&"A".repeat(64)));
+        // Wrong length: 63 and 65 chars rejected.
+        assert!(!is_valid_sha256_hex(&"a".repeat(63)));
+        assert!(!is_valid_sha256_hex(&"a".repeat(65)));
+        // Non-hex character (correct length) rejected.
+        assert!(!is_valid_sha256_hex(&"g".repeat(64)));
     }
 }

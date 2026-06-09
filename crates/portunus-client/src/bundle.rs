@@ -20,8 +20,10 @@ pub struct CredentialBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<ClientId>,
     pub server_endpoint: String,
+    /// SHA-256 of the server leaf cert DER (lowercase hex). The single
+    /// source of TLS trust — the certificate itself is not stored; the
+    /// handshake cert is verified against this pin.
     pub server_cert_sha256: String,
-    pub server_cert_pem: String,
     pub token: String,
 }
 
@@ -39,7 +41,7 @@ impl CredentialBundle {
                 bundle.version
             )));
         }
-        bundle.verify_pin_consistency()?;
+        bundle.validate_pin()?;
         Ok(bundle)
     }
 
@@ -49,7 +51,6 @@ impl CredentialBundle {
         client_id: Option<ClientId>,
         server_endpoint: String,
         server_cert_sha256: String,
-        server_cert_pem: String,
         token: String,
     ) -> std::io::Result<Self> {
         if version != 1 {
@@ -63,10 +64,9 @@ impl CredentialBundle {
             client_id,
             server_endpoint,
             server_cert_sha256,
-            server_cert_pem,
             token,
         };
-        bundle.verify_pin_consistency()?;
+        bundle.validate_pin()?;
         Ok(bundle)
     }
 
@@ -78,16 +78,14 @@ impl CredentialBundle {
         write_secret(path, &body)
     }
 
-    /// Confirm `sha256(DER(server_cert_pem)) == server_cert_sha256`. A bundle
-    /// that fails this check is corrupt or maliciously assembled — fail
-    /// loudly rather than dialling out under a forged pin.
-    fn verify_pin_consistency(&self) -> std::io::Result<()> {
-        let der = leaf_der_from_pem(&self.server_cert_pem)?;
-        let computed = portunus_core::fingerprint::sha256_hex(&der);
-        if !computed.eq_ignore_ascii_case(&self.server_cert_sha256) {
+    /// The bundle's trust anchor is the SHA-256 pin. Reject a bundle whose
+    /// pin is not 64 hex chars rather than dialling out under a malformed
+    /// fingerprint.
+    fn validate_pin(&self) -> std::io::Result<()> {
+        let pin = &self.server_cert_sha256;
+        if !portunus_core::fingerprint::is_valid_sha256_hex(pin) {
             return Err(std::io::Error::other(format!(
-                "bundle pin mismatch: cert_pem hashes to {computed}, bundle says {}",
-                self.server_cert_sha256
+                "bundle has malformed server_cert_sha256 pin: {pin:?}"
             )));
         }
         Ok(())
@@ -202,27 +200,62 @@ where
     Err(BundleSearchError { attempted })
 }
 
-fn leaf_der_from_pem(pem: &str) -> std::io::Result<Vec<u8>> {
-    use base64::Engine as _;
-    let mut in_block = false;
-    let mut buf = String::new();
-    for line in pem.lines() {
-        let line = line.trim();
-        if line == "-----BEGIN CERTIFICATE-----" {
-            in_block = true;
-            buf.clear();
-            continue;
-        }
-        if line == "-----END CERTIFICATE-----" {
-            return base64::engine::general_purpose::STANDARD
-                .decode(buf.trim())
-                .map_err(std::io::Error::other);
-        }
-        if in_block {
-            buf.push_str(line);
-        }
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn sample_json(pin: &str) -> String {
+        // client_id is optional (skipped when absent); omit it here.
+        format!(
+            r#"{{"version":1,"client_name":"edge-01","server_endpoint":"127.0.0.1:7443","server_cert_sha256":"{pin}","token":"tok"}}"#
+        )
     }
-    Err(std::io::Error::other("no CERTIFICATE block in PEM"))
+
+    fn write_file(json: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.bundle.json");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(json.as_bytes())
+            .unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn read_from_round_trips_without_cert_pem() {
+        let pin = "a".repeat(64);
+        let (_dir, path) = write_file(&sample_json(&pin));
+        let bundle = CredentialBundle::read_from(&path).expect("read");
+        assert_eq!(bundle.server_cert_sha256, pin);
+        assert_eq!(bundle.token, "tok");
+    }
+
+    #[test]
+    fn read_from_rejects_malformed_pin() {
+        let (_dir, path) = write_file(&sample_json("nothex"));
+        assert!(CredentialBundle::read_from(&path).is_err());
+    }
+
+    #[test]
+    fn from_enrollment_then_write_then_read_round_trips() {
+        let pin = "b".repeat(64);
+        let bundle = CredentialBundle::from_enrollment(
+            1,
+            ClientName::new("edge-01").unwrap(),
+            None,
+            "127.0.0.1:7443".into(),
+            pin.clone(),
+            "tok".into(),
+        )
+        .expect("from_enrollment");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.bundle.json");
+        bundle.write_to(&path).unwrap();
+        let read = CredentialBundle::read_from(&path).unwrap();
+        assert_eq!(read.server_cert_sha256, pin);
+        assert_eq!(read.token, "tok");
+    }
 }
 
 #[cfg(test)]
