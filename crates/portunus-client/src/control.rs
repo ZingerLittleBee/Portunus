@@ -20,7 +20,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
-use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{error, info, warn};
 
 use crate::bundle::CredentialBundle;
@@ -62,20 +61,14 @@ pub async fn connect_once(
     bundle: &CredentialBundle,
     cancel: &CancellationToken,
 ) -> Result<LiveSession, ControlError> {
-    // Pinning model: the bundle carries the server's self-signed leaf cert PEM
-    // *and* its SHA-256 fingerprint. `CredentialBundle::read_from` already
-    // verified that `sha256(DER(server_cert_pem)) == server_cert_sha256` at
-    // load time, so trusting `server_cert_pem` here is equivalent to trusting
-    // the pin. We pass it as the *only* CA — system roots are not consulted.
-    let ca = Certificate::from_pem(bundle.server_cert_pem.as_bytes());
-    let endpoint = Endpoint::from_shared(format!("https://{}", bundle.server_endpoint))
-        .map_err(|e| ControlError::Transport(e.to_string()))?
-        .tls_config(
-            ClientTlsConfig::new()
-                .ca_certificate(ca)
-                .domain_name(extract_host(&bundle.server_endpoint)),
-        )
-        .map_err(|e| ControlError::Tls(e.to_string()))?;
+    // Pinning model: the bundle carries the server leaf cert's SHA-256
+    // fingerprint. We trust exactly that certificate at the TLS handshake
+    // layer via PinnedCertVerifier — no CA chain, no hostname check, no
+    // embedded PEM. SHA-256 collision resistance makes pinning the
+    // fingerprint as strong as shipping the whole certificate.
+    let endpoint =
+        crate::tls::pinned_endpoint(&bundle.server_endpoint, &bundle.server_cert_sha256)
+            .map_err(|e| ControlError::Tls(e.to_string()))?;
 
     let channel = endpoint
         .connect()
@@ -151,12 +144,6 @@ fn format_chain<E: std::error::Error + std::fmt::Debug + 'static>(e: &E) -> Stri
         src = s.source();
     }
     out
-}
-
-pub(crate) fn extract_host(endpoint: &str) -> String {
-    endpoint
-        .rsplit_once(':')
-        .map_or_else(|| endpoint.to_string(), |(h, _)| h.to_string())
 }
 
 fn status_to_error(status: &tonic::Status) -> ControlError {

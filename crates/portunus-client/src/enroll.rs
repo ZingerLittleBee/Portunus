@@ -1,21 +1,17 @@
 use std::path::PathBuf;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use portunus_core::ClientName;
 use portunus_proto::v1::{EnrollClientRequest, client_enrollment_client::ClientEnrollmentClient};
 use thiserror::Error;
 use tonic::Request;
-use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 
 use crate::bundle::CredentialBundle;
-use crate::control::extract_host;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrollmentUri {
     pub endpoint: String,
     pub pin_sha256: String,
     pub code: String,
-    pub server_cert_pem: String,
 }
 
 impl EnrollmentUri {
@@ -35,7 +31,6 @@ impl EnrollmentUri {
 
         let mut pin: Option<String> = None;
         let mut code: Option<String> = None;
-        let mut cert: Option<String> = None;
         for pair in query.split('&') {
             let Some((key, value)) = pair.split_once('=') else {
                 return Err(EnrollmentUriError::MalformedQueryPair);
@@ -56,13 +51,6 @@ impl EnrollmentUri {
                     }
                     code = Some(value.to_string());
                 }
-                "cert" => {
-                    let bytes = URL_SAFE_NO_PAD
-                        .decode(value.as_bytes())
-                        .map_err(|_| EnrollmentUriError::BadCert)?;
-                    let pem = String::from_utf8(bytes).map_err(|_| EnrollmentUriError::BadCert)?;
-                    cert = Some(pem);
-                }
                 _ => {}
             }
         }
@@ -71,7 +59,6 @@ impl EnrollmentUri {
             endpoint: endpoint.to_string(),
             pin_sha256: pin.ok_or(EnrollmentUriError::MissingField("pin"))?,
             code: code.ok_or(EnrollmentUriError::MissingField("code"))?,
-            server_cert_pem: cert.ok_or(EnrollmentUriError::MissingField("cert"))?,
         })
     }
 }
@@ -90,8 +77,6 @@ pub enum EnrollmentUriError {
     MalformedQueryPair,
     #[error("bad enrollment URI pin")]
     BadPin,
-    #[error("bad enrollment URI certificate")]
-    BadCert,
 }
 
 #[derive(Debug, Error)]
@@ -112,27 +97,12 @@ pub enum EnrollError {
 
 pub async fn enroll(raw_uri: &str, out: Option<PathBuf>) -> Result<PathBuf, EnrollError> {
     let parsed = EnrollmentUri::parse(raw_uri)?;
-    let preliminary = CredentialBundle::from_enrollment(
-        1,
-        ClientName::new("enrollment-probe")?,
-        None,
-        parsed.endpoint.clone(),
-        parsed.pin_sha256.clone(),
-        parsed.server_cert_pem.clone(),
-        "probe-token".into(),
-    )
-    .map_err(EnrollError::EnrollmentMaterial)?;
 
-    let ca = Certificate::from_pem(preliminary.server_cert_pem.as_bytes());
-    let endpoint = Endpoint::from_shared(format!("https://{}", parsed.endpoint))
+    // Dial the enrollment endpoint trusting only the pinned certificate
+    // (its SHA-256 fingerprint from the URI). The handshake fails before
+    // the join code is sent if the server presents a different cert.
+    let channel = crate::tls::pinned_endpoint(&parsed.endpoint, &parsed.pin_sha256)
         .map_err(|e| EnrollError::Transport(e.to_string()))?
-        .tls_config(
-            ClientTlsConfig::new()
-                .ca_certificate(ca)
-                .domain_name(extract_host(&preliminary.server_endpoint)),
-        )
-        .map_err(|e| EnrollError::Transport(e.to_string()))?;
-    let channel = endpoint
         .connect()
         .await
         .map_err(|e| EnrollError::Transport(e.to_string()))?;
@@ -159,7 +129,6 @@ pub async fn enroll(raw_uri: &str, out: Option<PathBuf>) -> Result<PathBuf, Enro
         client_id,
         response.server_endpoint,
         response.server_cert_sha256,
-        response.server_cert_pem,
         response.token,
     )
     .map_err(EnrollError::EnrollmentMaterial)?;
@@ -187,13 +156,10 @@ fn default_bundle_write_path() -> PathBuf {
 mod tests {
     use super::*;
 
-    const PEM: &str = "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n";
-
     #[test]
     fn enrollment_uri_roundtrips_fields() {
-        let cert = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(PEM.as_bytes());
         let uri = format!(
-            "portunus://control.example.com:7443/enroll?pin=sha256:{}&code=join-code&cert={cert}",
+            "portunus://control.example.com:7443/enroll?pin=sha256:{}&code=join-code",
             "a".repeat(64)
         );
 
@@ -202,28 +168,48 @@ mod tests {
         assert_eq!(parsed.endpoint, "control.example.com:7443");
         assert_eq!(parsed.pin_sha256, "a".repeat(64));
         assert_eq!(parsed.code, "join-code");
-        assert_eq!(parsed.server_cert_pem, PEM);
+    }
+
+    #[test]
+    fn enrollment_uri_ignores_unknown_keys() {
+        // A stray cert= (or any future key) is ignored, not rejected.
+        let uri = format!(
+            "portunus://control.example.com:7443/enroll?pin=sha256:{}&code=join-code&cert=ignored",
+            "a".repeat(64)
+        );
+        let parsed = EnrollmentUri::parse(&uri).expect("parse");
+        assert_eq!(parsed.code, "join-code");
     }
 
     #[test]
     fn enrollment_uri_rejects_missing_pin() {
-        let cert = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(PEM.as_bytes());
-        let uri = format!("portunus://control.example.com:7443/enroll?code=join-code&cert={cert}");
+        let uri = "portunus://control.example.com:7443/enroll?code=join-code";
 
         assert!(matches!(
-            EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUri::parse(uri).unwrap_err(),
             EnrollmentUriError::MissingField("pin")
         ));
     }
 
     #[test]
-    fn enrollment_uri_rejects_query_pair_without_equals() {
-        let cert = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(PEM.as_bytes());
-        let uri =
-            format!("portunus://control.example.com:7443/enroll?pin&code=join-code&cert={cert}");
-
+    fn enrollment_uri_rejects_missing_code() {
+        let uri = format!(
+            "portunus://control.example.com:7443/enroll?pin=sha256:{}",
+            "a".repeat(64)
+        );
         assert!(matches!(
             EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUriError::MissingField("code")
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_query_pair_without_equals() {
+        // `pin` present but malformed (no '=').
+        let uri = "portunus://control.example.com:7443/enroll?pin&code=join-code";
+
+        assert!(matches!(
+            EnrollmentUri::parse(uri).unwrap_err(),
             EnrollmentUriError::MalformedQueryPair
         ));
     }
