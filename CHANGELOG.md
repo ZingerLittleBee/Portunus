@@ -5,10 +5,35 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] — 2026-06-10
+
+One-command client onboarding. The "Connect client" flow collapses from a
+multi-step copy-paste sequence to a single command per deploy method; the
+verbose `sudo install -o root -g portunus-client -m 0640 …` bundle-placement
+line is gone. No wire-protocol, join-code lifecycle, or pinned-TLS handshake
+change — fully backward compatible.
 
 ### Added
-- One-command client onboarding: `install.sh --enroll '<uri>'` installs, enrolls, places the bundle (`/etc/portunus/client.bundle.json`, `root:portunus-client 0640`), and starts the service in a single command. The Docker image self-enrolls on first boot from `PORTUNUS_ENROLL_URI` into a mounted volume. The Web UI "Connect client" dialog now shows one command per tab.
+- **`install.sh --enroll '<uri>'` (binary / systemd).** One command installs
+  the binary, creates the service user and `/etc/portunus`, installs the unit,
+  enrolls — placing `/etc/portunus/client.bundle.json` as `root:portunus-client`,
+  mode `0640` — and starts the service, in that order, so the bundle is in
+  place before first start and the service never crash-loops. Without
+  `--enroll`, behavior is byte-for-byte identical install-only.
+- **Docker self-enrollment.** `portunus-client` self-enrolls on first boot from
+  `PORTUNUS_ENROLL_URI` when the resolved bundle is absent, writing it into the
+  mounted volume; a persisted bundle wins on later boots (the one-time code is
+  already spent). The runtime image's `/etc/portunus` is now `nonroot`-writable
+  so an empty named volume inherits a writable owner —
+  `docker run -d --network host -e PORTUNUS_ENROLL_URI='<uri>' -v portunus-client:/etc/portunus <image>`.
+- The Web UI "Connect client" dialog renders a single command per tab
+  (Binary / Docker), replacing the previous multi-step guide; it notes that the
+  command carries a single-use, short-TTL code.
+
+### Changed
+- `install.sh client --deploy docker` now generates a self-enrolling Compose
+  file (named `portunus-client` volume, `PORTUNUS_ENROLL_URI` env) instead of a
+  bind-mounted pre-placed bundle.
 
 ## [2.0.0] — 2026-06-03
 
