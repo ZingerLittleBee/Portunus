@@ -288,8 +288,33 @@ async fn put_client(
     }))
 }
 
-async fn get_clients(State(state): State<Arc<AppState>>) -> Json<Vec<ClientView>> {
-    Json(cli::list_clients(&state).await)
+async fn get_clients(
+    State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<OperatorIdentity>,
+) -> Json<Vec<ClientView>> {
+    let mut views = cli::list_clients(&state).await;
+    // RBAC: superadmin sees every client; a non-superadmin only sees the
+    // clients they hold a grant for (a wildcard `*` grant sees all). This
+    // scopes the client list — names, addresses, connection times — to the
+    // tenant's own infrastructure and keeps the rule/quota client picker in
+    // sync with what `enforce_push` will actually authorize.
+    if identity.role != portunus_auth::OperatorRole::Superadmin {
+        let grants = state.operator_auth.grants_for(&identity.user_id);
+        let wildcard = grants
+            .iter()
+            .any(|g| matches!(g.client, portunus_auth::ClientScope::Any));
+        if !wildcard {
+            let allowed: std::collections::HashSet<&str> = grants
+                .iter()
+                .filter_map(|g| match &g.client {
+                    portunus_auth::ClientScope::Named(n) => Some(n.as_str()),
+                    portunus_auth::ClientScope::Any => None,
+                })
+                .collect();
+            views.retain(|v| allowed.contains(v.client_name.as_str()));
+        }
+    }
+    Json(views)
 }
 
 #[derive(Debug, Deserialize)]
