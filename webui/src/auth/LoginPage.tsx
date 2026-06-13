@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AlertTriangle } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -164,8 +165,11 @@ export function LoginPage() {
         </CardHeader>
         <CardContent>
           {expired && !mustChangePassword && (
-            <Alert className="mb-4">
-              <AlertDescription>{t("login.sessionExpired")}</AlertDescription>
+            <Alert className="mb-4 border-amber-500/50 [&>svg]:text-amber-500">
+              <AlertTriangle />
+              <AlertDescription className="text-amber-700 dark:text-amber-400">
+                {t("login.sessionExpired")}
+              </AlertDescription>
             </Alert>
           )}
           {mustChangePassword ? (
