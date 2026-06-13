@@ -72,6 +72,8 @@
   "tokenReveal": {
     "title": "已签发 API 令牌",
     "description": "请立即复制此 API 令牌——之后将不会再显示。",
+    "passwordTitle": "已设置临时密码",
+    "passwordDescription": "请立即复制此临时密码——之后将不会再显示。该用户下次登录时必须修改密码。",
     "copy": "复制",
     "copied": "已复制",
     "dismiss": "关闭",

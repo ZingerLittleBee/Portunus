@@ -72,6 +72,8 @@
   "tokenReveal": {
     "title": "API token issued",
     "description": "Copy this API token now — it will not be shown again.",
+    "passwordTitle": "Temporary password set",
+    "passwordDescription": "Copy this temporary password now — it will not be shown again. The user must change it on next login.",
     "copy": "Copy",
     "copied": "Copied",
     "dismiss": "Dismiss",
