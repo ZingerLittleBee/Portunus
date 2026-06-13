@@ -161,14 +161,24 @@ serve-docker: server-build  ## Run server bound to 0.0.0.0:7080 (simulates Docke
 #   • UI edits hot-reload through Vite (no rebuild)
 #   • Backend edits: Ctrl-C and re-run `make dev` (cargo incremental
 #     rebuilds the changed crates only)
-# `trap 'kill 0'` ensures Ctrl-C tears down both child processes
-# cleanly via the shared shell process group.
+# `trap 'kill 0'` tears down both child processes on Ctrl-C via the
+# shared shell process group. Each child is also wrapped in a subshell
+# so that if EITHER exits on its own (e.g. the backend fails to start —
+# `serve failed: ...`), the other is killed and `make dev` exits
+# non-zero with a pointer to the cause, instead of silently lingering as
+# a half-up dev env (Vite alone, every /v1 request ECONNREFUSED).
 dev: dev-bootstrap webui/node_modules  ## Run backend (skip embed) + Vite UI together — open http://localhost:5173
 	@echo "→ backend on http://$(LISTEN)  |  UI on http://localhost:5173  (Ctrl-C stops both)"
 	@trap 'kill 0' INT TERM; \
-	  PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
-	    --data-dir $(DATA_DIR) serve --operator-http-listen $(LISTEN) & \
-	  ( cd webui && pnpm dev ) & \
+	  ( PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
+	      --data-dir $(DATA_DIR) serve --operator-http-listen $(LISTEN); \
+	    st=$$?; echo ""; \
+	    echo ">>> make dev: BACKEND exited (status=$$st). Scroll up for the cause (e.g. 'serve failed: ...'). Tearing down." >&2; \
+	    kill 0 ) & \
+	  ( cd webui && pnpm dev; \
+	    st=$$?; echo ""; \
+	    echo ">>> make dev: Vite exited (status=$$st). Tearing down." >&2; \
+	    kill 0 ) & \
 	  wait
 
 # Vite needs webui/node_modules before `pnpm dev` can start. On a fresh
