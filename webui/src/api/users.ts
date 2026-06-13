@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/api/client";
 import { credentialsKey } from "@/api/credentials";
-import { ME_QUERY_KEY } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, useIdentity } from "@/auth/AuthGate";
+import { isSuperadmin } from "@/lib/permissions";
 import type {
   CreateUserBody,
   CreateUserResponse,
@@ -16,9 +17,16 @@ export const userKey = (id: string) => ["users", id] as const;
 const REFETCH_INTERVAL = 5_000;
 
 export function useUsersList() {
+  // RBAC: `/v1/users` is superadmin-only. Gating the query (rather than
+  // letting it 403 every `REFETCH_INTERVAL`) stops the error toast loop for
+  // non-superadmin operators who land on pages that consume this list
+  // (Rules owner filter, dashboard traffic breakdown). Consumers already
+  // tolerate `undefined` data.
+  const identity = useIdentity();
   return useQuery({
     queryKey: USERS_KEY,
     queryFn: () => apiFetch<UserView[]>("/v1/users"),
+    enabled: isSuperadmin(identity),
     refetchInterval: REFETCH_INTERVAL,
     staleTime: 2_500,
   });

@@ -17,6 +17,25 @@ export class ApiError extends Error {
   }
 }
 
+/// Render an error for display in the UI.
+///
+/// The operator API returns `{ code, message }`, but most server error
+/// variants embed their stable `code` as a prefix of the human `message`
+/// (e.g. `code = "validation.rate_limit_on_legacy_shape"`,
+/// `message = "validation.rate_limit_on_legacy_shape: rate_limit requires …"`).
+/// Naively rendering `${code}: ${message}` therefore doubles the code. This
+/// helper prepends the code only when the message does not already carry it.
+export function formatApiError(err: unknown): string {
+  if (err instanceof ApiError) {
+    const { code, message } = err;
+    if (!code || message === code || message.startsWith(`${code}:`)) {
+      return message || code;
+    }
+    return `${code}: ${message}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 export const UNAUTHORIZED_EVENT = "auth:unauthorized";
 
 function emitUnauthorized(path: string): void {

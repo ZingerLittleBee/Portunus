@@ -21,7 +21,8 @@
     "metrics": "指标",
     "settings": "设置",
     "signOut": "登出",
-    "userMenu": "用户菜单"
+    "userMenu": "用户菜单",
+    "toggleSidebar": "切换侧栏"
   },
   "login": {
     "title": "登录",
@@ -218,6 +219,7 @@
     "sniPatternHelp": "精确主机名或单层通配符。留空为普通 TCP 转发。仅适用于 TCP 单端口规则。",
     "rateLimitTitle": "服务质量(QoS)",
     "rateLimitHelp": "按规则配置可选的 QoS 上限。留空表示该维度不限制。",
+    "rateLimitRangeConflict": "QoS 限速不能与目标端口范围同时使用。请清空目标结束端口，或移除限速。",
     "requiredField": "此字段为必填项。",
     "invalidPort": "请输入 1–65535 之间的端口。",
     "invalidHealthCheckInterval": "请输入 1–3600 秒之间的值。"

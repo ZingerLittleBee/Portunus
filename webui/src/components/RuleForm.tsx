@@ -5,7 +5,8 @@ import { z } from "zod";
 import { Plus, Trash2 } from "lucide-react";
 
 import { usePushRule } from "@/api/rules";
-import { ApiError } from "@/api/client";
+import { useClientsList } from "@/api/clients";
+import { formatApiError } from "@/api/client";
 import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,9 +14,11 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
+import { ClientCombobox } from "@/components/UserQuota/ClientCombobox";
 import {
   Select,
   SelectContent,
@@ -36,6 +39,9 @@ import {
 
 const PROXY_PROTOCOL_NONE = "__none";
 
+// Stable reference so the combobox doesn't see a new Set every render.
+const EMPTY_DISABLED_CLIENTS = new Set<string>();
+
 const isPort = (s: string) => /^\d{1,5}$/.test(s) && Number(s) >= 1 && Number(s) <= 65535;
 
 interface RuleFormProps {
@@ -49,6 +55,15 @@ export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
   const { t } = useTranslation();
   const push = usePushRule();
   const [error, setError] = useState<string | null>(null);
+  // C1: the client is chosen from the connected/granted clients list
+  // (addressed by stable id) rather than typed free-form. The wire still
+  // carries the display name, which the server resolves to a handle.
+  const clientsQ = useClientsList();
+  const clientLites = (clientsQ.data ?? []).map((c) => ({
+    client_id: c.client_id,
+    client_name: c.client_name,
+    connected: c.connected,
+  }));
 
   const rateLimitSchema = z.object({
     bandwidth_in_bps: z.string(),
@@ -92,6 +107,17 @@ export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
         if (v.targetEnd !== "" && !isPort(v.targetEnd)) {
           ctx.addIssue({ code: "custom", path: ["targetEnd"], message: t("rulePush.invalidPort") });
         }
+        // 011-rate-limiting-qos: caps are only accepted on the targets[]
+        // shape, which cannot express a target *port range*. Block the
+        // unsupported combination up front instead of sending a request the
+        // server is bound to reject.
+        if (v.targetEnd !== "" && isPort(v.targetEnd) && formStateToRateLimit(v.rateLimit)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["targetEnd"],
+            message: t("rulePush.rateLimitRangeConflict"),
+          });
+        }
       } else {
         v.targets.forEach((row, i) => {
           if (!row.host.trim()) {
@@ -127,7 +153,7 @@ export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
   const form = useForm<RuleFormValues>({
     resolver: zResolver<RuleFormValues>(schema),
     defaultValues: {
-      client: "client-a",
+      client: "",
       listenStart: "30000",
       listenEnd: "",
       mode: "single",
@@ -163,8 +189,12 @@ export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
     try {
       const trimmedSni = values.sniPattern.trim();
       const rl = formStateToRateLimit(values.rateLimit);
+      // `values.client` holds the selected client_id; the push API resolves
+      // by display name, so map it back before building the body.
+      const clientName =
+        clientLites.find((c) => c.client_id === values.client)?.client_name ?? values.client;
       const baseBody = {
-        client: values.client,
+        client: clientName,
         listen_port: Number(values.listenStart),
         ...(values.listenEnd ? { listen_port_end: Number(values.listenEnd) } : {}),
         protocol: values.protocol,
@@ -175,39 +205,67 @@ export function RuleForm({ onSuccess, onCancel }: RuleFormProps) {
         // is blank. Preserves SC-004 wire byte-stability for v0.10 rule pushes.
         ...(rl ? { rate_limit: rl } : {}),
       };
-      const body =
-        values.mode === "single"
-          ? {
-              ...baseBody,
-              target_host: values.target,
-              target_port: Number(values.targetStart),
-              ...(values.targetEnd ? { target_port_end: Number(values.targetEnd) } : {}),
-            }
-          : {
-              ...baseBody,
-              targets: values.targets.map((row, idx) => ({
-                host: row.host,
-                port: Number(row.port),
-                priority: idx,
-                ...(values.protocol === "tcp" && row.proxyProtocol
-                  ? { proxy_protocol: row.proxyProtocol }
-                  : {}),
-              })),
-              ...(values.healthCheckInterval
-                ? { health_check_interval_secs: Number(values.healthCheckInterval) }
-                : {}),
-            };
+      let body;
+      if (values.mode === "multi") {
+        body = {
+          ...baseBody,
+          targets: values.targets.map((row, idx) => ({
+            host: row.host,
+            port: Number(row.port),
+            priority: idx,
+            ...(values.protocol === "tcp" && row.proxyProtocol
+              ? { proxy_protocol: row.proxyProtocol }
+              : {}),
+          })),
+          ...(values.healthCheckInterval
+            ? { health_check_interval_secs: Number(values.healthCheckInterval) }
+            : {}),
+        };
+      } else if (rl) {
+        // R2a: the server only accepts rate_limit on the targets[] shape, so
+        // a single target with caps is transparently sent as a one-element
+        // targets[]. (A target port range is incompatible with caps and is
+        // blocked by the form's superRefine guard above.)
+        body = {
+          ...baseBody,
+          targets: [
+            { host: values.target, port: Number(values.targetStart), priority: 0 },
+          ],
+        };
+      } else {
+        body = {
+          ...baseBody,
+          target_host: values.target,
+          target_port: Number(values.targetStart),
+          ...(values.targetEnd ? { target_port_end: Number(values.targetEnd) } : {}),
+        };
+      }
       const res = await push.mutateAsync(body);
       onSuccess(res.rule_id);
     } catch (err) {
-      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setError(formatApiError(err));
     }
   }
 
   return (
     <form onSubmit={handleSubmit(onSubmit)}>
       <FieldGroup>
-        <FormTextField control={control} name="client" label={t("rules.client")} />
+        <Field data-invalid={formState.errors.client ? true : undefined}>
+          <FieldLabel htmlFor="rule-client">{t("rules.client")}</FieldLabel>
+          <Controller
+            control={control}
+            name="client"
+            render={({ field }) => (
+              <ClientCombobox
+                clients={clientLites}
+                value={field.value}
+                onChange={field.onChange}
+                disabledClientIds={EMPTY_DISABLED_CLIENTS}
+              />
+            )}
+          />
+          {formState.errors.client && <FieldError errors={[formState.errors.client]} />}
+        </Field>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <FormTextField

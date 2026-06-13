@@ -53,6 +53,12 @@ export function parseDashboardGauges(text: string | undefined): DashboardGauges 
   let clientsConnected: number | null = null;
   let activeConnectionsSum = 0;
   let sawActiveConnections = false;
+  // Every active rule emits a `portunus_rule_active_connections` series
+  // (even at value 0), whereas `*_bytes_in_total` only appears once a rule
+  // has carried traffic. Counting the active-connections labels therefore
+  // yields the true active-rule count; counting bytes-in would undercount
+  // freshly-pushed, zero-traffic rules.
+  const activeRuleIds = new Set<string>();
   const ruleBytesIn = new Map<string, number>();
   const ruleBytesOut = new Map<string, number>();
 
@@ -68,6 +74,8 @@ export function parseDashboardGauges(text: string | undefined): DashboardGauges 
     if (line.startsWith("portunus_rule_active_connections{")) {
       const v = valueAtEnd(line);
       if (v !== null) {
+        const rule = extractRule(line);
+        if (rule) activeRuleIds.add(rule);
         activeConnectionsSum += v;
         sawActiveConnections = true;
       }
@@ -87,7 +95,7 @@ export function parseDashboardGauges(text: string | undefined): DashboardGauges 
     }
   }
 
-  const rulesActive = ruleBytesIn.size > 0 ? ruleBytesIn.size : null;
+  const rulesActive = activeRuleIds.size > 0 ? activeRuleIds.size : null;
 
   const topRules: TopRule[] = [...ruleBytesIn.keys()]
     .map((rule) => {

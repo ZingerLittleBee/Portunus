@@ -17,6 +17,18 @@ function isMeQueryKey(queryKey: readonly unknown[]): boolean {
   return queryKey.length === ME_QUERY_KEY.length && queryKey.every((part, idx) => part === ME_QUERY_KEY[idx]);
 }
 
+/// Read the current operator identity from the shared `me` query cache.
+/// `AuthGate` populates this cache on mount, so callers (role gates,
+/// conditionally-`enabled` queries) get it without an extra round-trip.
+export function useIdentity(): Identity | undefined {
+  const { data } = useQuery({
+    queryKey: ME_QUERY_KEY,
+    queryFn: fetchIdentity,
+    staleTime: 60_000,
+  });
+  return data;
+}
+
 interface AuthGateProps {
   /** Required role; omit for "any authenticated user". */
   role?: Role;

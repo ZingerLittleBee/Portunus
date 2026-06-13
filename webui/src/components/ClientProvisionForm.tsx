@@ -4,7 +4,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateClientEnrollment } from "@/api/clients";
-import { ApiError } from "@/api/client";
+import { formatApiError } from "@/api/client";
 import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -42,13 +42,7 @@ export function ClientProvisionForm({ onDone }: ClientProvisionFormProps) {
       });
       setEnrollment(res);
     } catch (err) {
-      if (err instanceof ApiError) {
-        setError(`${err.code}: ${err.message}`);
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError(String(err));
-      }
+      setError(formatApiError(err));
     }
   }
 

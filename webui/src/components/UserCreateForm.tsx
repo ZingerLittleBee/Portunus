@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { useCreateUser } from "@/api/users";
 import { useCreateAccessEntry } from "@/api/access-entries";
 import { useClientsList } from "@/api/clients";
-import { ApiError } from "@/api/client";
+import { formatApiError } from "@/api/client";
 import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -82,14 +82,12 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
           });
           toast.success(t("userQuota.toast.created", { client: pendingQuota.client_name }));
         } catch (err) {
-          const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
-          toast.warning(`${t("userQuota.toast.createFailed")}: ${msg}`);
+          toast.warning(`${t("userQuota.toast.createFailed")}: ${formatApiError(err)}`);
         }
       }
       onSuccess(res.user_id);
     } catch (err) {
-      const msg = err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
-      setError(msg);
+      setError(formatApiError(err));
     }
   }
 
@@ -146,6 +144,8 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
               <UserQuotaForm
                 clients={clientLites}
                 disabledClientIds={new Set()}
+                nested
+                framed={false}
                 onSubmit={(v) => {
                   setPendingQuota(v);
                 }}

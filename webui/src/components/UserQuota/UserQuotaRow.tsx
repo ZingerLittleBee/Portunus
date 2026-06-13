@@ -16,7 +16,7 @@ import {
   useUpdateAccessEntry,
   type AccessEntry,
 } from "@/api/access-entries";
-import { ApiError } from "@/api/client";
+import { formatApiError } from "@/api/client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -87,9 +87,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
       toast.success(t("userQuota.toast.updated", { client: v.client_name }));
       setEditOpen(false);
     } catch (err) {
-      const msg =
-        err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
-      setServerError(msg);
+      setServerError(formatApiError(err));
       toast.error(t("userQuota.toast.updateFailed"));
 
       // If the recreate-after-delete leg failed, the user's access is now
@@ -115,9 +113,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
       toast.success(t("userQuota.toast.deleted", { client: entry.client_name }));
       setConfirmDelete(false);
     } catch (err) {
-      const msg =
-        err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
-      toast.error(`${t("userQuota.toast.deleteFailed")}: ${msg}`);
+      toast.error(`${t("userQuota.toast.deleteFailed")}: ${formatApiError(err)}`);
     }
   }
 
