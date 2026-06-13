@@ -5,18 +5,23 @@ working in this repository. Kept in sync with `CLAUDE.md`.
 
 ## Repository status
 
-Stable release line. Latest tag is **v1.9.1** (see `CHANGELOG.md`); the
-default branch is `main`. Everything through `014-udp-centralized-demux`
-has shipped (v1.5.x); v1.6.x–v1.9.1 since added the standalone stats TUI,
-forwarder hardening (UDP HOL, time-boxed PROXY prelude, bounded DNS
-cache, accept-loop backoff), the AGPL relicense + static `musl` Linux
-binaries, the Railway image-based deploy template, and a Web UI pass
-(in-dialog forms, split Live/History audit views).
+Stable release line. Latest tag is **v2.1.0** (2026-06-10, see
+`CHANGELOG.md`); the default branch is `main`. Everything through
+`015-client-stable-id` has shipped: that workspace-wide refactor — a
+system-generated, stable, opaque `ClientId` (ULID) that replaces the
+overloaded `client_name` as the identity / URL / primary-key /
+correlation key, demoting `client_name` to a free-form display label —
+landed as **v2.0.0** (2026-06-03). v2.1.0 then added one-command client
+onboarding (`install.sh --enroll`, Docker self-enrollment). Earlier,
+v1.6.x–v1.9.1 added the standalone stats TUI, forwarder hardening (UDP
+HOL, time-boxed PROXY prelude, bounded DNS cache, accept-loop backoff),
+the AGPL relicense + static `musl` Linux binaries, the Railway
+image-based deploy template, and a Web UI pass (in-dialog forms, split
+Live/History audit views).
 
-The current workstream is the **active feature** in the SPECKIT block at
-the bottom of this file — `015-client-stable-id` on branch
-`015-client-stable-id`. This is design/spec context, not yet released;
-verify any claim against `git log` / `CHANGELOG.md`.
+There is **no active in-flight feature**. The SPECKIT block at the bottom
+of this file documents the now-shipped 015 baseline; verify any claim
+against `git log` / `CHANGELOG.md`.
 
 ## Architecture
 
@@ -69,7 +74,7 @@ Raw cargo when working across the workspace:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo bench -p portunus-client --bench data_plane    # compares to v0.1.0 baseline
+cargo bench -p portunus-forwarder --bench data_plane # compares to v0.1.0 baseline
 ```
 
 Run a single test:
@@ -104,9 +109,13 @@ pnpm build        # tsc -b && vite build && size-limit (≤ 500 KB gz)
   on `-D warnings`. See `[workspace.lints.clippy]` in `Cargo.toml` for
   the intentional `allow` list and the reason each is allowed — do not
   remove an `allow` without re-reading that comment.
-- **Data-plane perf gate**: `.github/workflows/bench.yml` fails PRs
-  that regress median benchmark by >25% vs
-  `crates/portunus-client/benches/baselines/v0.1.0.json`.
+- **Data-plane perf gate**: `.github/workflows/bench.yml` runs
+  `cargo bench -p portunus-forwarder --bench data_plane` and hard-fails
+  PRs whose median regresses by >50% vs
+  `crates/portunus-forwarder/benches/baselines/v0.1.0.json` (via
+  `scripts/bench_regression_gate.py --max-regression-pct 50`). The
+  Constitution's Principle II is the stricter *review* gate: any >5%
+  throughput/p99 regression must be justified in the PR.
 - **Operator HTTP listener is loopback-pinned** at startup. Remote
   access is an operator concern (SSH tunnel or reverse proxy with auth).
 - **Data-plane reject/throttle events are tracing-only** — they do NOT
@@ -135,24 +144,26 @@ plans (v0.1.0 – v0.11.0) remain in `specs/` for reference.
 
 - `README.md` — install, basic flow, operator API entry points.
 - `Makefile` — every target has a `##` help comment (try `make help`).
-- `docs/runbook.md` — day-1/day-2 ops, troubleshooting.
+- `docs/content/docs/` — Fumadocs/MDX user & ops docs (configuration,
+  features, CLI, deploy). Replaces the old `docs/runbook.md` (removed);
+  the published docs site is built from this tree.
 - `webui/README.md` — frontend toolchain & bundle-size budget.
 - `.specify/memory/constitution.md` — project principles (auth model,
   perf gates).
 
 <!-- SPECKIT START -->
-Active feature: `015-client-stable-id` on branch
-`015-client-stable-id`. This is a v2.0-level, workspace-wide refactor
-that separates a client's **identity** from its **label**. Today the
-user-supplied `client_name` is overloaded as the unique identifier,
+Shipped baseline: `015-client-stable-id`, released as **v2.0.0**
+(2026-06-03). This was a v2.0-level, workspace-wide refactor that
+separates a client's **identity** from its **label**. Before 015, the
+user-supplied `client_name` was overloaded as the unique identifier,
 the URL path segment, the SQLite primary key, and the log/metric
 correlation key, forcing a strict DNS-label rule on it. The refactor
-introduces a system-generated, stable, opaque `ClientId` (ULID, reusing
+introduced a system-generated, stable, opaque `ClientId` (ULID, reusing
 the existing `ulid` crate already used by `RuleId`/`RequestId`) that
-takes over the identifier / URL / primary-key / correlation roles, and
-demotes `client_name` to a free-form display field.
+took over the identifier / URL / primary-key / correlation roles, and
+demoted `client_name` to a free-form display field.
 
-Key decisions (resolved 2026-06-02, see `spec.md`):
+Key decisions (resolved 2026-06-02, shipped in v2.0.0; see `spec.md`):
 - **`client_name` is display-only.** Validation is relaxed to reject
   only empty/whitespace-only names, control characters, and names over a
   max length (assume ≤255); uppercase, spaces, dots, underscores, and
@@ -173,13 +184,20 @@ Key decisions (resolved 2026-06-02, see `spec.md`):
 - **Transparent upgrade, no re-enrollment.** A pre-upgrade credential
   bundle (token, no id) still connects: the authenticated token resolves
   to the client's newly-assigned `ClientId` server-side.
-- **SQLite V011 migration.** Seven `client_name`-keyed tables
-  (`client_tokens`, `rules`, `rate_limit_owner`, `traffic_quotas`,
-  `traffic_usage_minute`, `traffic_usage_hour`, `client_enrollments`)
-  are re-keyed to `client_id`. `client_tokens` is the source of truth:
-  assign an id per client there, then backfill the rest by name-join.
-  SQLite primary-key changes require the build-new-table + copy + rename
-  dance; the migration must be idempotent and crash-safe.
+- **SQLite V011 + V012 migration (two-step).** Seven `client_name`-keyed
+  tables (`client_tokens`, `rules`, `rate_limit_owner`, `traffic_quotas`,
+  `traffic_samples_1m`, `traffic_samples_1h`, `client_enrollments`) are
+  re-keyed to `client_id`. **V011** (additive) builds a `client_name →
+  client_id` map from the UNION of every table's names (so billing rows
+  for already-deleted clients still get an id), rebuilds `client_tokens`
+  with a `client_id` primary key, and backfills a `client_id` column on
+  the other six. **V012** flips the composite primary keys
+  (build-new-table + copy + rename), drops `client_name` from
+  `rate_limit_owner`, and keeps `client_name` as a display column on the
+  `traffic_*` tables. Split across two versions so the working tree never
+  sits broken between the SQL and the Rust/operator-route changes; both
+  migrations are idempotent and crash-safe via refinery's transactional
+  version gate.
 - **Operator surface re-keys to id.** HTTP routes become
   `/v1/clients/{id}/...`, CLI args and Web UI routes
   (`/clients/:clientId`) address by id; `ConnectedClients` switches from
@@ -203,12 +221,13 @@ Inherited baselines (do not re-derive):
   demux: one `UdpRuleRuntime` per rule supervising a listener task per
   port, a shared `UdpFlowRegistry` keyed by `(listen_port, source_addr)`,
   per-rule flow cap, ICMP-driven flow eviction, `O(1)×64 KiB` recv
-  buffer. No operator-surface change. 015 re-keys the per-client store
-  layer but does not touch this UDP runtime.
+  buffer. No operator-surface change. 015 re-keyed the per-client store
+  layer but did not touch this UDP runtime.
 - v0.13.0 — `docs/superpowers/plans/2026-05-14-traffic-quotas-and-history.md`.
   Per-rule and per-owner traffic quotas. The `traffic_quotas` /
-  `traffic_usage_*` tables are among the seven that 015's V011 migration
-  re-keys from `client_name` to `client_id`.
+  `traffic_samples_1m` / `traffic_samples_1h` tables are among the seven
+  that 015's V011/V012 migration re-keyed from `client_name` to
+  `client_id`.
 - v0.12.0 — `specs/012-tcp-zero-copy-splice/plan.md`. Linux
   `splice(2)` fast path; TCP-only, untouched by v1.5.x.
 - v0.11.0 — `specs/011-rate-limiting-qos/plan.md`. Per-rule and
