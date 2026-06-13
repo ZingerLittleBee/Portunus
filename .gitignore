@@ -31,6 +31,11 @@ docker-bin/
 # tokens; never source of truth, never check in. Match anywhere in the tree.
 *.bundle.json
 
+# Local dev server state — the Makefile `dev`/`serve`/`bootstrap` DATA_DIR
+# default ($(CURDIR)/.portunus-dev): SQLite state.db + generated TLS
+# material + the .dev-credentials-set marker. Never check in.
+/.portunus-dev/
+
 # 006-management-web-ui: SPA build artefacts and Node module cache.
 # Keep `webui/dist/` itself (so rust-embed can compile against an empty
 # directory under PORTUNUS_SKIP_WEBUI=1) but ignore its contents.
