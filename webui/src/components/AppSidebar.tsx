@@ -23,7 +23,7 @@ import {
 import { logout } from "@/api/auth";
 import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
 import { clearLegacyToken } from "@/auth/token-store";
-import { canSeeAuditLog, canSeeUsersList, type Identity } from "@/lib/permissions";
+import { canSeeAuditLog, canSeeMetrics, canSeeUsersList, type Identity } from "@/lib/permissions";
 import { setLanguage, SUPPORTED_LANGUAGES, type Language } from "@/i18n";
 import { useTheme, type ThemeChoice } from "@/theme/ThemeProvider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -69,7 +69,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/rules", i18nKey: "nav.rules", icon: ListChecks, visible: () => true },
   { to: "/clients", i18nKey: "nav.clients", icon: Network, visible: () => true },
   { to: "/audit", i18nKey: "nav.audit", icon: Shield, visible: canSeeAuditLog },
-  { to: "/metrics", i18nKey: "nav.metrics", icon: Activity, visible: () => true },
+  { to: "/metrics", i18nKey: "nav.metrics", icon: Activity, visible: canSeeMetrics },
   { to: "/settings", i18nKey: "nav.settings", icon: Settings, visible: () => true },
 ];
 

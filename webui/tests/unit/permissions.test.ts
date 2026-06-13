@@ -32,9 +32,9 @@ describe("permissions", () => {
     }
   });
 
-  it("metrics gate accepts any authenticated identity", () => {
+  it("metrics gate is superadmin-only (mirrors the server's 403)", () => {
     expect(canSeeMetrics(superadmin)).toBe(true);
-    expect(canSeeMetrics(alice)).toBe(true);
+    expect(canSeeMetrics(alice)).toBe(false);
     expect(canSeeMetrics(null)).toBe(false);
   });
 
