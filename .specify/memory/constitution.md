@@ -217,4 +217,4 @@ Runtime / per-task agent guidance lives in `CLAUDE.md` and the relevant
 `.specify/templates/*.md` files; those documents MUST stay consistent with
 the principles above.
 
-**Version**: 2.0.1 | **Ratified**: 2026-05-06 | **Last Amended**: 2026-05-06
+**Version**: 2.0.2 | **Ratified**: 2026-05-06 | **Last Amended**: 2026-05-08
