@@ -5,6 +5,83 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — 2026-06-14
+
+RBAC hardening and a Web UI QA pass. Non-superadmin operators no longer
+see clients they hold no grant for, and the Metrics page is now gated to
+superadmins to match the server. A round of QA fixes addresses a stalled
+quota-exhaustion push and several Web UI defects. No wire-protocol,
+SQLite-schema, or data-plane change — fully backward compatible.
+
+### Security
+- **`GET /v1/clients` is scoped to granted clients for non-superadmins.**
+  The operator client list previously returned every client (name,
+  address, connection time) to any authenticated user, including tenants
+  with no grant for those clients. The list is now filtered to the
+  clients the caller holds a grant for (a wildcard `*` grant still sees
+  all), consistent with `enforce_push` and the rule/quota client picker.
+  Superadmin behavior is unchanged.
+- **The Metrics page is gated to superadmins.** `GET /v1/metrics` is
+  superadmin-only on the server (403 otherwise), but the Metrics nav
+  link, route guard, and `canSeeMetrics` predicate admitted any
+  authenticated user, so a regular user opening `/metrics` rendered a
+  broken "Forbidden" shell. All three are aligned with the server: the
+  nav link is hidden and non-superadmins get the standard
+  PermissionDenied page, consistent with Users and Audit.
+- **The users-list query is gated behind the superadmin role.**
+  Non-superadmin operators previously polled `/v1/users` every 5 s and
+  hit a 403 toast loop; the query is now suppressed for non-superadmins.
+
+### Changed
+- The rule push form addresses the client through a picker dropdown
+  instead of a free-text name input — brittle since v2.0.0 relaxed the
+  display-name rules — and a single-target rule with QoS caps is now sent
+  transparently as a one-element `targets[]` (the server only accepts
+  `rate_limit` on the `targets[]` shape). The unsupported caps +
+  target-port-range combination is rejected up front with a clear
+  message instead of failing server-side.
+- `make dev` / `make serve` default `DATA_DIR` to a repo-local
+  `.portunus-dev` (gitignored) instead of `/tmp/portunus-dev`, so the dev
+  loop works where `/tmp` is tmpfs (the server refuses tmpfs/NFS
+  data-dirs to protect SQLite). `make dev` also fails loudly now: when
+  the backend exits, the target tears down the process group and exits
+  non-zero with a pointer to the cause instead of leaving Vite up and
+  502'ing every `/v1` request.
+
+### Fixed
+- **Natural quota exhaustion is enforced again on the data plane.** The
+  aggregator emits a `QuotaExhaustedEvent` the first time a (user,
+  client) pair crosses its monthly budget, but `serve.rs` looked the row
+  up by `client_name` and resolved the session via `handles_by_name` —
+  both stale after v2.0.0 re-keyed the quota cache and client registry to
+  the opaque `client_id`. The display name silently missed, so the
+  `TrafficQuotaUpdate{exhausted=true}` push never reached the client and
+  traffic crossing the budget (as opposed to an operator PUT/PATCH) was
+  never enforced. The lookup now resolves by `client_id`, mirroring the
+  operator-CRUD push path.
+- The create-user dialog discarded everything on Save: the initial-quota
+  subform nested its own `<form>` inside the create-user `<form>`
+  (invalid HTML), so Save triggered the outer form's native GET submit.
+  `UserQuotaForm` gains a nested mode (a `<div>` with a `type=button`
+  Save) and `UserCreateForm` opts in.
+- The reset-password success dialog reused the credential-issuance reveal
+  modal, so it announced "API token issued — copy this API token now"
+  while actually showing the new temporary login password. It now shows
+  password-specific copy and notes the forced next-login change.
+- The session-expired login notice used the neutral default Alert with no
+  icon, so it read like a disabled input box; it now carries a warning
+  icon and amber accent so it is clearly a notice.
+- Operator API error displays double-prefixed the stable error code (the
+  code already prefixes the server's message). A `formatApiError()`
+  helper now routes all error displays through a single de-duplicating
+  path.
+- The Dashboard / Metrics "Active rules" count undercounted by counting
+  only rules with a `bytes_in` series, missing zero-traffic rules; it now
+  counts distinct rules from the always-emitted `active_connections`
+  series.
+- The sidebar collapse toggle used a hard-coded English label; it is now
+  localized.
+
 ## [2.1.0] — 2026-06-10
 
 One-command client onboarding. The "Connect client" flow collapses from a

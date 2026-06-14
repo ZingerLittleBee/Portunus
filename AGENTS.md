@@ -5,14 +5,17 @@ working in this repository. Kept in sync with `CLAUDE.md`.
 
 ## Repository status
 
-Stable release line. Latest tag is **v2.1.0** (2026-06-10, see
+Stable release line. Latest tag is **v2.2.0** (2026-06-14, see
 `CHANGELOG.md`); the default branch is `main`. Everything through
 `015-client-stable-id` has shipped: that workspace-wide refactor — a
 system-generated, stable, opaque `ClientId` (ULID) that replaces the
 overloaded `client_name` as the identity / URL / primary-key /
 correlation key, demoting `client_name` to a free-form display label —
 landed as **v2.0.0** (2026-06-03). v2.1.0 then added one-command client
-onboarding (`install.sh --enroll`, Docker self-enrollment). Earlier,
+onboarding (`install.sh --enroll`, Docker self-enrollment), and **v2.2.0**
+hardened operator RBAC (grant-scoped `GET /v1/clients`, superadmin-only
+Metrics page) and shipped a Web UI QA pass — no wire/schema change.
+Earlier,
 v1.6.x–v1.9.1 added the standalone stats TUI, forwarder hardening (UDP
 HOL, time-boxed PROXY prelude, bounded DNS cache, accept-loop backoff),
 the AGPL relicense + static `musl` Linux binaries, the Railway
