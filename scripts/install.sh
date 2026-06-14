@@ -689,18 +689,24 @@ write_compose_file() {
     if [ ! -f "$dir/portunus.toml" ]; then
       die "create ${dir}/portunus.toml first — docker mounts it at /etc/portunus/standalone.toml (example: ${RAW_BASE}/crates/portunus-standalone/contrib/portunus.example.toml)"
     fi
-    # No GHCR image is published for standalone — copy the reference
-    # compose file from contrib/ and the user builds locally.
-    local self_dir3=""
-    if [ -n "${SELF_SCRIPT:-}" ]; then
-      self_dir3="$(dirname "$SELF_SCRIPT")"
-    fi
-    if [ -n "$self_dir3" ] && [ -r "$self_dir3/../crates/portunus-standalone/contrib/docker-compose.yml" ]; then
-      cp "$self_dir3/../crates/portunus-standalone/contrib/docker-compose.yml" "$dir/docker-compose.yml"
-    else
-      curl -fsSL "${RAW_BASE}/crates/portunus-standalone/contrib/docker-compose.yml" -o "$dir/docker-compose.yml" \
-        || die "failed to fetch contrib/docker-compose.yml"
-    fi
+    # The standalone GHCR image is published by release.yml (tags
+    # :<version> and :latest), so emit an image-based compose that
+    # bind-mounts the operator-authored portunus.toml read-only. No
+    # source tree or local build is required on the target host.
+    [ -f "$f" ] && { echo "→ keeping existing $f"; return 0; }
+    cat > "$f" <<YAML
+services:
+  standalone:
+    image: ghcr.io/zingerlittlebee/portunus-standalone:${artifact_version:-latest}
+    container_name: portunus-standalone
+    network_mode: host
+    volumes:
+      - ./portunus.toml:/etc/portunus/standalone.toml:ro
+    cap_add:
+      - NET_BIND_SERVICE
+    restart: unless-stopped
+YAML
+    echo "→ wrote $f"
     return 0
   fi
   if [ "$ROLE" = "client" ]; then
