@@ -80,6 +80,21 @@ mod tests {
     }
 
     #[test]
+    fn econnaborted_evicts() {
+        // ConnectionAborted shares the connected-UDP "peer gone" eviction
+        // arm with ECONNREFUSED/ECONNRESET — assert it explicitly so a
+        // future refactor of the match can't silently drop the arm.
+        let e = err_from_raw(libc::ECONNABORTED);
+        assert_eq!(classify_udp_error(&e), UdpAction::Evict);
+    }
+
+    #[test]
+    fn econnreset_evicts() {
+        let e = err_from_raw(libc::ECONNRESET);
+        assert_eq!(classify_udp_error(&e), UdpAction::Evict);
+    }
+
+    #[test]
     fn emsgsize_message_too_large() {
         let e = err_from_raw(libc::EMSGSIZE);
         assert_eq!(classify_udp_error(&e), UdpAction::MessageTooLarge);
