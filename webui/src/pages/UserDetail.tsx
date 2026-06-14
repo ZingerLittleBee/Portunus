@@ -89,6 +89,9 @@ function UserDetailInner({ userId, identity }: InnerProps) {
   const resetPassword = useResetUserPassword(userId);
 
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  // The reveal modal is shared between API-token issuance and password reset;
+  // track which secret it currently holds so the copy reads correctly.
+  const [revealKind, setRevealKind] = useState<"token" | "password">("token");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<string | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
@@ -140,6 +143,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             size="sm"
             onClick={async () => {
               const res = await issue.mutateAsync({});
+              setRevealKind("token");
               setIssuedToken(res.token);
             }}
             disabled={issue.isPending}
@@ -245,6 +249,12 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           }
         }}
         token={issuedToken ?? ""}
+        {...(revealKind === "password"
+          ? {
+              title: t("tokenReveal.passwordTitle"),
+              description: t("tokenReveal.passwordDescription"),
+            }
+          : {})}
       />
 
       {rotateTarget && (
@@ -259,6 +269,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             const res = await rotate.mutateAsync({});
             await qc.invalidateQueries({ queryKey: credentialsKey(userId) });
             setRotateTarget(null);
+            setRevealKind("token");
             setIssuedToken(res.token);
           }}
         />
@@ -290,6 +301,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             });
             setResetOpen(false);
             if (res.temporary_password) {
+              setRevealKind("password");
               setIssuedToken(res.temporary_password);
             }
           } catch (err) {

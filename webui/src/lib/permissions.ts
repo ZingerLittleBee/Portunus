@@ -23,7 +23,10 @@ export function canSeeAuditLog(identity: Identity | null | undefined): boolean {
 }
 
 export function canSeeMetrics(identity: Identity | null | undefined): boolean {
-  return identity != null;
+  // The server's `GET /v1/metrics` mirror is superadmin-only (returns 403
+  // otherwise), and the tenant Dashboard already skips it — so the Metrics
+  // page must be gated the same way, not left to render a "Forbidden" stub.
+  return isSuperadmin(identity);
 }
 
 export function canSeeUserDetail(

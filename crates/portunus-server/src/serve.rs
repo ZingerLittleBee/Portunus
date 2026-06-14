@@ -373,12 +373,17 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
                 () = exhaust_shutdown.cancelled() => break,
                 evt = rx.recv() => {
                     let Some(evt) = evt else { break };
+                    // The traffic-quota cache and the connected-client
+                    // registry are both keyed by the stable `client_id`
+                    // (015-client-stable-id), so resolve by id — keying the
+                    // lookup on the free-form display name silently misses and
+                    // the exhaust push never reaches the client.
                     if let Some(row) = exhaust_state
                         .traffic_quotas
-                        .get(&evt.user_id, &evt.client_name)
-                        && let Ok(client) = portunus_core::ClientName::new(evt.client_name.clone())
+                        .get(&evt.user_id, &evt.client_id)
+                        && let Ok(client_id) = evt.client_id.parse::<portunus_core::ClientId>()
                         && let Some((outbound, _waiters)) =
-                            exhaust_state.clients.handles_by_name(&client).await
+                            exhaust_state.clients.handles(&client_id).await
                     {
                         let msg = crate::traffic_quotas::make_traffic_quota_set_msg(
                             &row,
@@ -388,7 +393,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), PortunusError> {
                             tracing::warn!(
                                 event = "traffic_quota.exhaust_push_failed",
                                 user = %evt.user_id,
-                                client = %evt.client_name,
+                                client_id = %evt.client_id,
                             );
                         }
                     }

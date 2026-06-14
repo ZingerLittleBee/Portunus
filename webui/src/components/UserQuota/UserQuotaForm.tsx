@@ -47,6 +47,12 @@ interface Props {
   onCancel: () => void;
   busy?: boolean;
   framed?: boolean;
+  /// Render as a plain `<div>` (not a `<form>`) so this can be embedded
+  /// inside another `<form>` without nesting form elements — nested forms
+  /// are invalid HTML and cause the inner Save to trigger the outer form's
+  /// native submit. When set, Save validates + reports via `onSubmit`
+  /// without a form submission.
+  nested?: boolean;
   popoverContainer?: HTMLElement | null | undefined;
   serverError?: string | null;
 }
@@ -81,6 +87,7 @@ export function UserQuotaForm({
   onCancel,
   busy,
   framed = true,
+  nested = false,
   popoverContainer,
   serverError,
 }: Props) {
@@ -117,11 +124,8 @@ export function UserQuotaForm({
     });
   }
 
-  return (
-    <form
-      onSubmit={handleSubmit(submit)}
-      className={cn("flex flex-col", framed && "rounded-md border bg-card p-4")}
-    >
+  const rootClassName = cn("flex flex-col", framed && "rounded-md border bg-card p-4");
+  const body = (
       <FieldGroup>
         <Field data-invalid={formState.errors.client_id ? true : undefined}>
           <FieldLabel htmlFor="quota-client">{t("userQuota.form.client")}</FieldLabel>
@@ -272,7 +276,11 @@ export function UserQuotaForm({
         )}
 
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-          <Button type="submit" disabled={busy}>
+          <Button
+            type={nested ? "button" : "submit"}
+            onClick={nested ? handleSubmit(submit) : undefined}
+            disabled={busy}
+          >
             {busy ? t("confirm.busy") : t("userQuota.form.save")}
           </Button>
           <Button type="button" variant="outline" onClick={onCancel}>
@@ -280,6 +288,13 @@ export function UserQuotaForm({
           </Button>
         </div>
       </FieldGroup>
+  );
+  if (nested) {
+    return <div className={rootClassName}>{body}</div>;
+  }
+  return (
+    <form onSubmit={handleSubmit(submit)} className={rootClassName}>
+      {body}
     </form>
   );
 }

@@ -252,7 +252,7 @@ export function App() {
       <Route
         path="/metrics"
         element={
-          <AuthGate>
+          <AuthGate role="superadmin">
             <Shell>
               <Metrics />
             </Shell>

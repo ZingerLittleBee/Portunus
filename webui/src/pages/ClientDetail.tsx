@@ -8,7 +8,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 
-import { ApiError } from "@/api/client";
+import { formatApiError } from "@/api/client";
 import {
   useClientOwnersList,
   useClientsList,
@@ -64,7 +64,7 @@ export function ClientDetail() {
       setReenrollment(enrollment);
       setConfirmOpen(false);
     } catch (err) {
-      setReenrollError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setReenrollError(formatApiError(err));
     }
   }
 

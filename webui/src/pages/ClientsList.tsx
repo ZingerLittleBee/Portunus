@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Ban, Circle, CircleDot, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
-import { ApiError } from "@/api/client";
+import { formatApiError } from "@/api/client";
 import {
   useClientsList,
   useDeleteClient,
@@ -103,7 +103,7 @@ export function ClientsList() {
       }
       setPendingEdit(null);
     } catch (err) {
-      setEditError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setEditError(formatApiError(err));
     }
   }
 
@@ -114,7 +114,7 @@ export function ClientsList() {
       await revoke.mutateAsync(pendingRevoke.client_id);
       setPendingRevoke(null);
     } catch (err) {
-      setRevokeError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setRevokeError(formatApiError(err));
     }
   }
 
@@ -125,7 +125,7 @@ export function ClientsList() {
       await remove.mutateAsync(pendingDelete.client_id);
       setPendingDelete(null);
     } catch (err) {
-      setDeleteError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setDeleteError(formatApiError(err));
     }
   }
 

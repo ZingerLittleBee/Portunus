@@ -456,4 +456,43 @@ mod tests {
             assert!(is_auditable_mutation(&m), "{m} should be audited");
         }
     }
+
+    #[test]
+    fn password_change_whitelist_allows_only_self_service_pair() {
+        // A cookie-authed user whose password is flagged for change is
+        // confined to exactly two routes — the self-service "read me" and
+        // "set my password" pair. Pin both so the whitelist can't widen
+        // silently.
+        assert!(password_change_route_allowed(&Method::GET, "/v1/users/me"));
+        assert!(password_change_route_allowed(
+            &Method::POST,
+            "/v1/users/me/password"
+        ));
+    }
+
+    #[test]
+    fn password_change_whitelist_rejects_everything_else() {
+        // Wrong method on a whitelisted path.
+        assert!(!password_change_route_allowed(
+            &Method::POST,
+            "/v1/users/me"
+        ));
+        assert!(!password_change_route_allowed(
+            &Method::GET,
+            "/v1/users/me/password"
+        ));
+        // Unrelated routes, regardless of method, stay blocked so a
+        // must-change session can't reach the rest of the operator API.
+        for (m, p) in [
+            (Method::GET, "/v1/users"),
+            (Method::POST, "/v1/rules"),
+            (Method::GET, "/v1/clients"),
+            (Method::GET, "/v1/users/me/credentials"),
+        ] {
+            assert!(
+                !password_change_route_allowed(&m, p),
+                "{m} {p} must be blocked during a forced password change"
+            );
+        }
+    }
 }

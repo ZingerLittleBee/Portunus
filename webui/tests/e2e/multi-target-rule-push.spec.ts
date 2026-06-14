@@ -38,7 +38,10 @@ test.describe("multi-target rule push", () => {
     ).toBeVisible();
 
     // Fill the form and submit. The superadmin token bypasses grant checks.
-    await page.getByLabel(/^client$/i).fill("edge-mt");
+    // The client field is a combobox (picks from the connected/granted list)
+    // rather than a free-text input: open it and select the enrolled client.
+    await page.getByRole("combobox", { name: /^client$/i }).click();
+    await page.getByRole("option", { name: /edge-mt/i }).click();
     await page.getByLabel(/listen port \(start\)/i).fill("31050");
 
     const hostInputs = page.getByPlaceholder(/target host or ip/i);
@@ -82,7 +85,8 @@ test.describe("multi-target rule push", () => {
     await enrollClient(request, server.httpUrl, server.superadminToken, "edge-st");
 
     await page.goto("/rules/new");
-    await page.getByLabel(/^client$/i).fill("edge-st");
+    await page.getByRole("combobox", { name: /^client$/i }).click();
+    await page.getByRole("option", { name: /edge-st/i }).click();
     await page.getByLabel(/listen port \(start\)/i).fill("32050");
     await page.getByLabel(/target host/i).fill("127.0.0.1");
     await page.getByLabel(/target port \(start\)/i).fill("9000");

@@ -33,9 +33,11 @@ describe("parseDashboardGauges", () => {
     expect(g.activeConnections).toBe(22); // 12 + 7 + 3
   });
 
-  it("counts distinct active rules via bytes_in label", () => {
+  it("counts distinct active rules via the active-connections label", () => {
     const g = parseDashboardGauges(FIXTURE);
-    expect(g.rulesActive).toBe(2); // rules 7 and 8 are present
+    // Rules 7, 8 and 9 all emit active_connections (even rule 9, which has
+    // no traffic counters yet). Counting bytes_in would undercount to 2.
+    expect(g.rulesActive).toBe(3);
   });
 
   it("computes top rules by in+out, descending", () => {

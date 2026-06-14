@@ -26,13 +26,12 @@ use std::path::PathBuf;
 /// `OperatorIdentity`. Each entry must carry a justification and is
 /// removed when the handler is hardened — `allowlist_has_no_stale_entries`
 /// fails if an entry stops being an actual unguarded protected handler.
-const ALLOWLIST: &[&str] = &[
-    // GET /v1/clients — the Web UI exposes the client list to User-role
-    // operators by design (sidebar nav is unconditional). Correct
-    // hardening is grant-scoped read filtering, tracked as a follow-up;
-    // a blanket superadmin gate here would break the User clients page.
-    "get_clients",
-];
+///
+/// Currently empty: `get_clients` was the last entry, and the follow-up it
+/// pointed to (grant-scoped read filtering) shipped — the handler now takes
+/// an `OperatorIdentity` and scopes the list to the caller's granted clients,
+/// so every protected handler can authorize.
+const ALLOWLIST: &[&str] = &[];
 
 fn operator_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/operator")

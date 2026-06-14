@@ -21,7 +21,8 @@
     "metrics": "Metrics",
     "settings": "Settings",
     "signOut": "Sign out",
-    "userMenu": "User menu"
+    "userMenu": "User menu",
+    "toggleSidebar": "Toggle sidebar"
   },
   "login": {
     "title": "Sign in",
@@ -71,6 +72,8 @@
   "tokenReveal": {
     "title": "API token issued",
     "description": "Copy this API token now — it will not be shown again.",
+    "passwordTitle": "Temporary password set",
+    "passwordDescription": "Copy this temporary password now — it will not be shown again. The user must change it on next login.",
     "copy": "Copy",
     "copied": "Copied",
     "dismiss": "Dismiss",
@@ -218,6 +221,7 @@
     "sniPatternHelp": "Exact host or single-label wildcard. Leave blank for plain TCP forwarding. Available only for TCP single-port rules.",
     "rateLimitTitle": "Quality of service",
     "rateLimitHelp": "Optional per-rule QoS caps. Leave fields blank to leave that dimension uncapped.",
+    "rateLimitRangeConflict": "QoS caps can't be combined with a target port range. Clear the target end port or remove the caps.",
     "requiredField": "This field is required.",
     "invalidPort": "Enter a port between 1 and 65535.",
     "invalidHealthCheckInterval": "Enter a value between 1 and 3600 seconds."

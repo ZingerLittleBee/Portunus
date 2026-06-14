@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { useCreateAccessEntry, type AccessEntry } from "@/api/access-entries";
-import { ApiError } from "@/api/client";
+import { formatApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -57,9 +57,7 @@ export function UserQuotaTable({ userId, entries, clients, readOnly }: Props) {
       toast.success(t("userQuota.toast.created", { client: v.client_name }));
       setAdding(false);
     } catch (err) {
-      const msg =
-        err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message;
-      setServerError(msg);
+      setServerError(formatApiError(err));
       toast.error(t("userQuota.toast.createFailed"));
     }
   }
