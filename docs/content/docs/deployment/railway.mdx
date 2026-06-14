@@ -63,9 +63,10 @@ incomplete.
 
 ## Client endpoint
 
-From the Web UI **Clients** page (or the `provision-client` CLI), generate a client
-bundle. It already embeds the advertised endpoint (the TCP Proxy `host:port`) and
-the pinned cert fingerprint, so `portunus-client` dials the TCP Proxy directly.
+From the Web UI **Clients** page (or the `portunus-server enroll-client` CLI), generate a
+one-time enroll URI. It embeds the advertised endpoint (the TCP Proxy `host:port`) and
+the pinned cert fingerprint; `portunus-client enroll '<uri>'` writes a bundle that dials
+the TCP Proxy directly.
 Install and run the edge client with Docker (see
 [Client Configuration](/en/docs/configuration/client#docker)) or the host installer
 ([`install.sh`](/en/docs/configuration/client#install-the-binary)).

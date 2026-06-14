@@ -89,16 +89,16 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ## Docker Compose
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server --deploy docker
 ## binary + service (systemd / OpenRC)
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server
 
 # each edge host — one command: installs, enrolls, places bundle, starts service
 ## binary + service (systemd / OpenRC) — recommended
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
 ## Docker — self-enrolls on first boot from PORTUNUS_ENROLL_URI
 docker run -d --name portunus-client --network host -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' -v portunus-client:/etc/portunus ghcr.io/zingerlittlebee/portunus-client
 ```
 
-In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus printed run instructions. Docker mode writes a `compose.yaml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone never seeds a config — you create it (the binary exits without one); `--config PATH` points the service at a specific file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
+In binary mode the script installs a service via whichever init it detects — **systemd**, or **OpenRC** on Alpine; hosts with neither get the binary plus printed run instructions. Docker mode writes a `compose.yml`. Either way the deploy is recorded so later `upgrade` / `status` / `uninstall` work too. Standalone never seeds a config — you create it (the binary exits without one); `--config PATH` points the service at a specific file. Docker images live on GHCR as `portunus-{server,client,standalone}` — see the [Docker deployment guide](https://portunus.bybee.dev/en/docs/deployment/docker).
 
 **From source** (Rust 1.88+ stable; `protoc` is vendored via `prost-build`):
 
@@ -113,7 +113,7 @@ Prebuilt binaries for Linux and macOS (x86_64 + aarch64) are on the [releases pa
 1. Click **Deploy on Railway** above and create the service.
 2. Open the service **Deploy Logs** and copy `Portunus onboarding setup token: <token>`.
 3. Visit the generated HTTPS domain → onboarding page → paste the token, set a superadmin username + password.
-4. `provision-client` a bundle and run `portunus-client --bundle <file>` on any public host; it connects through the Railway TCP proxy.
+4. In the Web UI **Clients** page (or `portunus-server enroll-client <name>`) generate a one-time enroll URI, run `portunus-client enroll '<uri>'` on any public host to write a bundle, then start `portunus-client --bundle <file>`; it connects through the Railway TCP proxy.
 
 See the [Railway deployment guide](https://portunus.bybee.dev/en/docs/deployment/railway) and [`deploy/railway/README.md`](deploy/railway/README.md) for details.
 

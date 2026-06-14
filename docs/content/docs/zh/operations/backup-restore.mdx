@@ -95,6 +95,6 @@ v0.5–v0.7 的 `identity.json` 是 mode-0600 的原子写 JSON，可以放心 `
 - **`--data-dir` 落在 NFS / tmpfs / ramfs** 时，启动期会以
   `event=startup.unsupported_filesystem` 拒绝。请用本地可写文件系统。
 - **两个 `portunus-server serve` 同时打开同一 data-dir** 时，第二个会以
-  `event=startup.store_in_use`（退出 75）退出。clustering 不在当前版本范围。
+  `event=startup.store_in_use`（退出 1）退出。clustering 不在当前版本范围。
 - **`reset --confirm` 不会清空 server.crt / server.key / `server.toml`** ——
   只清 SQLite state。如需一起清掉，请单独删除。

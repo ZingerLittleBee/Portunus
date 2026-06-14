@@ -89,16 +89,16 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ## Docker Compose
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server --deploy docker
 ## 二进制 + 服务（systemd / OpenRC）
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server
 
 # 每台边缘主机
 ## 二进制 + 服务（systemd / OpenRC）—— 推荐
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client
 ## Docker Compose —— 先 enroll 一次（生成 ./client.bundle.json），再执行：
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client --deploy docker
 ```
 
-二进制模式下，脚本会按检测到的 init 系统安装服务 —— **systemd**，或 Alpine 上的 **OpenRC**；两者都没有的主机则只装二进制并打印手动启动说明。Docker 模式则写出 `compose.yaml`。无论哪种方式都会记录这套部署，后续 `upgrade` / `status` / `uninstall` 同样可用。standalone 不会替你写配置 —— 由你自行创建（缺失时二进制直接退出）；`--config PATH` 可指定服务读取的 TOML 文件。Docker 镜像发布在 GHCR，名为 `portunus-{server,client,standalone}` —— 见 [Docker 部署指南](https://portunus.bybee.dev/zh/docs/deployment/docker)。
+二进制模式下，脚本会按检测到的 init 系统安装服务 —— **systemd**，或 Alpine 上的 **OpenRC**；两者都没有的主机则只装二进制并打印手动启动说明。Docker 模式则写出 `compose.yml`。无论哪种方式都会记录这套部署，后续 `upgrade` / `status` / `uninstall` 同样可用。standalone 不会替你写配置 —— 由你自行创建（缺失时二进制直接退出）；`--config PATH` 可指定服务读取的 TOML 文件。Docker 镜像发布在 GHCR，名为 `portunus-{server,client,standalone}` —— 见 [Docker 部署指南](https://portunus.bybee.dev/zh/docs/deployment/docker)。
 
 **从源码编译**（Rust 1.88+ 稳定版；`protoc` 已通过 `prost-build` 内联）：
 
@@ -113,7 +113,7 @@ Linux 与 macOS（x86_64 + aarch64）的预编译二进制见 [releases 页面](
 1. 点上方 **Deploy on Railway** 创建服务。
 2. 打开服务的 **Deploy Logs**，复制 `Portunus onboarding setup token: <token>`。
 3. 访问生成的 HTTPS 域名 → 引导页 → 粘贴 token，设置超管用户名 + 密码。
-4. `provision-client` 生成一个 bundle，在任意公网主机上运行 `portunus-client --bundle <file>`，它会经 Railway TCP proxy 连接。
+4. 在 Web UI 的 **Clients** 页面（或 `portunus-server enroll-client <name>`）生成一次性 enroll URI，在任意公网主机上运行 `portunus-client enroll '<uri>'` 写出 bundle，再启动 `portunus-client --bundle <file>`；它会经 Railway TCP proxy 连接。
 
 详见 [Railway 部署指南](https://portunus.bybee.dev/zh/docs/deployment/railway) 与 [`deploy/railway/README.md`](deploy/railway/README.md)。
 

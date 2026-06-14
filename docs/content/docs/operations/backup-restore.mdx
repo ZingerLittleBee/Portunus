@@ -105,7 +105,7 @@ data-dir. On an empty data-dir `reset` is a no-op and exits 0.
   `event=startup.unsupported_filesystem`. Use a local writable
   filesystem.
 - **Two `portunus-server serve` against the same data-dir** exit with
-  `event=startup.store_in_use` (exit 75). Clustering is out of scope
+  `event=startup.store_in_use` (exit 1). Clustering is out of scope
   for the current release.
 - **`reset --confirm` does not wipe TLS material or `server.toml`** — only
   SQLite state. Clear those files separately if you need to.

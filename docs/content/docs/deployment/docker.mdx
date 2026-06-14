@@ -14,7 +14,7 @@ docker pull ghcr.io/zingerlittlebee/portunus-client:latest
 ```
 
 For fully repeatable production deploys, replace `:latest` with a pinned
-release tag such as `:1.8.0`.
+release tag such as `:2.2.0`.
 
 ## Server compose
 
@@ -116,8 +116,8 @@ invocation can run a different subcommand:
 Operator commands fall into two groups, and they have very different runtime
 requirements.
 
-**HTTP API commands** (`push-rule`, `list-rules`, `remove-rule`, `rule-stats`)
-talk to the running server's operator HTTP API, so they require an API token
+**HTTP API commands** (`push-rule`, `list-rules`, `remove-rule`, `rule-stats`,
+`list-clients`) talk to the running server's operator HTTP API, so they require an API token
 and can run while `server` is up. After Web onboarding, create a token from the
 Web UI Credentials page and pass it as `PORTUNUS_OPERATOR_TOKEN`:
 
@@ -127,11 +127,15 @@ docker compose run --rm \
   operator push-rule edge-01 18080 backend.internal:8080
 ```
 
-**Store-direct commands** (`enroll-client`, `revoke`, `list-clients`,
-`reset-password`, `onboarding-token`) open the SQLite store directly and take an
+The `operator` sidecar's default command is `list-clients`, itself an HTTP API
+call — pass `-e PORTUNUS_OPERATOR_TOKEN=…` when you run it, e.g. `docker compose
+run --rm -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" operator list-clients`.
+
+**Store-direct commands** (`enroll-client`, `revoke`, `reset-password`,
+`onboarding-token`) open the SQLite store directly and take an
 exclusive lock. They do **not** read `PORTUNUS_OPERATOR_TOKEN`, and they cannot
 run while `server` holds the store — a running server makes them exit with
-`store_in_use` (exit code 75).
+`store_in_use` (exit 1).
 
 <Callout type="warn">
 Do **not** run a store-direct command through the `operator` compose service.
@@ -278,11 +282,11 @@ from a newer host distribution into these images; that can produce
 
 ## Health checks
 
-Do not use `list-clients` (or any other store-direct command) as a
-`HEALTHCHECK` probe. It opens the SQLite store with an exclusive lock, so
-running it periodically against a live server fights the server for that lock
-and fails with `store_in_use` (exit code 75) — the container would never report
-healthy.
+Do not use `list-clients` (or any other operator subcommand) as a
+`HEALTHCHECK` probe. Since the 015 refactor `list-clients` is an HTTP call to
+the running server's operator API that needs a valid `PORTUNUS_OPERATOR_TOKEN`,
+so an unauthenticated probe just gets an auth denial — and even a success only
+proves the HTTP listener is up.
 
 The distroless runtime image also has no shell, `curl`, or `wget`, so a
 container-internal `CMD` probe is impractical. Instead, drive liveness from the

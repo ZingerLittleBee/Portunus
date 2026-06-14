@@ -48,7 +48,7 @@ docker run -d --network host \
 
 Notes:
 
-- Pin a specific version in production (`:1.8.0` rather than `:latest`).
+- Pin a specific version in production (e.g. `:X.Y.Z` rather than `:latest`).
 - The container runs as **UID 65532** (`nonroot`). The host file must be
   readable by that UID — `chmod 0644 portunus.toml` is the simplest fix.
   If you get `error: io error: Permission denied (os error 13)`, this is
@@ -478,7 +478,7 @@ output.
 If you installed via the **one-click installer**:
 
 ```sh
-# Upgrade to the latest release (or pin --version v1.8.0):
+# Upgrade to the latest release (in place, reusing recorded config):
 sh install.sh upgrade standalone
 
 # Status (binary version, service active, deploy form):

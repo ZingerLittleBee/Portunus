@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 ```
 
 容器以 UID 65532（`nonroot`）运行，因此宿主配置文件必须能被该 UID 读取——
-`chmod 0644 portunus.toml` 是最简单的修复方式。安装器会写出 `compose.yaml`
+`chmod 0644 portunus.toml` 是最简单的修复方式。安装器会写出 `compose.yml`
 并启动服务;后续 `upgrade` / `status` / `uninstall` 会复用它。想用裸
 `docker run` 或自己写 Compose 文件？参见
 [Standalone 转发器](/zh/docs/configuration/standalone#docker)。
@@ -192,6 +192,15 @@ docker compose up -d && docker compose logs -f -t
 Web UI 在 Server 主机的 `http://127.0.0.1:7080/`。Client 控制面 listener
 仍然是 `0.0.0.0:7443`。
 
+首次启动时，从日志读取 onboarding setup token，粘贴到 Web UI 创建第一个 superadmin：
+
+```sh
+docker compose logs | grep 'Portunus onboarding setup token'
+```
+
+onboarding 完成前，该 token 每次重启都会轮换——完整引导流程见
+[Docker 部署](/zh/docs/deployment/docker)。
+
 **部署在反向代理 / 云主机后面？** enrollment URI 中必须嵌入边缘 client
 能连上的**公网** `host:port`。否则，未经浏览器请求创建的 enrollment
 （例如 Docker operator 的 `enroll-client`）会回落到 `127.0.0.1:7443`，
@@ -240,6 +249,8 @@ volumes:
 ```sh
 git clone https://github.com/ZingerLittleBee/Portunus.git
 cd Portunus
+# 先构建内嵌的 operator Web UI（portunus-server 的 build.rs 需要它）
+(cd webui && pnpm install --frozen-lockfile && pnpm build)
 cargo build --release -p portunus-server
 sudo install -m 0755 target/release/portunus-server /usr/local/bin/
 ```

@@ -60,7 +60,7 @@ if `--data-dir` points at NFS, tmpfs, or ramfs. Move the data-dir to a
 **local writable filesystem**.
 
 It also refuses two `portunus-server serve` processes against the same
-data-dir (`event=startup.store_in_use`, exit 75) — clustering is out of
+data-dir (`event=startup.store_in_use`, exit 1) — clustering is out of
 scope.
 
 ## Backup

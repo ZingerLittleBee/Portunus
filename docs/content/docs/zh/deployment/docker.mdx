@@ -13,7 +13,7 @@ docker pull ghcr.io/zingerlittlebee/portunus-client:latest
 ```
 
 如果需要完全可复现的生产部署，把 `:latest` 换成固定 release tag，例如
-`:1.8.0`。
+`:2.2.0`。
 
 ## Server Compose
 
@@ -107,7 +107,7 @@ services:
 
 操作员命令分两类，运行条件完全不同。
 
-**HTTP API 命令**（`push-rule`、`list-rules`、`remove-rule`、`rule-stats`）走
+**HTTP API 命令**（`push-rule`、`list-rules`、`remove-rule`、`rule-stats`、`list-clients`）走
 运行中 Server 的 operator HTTP API，因此需要 API Token，并且可以在 `server`
 运行时执行。Web onboarding 完成后，在 Web UI 的 Credentials 页面创建一个 API
 Token，再用 `PORTUNUS_OPERATOR_TOKEN` 传给 CLI：
@@ -118,10 +118,14 @@ docker compose run --rm \
   operator push-rule edge-01 18080 backend.internal:8080
 ```
 
-**store-direct 命令**（`enroll-client`、`revoke`、`list-clients`、
+`operator` sidecar 的默认 command 是 `list-clients`，它本身是 HTTP API 调用——
+运行时请用 `-e PORTUNUS_OPERATOR_TOKEN=…` 传 Token，例如 `docker compose run --rm
+-e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" operator list-clients`。
+
+**store-direct 命令**（`enroll-client`、`revoke`、
 `reset-password`、`onboarding-token`）直接打开 SQLite store 并取排他锁。它们
 **不**读取 `PORTUNUS_OPERATOR_TOKEN`，也无法在 `server` 持有 store 时运行——
-此时会以 `store_in_use`（退出码 75）退出。
+此时会以 `store_in_use`（退出码 1）退出。
 
 <Callout type="warn">
 **不要**通过 `operator` compose 服务运行 store-direct 命令。该服务与 Server
@@ -256,9 +260,10 @@ docker compose -f deploy/docker/docker-compose.yml build
 
 ## 健康检查
 
-不要用 `list-clients`（或任何其他 store-direct 命令）作为 `HEALTHCHECK` 探针。
-它会以排他锁打开 SQLite store，周期性地对运行中的 Server 执行就会和 Server 抢
-这把锁，从而以 `store_in_use`（退出码 75）失败——容器会一直报告为不健康。
+不要用 `list-clients`（或任何其他 operator 子命令）作为 `HEALTHCHECK` 探针。
+015 重构后 `list-clients` 是对运行中 Server operator API 的 HTTP 调用，需要有效的
+`PORTUNUS_OPERATOR_TOKEN`，未携带 Token 的探针只会拿到鉴权拒绝，即便成功也只能
+证明 HTTP listener 存活。
 
 另外，distroless 运行时镜像没有 shell、`curl` 或 `wget`，所以在镜像内做 `CMD`
 探针并不现实。建议改在编排层用 TCP 连接探活，探测某个监听端口——例如 operator

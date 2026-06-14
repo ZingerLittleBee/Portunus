@@ -42,9 +42,10 @@ no `operator_http_public_origin` are required.
 
 ## Connecting a client
 
-In the Web UI (or via CLI), `provision-client` produces a bundle that already embeds the
-advertised endpoint (the TCP proxy `host:port`) and the pinned cert fingerprint. Run
-`portunus-client --bundle <file>` on any public host; it connects through the TCP proxy.
+In the Web UI **Clients** page (or `portunus-server enroll-client <name>`) generate a
+one-time enroll URI; it embeds the advertised endpoint (the TCP proxy `host:port`) and the
+pinned cert fingerprint. On any public host run `portunus-client enroll '<uri>'` to write a
+bundle, then start `portunus-client --bundle <file>`; it connects through the TCP proxy.
 
 ## Updating the template
 

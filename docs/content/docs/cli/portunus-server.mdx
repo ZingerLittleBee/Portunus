@@ -134,13 +134,12 @@ Pre-flight rejects an empty `set` envelope with exit 3 +
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | Generic error (config, IO, …) |
+| 1 | Generic error (config, IO, `store_in_use`, …) |
 | 2 | Validation error |
 | 3 | Pre-flight validation (e.g. `validation.rate_limit_no_caps_provided`) |
 | 4 | `PORTUNUS_OPERATOR_TOKEN` missing |
 | 6 | Activation failed (e.g. `port_in_use`) |
 | 8 | User not found for local password recovery |
-| 75 | Store in use by another process |
 | 78 | Schema-version too new (downgrade attempt) |
 
 (See per-subcommand `--help` for the complete code table.)

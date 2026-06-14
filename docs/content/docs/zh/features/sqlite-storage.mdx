@@ -56,7 +56,7 @@ $XDG_STATE_HOME/portunus/    （或 ~/.local/state/portunus/）
 `event=startup.unsupported_filesystem` 拒绝启动。请改用本地可写的文件系统。
 
 当两个 `portunus-server serve` 同时打开同一个 data-dir 时，后启动的一个会以
-`event=startup.store_in_use`（退出码 75）退出 —— 集群（clustering）不在 v0.8 的范围内。
+`event=startup.store_in_use`（退出码 1）退出 —— 集群（clustering）不在范围内。
 
 ## 备份
 

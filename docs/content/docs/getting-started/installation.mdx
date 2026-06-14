@@ -201,6 +201,16 @@ state live in the `portunus-data` volume.
 The Web UI is available on the server host at `http://127.0.0.1:7080/`. The
 client control-plane listener remains on `0.0.0.0:7443`.
 
+On first boot, read the onboarding setup token from the logs and paste it into
+the Web UI to create the first superadmin:
+
+```sh
+docker compose logs | grep 'Portunus onboarding setup token'
+```
+
+The token rotates on each restart until onboarding completes — see [Deploy with
+Docker](/en/docs/deployment/docker) for the full onboarding flow.
+
 **Deploying behind a proxy / on a cloud host?** The enrollment URI must
 embed the **public** `host:port` an edge client can dial. If you do not
 configure it, an enrollment created without a browser request (e.g. the
@@ -250,6 +260,8 @@ For a source build:
 ```sh
 git clone https://github.com/ZingerLittleBee/Portunus.git
 cd Portunus
+# build the embedded operator Web UI first (required by portunus-server's build.rs)
+(cd webui && pnpm install --frozen-lockfile && pnpm build)
 cargo build --release -p portunus-server
 sudo install -m 0755 target/release/portunus-server /usr/local/bin/
 ```

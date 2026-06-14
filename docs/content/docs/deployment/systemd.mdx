@@ -28,6 +28,16 @@ server, use `… | sudo sh -s -- server` (creates `portunus-server` and
 documented once in
 [Client Configuration](/en/docs/configuration/client#install-the-binary).
 
+<Callout type="warn">
+A bare `client` install enables and starts `portunus-client.service`
+immediately, but the service has no credential bundle yet, so it crash-loops
+(`Restart=on-failure`, every 5 s) until you enroll. Either pass `--enroll
+'<uri>'` (see first-boot step 6) to install + enroll + start in one shot, or add
+`--no-service` to install without starting, then place
+`/etc/portunus/client.bundle.json` and run `systemctl enable --now
+portunus-client` yourself.
+</Callout>
+
 From a source checkout you can instead install only the units with
 `cd deploy/systemd && sudo ./install.sh client` (the binary must already
 be on `PATH`).
@@ -137,8 +147,10 @@ scale this proportionally. The bundle is mounted read-only.
 After install:
 
 ```sh
-# 1. Optional: override defaults
-sudo cp deploy/server.toml.example /var/lib/portunus/server.toml
+# 1. Optional: override defaults (a curl|sh install leaves no checkout — fetch
+#    the example from the repo; without it the server uses built-in defaults)
+sudo curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/deploy/server.toml.example \
+  -o /var/lib/portunus/server.toml
 sudo nano /var/lib/portunus/server.toml
 
 # 2. Enable and start the server
@@ -171,7 +183,12 @@ onboarding completes.
 
 ## Smoke check
 
+Web onboarding above creates a password-based superadmin, not an API bearer
+token. To probe the operator API, first create a token on the Web UI
+**Credentials** page and export it as `PORTUNUS_OPERATOR_TOKEN`:
+
 ```sh
+export PORTUNUS_OPERATOR_TOKEN=<token-from-web-ui>
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/users/me
 ```
@@ -204,7 +221,7 @@ after login. It opens the SQLite store directly, so do not run it while
 - **NFS / tmpfs / ramfs** for `--data-dir` is **rejected** at startup
   with `event=startup.unsupported_filesystem`. Use a local filesystem.
 - **Two server processes against the same data-dir**: the second exits
-  with `event=startup.store_in_use` (exit 75). Clustering is out of scope.
+  with `event=startup.store_in_use` (exit 1). Clustering is out of scope.
 
 ## Backup cron
 

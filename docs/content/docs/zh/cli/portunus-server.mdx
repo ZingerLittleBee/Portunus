@@ -130,13 +130,12 @@ Web onboarding 创建的则是初始化时选定的 ID。
 | 码 | 含义 |
 | --- | --- |
 | 0 | 成功 |
-| 1 | 通用错误（配置 / IO 等） |
+| 1 | 通用错误（配置 / IO / `store_in_use` 存储被另一进程占用 等） |
 | 2 | 校验错误 |
 | 3 | 预校验（如 `validation.rate_limit_no_caps_provided`） |
 | 4 | 缺少 `PORTUNUS_OPERATOR_TOKEN` |
 | 6 | 激活失败（如 `port_in_use`） |
 | 8 | 本地密码恢复目标用户不存在 |
-| 75 | 存储被另一进程占用 |
 | 78 | schema 比当前二进制还新（试图降级） |
 
 （完整码表参见每个子命令的 `--help`。）

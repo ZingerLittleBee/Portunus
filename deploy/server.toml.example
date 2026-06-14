@@ -9,7 +9,7 @@
 # co-located server+client testing.
 control_listen = "0.0.0.0:7443"
 
-# Operator HTTP API (provision-client / push-rule / list-rules / rule-stats /
+# Operator HTTP API (enroll-client / push-rule / list-rules / rule-stats /
 # user-* / credential-* / grant-*). Defaults to loopback. You may bind
 # 0.0.0.0 for container port publishing or a trusted reverse proxy, but every
 # /v1/* request must still carry `Authorization: Bearer <token>` (v0.5.0+).

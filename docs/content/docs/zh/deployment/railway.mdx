@@ -53,9 +53,9 @@ Portunus onboarding setup token: <token>
 
 ## 客户端端点
 
-在 Web UI 的 **Clients** 页（或 `provision-client` CLI）生成客户端 bundle。它已内嵌
-advertised endpoint（TCP Proxy 的 `host:port`）和钉住的证书指纹，因此 `portunus-client`
-直接拨号 TCP Proxy。用 Docker（见
+在 Web UI 的 **Clients** 页（或 `portunus-server enroll-client` CLI）生成一次性 enroll URI。
+它已内嵌 advertised endpoint（TCP Proxy 的 `host:port`）和钉住的证书指纹；`portunus-client
+enroll '<uri>'` 据此写出 bundle 并直接拨号 TCP Proxy。用 Docker（见
 [客户端配置](/zh/docs/configuration/client#docker)）或主机安装器
 （[`install.sh`](/zh/docs/configuration/client#install-the-binary)）安装并运行边缘客户端。
 

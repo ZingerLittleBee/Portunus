@@ -132,7 +132,7 @@ resolver 缓存有上界（v1.7 起加入的内存泄漏防护）：在高基数
 
 `--data-dir` 落在 NFS / tmpfs / ramfs。请改本地可写文件系统。
 
-### `startup.store_in_use`（exit 75）
+### `startup.store_in_use`（exit 1）
 
 另一个 `portunus-server serve` 已经拿着数据库。找出并停掉那个进程；clustering
 不在范围。

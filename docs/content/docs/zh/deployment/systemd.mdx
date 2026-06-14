@@ -24,6 +24,14 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 mode 0750）。二进制获取与标志说明统一记录在
 [Client 配置](/zh/docs/configuration/client#安装二进制)。
 
+<Callout type="warn">
+纯 `client` 安装会立即启用并启动 `portunus-client.service`，但此时服务还没有凭据
+bundle，因此会 crash-loop（`Restart=on-failure`，每 5 秒一次）直到完成接入。可以传
+`--enroll '<uri>'`（见 first-boot 步骤 6）一步完成安装 + 接入 + 启动，或加
+`--no-service` 只安装不启动，再自行放入 `/etc/portunus/client.bundle.json` 并执行
+`systemctl enable --now portunus-client`。
+</Callout>
+
 如果从源码 checkout 安装，也可以只安装 unit 文件：
 `cd deploy/systemd && sudo ./install.sh client`（需要二进制已在 `PATH` 上）。
 
@@ -129,8 +137,10 @@ client 绑定 operator 推送的规则所配置的 listen 端口，因此带 `CA
 安装后：
 
 ```sh
-# 1. 可选：覆写默认值
-sudo cp deploy/server.toml.example /var/lib/portunus/server.toml
+# 1. 可选：覆写默认值（curl|sh 安装不会留下 checkout —— 从仓库拉取示例；
+#    没有该文件时 server 使用内置默认值）
+sudo curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/deploy/server.toml.example \
+  -o /var/lib/portunus/server.toml
 sudo nano /var/lib/portunus/server.toml
 
 # 2. 启用并启动 server
@@ -162,7 +172,12 @@ setup token 30 分钟后过期，并且在 onboarding 完成前每次 server 启
 
 ## 烟雾测试
 
+上面的 Web onboarding 创建的是基于密码的 superadmin，而不是 API bearer Token。
+要探测 operator API，先在 Web UI 的 **Credentials** 页面创建一个 Token，并以
+`PORTUNUS_OPERATOR_TOKEN` 导出：
+
 ```sh
+export PORTUNUS_OPERATOR_TOKEN=<web-ui-生成的-token>
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/users/me
 ```
@@ -192,7 +207,7 @@ sudo systemctl start portunus-server
 - **`--data-dir` 落在 NFS / tmpfs / ramfs** 时，启动期会以
   `event=startup.unsupported_filesystem` 拒绝。请改用本地文件系统。
 - **两个 server 进程同时打开同一 data-dir** 时，第二个会以
-  `event=startup.store_in_use`（退出码 75）退出。clustering 不在范围内。
+  `event=startup.store_in_use`（退出码 1）退出。clustering 不在范围内。
 
 ## 备份 cron
 

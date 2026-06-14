@@ -86,9 +86,9 @@ portunus-client --bundle ./edge-01.bundle.json
 数秒之内 Server 就会输出 `client.connected`。可以这样验证：
 
 ```sh
-portunus-server --data-dir ./srv list-clients
-# CLIENT   STATE       PROVISIONED_AT         ADDRESS
-# edge-01  connected   2026-05-06T12:01:30Z   -
+portunus-server list-clients
+# CLIENT_ID                   NAME      STATE       REMOTE_ADDR          CONNECTED_AT
+# 01J8X4ZKQ9A1B2C3D4E5F6G7H8  edge-01   connected   203.0.113.10:51324   2026-05-06T12:01:30+00:00
 ```
 
 ## 5. 推送一条转发规则
