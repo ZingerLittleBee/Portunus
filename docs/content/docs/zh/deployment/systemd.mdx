@@ -144,8 +144,13 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 4. 通过 SSH tunnel 或本机浏览器打开 http://127.0.0.1:7080/，
 #    粘贴 setup token，创建第一个 superadmin 密码。
 
-# 5. 创建首个 Client（Web UI Clients 页面，或 CLI）：
-portunus-server --data-dir /var/lib/portunus enroll-client edge-01
+# 5. 创建首个 Client —— Web UI Clients 页面，或离线 CLI。
+#    enroll-client 直接打开 state.db，需先停服务
+#    （否则会对运行中的 server 报 store_in_use）：
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus enroll-client edge-01
+sudo systemctl start portunus-server
 
 # 6. 在边缘主机：一条命令完成安装、接入并启动
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \

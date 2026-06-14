@@ -152,8 +152,13 @@ sudo journalctl -u portunus-server -n 100 --no-pager \
 # 4. Open http://127.0.0.1:7080/ over SSH tunnel or local browser,
 #    paste the setup token, and create the first superadmin password.
 
-# 5. Create the first client (Web UI Clients page, or the CLI):
-portunus-server --data-dir /var/lib/portunus enroll-client edge-01
+# 5. Create the first client — Web UI Clients page, or the offline CLI.
+#    enroll-client opens state.db directly, so stop the service first
+#    (otherwise it exits store_in_use against the running server):
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus enroll-client edge-01
+sudo systemctl start portunus-server
 
 # 6. On the edge host: install, enroll, and start — one command
 curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \

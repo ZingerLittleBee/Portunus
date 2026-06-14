@@ -37,7 +37,7 @@ sqlite3 ~/portunus-backup-2026-05-08.db \
 set -eu
 DEST=/var/backups/portunus/$(date +%F).db
 mkdir -p "$(dirname "$DEST")"
-sudo -u portunus portunus-server \
+sudo -u portunus-server portunus-server \
   --data-dir /var/lib/portunus \
   backup --out "$DEST"
 find /var/backups/portunus -name '*.db' -mtime +30 -delete

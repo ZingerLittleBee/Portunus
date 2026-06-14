@@ -62,6 +62,15 @@ On first server launch the server creates `./srv/server.crt`,
 portunus-server --data-dir ./srv enroll-client edge-01
 ```
 
+<Callout type="warn">
+`enroll-client` opens `state.db` directly and exits with `store_in_use`
+while a server is already running on the same `--data-dir`. With the server
+started above still live, create the client from the Web UI **Clients** page
+or the operator HTTP API instead — both go through the running server.
+Reserve the offline CLI for bootstrap before `serve` starts. See
+[Enroll](/en/docs/configuration/client#enroll).
+</Callout>
+
 On Host B, install the client then redeem the printed command:
 
 ```sh
