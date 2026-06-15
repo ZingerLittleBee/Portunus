@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -240,6 +240,24 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
     zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
     *:next_manual) _f="  no supported init system; run it in the background manually:\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
+    zh:srv_running) _f="✓ Portunus server %s 已安装并已启动运行。" ;;
+    zh:srv_installed_only) _f="✓ Portunus server %s 已安装（因 --no-service 未启动服务）。" ;;
+    zh:srv_start_hint) _f="  先启动服务：sudo systemctl enable --now portunus-server" ;;
+    zh:srv_next_title) _f="后续步骤：" ;;
+    zh:srv_step_token) _f="  1) 获取 onboarding setup token（仅首次，用于创建第一个管理员）：\n       sudo journalctl -u portunus-server | grep 'onboarding setup token'" ;;
+    zh:srv_step_ui) _f="  2) 在浏览器打开 Web UI：%s\n       （按设计只绑回环地址，公网访问不到）" ;;
+    zh:srv_step_ui_remote) _f="       服务器在远端？在你自己的机器上先建 SSH 隧道，再用本地浏览器打开上面的地址：\n       ssh -L %s:127.0.0.1:%s <用户名>@<服务器地址>" ;;
+    zh:srv_step_super) _f="  3) 把 token 粘贴到浏览器，创建第一个 _superadmin 账号。" ;;
+    zh:srv_handy) _f="常用命令：\n  查看状态：install.sh status\n  查看日志：sudo journalctl -u portunus-server -f\n  停止服务：sudo systemctl stop portunus-server" ;;
+    *:srv_running) _f="✓ Portunus server %s is installed and running." ;;
+    *:srv_installed_only) _f="✓ Portunus server %s is installed (service not started: --no-service)." ;;
+    *:srv_start_hint) _f="  Start it first:  sudo systemctl enable --now portunus-server" ;;
+    *:srv_next_title) _f="Next steps:" ;;
+    *:srv_step_token) _f="  1) Get the onboarding setup token (first run only, to create the first admin):\n       sudo journalctl -u portunus-server | grep 'onboarding setup token'" ;;
+    *:srv_step_ui) _f="  2) Open the Web UI in a browser:  %s\n       (bound to loopback by design — not reachable from the public network)" ;;
+    *:srv_step_ui_remote) _f="       Remote server? From your own machine, tunnel first, then open the URL locally:\n       ssh -L %s:127.0.0.1:%s <user>@<this-server>" ;;
+    *:srv_step_super) _f="  3) Paste the token in the browser, then create the first _superadmin account." ;;
+    *:srv_handy) _f="Handy commands:\n  status:  install.sh status\n  logs:    sudo journalctl -u portunus-server -f\n  stop:    sudo systemctl stop portunus-server" ;;
     *) _f="$_k" ;;
   esac
   # shellcheck disable=SC2059
@@ -631,10 +649,39 @@ write_server_dropin() {
   echo "→ wrote $f"
 }
 
+# Guided onboarding for a systemd server install. The generic one-liner
+# (just `status:`) left users unsure the service was even running and with
+# no path to the Web UI / first-admin token; this walks them through it.
+print_server_next_steps() {
+  local host="127.0.0.1" port="7080" h url
+  if [ -n "$OP_HTTP_LISTEN" ]; then
+    port="${OP_HTTP_LISTEN##*:}"; h="${OP_HTTP_LISTEN%:*}"
+    # A wildcard bind (0.0.0.0 / ::) is still reached over loopback locally.
+    [ -n "$h" ] && [ "$h" != "0.0.0.0" ] && [ "$h" != "::" ] && host="$h"
+  fi
+  url="http://${host}:${port}"
+  if service_should_start; then t srv_running "$resolved_version"; echo
+  else t srv_installed_only "$resolved_version"; echo; t srv_start_hint; echo; fi
+  echo
+  t srv_next_title;      echo
+  t srv_step_token;      echo
+  t srv_step_ui "$url";  echo
+  t srv_step_ui_remote "$port" "$port"; echo
+  t srv_step_super;      echo
+  echo
+  t srv_handy;           echo
+}
+
 # Actionable post-install hints. The service is started by default; these
 # cover the cases where it was NOT (--no-service, no init manager, or a
 # standalone install whose config the operator still has to create).
 print_next_steps() {
+  # systemd server gets the guided block above; everything else keeps the
+  # compact hints (other inits use commands the rich block can't assume).
+  if [ "$ROLE" = server ] && [ "${DEPLOY:-binary}" != docker ] && [ "${INIT:-}" = systemd ]; then
+    print_server_next_steps
+    return
+  fi
   echo "$(t done_next)"
   if [ "${DEPLOY:-binary}" = "docker" ]; then
     t next_docker "${COMPOSE_DIR:-$PWD}"; echo
