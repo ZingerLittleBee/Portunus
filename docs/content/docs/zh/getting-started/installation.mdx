@@ -163,6 +163,9 @@ services:
     container_name: portunus-server
     ports:
       - "7443:7443"
+      # Operator API + Web UI 端口，默认只绑宿主机 loopback，外部访问不到（推荐的安全默认值）。
+      # 想用公网 IP 直接访问、又不想架反向代理：改成 "7080:7080"，
+      # 并务必自行加固（防火墙限制来源 IP + 强密码），否则管理后台会暴露在公网。
       - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
@@ -218,6 +221,9 @@ services:
     container_name: portunus-server
     ports:
       - "7443:7443"
+      # Operator API + Web UI 端口，默认只绑宿主机 loopback，外部访问不到（推荐的安全默认值）。
+      # 想用公网 IP 直接访问、又不想架反向代理：改成 "7080:7080"，
+      # 并务必自行加固（防火墙限制来源 IP + 强密码），否则管理后台会暴露在公网。
       - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus

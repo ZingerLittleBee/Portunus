@@ -172,6 +172,11 @@ services:
     container_name: portunus-server
     ports:
       - "7443:7443"
+      # Operator API + Web UI. Loopback-only by default (not reachable from
+      # outside — the recommended, safe default). To reach it directly over the
+      # public IP without a reverse proxy, change this to "7080:7080" and harden
+      # it yourself (firewall the source IPs + a strong password); otherwise the
+      # admin UI is exposed to the internet.
       - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
@@ -229,6 +234,11 @@ services:
     container_name: portunus-server
     ports:
       - "7443:7443"
+      # Operator API + Web UI. Loopback-only by default (not reachable from
+      # outside — the recommended, safe default). To reach it directly over the
+      # public IP without a reverse proxy, change this to "7080:7080" and harden
+      # it yourself (firewall the source IPs + a strong password); otherwise the
+      # admin UI is exposed to the internet.
       - "127.0.0.1:7080:7080"
     volumes:
       - portunus-data:/var/lib/portunus
