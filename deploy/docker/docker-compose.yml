@@ -1,23 +1,43 @@
 # Local-only "kick the tires" compose for Portunus.
 #
+# It builds the runtime images from a local checkout, runs a control-plane
+# server (operator API + Web UI on http://127.0.0.1:7080), and can attach a
+# self-enrolling edge client. This is for development and release verification,
+# not the recommended install path — see docs/deployment/docker for that.
+#
+# Client enrollment and rule push changed in v2.0 (015-client-stable-id) and
+# v1.6.1, so the operator subcommands differ by transport:
+#   - enroll-client / revoke / rename-client are OFFLINE (they open state.db):
+#     they only run with the server stopped, and NOT via the `operator` service
+#     here — it shares the server's network namespace, which is gone when the
+#     server is down. Enroll from the Web UI Clients page instead (step 5).
+#   - list-clients / push-rule / list-rules / rule-stats are HTTP calls to the
+#     running server's operator API: they need `PORTUNUS_OPERATOR_TOKEN` and
+#     address clients by their stable id (ULID), not their display name.
+#
 # Usage:
-#   1. Build the binaries and stage them for the runtime-only Dockerfiles:
+#   1. Stage prebuilt Linux binaries for the runtime-only Dockerfiles:
 #        ./deploy/docker/prepare-build-context.sh
 #   2. Build:    docker compose -f deploy/docker/docker-compose.yml build
 #   3. Start:    docker compose -f deploy/docker/docker-compose.yml up -d server
-#   4. Provision a client (writes bundle into shared volume):
+#   4. Onboard + mint a token: open http://127.0.0.1:7080, paste the setup token
+#        from `docker compose logs server | grep 'onboarding setup token'`, create
+#        the first superadmin, then mint an operator API token on the Credentials
+#        page and export it for the HTTP commands below:
+#          export PORTUNUS_OPERATOR_TOKEN=<token>
+#   5. Enroll a client in the Web UI Clients page, copy the one-time enroll URI,
+#      then start the self-enrolling client (it writes its bundle on first boot):
+#        PORTUNUS_ENROLL_URI='portunus://…' \
+#          docker compose -f deploy/docker/docker-compose.yml --profile client up -d client
+#   6. Find the client's id (HTTP; reads PORTUNUS_OPERATOR_TOKEN from the env):
 #        docker compose -f deploy/docker/docker-compose.yml \
-#          run --rm operator provision-client edge-01 \
-#          --out /shared/edge-01.bundle.json
-#      Then copy /shared/edge-01.bundle.json out of the server volume to give
-#      to the client (or mount the same volume into the client container).
-#   5. Start the client:
+#          run --rm -e PORTUNUS_OPERATOR_TOKEN operator \
+#          --data-dir /var/lib/portunus list-clients
+#   7. Push a rule (8080 → echo:9000) addressed by that id:
 #        docker compose -f deploy/docker/docker-compose.yml \
-#          --profile client up -d client
-#   6. Push a rule (8080 → echo:9000):
-#        docker compose -f deploy/docker/docker-compose.yml \
-#          run --rm operator push-rule edge-01 8080 echo 9000
-#   7. Drive traffic from inside the network:
+#          run --rm -e PORTUNUS_OPERATOR_TOKEN operator \
+#          --data-dir /var/lib/portunus push-rule <client-id> 8080 echo:9000
+#   8. Drive traffic from inside the network:
 #        docker run --rm --network container:portunus-client alpine:3.20 \
 #          sh -c 'apk add --no-cache netcat-openbsd >/dev/null && echo hello | nc -q1 127.0.0.1 8080'
 #
@@ -25,7 +45,7 @@
 # - Operator HTTP (7080) and metrics (7081) are loopback-only by design.
 #   To inspect /metrics from the host: `docker compose exec server` won't
 #   work (distroless has no shell), so use `docker run --rm --network
-#   container:portunus-server-1 curlimages/curl -s 127.0.0.1:7081/metrics`.
+#   container:portunus-server curlimages/curl -s 127.0.0.1:7081/metrics`.
 # - This compose is for local exploration only. For production use the
 #   systemd units in deploy/systemd/ or roll the images into your
 #   orchestrator with a real secret management story.
@@ -42,22 +62,24 @@ services:
       - "127.0.0.1:7080:7080"
     volumes:
       - server-data:/var/lib/portunus
-      - shared-bundles:/shared
     command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
     restart: unless-stopped
 
-  # One-shot operator: same image, override the entrypoint command.
-  # `docker compose run --rm operator <subcommand>` runs against the same
-  # data volume as the server.
+  # One-shot operator: same image, override the entrypoint command via
+  # `docker compose run --rm operator <subcommand>`. It shares the server's
+  # network namespace, so HTTP operator subcommands (list-clients, push-rule,
+  # list-rules, rule-stats) reach the operator API at 127.0.0.1:7080 — pass the
+  # bearer token with `-e PORTUNUS_OPERATOR_TOKEN`. Offline subcommands
+  # (enroll-client, revoke, rename-client) cannot run here: they need the
+  # server (and thus this shared netns) stopped; enroll from the Web UI.
   operator:
     profiles: ["cli"]
     image: portunus/server:dev
     volumes:
       - server-data:/var/lib/portunus
-      - shared-bundles:/shared
     network_mode: "service:server"
     entrypoint: ["/usr/local/bin/portunus-server"]
-    command: ["--data-dir", "/var/lib/portunus", "list-clients"]
+    command: ["--help"]
 
   client:
     profiles: ["client"]
@@ -66,9 +88,15 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.client
     image: portunus/client:dev
+    # First boot self-enrolls from PORTUNUS_ENROLL_URI and writes the bundle
+    # into the client-data volume; later boots reuse the bundle and ignore the
+    # URI. Sharing the server's network namespace lets the client dial the
+    # advertised loopback endpoint (127.0.0.1:7443) of this dev server.
+    environment:
+      PORTUNUS_ENROLL_URI: "${PORTUNUS_ENROLL_URI:-}"
+    network_mode: "service:server"
     volumes:
-      - shared-bundles:/shared:ro
-    command: ["--bundle", "/shared/edge-01.bundle.json"]
+      - client-data:/etc/portunus
     restart: unless-stopped
 
   # Echo target: any TCP that gets bytes echoes them back. Used by the
@@ -84,4 +112,4 @@ services:
 
 volumes:
   server-data:
-  shared-bundles:
+  client-data:
