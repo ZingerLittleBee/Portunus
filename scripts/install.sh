@@ -3,7 +3,7 @@
 # config/env for client/server/standalone, binary+systemd|openrc or Docker.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
-#   curl -fsSL .../scripts/install.sh | sh        # interactive menu
+#   curl -fsSL .../scripts/install.sh | sh -s -- server --advertised-endpoint host:7443
 #
 # POSIX sh. The only non-POSIX builtin relied upon is `local`, which dash,
 # busybox ash, and ksh all provide.
@@ -672,14 +672,13 @@ install_docker() {
 # ─── Usage / help (layered: short by default, full via --help-all) ────
 print_usage() {
   cat <<'USAGE'
-Portunus installer & lifecycle manager
+Portunus installer & lifecycle manager (flag-driven, non-interactive)
 
 Usage:
-  install.sh                    interactive wizard (recommended for first use)
-  install.sh <role> [options]   install a role non-interactively
-  install.sh <verb> [options]   manage an existing install
+  install.sh <role> [options]    install a role
+  install.sh <verb> [options]    manage an existing install
 
-Roles (what do you want to run?):
+Roles:
   standalone   forward ports/traffic on THIS machine (no control plane)
   server       run a control panel for many nodes (with Web UI)
   client       connect THIS machine to an existing control panel
@@ -688,37 +687,49 @@ Manage verbs:
   status                         show what is installed and running
   service start|stop|restart     control the service
   upgrade                        upgrade to the latest release
-  config get|set <key> [value]   view/change advertised-endpoint, data-dir, …
+  config get|set <key> [value]   view/change a server config key
+  env                            print all server config keys + values
   uninstall [--purge]            remove (--purge also deletes data)
   domain <fqdn>                  set up HTTPS via Caddy (server)
 
-Common options:
+Options:
   --version V                    install a specific version (default: latest)
-  --deploy binary|docker         deployment form
+  --deploy binary|docker         deployment form (default: binary)
+  --bin-dir D                    binary install dir (default: /usr/local/bin)
+  --compose-dir D                docker compose project dir (default: cwd)
   --enroll '<uri>'               (client) self-enroll during install
-  --domain FQDN [--acme-email A] (server) HTTPS via Caddy + Let's Encrypt
+  --domain FQDN                  (server) HTTPS via Caddy + Let's Encrypt
+  --acme-email A                 (server --domain) ACME contact email
+  --skip-dns-check               (server --domain) skip the DNS pre-check
   --data-dir D                   (server) data directory
   --advertised-endpoint H:P      (server) endpoint clients dial
+  --operator-http-listen A       (server) operator HTTP bind (default 127.0.0.1:7080)
   --config PATH                  (standalone) config file the service reads
   --no-service                   install but do not enable/start the service
-  --yes                          unattended: accept all prompts (for CI)
+  --restart                      (config set) restart the service to apply
+  --purge                        (uninstall) also delete the data dir / volume
   --dry-run                      print the plan and change nothing
-  --lang en|zh                   installer language
 
-More:  install.sh --help-all     full flag list + automation/CI seams
+Examples:
+  install.sh server --advertised-endpoint panel.example:7443
+  install.sh server --deploy docker --compose-dir ~/portunus
+  install.sh server --domain panel.example.com --acme-email ops@example.com
+  install.sh client --enroll 'portunus://panel.example.com:7443/enroll?...'
+  install.sh standalone --config /etc/portunus/standalone.toml
+  install.sh status
+  install.sh service restart
+  install.sh upgrade
+  install.sh config set advertised-endpoint panel.example:7443 --restart
+  install.sh config get advertised-endpoint
+  install.sh uninstall --purge
+
+More:  install.sh --help-all     adds automation/CI seam flags
 USAGE
 }
 
 print_usage_all() {
   print_usage
   cat <<'USAGE'
-
-Additional options:
-  --bin-dir D                    binary install dir (default: /usr/local/bin)
-  --compose-dir D                docker compose project dir (default: cwd)
-  --operator-http-listen A       (server) operator HTTP bind (default 127.0.0.1:7080)
-  --skip-dns-check               (server --domain) skip the DNS pre-check
-  --reset-lang                   forget the cached installer language
 
 Automation / CI seams (stable; exercised by scripts/install.test.sh):
   --effective-advertised         print the resolved advertised endpoint, exit
@@ -736,10 +747,6 @@ Automation / CI seams (stable; exercised by scripts/install.test.sh):
   --render-openrc ROLE           print the OpenRC init script, exit
   --render-confd ROLE [CFG]      print the OpenRC conf.d body, exit
   --render-config-dropin ROLE CFG  print the standalone config drop-in, exit
-  --print-i18n KEY               print one localized string, exit
-  --print-i18n-keys [LANG]       list all i18n keys, exit
-  --menu-stdin                   drive the interactive menu from stdin (tests)
-  --systemd                      back-compat no-op (service installed by default)
 USAGE
 }
 
@@ -761,7 +768,6 @@ parse_args() {
       --skip-dns-check) SKIP_DNS_CHECK="yes" ;;
       --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
       --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
-      --systemd) : ;;  # back-compat no-op: the service is installed by default now
       --no-service) NO_SERVICE="yes" ;;
       --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
       --enroll) shift; [ $# -gt 0 ] || die "--enroll needs a value"; ENROLL_URI="$1" ;;

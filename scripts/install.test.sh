@@ -49,8 +49,10 @@ $SH "$script" config set advertised-endpoint h.example:7443 --restart --dry-run 
 $SH "$script" install client --version 1.0.0 --dry-run >/dev/null 2>&1 || fail "install verb"
 $SH "$script" status --help >/dev/null 2>&1 || fail "status+help"
 
-# --- non-interactive when no tty and no args: helpful error, non-zero ---
-if echo "" | $SH "$script" </dev/null >/dev/null 2>&1; then fail "no-arg no-tty should error"; fi
+# --- no command prints usage to stderr and exits 2 ---
+if $SH "$script" </dev/null >/dev/null 2>&1; then fail "no-arg must exit non-zero"; fi
+no_arg_err="$($SH "$script" </dev/null 2>&1 || true)"
+printf '%s\n' "$no_arg_err" | grep -qi 'Usage:' || fail "no-arg must print usage"
 
 # --- meta round-trip via test seam ---
 tmpm="$(mktemp -d)"
@@ -67,7 +69,7 @@ rm -rf "$tmpd"
 
 # --- server binary dry-run mentions drop-in target, writes nothing ---
 sentinel="$(mktemp -d)"
-o="$($SH "$script" server --version 1.0.0 --systemd --advertised-endpoint h.example:7443 --data-dir "$sentinel/data" --dry-run)" || fail "server dry-run"
+o="$($SH "$script" server --version 1.0.0 --advertised-endpoint h.example:7443 --data-dir "$sentinel/data" --dry-run)" || fail "server dry-run"
 echo "$o" | grep -q 'drop-in:.*portunus-server.service.d/10-portunus.conf' || fail "drop-in plan line"
 [ -z "$(ls -A "$sentinel" 2>/dev/null)" ] || fail "dry-run wrote files"
 rm -rf "$sentinel"
@@ -97,7 +99,7 @@ $SH "$script" uninstall server --dry-run >/dev/null 2>&1 || fail "uninstall dry-
 $SH "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 
 # --- drop-in is an ExecStart= override carrying the flags (env is inert) ---
-dr="$($SH "$script" server --systemd --advertised-endpoint h:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --render-dropin)" || fail "render-dropin exit"
+dr="$($SH "$script" server --advertised-endpoint h:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --render-dropin)" || fail "render-dropin exit"
 echo "$dr" | grep -qx 'ExecStart=' || fail "dropin missing ExecStart= clear line"
 echo "$dr" | grep -qx 'ExecStart=/usr/local/bin/portunus-server --data-dir /srv/p serve --operator-http-listen 0.0.0.0:7080 --advertised-endpoint h:7443' || fail "dropin ExecStart override"
 if echo "$dr" | grep -q 'Environment=PORTUNUS_ADVERTISED_ENDPOINT='; then fail "inert Environment line still emitted"; fi
@@ -177,8 +179,8 @@ printf '%s\n' "$oc" | grep -Eq '^config:[[:space:]]*/' || fail "relative --confi
 out_ns="$($SH "$script" standalone --version 1.4.1 --no-service --dry-run)" || fail "--no-service dry-run exit"
 echo "$out_ns" | grep -Eq '^service:[[:space:]]*install only' || fail "--no-service: plan must say install only"
 
-# --- --systemd is accepted as a back-compat no-op ---
-$SH "$script" standalone --version 1.4.1 --systemd --dry-run >/dev/null 2>&1 || fail "--systemd back-compat no-op rejected"
+# --- --systemd is removed: now an unknown argument ---
+if $SH "$script" standalone --version 1.4.1 --systemd --dry-run >/dev/null 2>&1; then fail "--systemd must now error (removed)"; fi
 
 # --- --config is standalone-only; rejected for client/server ---
 $SH "$script" standalone --version 1.4.1 --config /etc/portunus/my.toml --dry-run >/dev/null 2>&1 || fail "standalone --config rejected"
@@ -431,9 +433,12 @@ fi
 $SH "$script" server install --domain example.com --acme-email "ops@example.com" --version 1.0.0 --dry-run >/dev/null 2>&1 \
   || fail "clean acme-email rejected by validation"
 
-# --- layered help: short --help stays terse; --help-all carries the CI seams ---
+# --- help: --help is the comprehensive user reference; --help-all adds seams ---
 h="$($SH "$script" --help 2>&1)" || fail "--help exit"
-printf '%s\n' "$h" | grep -qi 'interactive wizard' || fail "--help should mention the interactive wizard"
+printf '%s\n' "$h" | grep -qi 'flag-driven' || fail "--help should state it is flag-driven"
+printf '%s\n' "$h" | grep -q 'Examples:' || fail "--help should carry an Examples block"
+printf '%s\n' "$h" | grep -q -- '--restart' || fail "--help should document --restart"
+if printf '%s\n' "$h" | grep -qiE 'interactive (wizard|menu)'; then fail "--help must not advertise an interactive wizard/menu"; fi
 if printf '%s\n' "$h" | grep -q -- '--meta-write'; then fail "--help must not expose CI seams"; fi
 ha="$($SH "$script" --help-all 2>&1)" || fail "--help-all exit"
 printf '%s\n' "$ha" | grep -q -- '--meta-write' || fail "--help-all should list CI seams"
