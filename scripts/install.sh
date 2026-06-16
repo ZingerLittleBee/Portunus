@@ -537,7 +537,7 @@ print_next_steps() {
     _cfg="${CONFIG_PATH:-/etc/portunus/standalone.toml}"
     if [ "$ROLE" = "standalone" ]; then
       if [ -f "$_cfg" ]; then printf '  edit:    sudoedit %s\n' "$_cfg"
-      else printf "  create config first: write your forwarding rules to %s (the service exits and won'\''t start without it)\n" "$_cfg"; fi
+      else printf "  create config first: write your forwarding rules to %s (the service exits and won't start without it)\n" "$_cfg"; fi
     fi
     # If we did not start the service, show how to start it.
     if ! service_should_start; then
