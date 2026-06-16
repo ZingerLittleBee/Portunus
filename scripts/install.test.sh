@@ -471,6 +471,34 @@ grep -q '"--advertised-endpoint", "y.example:7443"' "$dy_tmp/compose.yaml" || fa
 ls "$dy_tmp/compose.yaml.portunus."*.bak >/dev/null 2>&1 || fail "docker .yaml: backup must be named compose.yaml.*.bak"
 rm -rf "$dy_tmp"
 
+# docker config set with BOTH compose.yml and compose.yaml present: edit the
+# file compose v2 actually uses (compose.yaml), and back up EVERY file so the
+# prior unbacked-deletion bug cannot recur (and a regression would be caught).
+db_tmp="$(mktemp -d)"
+printf 'role=server\ndeploy=docker\nversion=2.2.0\nlang=en\n' > "$db_tmp/.install-meta"
+cat > "$db_tmp/compose.yml" <<'YAML'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:2.2.0
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
+YAML
+cat > "$db_tmp/compose.yaml" <<'YAML'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:2.2.0
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
+  sidecar:
+    image: nginx
+YAML
+printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$db_tmp" config set advertised-endpoint y2.example:7443 >/dev/null 2>&1 \
+  || fail "docker config set (both files) exit"
+grep -q '"--advertised-endpoint", "y2.example:7443"' "$db_tmp/compose.yaml" || fail "docker both-files: effective compose.yaml not updated"
+[ ! -f "$db_tmp/compose.yml" ] || fail "docker both-files: stale compose.yml should be removed"
+ls "$db_tmp/compose.yaml.portunus."*.bak >/dev/null 2>&1 || fail "docker both-files: compose.yaml backup missing"
+ls "$db_tmp/compose.yml.portunus."*.bak >/dev/null 2>&1 || fail "docker both-files: compose.yml deleted UNBACKED (the prior bug)"
+grep -q sidecar "$db_tmp/compose.yaml.portunus."*.bak || fail "docker both-files: operator sidecar must be recoverable from .bak"
+rm -rf "$db_tmp"
+
 # --- config get/set rejects the client role (keys are server-only) ---
 cl_tmp="$(mktemp -d)"
 printf 'role=client\ndeploy=binary\nversion=2.2.0\nlang=en\ninit=systemd\n' > "$cl_tmp/.install-meta"

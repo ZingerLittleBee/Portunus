@@ -1782,7 +1782,10 @@ lifecycle_config() {
   flag="$(config_key_flag "$CONFIG_KEY")"
 
   if [ "$d" = docker ]; then
-    local src line; src="$dir/compose.yml"; [ -f "$src" ] || src="$dir/compose.yaml"
+    # Operate on the file docker compose v2 actually uses: compose.yaml wins
+    # over compose.yml. The installer only ever writes compose.yml, so normally
+    # only one exists; this matters only if an operator added a second file.
+    local src line; src="$dir/compose.yaml"; [ -f "$src" ] || src="$dir/compose.yml"
     line="$(grep -E '^[[:space:]]*command:' "$src" 2>/dev/null || true)"
     if [ "${CONFIG_OP:-get}" = get ]; then
       v="$(flag_value_from "$line" "$flag")"
@@ -1808,10 +1811,14 @@ lifecycle_config() {
       operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
     esac
     # Regenerating overwrites operator hand-edits to the managed compose. Back
-    # it up first (mirrors lifecycle_domain) and remove ONLY the file we read +
-    # backed up — never a second compose file we did not back up.
-    cp "$src" "${src}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null || true
-    rm -f "$src"
+    # up EVERY compose file present first (so nothing is lost and so a stale
+    # compose.yml cannot keep write_compose_file from regenerating), then
+    # regenerate and restore the operator's effective filename.
+    local _stamp _cf; _stamp="$(date +%Y%m%d%H%M%S)"
+    for _cf in "$dir/compose.yml" "$dir/compose.yaml"; do
+      if [ -f "$_cf" ]; then cp "$_cf" "${_cf}.portunus.${_stamp}.bak" 2>/dev/null || true; fi
+    done
+    rm -f "$dir/compose.yml" "$dir/compose.yaml"
     write_compose_file "$dir"; write_compose_env "$dir"
     [ "$src" = "$dir/compose.yaml" ] && [ -f "$dir/compose.yml" ] && mv "$dir/compose.yml" "$dir/compose.yaml"
     echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
@@ -1846,7 +1853,9 @@ lifecycle_config() {
   # Back up the target before regenerating so a hand-edit (esp. an openrc
   # conf.d the operator annotated) is recoverable, mirroring the docker path.
   local tgt; [ "$init" = openrc ] && tgt="$(confd_file)" || tgt="$(systemd_dropin_file)"
-  [ -f "$tgt" ] && config_sudo cp "$tgt" "${tgt}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null
+  # Best-effort backup: a failed cp (e.g. declined sudo) must NOT abort under
+  # set -e before the write — `|| true`, matching the docker path.
+  if [ -f "$tgt" ]; then config_sudo cp "$tgt" "${tgt}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null || true; fi
   if [ "$init" = openrc ]; then write_server_confd; else write_server_dropin; fi
   echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
   if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
