@@ -37,6 +37,7 @@ SUDO=""           # set in main(): "" when root, "sudo" otherwise
 ADVERTISED=""     # advertised endpoint host:port ("" = unset/auto)
 DATA_DIR=""
 OP_HTTP_LISTEN=""
+EXPOSE_OP_HTTP="no"  # --expose-operator-http: publish operator HTTP on 0.0.0.0 (insecure)
 SERVICE_ACTION="" # start|stop|restart
 CONFIG_OP=""      # get|set
 CONFIG_KEY=""
@@ -354,6 +355,7 @@ print_plan() {
   if [ "${DEPLOY:-binary}" = "docker" ]; then
     echo "compose_dir:      ${COMPOSE_DIR:-$PWD}"
     echo "env_file:         ${COMPOSE_DIR:-$PWD}/.env"
+    [ "$ROLE" = server ] && echo "op_http_publish:  $([ "$EXPOSE_OP_HTTP" = yes ] && echo "0.0.0.0:$(op_http_port) (PUBLIC — reachable off-host, insecure)" || echo "127.0.0.1:$(op_http_port) (loopback only)")"
   fi
   echo "bin_dir:          ${BIN_DIR}"
   [ "$ROLE" = "standalone" ] && [ "${DEPLOY:-binary}" != "docker" ] && echo "config:           ${CONFIG_PATH:-/etc/portunus/standalone.toml} (you create it; service exits if absent)"
@@ -631,9 +633,11 @@ YAML
   # The server's --operator-http-listen has no env binding and defaults
   # to container-internal 127.0.0.1, which Docker's published port (and
   # host Caddy) cannot reach. Override the image CMD to bind 0.0.0.0
-  # inside the container (mirrors deploy/docker/docker-compose.yml); the
-  # host only publishes 127.0.0.1:<port> so it stays loopback-exposed.
-  local advcmd=""
+  # inside the container (mirrors deploy/docker/docker-compose.yml). The
+  # host publish bind defaults to 127.0.0.1:<port> (loopback-only);
+  # --expose-operator-http flips it to 0.0.0.0:<port> (off-host, insecure).
+  local advcmd="" pubhost="127.0.0.1"
+  [ "$EXPOSE_OP_HTTP" = yes ] && pubhost="0.0.0.0"
   [ -n "$ADVERTISED" ] && advcmd=", \"--advertised-endpoint\", \"${ADVERTISED}\""
   cat > "$f" <<YAML
 services:
@@ -644,7 +648,7 @@ services:
     command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:${port}"${advcmd}]
     ports:
       - "7443:7443"
-      - "127.0.0.1:${port}:${port}"
+      - "${pubhost}:${port}:${port}"
     volumes:
       - portunus-data:/var/lib/portunus
     restart: unless-stopped
@@ -665,7 +669,8 @@ install_docker() {
   # `up -d` must not leave compose files on disk with no .install-meta.
   meta_write "$dir/.install-meta" "role=$ROLE" "deploy=docker" \
     "version=${artifact_version:-$resolved_version}" \
-    "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+    "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" \
+    "expose_operator_http=$EXPOSE_OP_HTTP"
   ( cd "$dir" && $dc pull && $dc up -d )
 }
 
@@ -704,6 +709,8 @@ Options:
   --data-dir D                   (server) data directory
   --advertised-endpoint H:P      (server) endpoint clients dial
   --operator-http-listen A       (server) operator HTTP bind (default 127.0.0.1:7080)
+  --expose-operator-http         (server) publish operator HTTP/Web UI on 0.0.0.0
+                                 (INSECURE: reachable from any network — firewall it)
   --config PATH                  (standalone) config file the service reads
   --no-service                   install but do not enable/start the service
   --restart                      (config set) restart the service to apply
@@ -768,6 +775,7 @@ parse_args() {
       --skip-dns-check) SKIP_DNS_CHECK="yes" ;;
       --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
       --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
+      --expose-operator-http) EXPOSE_OP_HTTP="yes" ;;
       --no-service) NO_SERVICE="yes" ;;
       --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
       --enroll) shift; [ $# -gt 0 ] || die "--enroll needs a value"; ENROLL_URI="$1" ;;
@@ -814,6 +822,7 @@ main() {
   [ -n "$DOMAIN" ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--domain is server-only"
   [ -n "$ENROLL_URI" ] && [ "$ROLE" != client ] && die "--enroll is client-only"
   [ -n "$ENROLL_URI" ] && [ "$DEPLOY" = docker ] && die "--enroll is binary-only (for Docker pass PORTUNUS_ENROLL_URI to the container)"
+  [ "$EXPOSE_OP_HTTP" = yes ] && [ -n "$ROLE" ] && [ "$ROLE" != server ] && die "--expose-operator-http is server-only"
   # Reject a malformed ACME email before it can reach the root-written
   # Caddyfile as a `tls <email>` directive (Caddy directive injection).
   if [ -n "$ACME_EMAIL" ] && ! valid_email "$ACME_EMAIL"; then
@@ -821,6 +830,9 @@ main() {
   fi
   apply_advertised_default
   apply_install_defaults
+  if [ "$EXPOSE_OP_HTTP" = yes ] && [ "$ROLE" = server ] && [ "$VERB" = install ]; then
+    echo "warning: --expose-operator-http publishes the operator API + Web UI on 0.0.0.0:$(op_http_port), reachable from any network. It is guarded only by login/token — restrict the source IPs with a firewall and set a strong password, or prefer --domain (HTTPS via Caddy) or an SSH tunnel for remote access." >&2
+  fi
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
     case "$VERB" in
@@ -1018,6 +1030,9 @@ lifecycle_domain() {
   [ "$ROLE" = server ] || die "domain/HTTPS is server-only"
   [ -n "$DOMAIN" ] || die "usage: install.sh domain <fqdn>"
   OP_HTTP_LISTEN="$(meta_read "$mf" op_http_listen 2>/dev/null || echo '')"
+  # Preserve the docker operator-HTTP publish exposure across compose
+  # regeneration (a re-rendered compose would otherwise revert to loopback).
+  EXPOSE_OP_HTTP="$(meta_read "$mf" expose_operator_http 2>/dev/null || echo no)"
   DEPLOY="$(meta_read "$mf" deploy || echo binary)"
   setup_caddy_domain
   apply_advertised_default
@@ -1038,6 +1053,7 @@ lifecycle_domain() {
     meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" \
       "version=$(meta_read "$mf" version || echo '?')" \
       "advertised_endpoint_set=$(meta_read "$mf" advertised_endpoint_set || echo no)" \
+      "expose_operator_http=$EXPOSE_OP_HTTP" \
       "domain=$DOMAIN"
   fi
 }
@@ -1055,6 +1071,13 @@ apply_advertised_default() {
 apply_install_defaults() {
   [ "${VERB:-install}" = "install" ] || return 0
   [ -n "${ROLE:-}" ] || return 0
+  # --expose-operator-http: bind the operator HTTP listener to 0.0.0.0 so the
+  # API + Web UI are reachable off-host. For binary this drives the systemd
+  # drop-in / OpenRC conf.d ExecStart; for docker it drives the .env + the
+  # compose host-publish (see write_compose_file). Keep any custom port.
+  if [ "$EXPOSE_OP_HTTP" = yes ] && [ "$ROLE" = server ]; then
+    OP_HTTP_LISTEN="0.0.0.0:$(op_http_port)"
+  fi
   if [ -n "$CONFIG_PATH" ] && [ "$ROLE" != standalone ]; then
     die "--config is only valid for the standalone role (client uses --bundle, server uses --data-dir)"
   fi
@@ -1284,6 +1307,10 @@ lifecycle_config() {
     ROLE="$(meta_read "$mf" role || echo server)"
     OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
     ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
+    # The host publish exposure (loopback vs 0.0.0.0) is deploy metadata, not a
+    # command flag, so it lives in .install-meta — re-read it so a regenerated
+    # compose preserves --expose-operator-http instead of reverting to loopback.
+    EXPOSE_OP_HTTP="$(meta_read "$mf" expose_operator_http 2>/dev/null || echo no)"
     artifact_version="$(sed -n 's#.*ghcr.io/zingerlittlebee/portunus-[a-z]*:\([^"[:space:]]*\).*#\1#p' "$src" 2>/dev/null | head -1)"
     [ -n "$artifact_version" ] || artifact_version="$(meta_read "$mf" version 2>/dev/null || true)"
     [ -n "$artifact_version" ] || die "cannot determine the current image tag in $src"
