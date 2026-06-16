@@ -43,7 +43,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
            [--version V] [--deploy binary|docker]
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
-           [--operator-http-listen ADDR]
+           [--operator-http-listen ADDR] [--expose-operator-http]
            [--config PATH] [--no-service] [--enroll '<uri>']
            [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
            [--restart] [--purge] [--dry-run]
@@ -76,6 +76,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
 | `--advertised-endpoint <HOST:PORT>` | server 通告地址（见下）。留空 ⇒ 运行时自动。 |
 | `--data-dir <DIR>` | server 数据目录（默认 `/var/lib/portunus`）。 |
 | `--operator-http-listen <ADDR>` | Operator HTTP 监听地址覆写。 |
+| `--expose-operator-http` | **仅 server。** 把 Operator HTTP（Web UI + API）发布到 `0.0.0.0:<端口>`，使其可从任意网络访问（二进制绑定监听地址、Docker 改用 `0.0.0.0` 端口发布）。**不安全**：仅靠登录口令 / token 保护——请用防火墙限制来源并设置强口令,或优先用 `--domain` / SSH 隧道。默认仍仅 loopback。该选择记录在 `.install-meta`,后续 `config set` / `domain` 会保留。对 `client` / `standalone` 传入会直接报错。 |
 | `--config <PATH>` | **仅 standalone。** 服务读取的配置文件（默认 `/etc/portunus/standalone.toml`）。让 unit/conf.d 指向 `PATH` 并修正其权限——**文件由你创建**（缺失时服务直接退出）。对 `client` / `server` 传入会直接报错——它们用 `--bundle` / `--data-dir`。 |
 | `--enroll '<uri>'` | **仅 client、仅二进制。** 安装时自助注册：运行 `portunus-client enroll <uri>` 并放置 bundle。对 `server` / `standalone` 或带 `--deploy docker` 时会直接报错——Docker 请改为给容器传 `PORTUNUS_ENROLL_URI`。 |
 | `--no-service` | 安装二进制（及服务 unit）但**不**启用/启动,并打印手动启动命令。 |

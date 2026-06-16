@@ -47,7 +47,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
            [--version V] [--deploy binary|docker]
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
-           [--operator-http-listen ADDR]
+           [--operator-http-listen ADDR] [--expose-operator-http]
            [--config PATH] [--no-service] [--enroll '<uri>']
            [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
            [--restart] [--purge] [--dry-run]
@@ -80,6 +80,7 @@ A bare role is shorthand for install: `client` ≡ `install client`,
 | `--advertised-endpoint <HOST:PORT>` | Server reach address (see below). Blank ⇒ runtime auto. |
 | `--data-dir <DIR>` | Server data dir (default `/var/lib/portunus`). |
 | `--operator-http-listen <ADDR>` | Operator HTTP listen address override. |
+| `--expose-operator-http` | **Server only.** Publish the operator HTTP (Web UI + API) on `0.0.0.0:<port>` so it is reachable from any network (binary binds the listener; Docker switches the host port publish to `0.0.0.0`). **Insecure**: guarded only by the login password / token — restrict the source IPs with a firewall and set a strong password, or prefer `--domain` / an SSH tunnel. The default stays loopback-only. The choice is recorded in `.install-meta` and preserved across later `config set` / `domain`. A hard error for `client` / `standalone`. |
 | `--config <PATH>` | **Standalone only.** Config file the service reads (default `/etc/portunus/standalone.toml`). Points the unit/conf.d at `PATH` and fixes its permissions — **you create the file** (the service exits without it). A hard error for `client` / `server`, which use `--bundle` / `--data-dir`. |
 | `--enroll '<uri>'` | **Client only, binary only.** Self-enroll during install: runs `portunus-client enroll <uri>` and places the bundle. A hard error for `server` / `standalone` or with `--deploy docker` — for Docker, pass `PORTUNUS_ENROLL_URI` to the container instead. |
 | `--no-service` | Install the binary (and service unit) but do **not** enable/start it. Prints the manual start command. |

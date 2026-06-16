@@ -173,6 +173,55 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 
 </Tabs>
 
+By default the operator HTTP (Web UI + API) binds loopback only
+(`127.0.0.1:7080`), and the Docker deploy publishes the port only on
+`127.0.0.1` — so a fresh install is reachable from the server host only. Two safe
+ways to reach it remotely: use the **domain + automatic HTTPS** deploy below, or
+open an SSH tunnel (`ssh -L 7080:127.0.0.1:7080 user@server`, then browse
+`http://127.0.0.1:7080/`).
+
+#### Expose the operator UI / API publicly (optional, insecure)
+
+If you accept the risk and want the Web UI / API to listen on `0.0.0.0:7080`
+directly, add `--expose-operator-http` to the IP deploy (both Docker and binary
+support it):
+
+<Callout type="warn">
+`--expose-operator-http` exposes the operator API and Web UI to any network,
+**guarded only by the login password / token**. Restrict the source IPs with a
+firewall and set a strong password — otherwise prefer `--domain` (HTTPS) or an
+SSH tunnel.
+</Callout>
+
+<Tabs groupId="server-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
+
+```sh
+# Same as the IP deploy, but the host publishes the port on 0.0.0.0:7080 (publicly reachable, insecure)
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443 --expose-operator-http
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+```sh
+# Same as the IP deploy, but the server binds operator HTTP to 0.0.0.0:7080 (publicly reachable, insecure)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443 --expose-operator-http
+```
+
+</Tab>
+
+</Tabs>
+
+Later lifecycle operations (`config set`, `domain`, …) preserve this exposure
+(recorded in `.install-meta`) instead of silently reverting the port to
+loopback.
+
 ### Deploy with a domain + automatic HTTPS
 
 With `--domain`, the installer additionally configures a **Caddy** reverse proxy
@@ -222,21 +271,16 @@ binary: `journalctl -u portunus-server | grep 'onboarding setup token'`). The
 token rotates on each restart until onboarding completes — see
 [Deploy with Docker](/en/docs/deployment/docker).
 
-Below are the **manual Compose** (full control, without install.sh) and a Compose
-file reference for Docker deployments.
+### Manual Compose (without install.sh)
 
-### Copy-paste install on the server host
-
-1. Create and enter the working directory:
+`install.sh server --deploy docker` generates the `compose.yml` below for you
+(it additionally pins the version, writes `.env`, and injects
+`--advertised-endpoint` into `command`). Prefer to own it yourself? Write it in
+a working directory, then `docker compose up -d`:
 
 ```sh
 mkdir -p ~/portunus-server && cd ~/portunus-server
-```
-
-2. Write `docker-compose.yml`:
-
-```sh
-cat > docker-compose.yml <<'EOF'
+cat > compose.yml <<'EOF'
 services:
   server:
     image: ghcr.io/zingerlittlebee/portunus-server:latest
@@ -263,75 +307,23 @@ volumes:
   portunus-data:
     name: portunus-data
 EOF
-```
-
-3. Start the server and verify it:
-
-```sh
 docker compose up -d && docker compose logs -f -t
 ```
 
-That is enough for a default server install. Generated TLS material and SQLite
-state live in the `portunus-data` volume.
+The Web UI is at `http://127.0.0.1:7080/` and the client control-plane listener
+stays on `0.0.0.0:7443`; generated TLS material and SQLite state live in the
+`portunus-data` volume. The example uses `:latest` — pin a version tag such as
+`:X.Y.Z` for a repeatable production deploy. For non-default listeners or other
+overrides, mount an optional `server.toml` at `<data-dir>/server.toml` (e.g.
+`./server.toml:/var/lib/portunus/server.toml:ro`).
 
-The Web UI is available on the server host at `http://127.0.0.1:7080/`. The
-client control-plane listener remains on `0.0.0.0:7443`.
-
-On first boot, read the onboarding setup token from the logs and paste it into
-the Web UI to create the first superadmin:
-
-```sh
-docker compose logs | grep 'Portunus onboarding setup token'
-```
-
-The token rotates on each restart until onboarding completes — see [Deploy with
-Docker](/en/docs/deployment/docker) for the full onboarding flow.
-
-**Deploying behind a proxy / on a cloud host?** The enrollment URI must
-embed the **public** `host:port` an edge client can dial. If you do not
-configure it, an enrollment created without a browser request (e.g. the
-Docker operator `enroll-client`) falls back to `127.0.0.1:7443`, which a
-remote client cannot reach. Set the advertised endpoint via
-`PORTUNUS_ADVERTISED_ENDPOINT=host:port` (or the Web UI **Settings →
-Client connect address**), and ensure the server certificate SAN covers
-that host — see [Advertised Endpoint](/en/docs/features/advertised-endpoint).
-
-### Compose file reference
-
-```yaml
-services:
-  server:
-    image: ghcr.io/zingerlittlebee/portunus-server:latest
-    container_name: portunus-server
-    ports:
-      - "7443:7443"
-      # Operator API + Web UI. Loopback-only by default (not reachable from
-      # outside — the recommended, safe default). To reach it directly over the
-      # public IP without a reverse proxy, change this to "7080:7080" and harden
-      # it yourself (firewall the source IPs + a strong password); otherwise the
-      # admin UI is exposed to the internet.
-      - "127.0.0.1:7080:7080"
-    volumes:
-      - portunus-data:/var/lib/portunus
-    command:
-      - --data-dir
-      - /var/lib/portunus
-      - serve
-      - --operator-http-listen
-      - 0.0.0.0:7080
-    restart: unless-stopped
-
-volumes:
-  portunus-data:
-    name: portunus-data
-```
-
-The examples use `:latest` by default; pin a version tag such as `:X.Y.Z`
-when you need a fully repeatable production deploy.
-
-If you need non-default listeners or other overrides, place an optional
-`server.toml` at `<data-dir>/server.toml`, for example with
-`./server.toml:/var/lib/portunus/server.toml:ro`.
+**Deploying behind a proxy / on a cloud host?** The enrollment URI must embed
+the **public** `host:port` an edge client can dial. Otherwise an enrollment
+created without a browser request (e.g. the Docker operator `enroll-client`)
+falls back to `127.0.0.1:7443`, which a remote client cannot reach. Set the
+advertised endpoint via `PORTUNUS_ADVERTISED_ENDPOINT=host:port` (or the Web UI
+**Settings → Client connect address**), and ensure the server certificate SAN
+covers that host — see [Advertised Endpoint](/en/docs/features/advertised-endpoint).
 
 See [Deploy with Docker](/en/docs/deployment/docker) for operator commands,
 client Compose, backup, migration, and production notes.
@@ -488,43 +480,6 @@ tar -xzf portunus-<version>-<target>.tar.gz
 sudo install -m 0755 portunus-<version>-<target>/portunus-server /usr/local/bin/
 sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 ```
-
-## Service (systemd / OpenRC)
-
-Install the binary and a hardened service unit in one step — by default the
-installer also starts it:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- server
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- client
-```
-
-The installer detects the host init: a hardened **systemd** unit, or an
-**OpenRC** `supervise-daemon` service on Alpine. It creates the service user
-and directories, then enables and starts the service. Pass `--no-service` to
-lay down the binary and unit without starting it; a host with neither systemd
-nor OpenRC gets the binary plus printed run instructions.
-For a source-checkout install, use
-`cd deploy/systemd && sudo ./install.sh server client` instead (the binaries must already be
-in `/usr/local/bin`).
-
-<Callout type="warn">
-The `portunus-client` unit runs as the unprivileged `portunus-client` service
-user, which **cannot** read a root-owned `0600` bundle (the unit boot-loops
-with `bundle_load_failed … Permission denied`). The `--enroll` flag handles
-placement automatically (`root:portunus-client 0640`). If you place a bundle
-manually, use:
-
-```sh
-sudo install -o root -g portunus-client -m 0640 \
-  ./client.bundle.json /etc/portunus/client.bundle.json
-sudo systemctl enable --now portunus-client
-```
-
-</Callout>
-
-See [Deploying with systemd](/en/docs/deployment/systemd) for the full unit
-breakdown and hardening notes.
 
 ## Next steps
 
