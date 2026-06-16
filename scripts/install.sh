@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy ask_intent ask_enroll ask_setup_https equiv_cmd manage_title manage_status manage_service manage_upgrade manage_config manage_uninstall manage_install_another nav_main"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value config_docker_datadir ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy ask_intent ask_enroll ask_setup_https equiv_cmd manage_title manage_status manage_service manage_upgrade manage_config manage_uninstall manage_install_another nav_main"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -120,9 +120,10 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:next_status) _f="  查看状态：install.sh status" ;;
     zh:restart_now) _f="是否立即生效（重启服务）？[y/N]: " ;;
     zh:upgrade_current) _f="当前已是最新版 %s，无需升级。" ;;
-    zh:unknown_config_key) _f="未知的配置项：%s（可用：advertised-endpoint data-dir operator-http-listen version-pin）" ;;
-    zh:ask_config_key) _f="请选择要修改的配置项\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin" ;;
+    zh:unknown_config_key) _f="未知的配置项：%s（可用：advertised-endpoint data-dir operator-http-listen）" ;;
+    zh:ask_config_key) _f="请选择要修改的配置项\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen" ;;
     zh:ask_config_value) _f="请输入 %s 的新值: " ;;
+    zh:config_docker_datadir) _f="Docker 部署的 data-dir 固定为容器内卷路径，无法通过 config 修改；如需更改请编辑 compose.yml 的卷挂载。" ;;
     zh:ask_service_action) _f="请选择服务操作\n  [1] 启动\n  [2] 停止\n  [3] 重启" ;;
     zh:menu_invalid) _f="无效的选项：%s" ;;
     zh:press_enter) _f="按回车键继续…" ;;
@@ -194,9 +195,10 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:next_status) _f="  status:  install.sh status" ;;
     *:restart_now) _f="Apply now (restart service)? [y/N]: " ;;
     *:upgrade_current) _f="Already at %s; nothing to upgrade." ;;
-    *:unknown_config_key) _f="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)" ;;
-    *:ask_config_key) _f="Config key\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin" ;;
+    *:unknown_config_key) _f="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen)" ;;
+    *:ask_config_key) _f="Config key\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen" ;;
     *:ask_config_value) _f="New value for %s: " ;;
+    *:config_docker_datadir) _f="data-dir is fixed to the in-container volume path for Docker deploys and cannot be changed via config; edit the volume mount in compose.yml instead." ;;
     *:ask_service_action) _f="Service action\n  [1] start\n  [2] stop\n  [3] restart" ;;
     *:menu_invalid) _f="invalid option: %s" ;;
     *:press_enter) _f="Press Enter to continue…" ;;
@@ -1434,7 +1436,6 @@ menu_config() {
     1|advertised-endpoint)  k="advertised-endpoint" ;;
     2|data-dir)             k="data-dir" ;;
     3|operator-http-listen) k="operator-http-listen" ;;
-    4|version-pin)          k="version-pin" ;;
     *) t unknown_config_key "$a"; echo; return 0 ;;
   esac
   v="$(ask ask_config_value "$k")"
@@ -1569,7 +1570,7 @@ dispatch_verb() {
 }
 
 # ─── Lifecycle ────────────────────────────────────────────────────────
-SCOPED_KEYS="advertised-endpoint data-dir operator-http-listen version-pin"
+SCOPED_KEYS="advertised-endpoint data-dir operator-http-listen"
 validate_config_key() {
   [ -n "$CONFIG_KEY" ] || die "config key required (allowed: $SCOPED_KEYS)"
   case " $SCOPED_KEYS " in *" $CONFIG_KEY "*) ;; *) die "$(t unknown_config_key "$CONFIG_KEY")" ;; esac
@@ -1679,6 +1680,28 @@ lifecycle_uninstall() {
   rm -f "$mf" 2>/dev/null || true
 }
 
+# Extract the token following a CLI flag from a command string. Handles both
+# the systemd ExecStart form (`--flag value`) and the compose `command:` form
+# (`"--flag", "value"`) by normalizing quotes/commas/brackets to spaces first.
+flag_value_from() {  # $1 = text, $2 = flag (e.g. --advertised-endpoint)
+  printf '%s' "$1" | tr ',"[]' '    ' | awk -v f="$2" '{for(i=1;i<=NF;i++) if($i==f){print $(i+1); exit}}'
+}
+
+# Map a scoped config key to the server CLI flag it controls.
+config_key_flag() {  # $1 = key
+  case "$1" in
+    advertised-endpoint)  echo "--advertised-endpoint" ;;
+    operator-http-listen) echo "--operator-http-listen" ;;
+    data-dir)             echo "--data-dir" ;;
+  esac
+}
+
+# The server consumes advertised-endpoint / operator-http-listen / data-dir as
+# CLI flags ONLY — it has no env binding for them, so an Environment=/.env line
+# is inert. The authoritative location is therefore the systemd ExecStart
+# override (binary) or the compose `command:` array (docker). config get parses
+# that line; config set re-renders it from the install primitive so the other
+# install-time flags are preserved.
 lifecycle_config() {
   local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
   local _r; _r="$(meta_read "$mf" role 2>/dev/null || true)"
@@ -1687,36 +1710,63 @@ lifecycle_config() {
     return 2
   fi
   validate_config_key
-  local d; d="$(meta_read "$mf" deploy || echo binary)"
-  local target_file
-  if [ "$d" = docker ]; then target_file="$(dirname "$mf")/.env"; else target_file="/etc/systemd/system/portunus-server.service.d/10-portunus.conf"; fi
-  local envkey
-  case "$CONFIG_KEY" in
-    advertised-endpoint) envkey="PORTUNUS_ADVERTISED_ENDPOINT" ;;
-    operator-http-listen) envkey="PORTUNUS_OPERATOR_HTTP_LISTEN" ;;
-    data-dir) envkey="PORTUNUS_DATA_DIR" ;;
-    version-pin) envkey="PORTUNUS_VERSION_PIN" ;;
-  esac
+  local d dir flag line v
+  d="$(meta_read "$mf" deploy || echo binary)"; dir="$(dirname "$mf")"
+  flag="$(config_key_flag "$CONFIG_KEY")"
+  if [ "$d" = docker ]; then
+    local src="$dir/compose.yml"; [ -f "$src" ] || src="$dir/compose.yaml"
+    line="$(grep -E '^[[:space:]]*command:' "$src" 2>/dev/null || true)"
+  else
+    line="$(grep -E '^ExecStart=.*portunus-server' /etc/systemd/system/portunus-server.service.d/10-portunus.conf 2>/dev/null | tail -1 || true)"
+  fi
+
   if [ "${CONFIG_OP:-get}" = get ]; then
-    grep -E "(Environment=)?${envkey}=" "$target_file" 2>/dev/null | sed "s/.*${envkey}=//" || echo "<unset>"
+    v="$(flag_value_from "$line" "$flag")"
+    [ -n "$v" ] && echo "$v" || echo "<unset>"
     return 0
   fi
+
   [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
   if [ "$d" = docker ]; then
-    grep -v "^${envkey}=" "$target_file" 2>/dev/null > "$target_file.tmp" || true
-    echo "${envkey}=${CONFIG_VALUE}" >> "$target_file.tmp"; mv "$target_file.tmp" "$target_file"
+    # data-dir maps to a fixed in-container volume path; changing it would
+    # desync the command from the volume mount, so it is not config-settable.
+    [ "$CONFIG_KEY" = data-dir ] && { echo "$(t config_docker_datadir)" >&2; return 2; }
+    # Hydrate the current values from the compose so only the requested key
+    # changes, preserving the pinned image tag and keeping the published port
+    # in sync with operator-http-listen when we regenerate.
+    ROLE="$(meta_read "$mf" role || echo server)"
+    OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
+    artifact_version="$(sed -n 's#.*ghcr.io/zingerlittlebee/portunus-[a-z]*:\([^"[:space:]]*\).*#\1#p' "$src" 2>/dev/null | head -1)"
+    [ -n "$artifact_version" ] || artifact_version="$(meta_read "$mf" version 2>/dev/null || true)"
+    [ -n "$artifact_version" ] || die "cannot determine the current image tag in $src"
+    case "$CONFIG_KEY" in
+      advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
+      operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
+    esac
+    rm -f "$dir/compose.yml" "$dir/compose.yaml"
+    write_compose_file "$dir"; write_compose_env "$dir"
+    echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+    # `compose restart` keeps the old command; only `up -d` recreates with it.
+    if confirm "$(t restart_now)" no; then ( cd "$dir" && $(compose_cmd) up -d ); fi
   else
-    local keep=""
-    [ -f "$target_file" ] && keep="$(grep -E '^Environment=' "$target_file" 2>/dev/null | grep -vE "^Environment=${envkey}=" || true)"
-    sudo install -d -m 0755 "$(dirname "$target_file")"
-    { echo "[Service]"; [ -n "$keep" ] && printf '%s\n' "$keep"; echo "Environment=${envkey}=${CONFIG_VALUE}"; } | sudo tee "$target_file" >/dev/null
-    sudo systemctl daemon-reload 2>/dev/null || true
+    # Hydrate from the existing override so the untouched flags survive the
+    # re-render (render_dropin omits any flag whose global is empty).
+    DATA_DIR="$(flag_value_from "$line" --data-dir)"
+    OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
+    case "$CONFIG_KEY" in
+      advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
+      operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
+      data-dir)             DATA_DIR="$CONFIG_VALUE" ;;
+    esac
+    write_server_dropin
+    echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+    if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
   fi
-  echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
-  if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
 }
 
-lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
+lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
 
 # Read one line straight from the terminal into REPLY_TTY. A per-prompt
 # `cat`/process-sub left a zombie reader on the tty, so a second prompt
@@ -1724,7 +1774,11 @@ lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operato
 read_tty() {
   REPLY_TTY=""
   printf '%s\n' "$1" >&2           # question on its own line; answer below
-  if [ -t 0 ]; then printf '> ' >&2; read -r REPLY_TTY
+  # Honor the scripted-menu seam so confirm prompts (set→restart,
+  # uninstall→purge) read from stdin under tests instead of blocking on the
+  # controlling terminal — mirrors read_menu / ask.
+  if [ "$MENU_FORCE_STDIN" = yes ]; then printf '> ' >&2; read -r REPLY_TTY || return 1
+  elif [ -t 0 ]; then printf '> ' >&2; read -r REPLY_TTY
   elif [ -r /dev/tty ]; then printf '> ' >&2; read -r REPLY_TTY </dev/tty
   else return 1; fi
 }

@@ -330,6 +330,47 @@ if $SH "$script" --compose-dir "$sa_tmp" config get advertised-endpoint >/dev/nu
 fi
 rm -rf "$sa_tmp"
 
+# --- config get/set reads & writes the compose `command:` array (docker) ---
+# The server consumes advertised/op-http as CLI flags, so config must target the
+# compose command (NOT an inert .env line). Network-free: no `up -d` is run
+# (the restart confirm defaults to no under a non-TTY stdin).
+dk_tmp="$(mktemp -d)"
+printf 'role=server\ndeploy=docker\nversion=2.2.0\nlang=en\n' > "$dk_tmp/.install-meta"
+cat > "$dk_tmp/compose.yml" <<'YAML'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:2.2.0
+    container_name: portunus-server
+    env_file: [ .env ]
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080", "--advertised-endpoint", "old.example:7443"]
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+volumes:
+  portunus-data:
+    name: portunus-data
+YAML
+# get reads the value out of the command array
+g="$($SH "$script" --compose-dir "$dk_tmp" config get advertised-endpoint 2>/dev/null)" || fail "docker config get exit"
+[ "$g" = "old.example:7443" ] || fail "docker config get advertised-endpoint: got '$g'"
+# set rewrites the command array (and preserves the image tag). `--menu-stdin`
+# routes the restart confirm to stdin; feeding 'n' skips the (docker-less) recreate.
+printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set advertised-endpoint new.example:7443 >/dev/null 2>&1 \
+  || fail "docker config set exit"
+grep -q '"--advertised-endpoint", "new.example:7443"' "$dk_tmp/compose.yml" || fail "docker config set did not update command"
+grep -q 'portunus-server:2.2.0' "$dk_tmp/compose.yml" || fail "docker config set must preserve the pinned image tag"
+# re-reading reflects the new value (round-trip through the rewritten compose)
+g2="$($SH "$script" --compose-dir "$dk_tmp" config get advertised-endpoint 2>/dev/null)" || fail "docker config get (post-set) exit"
+[ "$g2" = "new.example:7443" ] || fail "docker config get after set: got '$g2'"
+# data-dir is not settable on docker (fixed volume mount) — must reject
+if printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set data-dir /tmp/x >/dev/null 2>&1; then
+  fail "docker config set data-dir must be rejected"
+fi
+rm -rf "$dk_tmp"
+
 # --- acme-email validation (security: Caddyfile directive injection) ---
 # A well-formed single-line email passes the predicate hook.
 $SH "$script" --valid-email "ops@example.com" || fail "valid acme-email rejected"

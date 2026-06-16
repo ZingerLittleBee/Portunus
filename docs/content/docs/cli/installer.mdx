@@ -227,20 +227,27 @@ lifecycle commands **from the compose directory** (or pass
 `config get/set` does not apply to the `standalone` role — edit its
 config file directly (default `/etc/portunus/standalone.toml`, or
 wherever `--config` pointed it). For `server` and `client`,
-`config` and `env` accept only these four keys (anything else is a hard
+`config` and `env` accept only these keys (anything else is a hard
 error):
 
-| Key | Maps to env var |
+| Key | Server CLI flag |
 | --- | --- |
-| `advertised-endpoint` | `PORTUNUS_ADVERTISED_ENDPOINT` |
-| `data-dir` | `PORTUNUS_DATA_DIR` |
-| `operator-http-listen` | `PORTUNUS_OPERATOR_HTTP_LISTEN` |
-| `version-pin` | `PORTUNUS_VERSION_PIN` |
+| `advertised-endpoint` | `--advertised-endpoint` |
+| `data-dir` | `--data-dir` |
+| `operator-http-listen` | `--operator-http-listen` |
 
-`set` writes the value into the systemd drop-in (binary) or the compose
-`.env` (docker), **merge-preserving** the other keys, then offers a
-service restart. `get` prints the persisted value (`<unset>` if none).
-`env` dumps all four.
+The server consumes these as **command-line flags**, not environment
+variables (a `--flag` always overrides the matching `PORTUNUS_*` env, and
+`--data-dir` has no env binding at all). So `set` writes them where the
+flags actually live: the systemd `ExecStart=` override drop-in (binary)
+or the compose `command:` array (docker). It **hydrates the current
+values first**, so changing one key preserves the others, then offers a
+service restart (`up -d` recreates the container for docker). `get` reads
+the persisted flag value back (`<unset>` if none); `env` dumps all keys.
+
+For a **docker** deploy, `data-dir` is not settable — it maps to the
+container's fixed `/var/lib/portunus` volume mount; edit `compose.yml`
+directly if you must relocate it.
 
 ```sh
 # binary server (run anywhere — meta is at /var/lib/portunus)
