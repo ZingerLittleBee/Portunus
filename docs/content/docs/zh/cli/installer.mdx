@@ -39,24 +39,35 @@ sh scripts/install.sh <verb> [flags]
 ## 两种模式
 
 **交互模式** —— 未给出可执行的 verb/role 且终端可用（stdin 是 TTY，或在管道
-调用时 `/dev/tty` 可读）。此时进入菜单：
+调用时 `/dev/tty` 可读）。安装器会根据本机当前状态自动分流：
+
+- **尚未安装** → 进入引导式安装向导。它用大白话问你想做什么，并把答案映射到
+  对应角色——你完全不需要知道 `standalone` / `server` / `client` 这些词：
+
+  ```text
+  你想用 Portunus 做什么？
+    [1] 在这台机器上转发端口/流量（无需控制台）
+    [2] 搭建控制台，集中管理多个转发节点（带 Web UI）
+    [3] 把这台机器接入已有的控制台
+    [m] 更多（管理 / 升级 / 卸载）
+    [0] 退出
+  ```
+
+- **已安装** → 进入管理菜单（状态 / 服务 / 升级 / 配置 / 卸载，外加*安装另一个
+  实例 / 角色*）。
+
+统一主菜单（安装 / 卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量）始终可以通过 `[m]`
+一键到达。
+
+向导只会询问你在命令行上没给的那些项，然后在唯一一次确认之前展示计划**以及等价的
+无人值守命令**——这样你可以把它直接复制进 CI：
 
 ```text
-Portunus Manager
-  [1] Install
-  [2] Uninstall
-  [3] Upgrade
-  [4] Status
-  [5] Service (start/stop/restart)
-  [6] Config
-  [7] Env
-  [0] Exit
-Select [0-7]:
+等价的无人值守命令（可复制到 CI / 文档）：
+  install.sh server --domain panel.example.com --yes
 ```
 
-因为即使被管道调用也能从 `/dev/tty` 读取，所以 `curl … | sh` 同样能进入菜单。选 `1`
-进入引导式安装向导：角色（`server` / `client` / `standalone`）→ 部署形态
-→（仅 server）HTTPS 域名 → 通告地址 → 计划预览 → 确认。
+因为即使被管道调用也能从 `/dev/tty` 读取，所以 `curl … | sh` 同样能进入向导。
 
 **非交互模式** —— 出现任意 verb/role/可识别的 flag，或带 `--yes`，或没有可用
 终端时进入。这是 CI 与自动化所依赖的契约，行为相当于在原下载器之上新增了若干 verb。

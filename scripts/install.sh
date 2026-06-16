@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy ask_intent ask_enroll ask_setup_https equiv_cmd manage_title manage_status manage_service manage_upgrade manage_config manage_uninstall manage_install_another nav_main"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -258,6 +258,31 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:srv_step_ui_remote) _f="       Remote server? From your own machine, tunnel first, then open the URL locally:\n       ssh -L %s:127.0.0.1:%s <user>@<this-server>" ;;
     *:srv_step_super) _f="  3) Paste the token in the browser, then create the first _superadmin account." ;;
     *:srv_handy) _f="Handy commands:\n  status:  install.sh status\n  logs:    sudo journalctl -u portunus-server -f\n  stop:    sudo systemctl stop portunus-server" ;;
+    # ── Redesigned interactive layer (intent mapping / manage menu / equiv cmd) ──
+    zh:ask_intent) _f="你想用 Portunus 做什么？\n  [1] 在这台机器上转发端口/流量（无需控制台）\n  [2] 搭建控制台，集中管理多个转发节点（带 Web UI）\n  [3] 把这台机器接入已有的控制台\n  [m] 更多（管理 / 升级 / 卸载）" ;;
+    zh:ask_enroll) _f="客户端注册链接（可留空，稍后配置）: " ;;
+    zh:ask_setup_https) _f="为 Web UI 配置 HTTPS 域名吗？\n  这会：安装 Caddy、写入 /etc/caddy/Caddyfile，并对本机公网 IP 做 DNS 预检。[y/N]: " ;;
+    zh:equiv_cmd) _f="等价的无人值守命令（可复制到 CI / 文档）：" ;;
+    zh:manage_title) _f="Portunus —— 已安装：%s %s" ;;
+    zh:manage_status) _f="  [1] 状态    Status" ;;
+    zh:manage_service) _f="  [2] 服务控制 Service (start/stop/restart)" ;;
+    zh:manage_upgrade) _f="  [3] 升级    Upgrade" ;;
+    zh:manage_config) _f="  [4] 配置    Config" ;;
+    zh:manage_uninstall) _f="  [5] 卸载    Uninstall" ;;
+    zh:manage_install_another) _f="  [6] 安装其他实例 / 角色  Install another" ;;
+    zh:nav_main) _f="  [m] 主菜单  Main menu" ;;
+    *:ask_intent) _f="What do you want to do with Portunus?\n  [1] Forward ports/traffic on THIS machine (no control plane)\n  [2] Run a control panel for many forwarding nodes (with Web UI)\n  [3] Connect THIS machine to an existing control panel\n  [m] More options (manage / upgrade / uninstall)" ;;
+    *:ask_enroll) _f="Client enroll URI (blank = configure later): " ;;
+    *:ask_setup_https) _f="Set up an HTTPS domain for the Web UI?\n  This installs Caddy, writes /etc/caddy/Caddyfile, and DNS-prechecks this host's public IP. [y/N]: " ;;
+    *:equiv_cmd) _f="Equivalent non-interactive command (copy into CI / docs):" ;;
+    *:manage_title) _f="Portunus — installed: %s %s" ;;
+    *:manage_status) _f="  [1] Status" ;;
+    *:manage_service) _f="  [2] Service (start/stop/restart)" ;;
+    *:manage_upgrade) _f="  [3] Upgrade" ;;
+    *:manage_config) _f="  [4] Config" ;;
+    *:manage_uninstall) _f="  [5] Uninstall" ;;
+    *:manage_install_another) _f="  [6] Install another instance / role" ;;
+    *:nav_main) _f="  [m] Main menu" ;;
     *) _f="$_k" ;;
   esac
   # shellcheck disable=SC2059
@@ -821,7 +846,81 @@ install_docker() {
   ( cd "$dir" && $dc pull && $dc up -d )
 }
 
-# ─── Arg parse + dispatch (minimal; expanded in Task 2) ───────────────
+# ─── Usage / help (layered: short by default, full via --help-all) ────
+print_usage() {
+  cat <<'USAGE'
+Portunus installer & lifecycle manager
+
+Usage:
+  install.sh                    interactive wizard (recommended for first use)
+  install.sh <role> [options]   install a role non-interactively
+  install.sh <verb> [options]   manage an existing install
+
+Roles (what do you want to run?):
+  standalone   forward ports/traffic on THIS machine (no control plane)
+  server       run a control panel for many nodes (with Web UI)
+  client       connect THIS machine to an existing control panel
+
+Manage verbs:
+  status                         show what is installed and running
+  service start|stop|restart     control the service
+  upgrade                        upgrade to the latest release
+  config get|set <key> [value]   view/change advertised-endpoint, data-dir, …
+  uninstall [--purge]            remove (--purge also deletes data)
+  domain <fqdn>                  set up HTTPS via Caddy (server)
+
+Common options:
+  --version V                    install a specific version (default: latest)
+  --deploy binary|docker         deployment form
+  --enroll '<uri>'               (client) self-enroll during install
+  --domain FQDN [--acme-email A] (server) HTTPS via Caddy + Let's Encrypt
+  --data-dir D                   (server) data directory
+  --advertised-endpoint H:P      (server) endpoint clients dial
+  --config PATH                  (standalone) config file the service reads
+  --no-service                   install but do not enable/start the service
+  --yes                          unattended: accept all prompts (for CI)
+  --dry-run                      print the plan and change nothing
+  --lang en|zh                   installer language
+
+More:  install.sh --help-all     full flag list + automation/CI seams
+USAGE
+}
+
+print_usage_all() {
+  print_usage
+  cat <<'USAGE'
+
+Additional options:
+  --bin-dir D                    binary install dir (default: /usr/local/bin)
+  --compose-dir D                docker compose project dir (default: cwd)
+  --operator-http-listen A       (server) operator HTTP bind (default 127.0.0.1:7080)
+  --skip-dns-check               (server --domain) skip the DNS pre-check
+  --reset-lang                   forget the cached installer language
+
+Automation / CI seams (stable; exercised by scripts/install.test.sh):
+  --effective-advertised         print the resolved advertised endpoint, exit
+  --detect-deploy [DIR]          print binary|docker for DIR/host, exit
+  --detect-init                  print systemd|openrc|none, exit
+  --detect-ip                    print "<ip> <provenance>", exit
+  --resolve-meta                 print the resolved .install-meta path, exit
+  --meta-write FILE k=v...       write an install-meta file, exit
+  --meta-read FILE KEY           read one key from an install-meta file, exit
+  --valid-endpoint H:P           exit 0/1 on host:port validity
+  --valid-fqdn FQDN              exit 0/1 on FQDN validity
+  --valid-email ADDR             exit 0/1 on ACME-email validity
+  --render-dropin                print the systemd ExecStart drop-in, exit
+  --render-caddy FQDN [PORT]     print the managed Caddy block, exit
+  --render-openrc ROLE           print the OpenRC init script, exit
+  --render-confd ROLE [CFG]      print the OpenRC conf.d body, exit
+  --render-config-dropin ROLE CFG  print the standalone config drop-in, exit
+  --print-i18n KEY               print one localized string, exit
+  --print-i18n-keys [LANG]       list all i18n keys, exit
+  --menu-stdin                   drive the interactive menu from stdin (tests)
+  --systemd                      back-compat no-op (service installed by default)
+USAGE
+}
+
+# ─── Arg parse + dispatch ─────────────────────────────────────────────
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -849,7 +948,8 @@ parse_args() {
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
       --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--enroll '<uri>' (client)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) print_usage; exit 0 ;;
+      --help-all) print_usage_all; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
@@ -1203,11 +1303,33 @@ apply_install_defaults() {
   fi
 }
 
-wizard_install() {
+# Echo the equivalent non-interactive command for the gathered intent, so the
+# wizard both teaches the flags and yields a copy-pasteable CI invocation.
+# Pure: reads the intent globals, emits only non-default flags, redacts the
+# one-time enroll secret, and always appends --yes (unattended).
+build_equiv_cmd() {
+  local c="install.sh $ROLE"
+  [ "${DEPLOY:-binary}" = docker ] && c="$c --deploy docker"
+  [ -n "$VERSION" ] && c="$c --version $VERSION"
+  [ -n "$CONFIG_PATH" ] && [ "$ROLE" = standalone ] && c="$c --config $CONFIG_PATH"
+  [ -n "$DATA_DIR" ] && [ "$ROLE" = server ] && c="$c --data-dir $DATA_DIR"
+  [ -n "$OP_HTTP_LISTEN" ] && c="$c --operator-http-listen $OP_HTTP_LISTEN"
+  [ -n "$DOMAIN" ] && c="$c --domain $DOMAIN"
+  [ -n "$ACME_EMAIL" ] && c="$c --acme-email $ACME_EMAIL"
+  # advertised is re-derived from --domain; only emit it when set independently.
+  [ "$ADVERTISED_FROM_DOMAIN" != yes ] && [ -n "$ADVERTISED" ] && c="$c --advertised-endpoint $ADVERTISED"
+  [ -n "$ENROLL_URI" ] && [ "$ROLE" = client ] && c="$c --enroll '<your-enroll-uri>'"
+  [ "$NO_SERVICE" = yes ] && c="$c --no-service"
+  printf '%s --yes' "$c"
+}
+
+# Gap-filling install flow. The role is already chosen (intent mapping); this
+# collects only what flags did not provide, prints the plan + the equivalent
+# non-interactive command, then runs the same executor the flags would.
+run_install_flow() {
   local a adv_prov=""
-  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; 3) ROLE=standalone ;; *) ROLE=server ;; esac
   # Recommended deploy form differs by role: server ⇒ docker compose,
-  # client ⇒ binary. Enter (empty) accepts the recommended one.
+  # client/standalone ⇒ binary. Enter (empty) accepts the recommended one.
   if [ "$ROLE" = server ]; then
     a="$(ask ask_deploy_server)"
     case "$a" in 2|binary) DEPLOY=binary ;; *) DEPLOY=docker ;; esac
@@ -1218,13 +1340,23 @@ wizard_install() {
     a="$(ask ask_deploy_client)"
     case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
   fi
+  # client (binary): optionally self-enroll now; blank defers it to later.
+  if [ "$ROLE" = client ] && [ "$DEPLOY" != docker ] && [ -z "$ENROLL_URI" ]; then
+    ENROLL_URI="$(ask ask_enroll)"
+  fi
   if [ "$ROLE" = server ]; then
-    while :; do
-      DOMAIN="$(ask ask_domain)"
-      [ -z "$DOMAIN" ] && break
-      valid_fqdn "$DOMAIN" && break
-      t bad_domain "$DOMAIN"; echo
-    done
+    # Heavy op: spell out the side effects before touching Caddy / DNS.
+    a="$(ask ask_setup_https)"
+    case "$a" in
+      y|Y|yes|YES)
+        while :; do
+          DOMAIN="$(ask ask_domain)"
+          [ -z "$DOMAIN" ] && break
+          valid_fqdn "$DOMAIN" && break
+          t bad_domain "$DOMAIN"; echo
+        done ;;
+      *) DOMAIN="" ;;
+    esac
     if [ -n "$DOMAIN" ]; then
       ADVERTISED="${DOMAIN}:7443"; ADVERTISED_FROM_DOMAIN=yes
     else
@@ -1241,23 +1373,39 @@ wizard_install() {
   fi
   detect_platform; resolve_version_static
   print_install_summary "$adv_prov"
+  t equiv_cmd; echo
+  printf '  %s\n' "$(build_equiv_cmd)"
   confirm "$(t confirm_proceed)" || { echo "$(t op_cancelled)"; return 1; }
   VERB=install; dispatch_verb
 }
 
 # An explicit CLI --compose-dir scopes the whole menu session; it must
 # survive the per-iteration reset (wizard-collected fields do not).
+# MENU_SCREEN holds the smart-routing navigation state across iterations and
+# is intentionally NOT reset between loops.
 MENU_COMPOSE_DIR=""
+MENU_SCREEN=""
+REPLY_MENU=""
 reset_menu_state() {
   ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"
   COMPOSE_DIR="$MENU_COMPOSE_DIR"
   ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
+  DOMAIN=""; ACME_EMAIL=""; ADVERTISED_FROM_DOMAIN="no"; ENROLL_URI=""
   SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
 }
 
 pause() {
   [ "$MENU_FORCE_STDIN" = yes ] && return 0   # scripted seam: never block
   read_tty "$(t press_enter)" || true
+}
+
+# Read one interactive choice into REPLY_MENU. Returns non-zero on EOF so the
+# caller can leave the loop (mirrors the original read||return idiom).
+read_menu() {
+  REPLY_MENU=""
+  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r REPLY_MENU || return 1
+  else printf '> ' >&2; read -r REPLY_MENU < /dev/tty 2>/dev/null || return 1; fi
+  return 0
 }
 
 menu_service() {
@@ -1297,41 +1445,95 @@ menu_config() {
   CONFIG_OP="set"; CONFIG_KEY="$k"; CONFIG_VALUE="$v"; VERB="config"; lifecycle_config
 }
 
-# Returns 2 to request menu exit; any other status keeps the loop alive.
-menu_handle() {
-  case "$1" in
-    1) wizard_install ;;
-    2) VERB="uninstall"; lifecycle_uninstall ;;
-    3) VERB="upgrade";   lifecycle_upgrade ;;
-    4) VERB="status";    lifecycle_status ;;
-    5) menu_service ;;
-    6) menu_config ;;
-    7) VERB="env";       lifecycle_env ;;
-    0|q|Q) return 2 ;;
-    *) t menu_invalid "$1"; echo; return 0 ;;
+# ── Smart-routing screens. Each prints its menu, reads one choice, dispatches
+# actions in a ( … ) subshell so a die() ends only the action (never the
+# session), and steers MENU_SCREEN for navigation. Returns non-zero to exit. ──
+
+# Install screen = the intent question itself (the wizard's first screen).
+menu_screen_install() {
+  printf '%s\n' "$(t ask_intent)"
+  read_menu || return 1
+  case "$REPLY_MENU" in
+    0|q|Q) return 1 ;;
+    m|M)   MENU_SCREEN=main; return 0 ;;
+    1) ROLE=standalone ;;
+    2) ROLE=server ;;
+    3) ROLE=client ;;
+    *) t menu_invalid "$REPLY_MENU"; echo; return 0 ;;
   esac
+  ( run_install_flow ) || true
+  # A successful install flips the next iteration to the manage screen.
+  current_meta_file >/dev/null 2>&1 && MENU_SCREEN=manage
+  pause
+  return 0
+}
+
+# Manage screen: shown by smart routing when an install is detected.
+menu_screen_manage() {
+  local mf role ver
+  mf="$(current_meta_file 2>/dev/null || true)"
+  [ -n "$mf" ] || { MENU_SCREEN=install; return 0; }
+  role="$(meta_read "$mf" role 2>/dev/null || echo '?')"
+  ver="$(meta_read "$mf" version 2>/dev/null || echo '?')"
+  echo
+  t manage_title "$role" "$ver"; echo
+  t manage_status; echo;    t manage_service; echo;          t manage_upgrade; echo
+  t manage_config; echo;    t manage_uninstall; echo;        t manage_install_another; echo
+  t nav_main; echo;         t menu_exit; echo
+  read_menu || return 1
+  case "$REPLY_MENU" in
+    0|q|Q) return 1 ;;
+    m|M) MENU_SCREEN=main;    return 0 ;;
+    6)   MENU_SCREEN=install; return 0 ;;
+    1) ( VERB=status;    lifecycle_status )    || true ;;
+    2) ( menu_service )                        || true ;;
+    3) ( VERB=upgrade;   lifecycle_upgrade )   || true ;;
+    4) ( menu_config )                         || true ;;
+    5) ( VERB=uninstall; lifecycle_uninstall ) || true ;;
+    *) t menu_invalid "$REPLY_MENU"; echo; return 0 ;;
+  esac
+  pause
+  return 0
+}
+
+# Main menu: the always-reachable unified task list (the escape hatch).
+menu_screen_main() {
+  echo
+  t menu_title; echo
+  t menu_install; echo;   t menu_uninstall; echo;   t menu_upgrade; echo
+  t menu_status; echo;    t menu_service; echo;      t menu_config; echo
+  t menu_env; echo;       t menu_exit; echo
+  printf '%s\n' "$(t menu_select)" >&2
+  read_menu || return 1
+  case "$REPLY_MENU" in
+    0|q|Q) return 1 ;;
+    1) MENU_SCREEN=install; return 0 ;;
+    2) ( VERB=uninstall; lifecycle_uninstall ) || true ;;
+    3) ( VERB=upgrade;   lifecycle_upgrade )   || true ;;
+    4) ( VERB=status;    lifecycle_status )    || true ;;
+    5) ( menu_service )                        || true ;;
+    6) ( menu_config )                         || true ;;
+    7) ( VERB="env";     lifecycle_env )       || true ;;
+    *) t menu_invalid "$REPLY_MENU"; echo; return 0 ;;
+  esac
+  pause
+  return 0
 }
 
 run_menu() {
   first_run_lang
   MENU_COMPOSE_DIR="${COMPOSE_DIR:-}"
+  # Smart routing: an existing install lands on the manage screen; a clean
+  # host lands on the install wizard. The unified main menu is always one
+  # [m] away on either screen.
+  if current_meta_file >/dev/null 2>&1; then MENU_SCREEN=manage; else MENU_SCREEN=install; fi
   while :; do
     reset_menu_state
-    echo; echo "$(t menu_title)"
-    echo "$(t menu_install)"; echo "$(t menu_uninstall)"; echo "$(t menu_upgrade)"
-    echo "$(t menu_status)"; echo "$(t menu_service)"; echo "$(t menu_config)"
-    echo "$(t menu_env)"; echo "$(t menu_exit)"
-    local c
-    printf '%s\n' "$(t menu_select)" >&2     # prompt on its own line; answer below
-    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r c || return 0
-    else printf '> ' >&2; read -r c < /dev/tty || return 0; fi
-    case "$c" in 0|q|Q) return 0 ;; esac
-    # Subshell isolation: a die()/exit inside any lifecycle path ends
-    # only this action, never the whole interactive session.
-    local rc=0
-    ( menu_handle "$c" ) || rc=$?
-    [ "$rc" -eq 2 ] && return 0
-    pause
+    case "$MENU_SCREEN" in
+      manage) menu_screen_manage || return 0 ;;
+      main)   menu_screen_main   || return 0 ;;
+      *)      menu_screen_install || return 0 ;;
+    esac
   done
 }
 dispatch_verb() {

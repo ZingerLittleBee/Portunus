@@ -43,25 +43,39 @@ required. `curl … | sh` works on any distro, including Alpine/musl.
 ## Two modes
 
 **Interactive** — no actionable verb/role and a terminal is reachable
-(stdin is a TTY, or `/dev/tty` is readable when piped). You get a menu:
+(stdin is a TTY, or `/dev/tty` is readable when piped). The installer
+routes by what is already on the host:
+
+- **Nothing installed** → the guided install wizard. It asks what you
+  want to do, in plain language, and maps your answer to a role — you
+  never have to know the words `standalone` / `server` / `client`:
+
+  ```text
+  What do you want to do with Portunus?
+    [1] Forward ports/traffic on THIS machine (no control plane)
+    [2] Run a control panel for many forwarding nodes (with Web UI)
+    [3] Connect THIS machine to an existing control panel
+    [m] More options (manage / upgrade / uninstall)
+    [0] Exit
+  ```
+
+- **Already installed** → a management menu (status / service / upgrade
+  / config / uninstall, plus *install another instance/role*).
+
+The unified main menu (Install / Uninstall / Upgrade / Status / Service
+/ Config / Env) is always one `[m]` away.
+
+The wizard only asks for what you did not pass on the command line, then
+shows a plan **and the equivalent non-interactive command** before a
+single confirm — so you can copy that command straight into CI:
 
 ```text
-Portunus Manager
-  [1] Install
-  [2] Uninstall
-  [3] Upgrade
-  [4] Status
-  [5] Service (start/stop/restart)
-  [6] Config
-  [7] Env
-  [0] Exit
-Select [0-7]:
+Equivalent non-interactive command (copy into CI / docs):
+  install.sh server --domain panel.example.com --yes
 ```
 
 Because it reads from `/dev/tty` when piped, `curl … | sh` reaches the
-menu. Pick `1` for a guided install wizard: role (`server` / `client` /
-`standalone`) → deploy form → (server only) HTTPS domain → advertised
-endpoint → plan preview → confirm.
+wizard.
 
 **Non-interactive** — any verb/role/recognized flag, or `--yes`, or no
 usable terminal. This is the contract for CI and automation; behaviour
