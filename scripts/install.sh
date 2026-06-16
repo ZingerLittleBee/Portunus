@@ -1634,7 +1634,14 @@ lifecycle_upgrade() {
   detect_platform; resolve_latest_tag
   if [ "$cur" = "$artifact_version" ]; then echo "$(t upgrade_current "$cur")"; return 0; fi
   confirm "$(t confirm_proceed)" || return 0
-  if [ "$DEPLOY" = docker ]; then COMPOSE_DIR="$(dirname "$mf")"; install_docker
+  if [ "$DEPLOY" = docker ]; then
+    COMPOSE_DIR="$(dirname "$mf")"
+    # Bump the pinned image tag in the existing compose file. write_compose_file
+    # preserves an operator's compose.yml verbatim, so without this the upgrade
+    # would re-pull the OLD tag and only the recorded meta version would change.
+    _cf="$COMPOSE_DIR/compose.yml"; [ -f "$_cf" ] || _cf="$COMPOSE_DIR/compose.yaml"
+    [ -f "$_cf" ] && sed -i "s#\(ghcr.io/zingerlittlebee/portunus-[a-z]*:\)[^[:space:]\"]*#\1${artifact_version}#g" "$_cf"
+    install_docker
   else
     [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
     _i="$(meta_read "$mf" init 2>/dev/null || true)"; case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
