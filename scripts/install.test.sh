@@ -27,7 +27,6 @@ echo "$out2" | grep -q '^tag:[[:space:]]*v2.0.0$' || fail "v-normalised tag"
 echo "$out2" | grep -q '^artifact_version:[[:space:]]*2.0.0$' || fail "v-normalised artifact"
 
 if $SH "$script" bogus --dry-run >/dev/null 2>&1; then fail "bogus role accepted"; fi
-$SH "$script" client --version 1.0.0 --yes --dry-run >/dev/null 2>&1 || fail "--yes flag rejected"
 
 # --- i18n key coverage: every EN key exists in ZH and vice-versa ---
 keys_en="$($SH "$script" --print-i18n-keys en | sort)"
@@ -43,6 +42,13 @@ o="$(PORTUNUS_LANG=en $SH "$script" --print-i18n menu_title)"; printf '%s\n' "$o
 o="$($SH "$script" server --deploy docker --advertised-endpoint h.example:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --version 1.0.0 --dry-run)" || fail "new flags exit"
 echo "$o" | grep -q '^deploy:[[:space:]]*docker$' || fail "deploy docker"
 echo "$o" | grep -q '^advertised:[[:space:]]*h.example:7443$' || fail "advertised line"
+
+# --- --yes is removed: now an unknown argument ---
+if $SH "$script" client --version 1.0.0 --yes --dry-run >/dev/null 2>&1; then fail "--yes must now error (removed)"; fi
+
+# --- --restart is accepted on config set (parses; no live service op in dry-run) ---
+$SH "$script" config set advertised-endpoint h.example:7443 --restart --dry-run >/dev/null 2>&1 \
+  || fail "--restart must be accepted on config set"
 
 # --- bare role implies install verb; explicit verb parsed ---
 $SH "$script" install client --version 1.0.0 --dry-run >/dev/null 2>&1 || fail "install verb"

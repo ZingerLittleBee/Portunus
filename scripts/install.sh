@@ -43,7 +43,7 @@ SERVICE_ACTION="" # start|stop|restart
 CONFIG_OP=""      # get|set
 CONFIG_KEY=""
 CONFIG_VALUE=""
-ASSUME_YES="no"
+RESTART="no"
 PURGE="no"
 DRY_RUN="no"
 ENROLL_URI=""     # --enroll '<uri>' (client/binary only): one-time enrollment URI
@@ -989,7 +989,7 @@ parse_args() {
       --no-service) NO_SERVICE="yes" ;;
       --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
       --enroll) shift; [ $# -gt 0 ] || die "--enroll needs a value"; ENROLL_URI="$1" ;;
-      --yes) ASSUME_YES="yes" ;;
+      --restart) RESTART="yes" ;;
       --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
       --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
@@ -1060,9 +1060,6 @@ main() {
   dispatch_verb
 }
 
-# ─── Interactive ──────────────────────────────────────────────────────
-MENU_FORCE_STDIN="no"
-
 # Seed the advertised-endpoint default. Public probe → local NIC →
 # loopback. Sets DETECTED_IP + DETECTED_PROV (an i18n key). Never fatal.
 # PORTUNUS_SKIP_IP_PROBE=1 skips the external probe (offline/test/CI).
@@ -1130,19 +1127,14 @@ dns_a_records() {
 dns_points_here() {  # $1 domain ; uses detect_public_ip
   local d="$1" a ip
   detect_public_ip; ip="$DETECTED_IP"
-  t dns_check "$d" "$ip"; echo
-  while :; do
-    a="$(dns_a_records "$d" | tr '\n' ' ')"
-    if printf '%s' "$a" | grep -qw "$ip"; then
-      t dns_ok "$d" "$ip"; echo; return 0
-    fi
-    t dns_mismatch "$d" "${a:-none}" "$ip"; echo
-    if [ "$ASSUME_YES" = yes ] || ! { [ -t 0 ] || [ -r /dev/tty ]; }; then
-      die "DNS for $d must point to $ip (or pass --skip-dns-check)"
-    fi
-    t dns_help "$d" "$ip"; echo
-    read_tty "" || die "DNS for $d must point to $ip"
-  done
+  printf 'Checking %s resolves to this server (%s)…\n' "$d" "$ip"
+  a="$(dns_a_records "$d" | tr '\n' ' ')"
+  if printf '%s' "$a" | grep -qw "$ip"; then
+    printf 'DNS OK: %s → %s\n' "$d" "$ip"; return 0
+  fi
+  printf 'DNS for %s does not point here. A record(s): %s ; this server: %s\n' \
+    "$d" "${a:-none}" "$ip"
+  die "DNS for $d must point to $ip (or pass --skip-dns-check)"
 }
 
 render_caddy_block() {  # $1 op-http port ; prints managed block
@@ -1398,7 +1390,6 @@ lifecycle_upgrade() {
   cur="$(meta_read "$mf" version || echo 0)"
   detect_platform; resolve_latest_tag
   if [ "$cur" = "$artifact_version" ]; then echo "$(t upgrade_current "$cur")"; return 0; fi
-  confirm "$(t confirm_proceed)" || return 0
   if [ "$DEPLOY" = docker ]; then
     COMPOSE_DIR="$(dirname "$mf")"
     # Bump the pinned image tag in the existing compose file. write_compose_file
@@ -1418,7 +1409,6 @@ lifecycle_upgrade() {
 lifecycle_uninstall() {
   local mf r d; mf="$(current_meta_file)" || die "$(t no_install_found)"
   r="$(meta_read "$mf" role || echo server)"; d="$(meta_read "$mf" deploy || echo binary)"
-  if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" no || return 0; fi
   if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
   else
     [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
@@ -1438,8 +1428,7 @@ lifecycle_uninstall() {
   fi
   if [ "$PURGE" = yes ]; then
     local dd; dd="$(dirname "$mf")"
-    read_tty "$(t confirm_purge_typed "$dd")" || REPLY_TTY=""
-    [ "$REPLY_TTY" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
+    sudo rm -rf "$dd"; echo "→ purged $dd"
   fi
   rm -f "$mf" 2>/dev/null || true
 }
@@ -1537,7 +1526,8 @@ lifecycle_config() {
     [ "$src" = "$dir/compose.yaml" ] && [ -f "$dir/compose.yml" ] && mv "$dir/compose.yml" "$dir/compose.yaml"
     echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
     # `compose restart` keeps the old command; only `up -d` recreates with it.
-    if confirm "$(t restart_now)" no; then ( cd "$dir" && $(compose_cmd) up -d ); fi
+    if [ "$RESTART" = yes ]; then ( cd "$dir" && $(compose_cmd) up -d )
+    else echo "→ restart to apply: re-run with --restart (recreates the container)"; fi
     return 0
   fi
 
@@ -1572,38 +1562,12 @@ lifecycle_config() {
   if [ -f "$tgt" ]; then config_sudo cp "$tgt" "${tgt}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null || true; fi
   if [ "$init" = openrc ]; then write_server_confd; else write_server_dropin; fi
   echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
-  if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
+  if [ "$RESTART" = yes ]; then SERVICE_ACTION=restart; lifecycle_service
+  else echo "→ restart to apply: install.sh service restart (or re-run with --restart)"; fi
 }
 
 lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
 
-# Read one line straight from the terminal into REPLY_TTY. A per-prompt
-# `cat`/process-sub left a zombie reader on the tty, so a second prompt
-# in the same command (uninstall→purge, set→restart) raced it.
-read_tty() {
-  REPLY_TTY=""
-  printf '%s\n' "$1" >&2           # question on its own line; answer below
-  # Honor the scripted-menu seam so confirm prompts (set→restart,
-  # uninstall→purge) read from stdin under tests instead of blocking on the
-  # controlling terminal — mirrors read_menu / ask.
-  if [ "$MENU_FORCE_STDIN" = yes ]; then printf '> ' >&2; read -r REPLY_TTY || return 1
-  elif [ -t 0 ]; then printf '> ' >&2; read -r REPLY_TTY
-  elif [ -r /dev/tty ]; then printf '> ' >&2; read -r REPLY_TTY </dev/tty
-  else return 1; fi
-}
-# confirm <prompt> [default]   default = yes (Enter ⇒ proceed) | no (Enter ⇒ abort)
-# The prompt text's [Y/n] vs [y/N] MUST match the default passed here.
-confirm() {
-  local prompt="$1" def="${2:-yes}"
-  [ "$ASSUME_YES" = yes ] && return 0
-  read_tty "$prompt" || return 1
-  case "$REPLY_TTY" in
-    y|Y|yes|YES) return 0 ;;
-    n|N|no|NO)   return 1 ;;
-    "")          [ "$def" = yes ] && return 0 || return 1 ;;
-    *)           return 1 ;;
-  esac
-}
 
 # Light host:port sanity (authoritative SAN/grammar check is the server's).
 valid_host_port() {
