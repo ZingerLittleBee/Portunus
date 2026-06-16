@@ -23,7 +23,7 @@ REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
 LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value config_docker_datadir ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy ask_intent ask_enroll ask_setup_https equiv_cmd manage_title manage_status manage_service manage_upgrade manage_config manage_uninstall manage_install_another nav_main"
+I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value config_docker_datadir ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_server_only bad_config_value next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy ask_intent ask_enroll ask_setup_https equiv_cmd manage_title manage_status manage_service manage_upgrade manage_config manage_uninstall manage_install_another nav_main"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -160,7 +160,8 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     zh:https_ready) _f="HTTPS 已就绪：https://%s/" ;;
     zh:https_public_note) _f="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。" ;;
     zh:adv_from_domain) _f="  对外通告地址：%s（由域名推导）" ;;
-    zh:config_na_standalone) _f="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml" ;;
+    zh:config_server_only) _f="config get/set 仅适用于 server 角色（standalone 请直接编辑 /etc/portunus/standalone.toml；client 没有这些参数）" ;;
+    zh:bad_config_value) _f="%s 的取值非法：%s" ;;
     zh:enroll_placed) _f="已将注册凭据写入 %s" ;;
     zh:enroll_failed) _f="客户端注册失败；二进制与服务已安装，请用新的注册链接重试。" ;;
     *:menu_title) _f="Portunus Manager" ;;
@@ -235,7 +236,8 @@ t() {  # t <key> [printf-args...] — localized printf, no trailing newline (cal
     *:https_ready) _f="HTTPS ready: https://%s/" ;;
     *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
     *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
-    *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
+    *:config_server_only) _f="config get/set applies to the server role only (standalone: edit /etc/portunus/standalone.toml directly; client has no such knobs)" ;;
+    *:bad_config_value) _f="invalid value for %s: %s" ;;
     *:enroll_placed) _f="Enrollment bundle placed at %s" ;;
     *:enroll_failed) _f="Enrollment failed; the binary and service are installed — retry with a fresh enroll link." ;;
     zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
@@ -652,10 +654,19 @@ install_systemd_unit() {  # install_systemd_unit <role> — place the unit only
   ${SUDO:-} systemctl daemon-reload || true
 }
 
-# ─── Server config (drop-in / .env) ───────────────────────────────────
-# Pure: emit the drop-in body for the currently-set scoped values.
-# Mirrors the `Environment=` lines `config set` writes so install-time
-# --data-dir / --operator-http-listen persist identically (parity).
+# ─── Server config (systemd drop-in / openrc conf.d) ──────────────────
+# The server's scoped flags live in the systemd ExecStart override (systemd)
+# or /etc/conf.d/portunus-server's datadir=/server_args= (openrc). These paths
+# are root-owned; `config set` writes them via sudo. PORTUNUS_TEST_CONFIG_ROOT
+# (a directory prefix) is a test-only seam: when set, the files are written
+# under it WITHOUT sudo and WITHOUT systemctl, so `config get/set` can be
+# exercised unprivileged in CI. Production leaves it unset → real paths + sudo.
+systemd_dropin_dir()  { printf '%s/etc/systemd/system/portunus-server.service.d' "${PORTUNUS_TEST_CONFIG_ROOT:-}"; }
+systemd_dropin_file() { printf '%s/10-portunus.conf' "$(systemd_dropin_dir)"; }
+confd_file()          { printf '%s/etc/conf.d/portunus-server' "${PORTUNUS_TEST_CONFIG_ROOT:-}"; }
+config_sudo() { if [ -n "${PORTUNUS_TEST_CONFIG_ROOT:-}" ]; then "$@"; else sudo "$@"; fi }
+
+# Pure: emit the systemd drop-in body for the currently-set scoped values.
 render_dropin() {
   # The server has no env binding for these; an inert Environment= line
   # is ignored. Emit a real ExecStart= override (cleared then re-set —
@@ -668,12 +679,37 @@ render_dropin() {
   return 0
 }
 write_server_dropin() {
-  local d="/etc/systemd/system/portunus-server.service.d" f
-  f="$d/10-portunus.conf"
-  sudo install -d -m 0755 "$d"
-  render_dropin | sudo tee "$f" >/dev/null
-  sudo systemctl daemon-reload || true
+  local d f; d="$(systemd_dropin_dir)"; f="$(systemd_dropin_file)"
+  config_sudo install -d -m 0755 "$d"
+  render_dropin | config_sudo tee "$f" >/dev/null
+  [ -n "${PORTUNUS_TEST_CONFIG_ROOT:-}" ] || sudo systemctl daemon-reload || true
   echo "→ wrote $f"
+}
+# openrc counterpart: rewrite /etc/conf.d/portunus-server from the current
+# scoped globals (datadir= + server_args=), mirroring openrc_install's seed.
+write_server_confd() {
+  local f; f="$(confd_file)"
+  config_sudo install -d -m 0755 "$(dirname "$f")"
+  render_confd server | config_sudo tee "$f" >/dev/null
+  echo "→ wrote $f"
+}
+# Load the server's current scoped values (DATA_DIR/OP_HTTP_LISTEN/ADVERTISED)
+# from the live binary config so `config get/set` reflects what is in effect.
+# systemd → the ExecStart override flags; openrc → datadir= + server_args=.
+hydrate_binary_config() {  # $1 = init (systemd|openrc|none)
+  DATA_DIR=""; OP_HTTP_LISTEN=""; ADVERTISED=""
+  if [ "$1" = openrc ]; then
+    local conf sargs; conf="$(confd_file)"
+    DATA_DIR="$(sed -n 's/^datadir="\(.*\)"$/\1/p' "$conf" 2>/dev/null | tail -1)"
+    sargs="$(sed -n 's/^server_args="\(.*\)"$/\1/p' "$conf" 2>/dev/null | tail -1)"
+    OP_HTTP_LISTEN="$(flag_value_from "$sargs" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$sargs" --advertised-endpoint)"
+  else
+    local line; line="$(grep -E '^ExecStart=.*portunus-server' "$(systemd_dropin_file)" 2>/dev/null | tail -1 || true)"
+    DATA_DIR="$(flag_value_from "$line" --data-dir)"
+    OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
+  fi
 }
 
 # Guided onboarding for a systemd server install. The generic one-liner
@@ -1426,8 +1462,8 @@ menu_config() {
   local _mf _r
   _mf="$(current_meta_file 2>/dev/null || true)"
   _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || true)"
-  if [ "${_r:-$ROLE}" = "standalone" ]; then
-    echo "$(t config_na_standalone)" >&2
+  if [ "${_r:-$ROLE}" != "server" ]; then
+    echo "$(t config_server_only)" >&2
     return 2
   fi
   local a k v
@@ -1440,8 +1476,8 @@ menu_config() {
   esac
   v="$(ask ask_config_value "$k")"
   [ -n "$v" ] || { echo "$(t op_cancelled)"; return 0; }
-  if [ "$k" = "advertised-endpoint" ] && ! valid_host_port "$v"; then
-    t bad_endpoint "$v"; echo; return 0
+  if ! valid_config_value "$k" "$v"; then
+    t bad_config_value "$k" "$v"; echo; return 0
   fi
   CONFIG_OP="set"; CONFIG_KEY="$k"; CONFIG_VALUE="$v"; VERB="config"; lifecycle_config
 }
@@ -1696,44 +1732,58 @@ config_key_flag() {  # $1 = key
   esac
 }
 
+# Validate a `config set` value before it is rendered into a CLI arg (systemd
+# ExecStart, openrc server_args, or the compose JSON command array). Reject
+# anything that could break out of the JSON string, inject a systemd directive
+# (a newline), or smuggle shell/quoting metacharacters. host:port keys get the
+# stricter valid_host_port; data-dir must be an absolute, path-safe string.
+valid_config_value() {  # $1 key, $2 value
+  [ -n "$2" ] || return 1
+  case "$1" in
+    advertised-endpoint|operator-http-listen)
+      case "$2" in *:*) ;; *) return 1 ;; esac   # require an explicit :port
+      valid_host_port "$2" ;;
+    data-dir)
+      case "$2" in /*) ;; *) return 1 ;; esac     # absolute path only
+      case "$2" in *[!A-Za-z0-9._/-]*) return 1 ;; *) return 0 ;; esac ;;
+    *) return 1 ;;
+  esac
+}
+
 # The server consumes advertised-endpoint / operator-http-listen / data-dir as
-# CLI flags ONLY — it has no env binding for them, so an Environment=/.env line
-# is inert. The authoritative location is therefore the systemd ExecStart
-# override (binary) or the compose `command:` array (docker). config get parses
-# that line; config set re-renders it from the install primitive so the other
-# install-time flags are preserved.
+# CLI flags ONLY — no env binding — so config reads/writes where the flags
+# actually live: the systemd ExecStart override or openrc conf.d server_args=
+# (binary), or the compose `command:` array (docker). config set re-renders
+# from the install primitive, hydrating siblings so one key changes in isolation.
+# Scoped keys are server-only, so the verb applies to the server role only.
 lifecycle_config() {
   local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
   local _r; _r="$(meta_read "$mf" role 2>/dev/null || true)"
-  if [ "${_r:-$ROLE}" = "standalone" ]; then
-    echo "$(t config_na_standalone)" >&2
+  if [ "${_r:-$ROLE}" != "server" ]; then
+    echo "$(t config_server_only)" >&2
     return 2
   fi
   validate_config_key
-  local d dir flag line v
+  local d dir flag v
   d="$(meta_read "$mf" deploy || echo binary)"; dir="$(dirname "$mf")"
   flag="$(config_key_flag "$CONFIG_KEY")"
+
   if [ "$d" = docker ]; then
-    local src="$dir/compose.yml"; [ -f "$src" ] || src="$dir/compose.yaml"
+    local src line; src="$dir/compose.yml"; [ -f "$src" ] || src="$dir/compose.yaml"
     line="$(grep -E '^[[:space:]]*command:' "$src" 2>/dev/null || true)"
-  else
-    line="$(grep -E '^ExecStart=.*portunus-server' /etc/systemd/system/portunus-server.service.d/10-portunus.conf 2>/dev/null | tail -1 || true)"
-  fi
-
-  if [ "${CONFIG_OP:-get}" = get ]; then
-    v="$(flag_value_from "$line" "$flag")"
-    [ -n "$v" ] && echo "$v" || echo "<unset>"
-    return 0
-  fi
-
-  [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
-  if [ "$d" = docker ]; then
+    if [ "${CONFIG_OP:-get}" = get ]; then
+      v="$(flag_value_from "$line" "$flag")"
+      if [ -n "$v" ]; then printf '%s\n' "$v"; else printf '%s\n' '<unset>'; fi
+      return 0
+    fi
+    [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
     # data-dir maps to a fixed in-container volume path; changing it would
     # desync the command from the volume mount, so it is not config-settable.
     [ "$CONFIG_KEY" = data-dir ] && { echo "$(t config_docker_datadir)" >&2; return 2; }
-    # Hydrate the current values from the compose so only the requested key
-    # changes, preserving the pinned image tag and keeping the published port
-    # in sync with operator-http-listen when we regenerate.
+    valid_config_value "$CONFIG_KEY" "$CONFIG_VALUE" || { echo "$(t bad_config_value "$CONFIG_KEY" "$CONFIG_VALUE")" >&2; return 2; }
+    # Hydrate from the compose so only the requested key changes, preserving the
+    # pinned image tag and keeping the published port in sync with
+    # operator-http-listen when we regenerate from the managed template.
     ROLE="$(meta_read "$mf" role || echo server)"
     OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
     ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
@@ -1744,26 +1794,44 @@ lifecycle_config() {
       advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
       operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
     esac
+    # Regenerating overwrites operator hand-edits to the managed compose. Back
+    # it up first (mirrors lifecycle_domain) and preserve the operator's
+    # filename so a customized compose stays recoverable from the .bak.
+    cp "$src" "${src}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null || true
     rm -f "$dir/compose.yml" "$dir/compose.yaml"
     write_compose_file "$dir"; write_compose_env "$dir"
+    [ "$src" = "$dir/compose.yaml" ] && [ -f "$dir/compose.yml" ] && mv "$dir/compose.yml" "$dir/compose.yaml"
     echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
     # `compose restart` keeps the old command; only `up -d` recreates with it.
     if confirm "$(t restart_now)" no; then ( cd "$dir" && $(compose_cmd) up -d ); fi
-  else
-    # Hydrate from the existing override so the untouched flags survive the
-    # re-render (render_dropin omits any flag whose global is empty).
-    DATA_DIR="$(flag_value_from "$line" --data-dir)"
-    OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
-    ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
-    case "$CONFIG_KEY" in
-      advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
-      operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
-      data-dir)             DATA_DIR="$CONFIG_VALUE" ;;
-    esac
-    write_server_dropin
-    echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
-    if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
+    return 0
   fi
+
+  # Binary: the flags live in the systemd ExecStart override OR the openrc
+  # conf.d, so config must follow the recorded init system — not assume systemd.
+  local init _i; _i="$(meta_read "$mf" init 2>/dev/null || true)"
+  case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
+  init="$INIT"
+  hydrate_binary_config "$init"
+  if [ "${CONFIG_OP:-get}" = get ]; then
+    case "$CONFIG_KEY" in
+      advertised-endpoint)  v="$ADVERTISED" ;;
+      operator-http-listen) v="$OP_HTTP_LISTEN" ;;
+      data-dir)             v="$DATA_DIR" ;;
+    esac
+    if [ -n "$v" ]; then printf '%s\n' "$v"; else printf '%s\n' '<unset>'; fi
+    return 0
+  fi
+  [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
+  valid_config_value "$CONFIG_KEY" "$CONFIG_VALUE" || { echo "$(t bad_config_value "$CONFIG_KEY" "$CONFIG_VALUE")" >&2; return 2; }
+  case "$CONFIG_KEY" in
+    advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
+    operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
+    data-dir)             DATA_DIR="$CONFIG_VALUE" ;;
+  esac
+  if [ "$init" = openrc ]; then write_server_confd; else write_server_dropin; fi
+  echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+  if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
 }
 
 lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }

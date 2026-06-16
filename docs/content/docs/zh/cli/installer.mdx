@@ -208,10 +208,10 @@ curl -fsSL .../scripts/install.sh | sh -s -- standalone --deploy docker
 
 ## 限定 config 与 env
 
-`config get/set` 不适用于 `standalone` 角色,请直接编辑其配置文件
-（默认 `/etc/portunus/standalone.toml`,或 `--config` 指定的路径）。
-对 `server` 与 `client`，`config` 与
-`env` 仅接受以下键（传入其它键会直接报错）：
+`config get/set` **仅适用于 `server` 角色**——它的键都是 server 专属的
+CLI 参数。`standalone` 安装请直接编辑其配置文件（默认
+`/etc/portunus/standalone.toml`,或 `--config` 指定的路径）；`client`
+没有这些参数。可接受的键（传入其它键会直接报错）：
 
 | 键 | server CLI 参数 |
 | --- | --- |
@@ -222,13 +222,17 @@ curl -fsSL .../scripts/install.sh | sh -s -- standalone --deploy docker
 server 把这些当作**命令行参数**消费，而非环境变量（`--flag` 始终覆盖
 同名的 `PORTUNUS_*` env，而 `--data-dir` 根本没有 env 绑定）。因此
 `set` 把值写到参数实际生效的位置：systemd 的 `ExecStart=` 覆盖
-drop-in（二进制）或 compose 的 `command:` 数组（docker）。它会**先读取
-当前所有值**，所以改一个键不会丢失其它键，随后询问是否重启服务
+drop-in、OpenRC 的 `/etc/conf.d/portunus-server`（`server_args=`/`datadir=`）
+或 compose 的 `command:` 数组（docker）。它会**先读取当前所有值**，
+所以改一个键不会丢失其它键，并校验取值,随后询问是否重启服务
 （docker 用 `up -d` 重建容器）。`get` 把持久化的参数值读回来
 （未设置时显示 `<unset>`）；`env` 打印全部键。
 
-对 **docker** 部署，`data-dir` 不可修改——它对应容器内固定的
-`/var/lib/portunus` 卷挂载；确需迁移请直接编辑 `compose.yml`。
+对 **docker** 部署，`set` 会从受管模板重新生成 `compose.yml`（保留固定的
+镜像 tag 并重新同步发布端口）,并先写一份带时间戳的 `.portunus.*.bak`
+备份,因此你的手改内容可从备份恢复。`data-dir` 在 docker 下不可修改
+——它对应容器内固定的 `/var/lib/portunus` 卷挂载；确需迁移请直接编辑
+`compose.yml`。
 
 ```sh
 # 二进制 server（任意目录运行——meta 在 /var/lib/portunus）
@@ -246,9 +250,11 @@ sh install.sh env
 
 安装 **server** 时，向导会提示填写通告地址——也就是 Client 连接的公网
 `host:port`。server 证书 SAN 必须覆盖该 host。留空则让 server 在运行
-时自动解析。安装器只做轻量的 `host:port` 合法性检查，并把值持久化
-（systemd drop-in 或 compose `.env` 中的 `PORTUNUS_ADVERTISED_ENDPOINT`），
-权威的 SAN / 语法校验由 server 在启动时完成。
+时自动解析。安装器只做轻量的 `host:port` 合法性检查，并把值作为
+`--advertised-endpoint` 参数持久化（写入 systemd 的 `ExecStart=` drop-in、
+OpenRC 的 `server_args=` 或 compose 的 `command:` 数组——与
+`config set advertised-endpoint` 写入的位置一致），权威的 SAN / 语法
+校验由 server 在启动时完成。
 
 ## 域名与 HTTPS
 

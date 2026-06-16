@@ -224,11 +224,11 @@ lifecycle commands **from the compose directory** (or pass
 
 ## Scoped config & env
 
-`config get/set` does not apply to the `standalone` role — edit its
-config file directly (default `/etc/portunus/standalone.toml`, or
-wherever `--config` pointed it). For `server` and `client`,
-`config` and `env` accept only these keys (anything else is a hard
-error):
+`config get/set` applies to the **`server` role only** — its keys are all
+server-only CLI flags. For a `standalone` install edit its config file
+directly (default `/etc/portunus/standalone.toml`, or wherever `--config`
+pointed it); a `client` has no such knobs. The accepted keys are
+(anything else is a hard error):
 
 | Key | Server CLI flag |
 | --- | --- |
@@ -239,15 +239,20 @@ error):
 The server consumes these as **command-line flags**, not environment
 variables (a `--flag` always overrides the matching `PORTUNUS_*` env, and
 `--data-dir` has no env binding at all). So `set` writes them where the
-flags actually live: the systemd `ExecStart=` override drop-in (binary)
-or the compose `command:` array (docker). It **hydrates the current
-values first**, so changing one key preserves the others, then offers a
-service restart (`up -d` recreates the container for docker). `get` reads
-the persisted flag value back (`<unset>` if none); `env` dumps all keys.
+flags actually live: the systemd `ExecStart=` override drop-in (systemd),
+`/etc/conf.d/portunus-server`'s `server_args=`/`datadir=` (OpenRC), or the
+compose `command:` array (docker). It **hydrates the current values
+first**, so changing one key preserves the others, validates the value,
+then offers a service restart (`up -d` recreates the container for
+docker). `get` reads the persisted flag value back (`<unset>` if none);
+`env` dumps all keys.
 
-For a **docker** deploy, `data-dir` is not settable — it maps to the
-container's fixed `/var/lib/portunus` volume mount; edit `compose.yml`
-directly if you must relocate it.
+For a **docker** deploy, `set` regenerates `compose.yml` from the managed
+template (keeping the pinned image tag and re-syncing the published port);
+a timestamped `.portunus.*.bak` of the prior file is written first, so any
+hand-edits you added are recoverable. `data-dir` is not settable on docker
+— it maps to the container's fixed `/var/lib/portunus` volume mount; edit
+`compose.yml` directly if you must relocate it.
 
 ```sh
 # binary server (run anywhere — meta is at /var/lib/portunus)
@@ -267,9 +272,11 @@ When installing a **server**, the wizard prompts for the advertised
 endpoint — the public `host:port` that Clients dial. The server
 certificate SAN must cover that host. Leave it blank to let the server
 auto-resolve it at run time. The installer only does a light `host:port`
-sanity check and persists the value (systemd drop-in or compose `.env`
-as `PORTUNUS_ADVERTISED_ENDPOINT`); authoritative SAN/grammar validation
-is performed by the server itself at startup.
+sanity check and persists the value as the `--advertised-endpoint` flag
+(in the systemd `ExecStart=` drop-in, the OpenRC `server_args=`, or the
+compose `command:` array — the same place `config set advertised-endpoint`
+writes); authoritative SAN/grammar validation is performed by the server
+itself at startup.
 
 ## Domain & HTTPS
 

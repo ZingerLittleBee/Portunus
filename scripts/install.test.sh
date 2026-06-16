@@ -158,9 +158,10 @@ echo "$di" | grep -Eq '^[0-9a-fA-F.:]+ prov_(nic|loopback)$' || fail "skip-probe
 
 # --- intent wizard: [2]=server, binary, skip HTTPS, '-' = loopback advertised ---
 # Inputs: intent(2)->server, deploy(2)->binary, https(n)->skip, advertised(-),
-# then the install screen reads Exit(0). The final confirm reads /dev/tty (not
-# the pipe) and aborts under a non-interactive harness, so no input is spent on
-# it — the summary still renders.
+# then the install screen reads Exit(0). Under --menu-stdin the final confirm
+# now reads the pipe too (read_tty honors the seam), so the trailing '0' is
+# consumed by the Proceed? prompt and the menu exits on the following EOF —
+# either way the summary renders, which is all these assertions check.
 wo="$(printf '2\n2\nn\n-\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
 printf '%s\n' "$wo" | grep -q 'About to install:' || fail "no summary block"
 printf '%s\n' "$wo" | grep -q 'data dir:.*\/var\/lib\/portunus' || fail "summary missing data-dir default"
@@ -369,7 +370,64 @@ g2="$($SH "$script" --compose-dir "$dk_tmp" config get advertised-endpoint 2>/de
 if printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set data-dir /tmp/x >/dev/null 2>&1; then
   fail "docker config set data-dir must be rejected"
 fi
+# operator-http-listen set must re-sync the PUBLISHED port too, not just the
+# command flag, and must preserve the advertised-endpoint set above.
+printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set operator-http-listen 0.0.0.0:9090 >/dev/null 2>&1 \
+  || fail "docker config set operator-http-listen exit"
+grep -q '"--operator-http-listen", "0.0.0.0:9090"' "$dk_tmp/compose.yml" || fail "docker op-http: command flag not updated"
+grep -q '127.0.0.1:9090:9090' "$dk_tmp/compose.yml" || fail "docker op-http: published port not re-synced"
+grep -q '"--advertised-endpoint", "new.example:7443"' "$dk_tmp/compose.yml" || fail "docker op-http set must preserve advertised-endpoint"
+# a backup of the prior compose is left behind (recoverable hand-edits)
+ls "$dk_tmp"/compose.yml.portunus.*.bak >/dev/null 2>&1 || fail "docker config set must leave a timestamped .bak"
+# injection-bearing values are rejected before any write (JSON breakout)
+if printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set advertised-endpoint 'x", "evil' >/dev/null 2>&1; then
+  fail "docker config set must reject a JSON-breakout value"
+fi
 rm -rf "$dk_tmp"
+
+# --- config get/set is init-aware for a binary server (systemd & openrc) ---
+# PORTUNUS_TEST_CONFIG_ROOT redirects the root-owned drop-in / conf.d under a
+# temp dir and disables sudo + systemctl, so the binary path (the primary fix)
+# is exercisable unprivileged. systemd writes the ExecStart override:
+bs_tmp="$(mktemp -d)"; bs_root="$(mktemp -d)"
+printf 'role=server\ndeploy=binary\nversion=2.2.0\nlang=en\ninit=systemd\n' > "$bs_tmp/.install-meta"
+[ "$($SH "$script" --compose-dir "$bs_tmp" config get advertised-endpoint 2>/dev/null)" = "<unset>" ] \
+  || fail "binary/systemd: fresh advertised should be <unset>"
+printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --menu-stdin --compose-dir "$bs_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
+  || fail "binary/systemd config set advertised exit"
+printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --menu-stdin --compose-dir "$bs_tmp" config set operator-http-listen 127.0.0.1:7080 >/dev/null 2>&1 \
+  || fail "binary/systemd config set op-http exit"
+dropin="$bs_root/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
+grep -q -- '--advertised-endpoint h.example:7443' "$dropin" || fail "binary/systemd: ExecStart missing advertised"
+grep -q -- '--operator-http-listen 127.0.0.1:7080' "$dropin" || fail "binary/systemd: ExecStart missing op-http (sibling not preserved)"
+[ "$(PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --compose-dir "$bs_tmp" config get advertised-endpoint 2>/dev/null)" = "h.example:7443" ] \
+  || fail "binary/systemd: get advertised round-trip"
+[ "$(PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --compose-dir "$bs_tmp" config get data-dir 2>/dev/null)" = "/var/lib/portunus" ] \
+  || fail "binary/systemd: get data-dir reads the ExecStart flag (regression: old code returned <unset>)"
+rm -rf "$bs_tmp" "$bs_root"
+
+# openrc keeps the flags in /etc/conf.d/portunus-server's server_args=/datadir=:
+or_tmp="$(mktemp -d)"; or_root="$(mktemp -d)"
+printf 'role=server\ndeploy=binary\nversion=2.2.0\nlang=en\ninit=openrc\n' > "$or_tmp/.install-meta"
+mkdir -p "$or_root/etc/conf.d"
+printf 'datadir="/var/lib/portunus"\nserver_args="--operator-http-listen 0.0.0.0:7080"\n' > "$or_root/etc/conf.d/portunus-server"
+[ "$(PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --compose-dir "$or_tmp" config get operator-http-listen 2>/dev/null)" = "0.0.0.0:7080" ] \
+  || fail "binary/openrc: get op-http from server_args"
+printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --menu-stdin --compose-dir "$or_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
+  || fail "binary/openrc config set advertised exit"
+grep -q -- '--operator-http-listen 0.0.0.0:7080 --advertised-endpoint h.example:7443' "$or_root/etc/conf.d/portunus-server" \
+  || fail "binary/openrc: server_args must carry both flags (sibling preserved)"
+rm -rf "$or_tmp" "$or_root"
+
+# --- config get/set rejects the client role (keys are server-only) ---
+cl_tmp="$(mktemp -d)"
+printf 'role=client\ndeploy=binary\nversion=2.2.0\nlang=en\ninit=systemd\n' > "$cl_tmp/.install-meta"
+cl_out="$($SH "$script" --compose-dir "$cl_tmp" config get advertised-endpoint 2>&1 || true)"
+echo "$cl_out" | grep -qi 'server' || fail "client config: rejection message should mention server-only"
+if $SH "$script" --compose-dir "$cl_tmp" config get advertised-endpoint >/dev/null 2>&1; then
+  fail "client config get must exit non-zero"
+fi
+rm -rf "$cl_tmp"
 
 # --- acme-email validation (security: Caddyfile directive injection) ---
 # A well-formed single-line email passes the predicate hook.
