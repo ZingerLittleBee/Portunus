@@ -13,7 +13,7 @@ install · uninstall · upgrade · status · service · config · env
 
 It manages both deploy forms — a **release binary + service unit** and a
 **Docker Compose** stack — across the `server`, `client`, and
-`standalone` roles, and it is bilingual (English / 中文). By default an
+`standalone` roles. By default an
 install also **starts** the service; pass `--no-service` to lay down the
 binary only. For the binary form it picks whichever init the host runs —
 **systemd** or **OpenRC** (Alpine); a host with neither still gets the
@@ -21,15 +21,14 @@ binary plus printed run instructions. The installer never writes a config
 for you — you author it (see the standalone guide); the service exits if
 it is missing. For a server it
 can also provision a **Caddy** reverse proxy with automatic Let's
-Encrypt HTTPS for the Web UI. The non-interactive flag interface that
-CI, automation, and the documented `curl … | sh` one-liner depend on
-is unchanged; the interactive menu is purely additive.
+Encrypt HTTPS for the Web UI. It is a non-interactive, flag-driven CLI —
+every action is selected by arguments, with no prompts.
 
 The same script is reachable two ways:
 
 ```sh
-# Always-current copy, piped (interactive menu or non-interactive verbs):
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh
+# Always-current copy, piped:
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server --advertised-endpoint host:7443
 
 # A checked-out / downloaded copy, run directly:
 sh scripts/install.sh <verb> [flags]
@@ -39,47 +38,6 @@ sh scripts/install.sh <verb> [flags]
 Pure **POSIX sh** — runs under `dash` and busybox `ash`, no `bash`
 required. `curl … | sh` works on any distro, including Alpine/musl.
 </Callout>
-
-## Two modes
-
-**Interactive** — no actionable verb/role and a terminal is reachable
-(stdin is a TTY, or `/dev/tty` is readable when piped). The installer
-routes by what is already on the host:
-
-- **Nothing installed** → the guided install wizard. It asks what you
-  want to do, in plain language, and maps your answer to a role — you
-  never have to know the words `standalone` / `server` / `client`:
-
-  ```text
-  What do you want to do with Portunus?
-    [1] Forward ports/traffic on THIS machine (no control plane)
-    [2] Run a control panel for many forwarding nodes (with Web UI)
-    [3] Connect THIS machine to an existing control panel
-    [m] More options (manage / upgrade / uninstall)
-    [0] Exit
-  ```
-
-- **Already installed** → a management menu (status / service / upgrade
-  / config / uninstall, plus *install another instance/role*).
-
-The unified main menu (Install / Uninstall / Upgrade / Status / Service
-/ Config / Env) is always one `[m]` away.
-
-The wizard only asks for what you did not pass on the command line, then
-shows a plan **and the equivalent non-interactive command** before a
-single confirm — so you can copy that command straight into CI:
-
-```text
-Equivalent non-interactive command (copy into CI / docs):
-  install.sh server --domain panel.example.com --yes
-```
-
-Because it reads from `/dev/tty` when piped, `curl … | sh` reaches the
-wizard.
-
-**Non-interactive** — any verb/role/recognized flag, or `--yes`, or no
-usable terminal. This is the contract for CI and automation; behaviour
-matches the historical downloader plus the new verbs.
 
 ## Synopsis
 
@@ -92,8 +50,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
            [--operator-http-listen ADDR]
            [--config PATH] [--no-service]
            [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
-           [--lang en|zh] [--reset-lang]
-           [--yes] [--purge] [--dry-run]
+           [--restart] [--purge] [--dry-run]
 ```
 
 A bare role is shorthand for install: `client` ≡ `install client`,
@@ -104,7 +61,7 @@ A bare role is shorthand for install: `client` ≡ `install client`,
 | Verb | What it does |
 | --- | --- |
 | `install <client\|server\|standalone>` | Guided or flag-driven install. Default deploy form is `binary`, and the service is started unless `--no-service`. |
-| `uninstall [client\|server\|standalone]` | Remove the binary + service unit (systemd unit/drop-in or OpenRC init.d/conf.d), or `docker compose down`. Confirms first. |
+| `uninstall [client\|server\|standalone]` | Remove the binary + service unit (systemd unit/drop-in or OpenRC init.d/conf.d), or `docker compose down`. Runs immediately; pair with `--purge` to also delete data. |
 | `upgrade [client\|server\|standalone]` | Resolve latest, compare to recorded version, reuse recorded config. No-op when current. |
 | `status` | Recorded metadata + a live probe (`systemctl is-active` / `rc-service status` / `docker compose ps`). Read-only. |
 | `service <start\|stop\|restart>` | Dispatch to `systemctl`, `rc-service`, or `docker compose` by the recorded init / deploy form. |
@@ -128,16 +85,11 @@ A bare role is shorthand for install: `client` ≡ `install client`,
 | `--domain <FQDN>` | Server-only. Provision a Caddy HTTPS front for the Web UI; also derives the advertised endpoint as `<FQDN>:7443` when `--advertised-endpoint` is unset. |
 | `--acme-email <ADDR>` | ACME / Let's Encrypt contact email for the Caddy domain. |
 | `--skip-dns-check` | Skip the pre-flight check that the domain's DNS resolves to this host. |
-| `--systemd` | Deprecated no-op, accepted for back-compat — the service is installed by default now. |
-| `--lang <en\|zh>` | Force UI language (also via `PORTUNUS_LANG`). |
-| `--reset-lang` | Clear the cached language preference and exit; the next interactive run re-prompts. |
-| `--yes` | Assume yes for ordinary confirmations. **Does not** bypass the `--purge` typed token. |
-| `--purge` | With `uninstall`, also delete the data dir / compose volume. Requires a typed confirmation. |
+| `--restart` | With `config set`, restart the service so the new value takes effect. Default: write the value but do not restart. |
+| `--purge` | With `uninstall`, also delete the data dir / compose volume. No confirmation prompt. |
 | `--dry-run` | Print the plan; perform **zero** network and **zero** filesystem changes. |
 
-`--version`, `--bin-dir`, `--yes`, `--dry-run` and the bare
-`client` / `server` form are the original downloader interface and behave
-exactly as before. `--systemd` is still accepted but no longer needed.
+A bare role is shorthand for install (e.g. `server` ≡ `install server`).
 
 ## Deploy forms
 
@@ -211,7 +163,7 @@ subcommands know how to act:
 | binary client / standalone | `/etc/portunus/.install-meta` |
 | docker | `<compose-dir>/.install-meta` |
 
-Fields include `role`, `deploy`, `version`, `lang`, `init`
+Fields include `role`, `deploy`, `version`, `init`
 (`systemd` / `openrc` / `none`), `advertised_endpoint_set`, `domain`,
 `installed_at`, `installer_version`. Lifecycle verbs read `init` back to
 pick the right service manager.
@@ -243,9 +195,10 @@ flags actually live: the systemd `ExecStart=` override drop-in (systemd),
 `/etc/conf.d/portunus-server`'s `server_args=`/`datadir=` (OpenRC), or the
 compose `command:` array (docker). It **hydrates the current values
 first**, so changing one key preserves the others, validates the value,
-then offers a service restart (`up -d` recreates the container for
-docker). `get` reads the persisted flag value back (`<unset>` if none);
-`env` dumps all keys.
+then — when you pass `--restart` — restarts the service (`up -d`
+recreates the container for docker). Without `--restart` the value is
+written but not applied until the next restart. `get` reads the
+persisted flag value back (`<unset>` if none); `env` dumps all keys.
 
 For a **docker** deploy, `set` regenerates `compose.yml` from the managed
 template (keeping the pinned image tag and re-syncing the published port);
@@ -257,19 +210,20 @@ hand-edits you added are recoverable. `data-dir` is not settable on docker
 ```sh
 # binary server (run anywhere — meta is at /var/lib/portunus)
 sudo sh install.sh config set advertised-endpoint host.example:7443
+sudo sh install.sh config set advertised-endpoint host.example:7443 --restart  # apply now
 sh install.sh config get advertised-endpoint
 sh install.sh env
 
 # docker (run from the compose dir, or pass --compose-dir)
 cd ~/portunus
-sh install.sh config set operator-http-listen 0.0.0.0:7080
+sh install.sh config set operator-http-listen 0.0.0.0:7080 --restart
 sh install.sh env
 ```
 
 ## Server advertised endpoint
 
-When installing a **server**, the wizard prompts for the advertised
-endpoint — the public `host:port` that Clients dial. The server
+When installing a **server**, set the advertised endpoint with
+`--advertised-endpoint` — the public `host:port` that Clients dial. The server
 certificate SAN must cover that host. Leave it blank to let the server
 auto-resolve it at run time. The installer only does a light `host:port`
 sanity check and persists the value as the `--advertised-endpoint` flag
@@ -280,9 +234,8 @@ itself at startup.
 
 ## Domain & HTTPS
 
-Server-only. When you supply a `--domain` (or answer the wizard's HTTPS
-prompt), the installer fronts the Web UI with **Caddy** and automatic
-Let's Encrypt HTTPS:
+Server-only. When you supply a `--domain`, the installer fronts the Web
+UI with **Caddy** and automatic Let's Encrypt HTTPS:
 
 ```sh
 # At install time
@@ -296,7 +249,7 @@ sudo sh install.sh domain portunus.example.com
 What it does:
 
 - Pre-flight checks that the domain's DNS A record resolves to this
-  host (skip with `--skip-dns-check`).
+  host; a mismatch is a hard error unless you pass `--skip-dns-check`.
 - Installs Caddy if absent (apt / dnf / yum), then writes a managed
   block — delimited by `# >>> portunus >>>` / `# <<< portunus <<<` — into
   `/etc/caddy/Caddyfile` reverse-proxying the domain to the operator HTTP
@@ -328,33 +281,20 @@ sh install.sh service stop
 # Upgrade in place, reusing recorded config (no-op when already current)
 sudo sh install.sh upgrade
 
-# Uninstall (keeps data) — confirms first
+# Uninstall (keeps data)
 sudo sh install.sh uninstall
 
-# Uninstall and delete data — requires typing the token 'purge'
+# Uninstall and delete data (no prompt)
 sudo sh install.sh uninstall --purge
-```
-
-## Language
-
-Resolution order: `--lang` / `PORTUNUS_LANG` → `LC_ALL` / `LANG`
-autodetect (`zh*` ⇒ 中文, else English) → first-run prompt when
-interactive → otherwise English. The chosen language is stored in
-`.install-meta` and reused by later subcommands.
-
-```sh
-PORTUNUS_LANG=zh curl -fsSL .../scripts/install.sh | sh
-sh install.sh --lang en status
 ```
 
 ## Safety
 
 - **`--dry-run`** prints the plan and performs zero network and zero
   filesystem changes — for every verb.
-- **`--purge`** additionally deletes the data dir / compose volume and
-  requires you to type the literal token `purge`. **`--yes` never
-  bypasses that typed token.**
-- Destructive actions always confirm; `uninstall` defaults to `[y/N]`.
+- **`--purge`** deletes the data dir / compose volume with no
+  confirmation — it is the explicit opt-in. Without it, `uninstall`
+  keeps data.
 - The shipped systemd unit and an existing base compose file are never
   edited — server config is applied through the drop-in / `.env`
   sidecar.
