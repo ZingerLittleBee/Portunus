@@ -95,24 +95,6 @@ $SH "$script" uninstall server --dry-run >/dev/null 2>&1 || fail "uninstall dry-
 # status dry-run exits 0
 $SH "$script" status --dry-run >/dev/null 2>&1 || fail "status dry-run"
 
-# --- smart routing: a clean host lands on the install wizard (intent question) ---
-# --compose-dir scopes meta resolution to an empty dir, so routing is
-# deterministic regardless of what is installed on the test machine.
-emptyd="$(mktemp -d)"
-out="$(printf '0\n' | PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-echo "$out" | grep -qi 'What do you want to do with Portunus' || fail "clean host should show the intent wizard"
-if echo "$out" | grep -qi 'Portunus Manager'; then fail "clean host must not lead with the management menu"; fi
-# [m] from the install screen reaches the unified main menu (the escape hatch)
-out="$(printf 'm\n0\n' | PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-echo "$out" | grep -qi 'Portunus Manager' || fail "[m] must reach the unified main menu"
-
-# --- smart routing: an existing install lands on the manage menu ---
-seededd="$(mktemp -d)"
-printf 'role=server\ndeploy=docker\nversion=2.2.0\n' > "$seededd/.install-meta"
-out="$(printf '0\n' | PORTUNUS_LANG=en $SH "$script" --compose-dir "$seededd" --menu-stdin 2>&1)" || true
-echo "$out" | grep -qi 'installed: server 2.2.0' || fail "installed host should show the manage menu with role/version"
-rm -rf "$seededd"
-
 # --- drop-in is an ExecStart= override carrying the flags (env is inert) ---
 dr="$($SH "$script" server --systemd --advertised-endpoint h:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --render-dropin)" || fail "render-dropin exit"
 echo "$dr" | grep -qx 'ExecStart=' || fail "dropin missing ExecStart= clear line"
@@ -150,55 +132,9 @@ o="$($SH "$script" --lang en --print-i18n ask_config_key)"; printf '%s\n' "$o" |
 o="$($SH "$script" --lang zh --print-i18n ask_service_action)"; printf '%s\n' "$o" | grep -q '启动' || fail "zh ask_service_action"
 o="$($SH "$script" --lang en --print-i18n menu_invalid bogus)"; printf '%s\n' "$o" | grep -qi 'invalid' || fail "en menu_invalid"
 
-# --- P1#2: a die() inside a menu action must NOT kill the whole session ---
-# From the main menu, Uninstall (2) with no install hits die(); the loop must
-# survive and redraw, then process the trailing Exit (0).
-mo="$(printf 'm\n2\n0\n' | PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-[ "$(printf '%s\n' "$mo" | grep -c 'Portunus Manager')" -ge 2 ] || fail "menu died after a failing action (P1#2)"
-
-# --- P2#4: invalid menu choice gives explicit feedback (install screen) ---
-io="$(printf '99\n0\n' | PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-printf '%s\n' "$io" | grep -qi 'invalid option' || fail "no invalid-option feedback"
-
 # --- wizard: IP detection seam, offline path never hits network ---
 di="$(PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" --detect-ip)" || fail "--detect-ip exit"
 echo "$di" | grep -Eq '^[0-9a-fA-F.:]+ prov_(nic|loopback)$' || fail "skip-probe must yield NIC/loopback ($di)"
-
-# --- intent wizard: [2]=server, binary, skip HTTPS, '-' = loopback advertised ---
-# Inputs: intent(2)->server, deploy(2)->binary, https(n)->skip, advertised(-),
-# then the install screen reads Exit(0). Under --menu-stdin the final confirm
-# now reads the pipe too (read_tty honors the seam), so the trailing '0' is
-# consumed by the Proceed? prompt and the menu exits on the following EOF —
-# either way the summary renders, which is all these assertions check.
-wo="$(printf '2\n2\nn\n-\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-printf '%s\n' "$wo" | grep -q 'About to install:' || fail "no summary block"
-printf '%s\n' "$wo" | grep -q 'data dir:.*\/var\/lib\/portunus' || fail "summary missing data-dir default"
-printf '%s\n' "$wo" | grep -q 'operator http:.*127\.0\.0\.1:7080' || fail "summary missing op-http default"
-printf '%s\n' "$wo" | grep -qi 'loopback' || fail "'-' input should mark loopback"
-if printf '%s\n' "$wo" | grep -q 'Version (blank = latest)'; then fail "wizard still asks version"; fi
-if printf '%s\n' "$wo" | grep -q 'Server data dir'; then fail "wizard still asks data-dir"; fi
-# the summary teaches the equivalent non-interactive command
-printf '%s\n' "$wo" | grep -qi 'Equivalent non-interactive command' || fail "summary missing equivalent-command label"
-printf '%s\n' "$wo" | grep -q 'install.sh server --yes' || fail "summary missing equivalent server command"
-
-# intent [1] maps to standalone (no jargon shown to the user)
-sa="$(printf '1\n1\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-printf '%s\n' "$sa" | grep -Eq 'role: +standalone' || fail "intent [1] must map to standalone"
-printf '%s\n' "$sa" | grep -q 'install.sh standalone --yes' || fail "standalone equivalent command"
-
-# client: intent [3]+binary offers an enroll URI; summary has no advertised line
-co="$(printf '3\n1\n\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-printf '%s\n' "$co" | grep -q 'About to install:' || fail "client no summary"
-printf '%s\n' "$co" | grep -qi 'enroll uri' || fail "client wizard should offer an enroll URI"
-if printf '%s\n' "$co" | grep -q 'advertised endpoint:'; then fail "client must not show advertised line"; fi
-
-# --- recommended deploy default differs by role (Enter accepts) ---
-so="$(printf '2\n\nn\n-\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-printf '%s\n' "$so" | grep -Eq 'deploy: +docker' || fail "server Enter must default to docker (recommended)"
-printf '%s\n' "$so" | grep -q 'compose dir:' || fail "server docker default missing compose dir line"
-ro="$(printf '3\n\n\n0\n' | PORTUNUS_SKIP_IP_PROBE=1 PORTUNUS_LANG=en $SH "$script" --compose-dir "$emptyd" --menu-stdin 2>&1)" || true
-printf '%s\n' "$ro" | grep -Eq 'deploy: +binary \+ service' || fail "client Enter must default to binary (recommended)"
-rm -rf "$emptyd"
 
 # --- --reset-lang clears the cached language preference ---
 fakehome="$(mktemp -d)"
@@ -376,9 +312,9 @@ YAML
 # get reads the value out of the command array
 g="$($SH "$script" --compose-dir "$dk_tmp" config get advertised-endpoint 2>/dev/null)" || fail "docker config get exit"
 [ "$g" = "old.example:7443" ] || fail "docker config get advertised-endpoint: got '$g'"
-# set rewrites the command array (and preserves the image tag). `--menu-stdin`
-# routes the restart confirm to stdin; feeding 'n' skips the (docker-less) recreate.
-printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set advertised-endpoint new.example:7443 >/dev/null 2>&1 \
+# set rewrites the command array (and preserves the image tag). Without
+# --restart no `up -d` runs, so this stays network-free / docker-less.
+$SH "$script" --compose-dir "$dk_tmp" config set advertised-endpoint new.example:7443 >/dev/null 2>&1 \
   || fail "docker config set exit"
 grep -q '"--advertised-endpoint", "new.example:7443"' "$dk_tmp/compose.yml" || fail "docker config set did not update command"
 grep -q 'portunus-server:2.2.0' "$dk_tmp/compose.yml" || fail "docker config set must preserve the pinned image tag"
@@ -386,12 +322,12 @@ grep -q 'portunus-server:2.2.0' "$dk_tmp/compose.yml" || fail "docker config set
 g2="$($SH "$script" --compose-dir "$dk_tmp" config get advertised-endpoint 2>/dev/null)" || fail "docker config get (post-set) exit"
 [ "$g2" = "new.example:7443" ] || fail "docker config get after set: got '$g2'"
 # data-dir is not settable on docker (fixed volume mount) — must reject
-if printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set data-dir /tmp/x >/dev/null 2>&1; then
+if $SH "$script" --compose-dir "$dk_tmp" config set data-dir /tmp/x >/dev/null 2>&1; then
   fail "docker config set data-dir must be rejected"
 fi
 # operator-http-listen set must re-sync the PUBLISHED port too, not just the
 # command flag, and must preserve the advertised-endpoint set above.
-printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set operator-http-listen 0.0.0.0:9090 >/dev/null 2>&1 \
+$SH "$script" --compose-dir "$dk_tmp" config set operator-http-listen 0.0.0.0:9090 >/dev/null 2>&1 \
   || fail "docker config set operator-http-listen exit"
 grep -q '"--operator-http-listen", "0.0.0.0:9090"' "$dk_tmp/compose.yml" || fail "docker op-http: command flag not updated"
 grep -q '127.0.0.1:9090:9090' "$dk_tmp/compose.yml" || fail "docker op-http: published port not re-synced"
@@ -399,7 +335,7 @@ grep -q '"--advertised-endpoint", "new.example:7443"' "$dk_tmp/compose.yml" || f
 # a backup of the prior compose is left behind (recoverable hand-edits)
 ls "$dk_tmp"/compose.yml.portunus.*.bak >/dev/null 2>&1 || fail "docker config set must leave a timestamped .bak"
 # injection-bearing values are rejected before any write (JSON breakout)
-if printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dk_tmp" config set advertised-endpoint 'x", "evil' >/dev/null 2>&1; then
+if $SH "$script" --compose-dir "$dk_tmp" config set advertised-endpoint 'x", "evil' >/dev/null 2>&1; then
   fail "docker config set must reject a JSON-breakout value"
 fi
 rm -rf "$dk_tmp"
@@ -412,9 +348,9 @@ bs_tmp="$(mktemp -d)"; bs_root="$(mktemp -d)"
 printf 'role=server\ndeploy=binary\nversion=2.2.0\nlang=en\ninit=systemd\n' > "$bs_tmp/.install-meta"
 [ "$($SH "$script" --compose-dir "$bs_tmp" config get advertised-endpoint 2>/dev/null)" = "<unset>" ] \
   || fail "binary/systemd: fresh advertised should be <unset>"
-printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --menu-stdin --compose-dir "$bs_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
+PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --compose-dir "$bs_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
   || fail "binary/systemd config set advertised exit"
-printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --menu-stdin --compose-dir "$bs_tmp" config set operator-http-listen 127.0.0.1:7080 >/dev/null 2>&1 \
+PORTUNUS_TEST_CONFIG_ROOT="$bs_root" $SH "$script" --compose-dir "$bs_tmp" config set operator-http-listen 127.0.0.1:7080 >/dev/null 2>&1 \
   || fail "binary/systemd config set op-http exit"
 dropin="$bs_root/etc/systemd/system/portunus-server.service.d/10-portunus.conf"
 grep -q -- '--advertised-endpoint h.example:7443' "$dropin" || fail "binary/systemd: ExecStart missing advertised"
@@ -436,7 +372,7 @@ printf 'datadir="/mnt/ssd/portunus"   # fast disk\nserver_args="--operator-http-
   || fail "binary/openrc: get op-http from server_args"
 [ "$(PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --compose-dir "$or_tmp" config get data-dir 2>/dev/null)" = "/mnt/ssd/portunus" ] \
   || fail "binary/openrc: get data-dir tolerates a trailing comment"
-printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --menu-stdin --compose-dir "$or_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
+PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --compose-dir "$or_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
   || fail "binary/openrc config set advertised exit"
 grep -q -- '--operator-http-listen 0.0.0.0:7080 --advertised-endpoint h.example:7443' "$or_root/etc/conf.d/portunus-server" \
   || fail "binary/openrc: server_args must carry both flags (sibling preserved)"
@@ -445,7 +381,7 @@ grep -q 'datadir="/mnt/ssd/portunus"' "$or_root/etc/conf.d/portunus-server" \
 ls "$or_root/etc/conf.d/portunus-server.portunus."*.bak >/dev/null 2>&1 \
   || fail "binary/openrc: config set must leave a timestamped conf.d .bak"
 # data-dir IS settable on openrc (unlike docker): updates datadir=, leaves server_args
-printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --menu-stdin --compose-dir "$or_tmp" config set data-dir /srv/portunus >/dev/null 2>&1 \
+PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --compose-dir "$or_tmp" config set data-dir /srv/portunus >/dev/null 2>&1 \
   || fail "binary/openrc config set data-dir exit"
 grep -q 'datadir="/srv/portunus"' "$or_root/etc/conf.d/portunus-server" || fail "binary/openrc: data-dir set did not update datadir="
 grep -q -- '--advertised-endpoint h.example:7443' "$or_root/etc/conf.d/portunus-server" || fail "binary/openrc: data-dir set must preserve server_args"
@@ -463,7 +399,7 @@ volumes:
   portunus-data:
     name: portunus-data
 YAML
-printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dy_tmp" config set advertised-endpoint y.example:7443 >/dev/null 2>&1 \
+$SH "$script" --compose-dir "$dy_tmp" config set advertised-endpoint y.example:7443 >/dev/null 2>&1 \
   || fail "docker config set (.yaml) exit"
 [ -f "$dy_tmp/compose.yaml" ] || fail "docker config set must keep the operator's compose.yaml filename"
 [ ! -f "$dy_tmp/compose.yml" ] || fail "docker config set must not leave a stray compose.yml"
@@ -490,7 +426,7 @@ services:
   sidecar:
     image: nginx
 YAML
-printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$db_tmp" config set advertised-endpoint y2.example:7443 >/dev/null 2>&1 \
+$SH "$script" --compose-dir "$db_tmp" config set advertised-endpoint y2.example:7443 >/dev/null 2>&1 \
   || fail "docker config set (both files) exit"
 grep -q '"--advertised-endpoint", "y2.example:7443"' "$db_tmp/compose.yaml" || fail "docker both-files: effective compose.yaml not updated"
 [ ! -f "$db_tmp/compose.yml" ] || fail "docker both-files: stale compose.yml should be removed"

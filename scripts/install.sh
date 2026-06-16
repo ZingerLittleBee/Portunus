@@ -60,7 +60,6 @@ DOMAIN=""             # optional HTTPS domain for host Caddy
 ACME_EMAIL=""         # optional Let's Encrypt account email
 SKIP_DNS_CHECK="no"   # --skip-dns-check
 CADDYFILE="/etc/caddy/Caddyfile"
-ADVERTISED_FROM_DOMAIN="no"  # set yes when ADVERTISED was derived from DOMAIN
 PRINT_EFF="no"               # --effective-advertised seam
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -1013,7 +1012,6 @@ parse_args() {
       --effective-advertised) PRINT_EFF=yes ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
-      --menu-stdin) MENU_FORCE_STDIN="yes" ;;  # defer to main so later --compose-dir et al. still parse
       *) if [ "$VERB" = domain ] && [ -z "$DOMAIN" ]; then DOMAIN="$1";
          elif [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1";
          elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1";
@@ -1023,20 +1021,13 @@ parse_args() {
   done
 }
 
-is_interactive() {
-  [ "${MENU_FORCE_STDIN:-no}" = yes ] && return 0   # scripted-menu seam forces the menu
-  if [ -t 0 ]; then return 0; fi
-  if [ -r /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then exec 3<&-; return 0; fi
-  return 1
-}
-
 main() {
   parse_args "$@"
   resolve_lang
-  # No actionable verb/role and a TTY ⇒ interactive menu (Task 7).
+  # No actionable verb/role: this is a flag-only CLI — print usage and exit.
   if [ -z "$VERB" ] && [ -z "$ROLE" ]; then
-    if is_interactive; then run_menu; exit $?; fi
-    die "no command given and no terminal; run 'install.sh -h' or pass a role"
+    print_usage >&2
+    exit 2
   fi
   [ -n "$VERB" ] || VERB="install"
   [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
@@ -1071,21 +1062,6 @@ main() {
 
 # ─── Interactive ──────────────────────────────────────────────────────
 MENU_FORCE_STDIN="no"
-ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
-  local p; p="$(t "$@")"; local a
-  printf '%s\n' "$p" >&2          # question on its own line; answer below
-  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r a || a=""
-  else printf '> ' >&2; read -r a < /dev/tty 2>/dev/null || a=""; fi
-  printf '%s' "$a"
-}
-
-first_run_lang() {
-  [ -n "$LANG_CODE" ] && return 0
-  local a; a="$(ask lang_prompt)"
-  case "$a" in 2) LANG_CODE=zh ;; *) LANG_CODE=en ;; esac
-  mkdir -p "$(dirname "$LANG_CACHE")" 2>/dev/null \
-    && printf '%s' "$LANG_CODE" > "$LANG_CACHE" 2>/dev/null || true
-}
 
 # Seed the advertised-endpoint default. Public probe → local NIC →
 # loopback. Sets DETECTED_IP + DETECTED_PROV (an i18n key). Never fatal.
@@ -1110,36 +1086,6 @@ detect_public_ip() {
   fi
   if valid_ip "$ip"; then DETECTED_IP="$ip"; DETECTED_PROV="prov_nic"; return 0; fi
   DETECTED_IP="127.0.0.1"; DETECTED_PROV="prov_loopback"; return 0
-}
-
-# Print every effective install value before the final confirm.
-print_install_summary() {
-  local adv_prov="$1"   # i18n key for advertised provenance, or ""
-  echo "$(t summary_title)"
-  t sum_role "$ROLE"; echo
-  if [ "$DEPLOY" = docker ]; then
-    t sum_deploy "$(t val_docker)"; echo
-  else
-    t sum_deploy "$(t val_binary)"; echo
-  fi
-  t sum_version "${VERSION:-$(t val_latest)}"; echo
-  if [ "$DEPLOY" = docker ]; then
-    t sum_compose "${COMPOSE_DIR:-$PWD}"; echo
-  else
-    t sum_bindir "${BIN_DIR:-$DEFAULT_BIN_DIR}"; echo
-  fi
-  if [ "$ROLE" = server ]; then
-    t sum_datadir "${DATA_DIR:-/var/lib/portunus}"; echo
-    t sum_ophttp "${OP_HTTP_LISTEN:-127.0.0.1:7080}"; echo
-    if [ "$ADVERTISED_FROM_DOMAIN" = yes ]; then
-      t adv_from_domain "$ADVERTISED"; echo
-    elif [ -n "$ADVERTISED" ]; then
-      t sum_advertised "$ADVERTISED $([ -n "$adv_prov" ] && t "$adv_prov")"; echo
-    else
-      t sum_advertised "$(t prov_loopback)"; echo
-    fi
-    [ -n "$DOMAIN" ] && { t sum_domain "$DOMAIN"; echo; }
-  fi
 }
 
 # ─── Caddy / HTTPS ────────────────────────────────────────────────────
@@ -1333,7 +1279,6 @@ apply_advertised_default() {
   [ -n "$DOMAIN" ] || return 0
   [ -z "$ADVERTISED" ] || return 0
   ADVERTISED="${DOMAIN}:7443"
-  ADVERTISED_FROM_DOMAIN=yes
   return 0
 }
 
@@ -1356,237 +1301,6 @@ apply_install_defaults() {
   fi
 }
 
-# Echo the equivalent non-interactive command for the gathered intent, so the
-# wizard both teaches the flags and yields a copy-pasteable CI invocation.
-# Pure: reads the intent globals, emits only non-default flags, redacts the
-# one-time enroll secret, and always appends --yes (unattended).
-build_equiv_cmd() {
-  local c="install.sh $ROLE"
-  [ "${DEPLOY:-binary}" = docker ] && c="$c --deploy docker"
-  [ -n "$VERSION" ] && c="$c --version $VERSION"
-  [ -n "$CONFIG_PATH" ] && [ "$ROLE" = standalone ] && c="$c --config $CONFIG_PATH"
-  [ -n "$DATA_DIR" ] && [ "$ROLE" = server ] && c="$c --data-dir $DATA_DIR"
-  [ -n "$OP_HTTP_LISTEN" ] && c="$c --operator-http-listen $OP_HTTP_LISTEN"
-  [ -n "$DOMAIN" ] && c="$c --domain $DOMAIN"
-  [ -n "$ACME_EMAIL" ] && c="$c --acme-email $ACME_EMAIL"
-  # advertised is re-derived from --domain; only emit it when set independently.
-  [ "$ADVERTISED_FROM_DOMAIN" != yes ] && [ -n "$ADVERTISED" ] && c="$c --advertised-endpoint $ADVERTISED"
-  [ -n "$ENROLL_URI" ] && [ "$ROLE" = client ] && c="$c --enroll '<your-enroll-uri>'"
-  [ "$NO_SERVICE" = yes ] && c="$c --no-service"
-  printf '%s --yes' "$c"
-}
-
-# Gap-filling install flow. The role is already chosen (intent mapping); this
-# collects only what flags did not provide, prints the plan + the equivalent
-# non-interactive command, then runs the same executor the flags would.
-run_install_flow() {
-  local a adv_prov=""
-  # Recommended deploy form differs by role: server ⇒ docker compose,
-  # client/standalone ⇒ binary. Enter (empty) accepts the recommended one.
-  if [ "$ROLE" = server ]; then
-    a="$(ask ask_deploy_server)"
-    case "$a" in 2|binary) DEPLOY=binary ;; *) DEPLOY=docker ;; esac
-  elif [ "$ROLE" = standalone ]; then
-    a="$(ask ask_deploy_standalone)"
-    case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
-  else
-    a="$(ask ask_deploy_client)"
-    case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
-  fi
-  # client (binary): optionally self-enroll now; blank defers it to later.
-  if [ "$ROLE" = client ] && [ "$DEPLOY" != docker ] && [ -z "$ENROLL_URI" ]; then
-    ENROLL_URI="$(ask ask_enroll)"
-  fi
-  if [ "$ROLE" = server ]; then
-    # Heavy op: spell out the side effects before touching Caddy / DNS.
-    a="$(ask ask_setup_https)"
-    case "$a" in
-      y|Y|yes|YES)
-        while :; do
-          DOMAIN="$(ask ask_domain)"
-          [ -z "$DOMAIN" ] && break
-          valid_fqdn "$DOMAIN" && break
-          t bad_domain "$DOMAIN"; echo
-        done ;;
-      *) DOMAIN="" ;;
-    esac
-    if [ -n "$DOMAIN" ]; then
-      ADVERTISED="${DOMAIN}:7443"; ADVERTISED_FROM_DOMAIN=yes
-    else
-      detect_public_ip
-      adv_prov="$DETECTED_PROV"
-      while :; do
-        a="$(ask ask_advertised_pub "${DETECTED_IP}:7443")"
-        if [ -z "$a" ]; then ADVERTISED="${DETECTED_IP}:7443"; break; fi
-        if [ "$a" = "-" ]; then ADVERTISED=""; adv_prov="prov_loopback"; break; fi
-        if valid_host_port "$a"; then ADVERTISED="$a"; adv_prov="prov_user"; break; fi
-        t bad_endpoint "$a"; echo
-      done
-    fi
-  fi
-  detect_platform; resolve_version_static
-  print_install_summary "$adv_prov"
-  t equiv_cmd; echo
-  printf '  %s\n' "$(build_equiv_cmd)"
-  confirm "$(t confirm_proceed)" || { echo "$(t op_cancelled)"; return 1; }
-  VERB=install; dispatch_verb
-}
-
-# An explicit CLI --compose-dir scopes the whole menu session; it must
-# survive the per-iteration reset (wizard-collected fields do not).
-# MENU_SCREEN holds the smart-routing navigation state across iterations and
-# is intentionally NOT reset between loops.
-MENU_COMPOSE_DIR=""
-MENU_SCREEN=""
-REPLY_MENU=""
-reset_menu_state() {
-  ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"
-  COMPOSE_DIR="$MENU_COMPOSE_DIR"
-  ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
-  DOMAIN=""; ACME_EMAIL=""; ADVERTISED_FROM_DOMAIN="no"; ENROLL_URI=""
-  SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
-}
-
-pause() {
-  [ "$MENU_FORCE_STDIN" = yes ] && return 0   # scripted seam: never block
-  read_tty "$(t press_enter)" || true
-}
-
-# Read one interactive choice into REPLY_MENU. Returns non-zero on EOF so the
-# caller can leave the loop (mirrors the original read||return idiom).
-read_menu() {
-  REPLY_MENU=""
-  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r REPLY_MENU || return 1
-  else printf '> ' >&2; read -r REPLY_MENU < /dev/tty 2>/dev/null || return 1; fi
-  return 0
-}
-
-menu_service() {
-  local a
-  a="$(ask ask_service_action)"
-  case "$a" in
-    1|start)   SERVICE_ACTION="start" ;;
-    2|stop)    SERVICE_ACTION="stop" ;;
-    3|restart) SERVICE_ACTION="restart" ;;
-    *) t menu_invalid "$a"; echo; return 0 ;;
-  esac
-  VERB="service"; lifecycle_service
-}
-
-menu_config() {
-  local _mf _r
-  _mf="$(current_meta_file 2>/dev/null || true)"
-  # Role-less meta defaults to server (parity with lifecycle_config); only a
-  # concrete non-server role is rejected.
-  _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || echo server)"
-  case "${_r:-server}" in server) ;; *) echo "$(t config_server_only)" >&2; return 2 ;; esac
-  local a k v
-  a="$(ask ask_config_key)"
-  case "$a" in
-    1|advertised-endpoint)  k="advertised-endpoint" ;;
-    2|data-dir)             k="data-dir" ;;
-    3|operator-http-listen) k="operator-http-listen" ;;
-    *) t unknown_config_key "$a"; echo; return 0 ;;
-  esac
-  v="$(ask ask_config_value "$k")"
-  [ -n "$v" ] || { echo "$(t op_cancelled)"; return 0; }
-  if ! valid_config_value "$k" "$v"; then
-    t bad_config_value "$k" "$v"; echo; return 0
-  fi
-  CONFIG_OP="set"; CONFIG_KEY="$k"; CONFIG_VALUE="$v"; VERB="config"; lifecycle_config
-}
-
-# ── Smart-routing screens. Each prints its menu, reads one choice, dispatches
-# actions in a ( … ) subshell so a die() ends only the action (never the
-# session), and steers MENU_SCREEN for navigation. Returns non-zero to exit. ──
-
-# Install screen = the intent question itself (the wizard's first screen).
-menu_screen_install() {
-  printf '%s\n' "$(t ask_intent)"
-  read_menu || return 1
-  case "$REPLY_MENU" in
-    0|q|Q) return 1 ;;
-    m|M)   MENU_SCREEN=main; return 0 ;;
-    1) ROLE=standalone ;;
-    2) ROLE=server ;;
-    3) ROLE=client ;;
-    *) t menu_invalid "$REPLY_MENU"; echo; return 0 ;;
-  esac
-  ( run_install_flow ) || true
-  # A successful install flips the next iteration to the manage screen.
-  current_meta_file >/dev/null 2>&1 && MENU_SCREEN=manage
-  pause
-  return 0
-}
-
-# Manage screen: shown by smart routing when an install is detected.
-menu_screen_manage() {
-  local mf role ver
-  mf="$(current_meta_file 2>/dev/null || true)"
-  [ -n "$mf" ] || { MENU_SCREEN=install; return 0; }
-  role="$(meta_read "$mf" role 2>/dev/null || echo '?')"
-  ver="$(meta_read "$mf" version 2>/dev/null || echo '?')"
-  echo
-  t manage_title "$role" "$ver"; echo
-  t manage_status; echo;    t manage_service; echo;          t manage_upgrade; echo
-  t manage_config; echo;    t manage_uninstall; echo;        t manage_install_another; echo
-  t nav_main; echo;         t menu_exit; echo
-  read_menu || return 1
-  case "$REPLY_MENU" in
-    0|q|Q) return 1 ;;
-    m|M) MENU_SCREEN=main;    return 0 ;;
-    6)   MENU_SCREEN=install; return 0 ;;
-    1) ( VERB=status;    lifecycle_status )    || true ;;
-    2) ( menu_service )                        || true ;;
-    3) ( VERB=upgrade;   lifecycle_upgrade )   || true ;;
-    4) ( menu_config )                         || true ;;
-    5) ( VERB=uninstall; lifecycle_uninstall ) || true ;;
-    *) t menu_invalid "$REPLY_MENU"; echo; return 0 ;;
-  esac
-  pause
-  return 0
-}
-
-# Main menu: the always-reachable unified task list (the escape hatch).
-menu_screen_main() {
-  echo
-  t menu_title; echo
-  t menu_install; echo;   t menu_uninstall; echo;   t menu_upgrade; echo
-  t menu_status; echo;    t menu_service; echo;      t menu_config; echo
-  t menu_env; echo;       t menu_exit; echo
-  printf '%s\n' "$(t menu_select)" >&2
-  read_menu || return 1
-  case "$REPLY_MENU" in
-    0|q|Q) return 1 ;;
-    1) MENU_SCREEN=install; return 0 ;;
-    2) ( VERB=uninstall; lifecycle_uninstall ) || true ;;
-    3) ( VERB=upgrade;   lifecycle_upgrade )   || true ;;
-    4) ( VERB=status;    lifecycle_status )    || true ;;
-    5) ( menu_service )                        || true ;;
-    6) ( menu_config )                         || true ;;
-    7) ( VERB="env";     lifecycle_env )       || true ;;
-    *) t menu_invalid "$REPLY_MENU"; echo; return 0 ;;
-  esac
-  pause
-  return 0
-}
-
-run_menu() {
-  first_run_lang
-  MENU_COMPOSE_DIR="${COMPOSE_DIR:-}"
-  # Smart routing: an existing install lands on the manage screen; a clean
-  # host lands on the install wizard. The unified main menu is always one
-  # [m] away on either screen.
-  if current_meta_file >/dev/null 2>&1; then MENU_SCREEN=manage; else MENU_SCREEN=install; fi
-  while :; do
-    reset_menu_state
-    case "$MENU_SCREEN" in
-      manage) menu_screen_manage || return 0 ;;
-      main)   menu_screen_main   || return 0 ;;
-      *)      menu_screen_install || return 0 ;;
-    esac
-  done
-}
 dispatch_verb() {
   case "$VERB" in
     install)
