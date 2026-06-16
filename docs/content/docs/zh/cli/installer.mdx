@@ -44,7 +44,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
            [--operator-http-listen ADDR]
-           [--config PATH] [--no-service]
+           [--config PATH] [--no-service] [--enroll '<uri>']
            [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
            [--restart] [--purge] [--dry-run]
 ```
@@ -77,6 +77,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
 | `--data-dir <DIR>` | server 数据目录（默认 `/var/lib/portunus`）。 |
 | `--operator-http-listen <ADDR>` | Operator HTTP 监听地址覆写。 |
 | `--config <PATH>` | **仅 standalone。** 服务读取的配置文件（默认 `/etc/portunus/standalone.toml`）。让 unit/conf.d 指向 `PATH` 并修正其权限——**文件由你创建**（缺失时服务直接退出）。对 `client` / `server` 传入会直接报错——它们用 `--bundle` / `--data-dir`。 |
+| `--enroll '<uri>'` | **仅 client、仅二进制。** 安装时自助注册：运行 `portunus-client enroll <uri>` 并放置 bundle。对 `server` / `standalone` 或带 `--deploy docker` 时会直接报错——Docker 请改为给容器传 `PORTUNUS_ENROLL_URI`。 |
 | `--no-service` | 安装二进制（及服务 unit）但**不**启用/启动,并打印手动启动命令。 |
 | `--domain <FQDN>` | 仅 server。为 Web UI 配置 Caddy HTTPS 前端；当未设置 `--advertised-endpoint` 时，还会把通告地址推导为 `<FQDN>:7443`。 |
 | `--acme-email <ADDR>` | Caddy 域名的 ACME / Let's Encrypt 联系邮箱。 |
@@ -124,7 +125,7 @@ curl -fsSL .../scripts/install.sh | sh -s -- server --deploy docker \
 
 写入 `compose.yml`（若已存在则保留）与同级 `.env`（保存限定变量），然后执行
 `docker compose pull && up -d`。需要 Docker Compose **v2**（也能识别旧版
-`docker-compose` ，但优先使用 v2）。server 配置走 `.env` 旁挂文件，
+`docker-compose` ，但优先使用 v2）。server 配置走 compose `command:` 数组，
 已存在的 compose 文件不会被改写。
 
 对 **standalone** 用 `--deploy docker` 时,compose 文件会把
@@ -273,7 +274,7 @@ sudo sh install.sh uninstall --purge
 - **`--purge`** 额外删除数据目录 / compose 卷,且无确认提示——它就是显式
   的选择开关。不带它时 `uninstall` 会保留数据。
 - 出厂 systemd unit 与已存在的基础 compose 文件都不会被改写，server
-  配置通过 drop-in / `.env` 旁挂文件下发。
+  配置通过 drop-in / compose `command:` 数组下发。
 - 在已有节点上重复执行 `install` 会通过 `.install-meta` 被识别出来；想在复用
   原有配置的同时切换版本，请用 `upgrade`。
 

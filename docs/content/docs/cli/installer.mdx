@@ -48,7 +48,7 @@ install.sh <client|server|standalone|install|uninstall|upgrade|status|service|co
            [--bin-dir DIR] [--compose-dir DIR]
            [--advertised-endpoint HOST:PORT] [--data-dir DIR]
            [--operator-http-listen ADDR]
-           [--config PATH] [--no-service]
+           [--config PATH] [--no-service] [--enroll '<uri>']
            [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
            [--restart] [--purge] [--dry-run]
 ```
@@ -60,7 +60,7 @@ A bare role is shorthand for install: `client` ≡ `install client`,
 
 | Verb | What it does |
 | --- | --- |
-| `install <client\|server\|standalone>` | Guided or flag-driven install. Default deploy form is `binary`, and the service is started unless `--no-service`. |
+| `install <client\|server\|standalone>` | Flag-driven install. Default deploy form is `binary`, and the service is started unless `--no-service`. |
 | `uninstall [client\|server\|standalone]` | Remove the binary + service unit (systemd unit/drop-in or OpenRC init.d/conf.d), or `docker compose down`. Runs immediately; pair with `--purge` to also delete data. |
 | `upgrade [client\|server\|standalone]` | Resolve latest, compare to recorded version, reuse recorded config. No-op when current. |
 | `status` | Recorded metadata + a live probe (`systemctl is-active` / `rc-service status` / `docker compose ps`). Read-only. |
@@ -81,6 +81,7 @@ A bare role is shorthand for install: `client` ≡ `install client`,
 | `--data-dir <DIR>` | Server data dir (default `/var/lib/portunus`). |
 | `--operator-http-listen <ADDR>` | Operator HTTP listen address override. |
 | `--config <PATH>` | **Standalone only.** Config file the service reads (default `/etc/portunus/standalone.toml`). Points the unit/conf.d at `PATH` and fixes its permissions — **you create the file** (the service exits without it). A hard error for `client` / `server`, which use `--bundle` / `--data-dir`. |
+| `--enroll '<uri>'` | **Client only, binary only.** Self-enroll during install: runs `portunus-client enroll <uri>` and places the bundle. A hard error for `server` / `standalone` or with `--deploy docker` — for Docker, pass `PORTUNUS_ENROLL_URI` to the container instead. |
 | `--no-service` | Install the binary (and service unit) but do **not** enable/start it. Prints the manual start command. |
 | `--domain <FQDN>` | Server-only. Provision a Caddy HTTPS front for the Web UI; also derives the advertised endpoint as `<FQDN>:7443` when `--advertised-endpoint` is unset. |
 | `--acme-email <ADDR>` | ACME / Let's Encrypt contact email for the Caddy domain. |
@@ -133,8 +134,8 @@ curl -fsSL .../scripts/install.sh | sh -s -- server --deploy docker \
 Writes `compose.yml` (kept if it already exists) and a sibling `.env`
 holding the scoped variables, then `docker compose pull && up -d`.
 Docker Compose **v2** is required (legacy `docker-compose` is detected
-but v2 is preferred). Server config goes through the `.env` sidecar; an
-existing compose file is never rewritten.
+but v2 is preferred). Server config goes through the compose `command:`
+array; an existing compose file is never rewritten.
 
 For **standalone** with `--deploy docker`, the compose file bind-mounts
 `<compose-dir>/portunus.toml` into the container — create it **before**
@@ -296,8 +297,8 @@ sudo sh install.sh uninstall --purge
   confirmation — it is the explicit opt-in. Without it, `uninstall`
   keeps data.
 - The shipped systemd unit and an existing base compose file are never
-  edited — server config is applied through the drop-in / `.env`
-  sidecar.
+  edited — server config is applied through the drop-in / compose
+  `command:` array.
 - Re-running `install` over an existing node is detected via
   `.install-meta`; use `upgrade` to move versions while reusing the
   recorded configuration.
