@@ -28,16 +28,6 @@ echo "$out2" | grep -q '^artifact_version:[[:space:]]*2.0.0$' || fail "v-normali
 
 if $SH "$script" bogus --dry-run >/dev/null 2>&1; then fail "bogus role accepted"; fi
 
-# --- i18n key coverage: every EN key exists in ZH and vice-versa ---
-keys_en="$($SH "$script" --print-i18n-keys en | sort)"
-keys_zh="$($SH "$script" --print-i18n-keys zh | sort)"
-[ -n "$keys_en" ] || fail "no EN i18n keys"
-[ "$keys_en" = "$keys_zh" ] || fail "i18n EN/ZH key sets differ"
-
-# --- explicit lang override wins ---
-o="$($SH "$script" --lang zh --print-i18n menu_title)"; printf '%s\n' "$o" | grep -q '管理' || fail "zh menu_title"
-o="$(PORTUNUS_LANG=en $SH "$script" --print-i18n menu_title)"; printf '%s\n' "$o" | grep -qi 'manager' || fail "en menu_title"
-
 # --- new flags accepted in dry-run plan ---
 o="$($SH "$script" server --deploy docker --advertised-endpoint h.example:7443 --data-dir /srv/p --operator-http-listen 0.0.0.0:7080 --version 1.0.0 --dry-run)" || fail "new flags exit"
 echo "$o" | grep -q '^deploy:[[:space:]]*docker$' || fail "deploy docker"
@@ -45,6 +35,11 @@ echo "$o" | grep -q '^advertised:[[:space:]]*h.example:7443$' || fail "advertise
 
 # --- --yes is removed: now an unknown argument ---
 if $SH "$script" client --version 1.0.0 --yes --dry-run >/dev/null 2>&1; then fail "--yes must now error (removed)"; fi
+
+# --- i18n flags are removed: now unknown arguments ---
+for badflag in --lang --reset-lang --print-i18n --print-i18n-keys; do
+  if $SH "$script" "$badflag" en >/dev/null 2>&1; then fail "$badflag must now error (removed)"; fi
+done
 
 # --- --restart is accepted on config set (parses; no live service op in dry-run) ---
 $SH "$script" config set advertised-endpoint h.example:7443 --restart --dry-run >/dev/null 2>&1 \
@@ -116,16 +111,6 @@ printf 'role=server\ndeploy=docker\n' > "$cdtmp/.install-meta"
 [ "$($SH "$script" --compose-dir "$cdtmp" --resolve-meta)" = "$cdtmp/.install-meta" ] || fail "Fix 2: scoped meta not resolved"
 rm -rf "$cdtmp"
 
-# --- Fix 4: next-step i18n keys exist in both languages ---
-o="$($SH "$script" --lang en --print-i18n next_systemd)"; printf '%s\n' "$o" | grep -qi 'systemctl' || fail "en next_systemd"
-o="$($SH "$script" --lang zh --print-i18n next_docker)"; printf '%s\n' "$o" | grep -q 'docker compose' || fail "zh next_docker"
-
-# --- new enroll i18n keys resolve (not echoed back as the bare key) ---
-for key in enroll_placed enroll_failed; do
-  en="$($SH "$script" --lang en --print-i18n "$key")"; [ "$en" != "$key" ] || fail "en i18n missing: $key"
-  zh="$($SH "$script" --lang zh --print-i18n "$key")"; [ "$zh" != "$key" ] || fail "zh i18n missing: $key"
-done
-
 # --- P2: light host:port validation ---
 $SH "$script" --valid-endpoint "host.example:7443" || fail "valid endpoint rejected"
 $SH "$script" --valid-endpoint "" || fail "blank endpoint must be allowed (auto)"
@@ -133,21 +118,9 @@ if $SH "$script" --valid-endpoint "no-port" 2>/dev/null; then fail "missing port
 if $SH "$script" --valid-endpoint "bad host:7443" 2>/dev/null; then fail "space in host accepted"; fi
 if $SH "$script" --valid-endpoint "h:99999x" 2>/dev/null; then fail "non-numeric port accepted"; fi
 
-# --- P1/P2: new interactive i18n keys present in both languages ---
-o="$($SH "$script" --lang en --print-i18n ask_config_key)"; printf '%s\n' "$o" | grep -qi 'advertised-endpoint' || fail "en ask_config_key"
-o="$($SH "$script" --lang zh --print-i18n ask_service_action)"; printf '%s\n' "$o" | grep -q '启动' || fail "zh ask_service_action"
-o="$($SH "$script" --lang en --print-i18n menu_invalid bogus)"; printf '%s\n' "$o" | grep -qi 'invalid' || fail "en menu_invalid"
-
 # --- wizard: IP detection seam, offline path never hits network ---
 di="$(PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" --detect-ip)" || fail "--detect-ip exit"
 echo "$di" | grep -Eq '^[0-9a-fA-F.:]+ prov_(nic|loopback)$' || fail "skip-probe must yield NIC/loopback ($di)"
-
-# --- --reset-lang clears the cached language preference ---
-fakehome="$(mktemp -d)"
-mkdir -p "$fakehome/.config/portunus"; printf 'zh' > "$fakehome/.config/portunus/installer-lang"
-HOME="$fakehome" XDG_CONFIG_HOME="$fakehome/.config" $SH "$script" --reset-lang >/dev/null 2>&1 || fail "--reset-lang exit"
-[ ! -e "$fakehome/.config/portunus/installer-lang" ] || fail "--reset-lang did not remove the cache"
-rm -rf "$fakehome"
 
 # --- Caddy: FQDN validation ---
 $SH "$script" --valid-fqdn serverbee-test.900040.xyz || fail "valid fqdn rejected"
@@ -170,20 +143,6 @@ if PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" client --domain x.example.com --dry-ru
 
 # --- Caddy: domain verb dry-run writes nothing, exits 0 ---
 PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" domain serverbee-test.900040.xyz --skip-dns-check --dry-run >/dev/null 2>&1 || fail "domain verb dry-run"
-
-# --- Caddy: EN/ZH i18n parity for the new keys ---
-diff <($SH "$script" --print-i18n-keys en | sort) <($SH "$script" --print-i18n-keys zh | sort) >/dev/null || fail "EN/ZH i18n key parity broken"
-# The key-parity check above compares the same $I18N_KEYS string twice, so it
-# cannot catch a missing `zh:`/`*:` case arm (it falls through to the wildcard).
-# Assert each renders, and that EN and ZH actually differ, for the config keys
-# this work renamed/added.
-for _k in config_server_only bad_config_value; do
-  _en="$($SH "$script" --lang en --print-i18n "$_k")"
-  _zh="$($SH "$script" --lang zh --print-i18n "$_k")"
-  [ "$_en" != "$_k" ] || fail "i18n: en arm missing for $_k"
-  [ "$_zh" != "$_k" ] || fail "i18n: zh arm missing for $_k"
-  [ "$_en" != "$_zh" ] || fail "i18n: en/zh identical for $_k (a case arm is likely missing)"
-done
 
 # --- advertised precedence: domain derives, explicit wins ---
 ea1="$(PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" server --domain d.example.com --effective-advertised 2>/dev/null)"
