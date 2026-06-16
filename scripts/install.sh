@@ -839,7 +839,8 @@ main() {
 }
 
 # Seed the advertised-endpoint default. Public probe → local NIC →
-# loopback. Sets DETECTED_IP + DETECTED_PROV (an i18n key). Never fatal.
+# loopback. Sets DETECTED_IP + DETECTED_PROV (a provenance token,
+# surfaced only by the --detect-ip seam). Never fatal.
 # PORTUNUS_SKIP_IP_PROBE=1 skips the external probe (offline/test/CI).
 valid_ip() { case "$1" in ""|*[!0-9a-fA-F.:]*) return 1 ;; *[.:]*) return 0 ;; *) return 1 ;; esac; }
 detect_public_ip() {

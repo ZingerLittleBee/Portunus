@@ -41,9 +41,18 @@ for badflag in --lang --reset-lang --print-i18n --print-i18n-keys; do
   if $SH "$script" "$badflag" en >/dev/null 2>&1; then fail "$badflag must now error (removed)"; fi
 done
 
-# --- --restart is accepted on config set (parses; no live service op in dry-run) ---
-$SH "$script" config set advertised-endpoint h.example:7443 --restart --dry-run >/dev/null 2>&1 \
-  || fail "--restart must be accepted on config set"
+# --- --restart drives the config-set restart path (init=none ⇒ a clean no-op) ---
+# Seeds a binary/none-init server meta under PORTUNUS_TEST_CONFIG_ROOT: `set`
+# writes the drop-in, then RESTART=yes reaches lifecycle_service → svc restart →
+# none_restart (a `:` no-op), so the live restart branch is exercised with zero
+# side effects (systemctl is never invoked on an init=none host).
+rs_tmp="$(mktemp -d)"; rs_root="$(mktemp -d)"
+printf 'role=server\ndeploy=binary\nversion=2.2.0\ninit=none\n' > "$rs_tmp/.install-meta"
+PORTUNUS_TEST_CONFIG_ROOT="$rs_root" $SH "$script" --compose-dir "$rs_tmp" config set advertised-endpoint h.example:7443 --restart >/dev/null 2>&1 \
+  || fail "--restart config set (init=none) must succeed"
+grep -q -- '--advertised-endpoint h.example:7443' "$rs_root/etc/systemd/system/portunus-server.service.d/10-portunus.conf" \
+  || fail "--restart path must still write the drop-in"
+rm -rf "$rs_tmp" "$rs_root"
 
 # --- bare role implies install verb; explicit verb parsed ---
 $SH "$script" install client --version 1.0.0 --dry-run >/dev/null 2>&1 || fail "install verb"
