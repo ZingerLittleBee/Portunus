@@ -3,7 +3,7 @@
 # config/env for client/server/standalone, binary+systemd|openrc or Docker.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- standalone
-#   curl -fsSL .../scripts/install.sh | sh        # interactive menu
+#   curl -fsSL .../scripts/install.sh | sh -s -- server --advertised-endpoint host:7443
 #
 # POSIX sh. The only non-POSIX builtin relied upon is `local`, which dash,
 # busybox ash, and ksh all provide.
@@ -22,8 +22,6 @@ esac
 REPO="ZingerLittleBee/Portunus"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 DEFAULT_BIN_DIR="/usr/local/bin"
-LANG_CACHE="${XDG_CONFIG_HOME:-$HOME/.config}/portunus/installer-lang"
-I18N_KEYS="menu_title menu_install menu_uninstall menu_upgrade menu_status menu_service menu_config menu_env menu_exit menu_select lang_prompt ask_role ask_deploy_server ask_deploy_client ask_deploy_standalone ask_version ask_bindir ask_datadir ask_ophttp confirm_proceed confirm_uninstall confirm_purge_typed need_role no_install_found done_next next_standalone_config next_systemd next_docker next_status restart_now upgrade_current unknown_config_key ask_config_key ask_config_value ask_service_action menu_invalid press_enter bad_endpoint op_cancelled ask_advertised_pub summary_title sum_role sum_deploy sum_version sum_bindir sum_datadir sum_ophttp sum_compose sum_advertised prov_detected prov_nic prov_loopback prov_user val_latest val_binary val_docker ask_domain sum_domain bad_domain dns_check dns_ok dns_mismatch dns_help caddy_installing caddy_done caddy_verify caddy_verify_warn https_ready https_public_note adv_from_domain config_na_standalone next_openrc next_manual next_standalone_create enroll_placed enroll_failed srv_running srv_installed_only srv_start_hint srv_next_title srv_step_token srv_step_ui srv_step_ui_remote srv_step_super srv_handy"
 
 # ─── Globals ──────────────────────────────────────────────────────────
 VERB=""           # install|uninstall|upgrade|status|service|config|env
@@ -43,11 +41,10 @@ SERVICE_ACTION="" # start|stop|restart
 CONFIG_OP=""      # get|set
 CONFIG_KEY=""
 CONFIG_VALUE=""
-ASSUME_YES="no"
+RESTART="no"
 PURGE="no"
 DRY_RUN="no"
 ENROLL_URI=""     # --enroll '<uri>' (client/binary only): one-time enrollment URI
-LANG_CODE="${PORTUNUS_LANG:-}"
 tag=""
 artifact_version=""
 resolved_version=""
@@ -55,12 +52,11 @@ os=""
 arch=""
 target=""
 DETECTED_IP=""        # last detect_public_ip() result
-DETECTED_PROV=""      # provenance i18n key: prov_detected|prov_nic|prov_loopback
+DETECTED_PROV=""      # provenance token: prov_detected|prov_nic|prov_loopback
 DOMAIN=""             # optional HTTPS domain for host Caddy
 ACME_EMAIL=""         # optional Let's Encrypt account email
 SKIP_DNS_CHECK="no"   # --skip-dns-check
 CADDYFILE="/etc/caddy/Caddyfile"
-ADVERTISED_FROM_DOMAIN="no"  # set yes when ADVERTISED was derived from DOMAIN
 PRINT_EFF="no"               # --effective-advertised seam
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -71,198 +67,6 @@ CLEANUP_DIRS=""
 _cleanup() { for d in $CLEANUP_DIRS; do [ -n "$d" ] && rm -rf "$d"; done; return 0; }
 trap _cleanup EXIT
 track_tmp() { CLEANUP_DIRS="$CLEANUP_DIRS $1"; }
-
-# ─── i18n ─────────────────────────────────────────────────────────────
-# Convention: every '%' in a message value MUST be a '%s' directive with a matching t() arg (values are used as printf format strings).
-resolve_lang() {
-  if [ -z "$LANG_CODE" ]; then
-    case "${LC_ALL:-${LANG:-}}" in zh*|*zh_*) LANG_CODE="zh" ;; *) LANG_CODE="" ;; esac
-  fi
-  # Reuse a prior interactive choice so the menu doesn't re-ask each run.
-  if [ -z "$LANG_CODE" ] && [ -r "$LANG_CACHE" ]; then
-    case "$(cat "$LANG_CACHE" 2>/dev/null)" in zh) LANG_CODE=zh ;; en) LANG_CODE=en ;; esac
-  fi
-  case "$LANG_CODE" in zh|en) ;; *) LANG_CODE="" ;; esac
-}
-
-t() {  # t <key> [printf-args...] — localized printf, no trailing newline (callers add it)
-  _k="${1:-}"; shift 2>/dev/null || true
-  case "$LANG_CODE:$_k" in
-    zh:menu_title) _f="Portunus 管理器" ;;
-    zh:menu_install) _f="  [1] 安装    Install" ;;
-    zh:menu_uninstall) _f="  [2] 卸载    Uninstall" ;;
-    zh:menu_upgrade) _f="  [3] 升级    Upgrade" ;;
-    zh:menu_status) _f="  [4] 状态    Status" ;;
-    zh:menu_service) _f="  [5] 服务控制 Service (start/stop/restart)" ;;
-    zh:menu_config) _f="  [6] 配置    Config" ;;
-    zh:menu_env) _f="  [7] 环境变量 Env" ;;
-    zh:menu_exit) _f="  [0] 退出    Exit" ;;
-    zh:menu_select) _f="请选择 [0-7]: " ;;
-    zh:lang_prompt) _f="请选择语言\n  [1] English\n  [2] 中文" ;;
-    zh:ask_role) _f="请选择要安装的角色\n  [1] server（服务端）\n  [2] client（客户端）\n  [3] standalone（独立转发器）" ;;
-    zh:ask_deploy_server) _f="请选择部署方式（直接回车选择推荐项）\n  [1] docker compose  （推荐）\n  [2] 二进制 + 服务（systemd/OpenRC）" ;;
-    zh:ask_deploy_client) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + 服务（systemd/OpenRC）  （推荐）\n  [2] docker compose" ;;
-    zh:ask_deploy_standalone) _f="请选择部署方式（直接回车选择推荐项）\n  [1] 二进制 + 服务（systemd/OpenRC）  （推荐）\n  [2] docker compose" ;;
-    zh:ask_version) _f="版本号（留空则使用最新版）: " ;;
-    zh:ask_bindir) _f="程序安装目录 [%s]: " ;;
-    zh:ask_datadir) _f="服务端数据目录（留空则使用默认值）: " ;;
-    zh:ask_ophttp) _f="运维 HTTP 监听地址（留空则使用默认值）: " ;;
-    zh:confirm_proceed) _f="确认继续吗？[Y/n]: " ;;
-    zh:confirm_uninstall) _f="确定要卸载 portunus-%s（%s）吗？[y/N]: " ;;
-    zh:confirm_purge_typed) _f="如需连同数据一并删除 %s，请输入 'purge' 确认: " ;;
-    zh:need_role) _f="请指定角色：client、server 或 standalone" ;;
-    zh:no_install_found) _f="未检测到 Portunus 安装（缺少 .install-meta，且自动探测未命中）。" ;;
-    zh:done_next) _f="安装完成，后续步骤：" ;;
-    zh:next_standalone_config) _f="  编辑配置：sudoedit %s" ;;
-    zh:next_standalone_create) _f="  先创建配置：把转发规则写入 %s（没有它服务会直接退出，不会启动）" ;;
-    zh:next_systemd) _f="  启动服务：sudo systemctl enable --now portunus-%s" ;;
-    zh:next_docker) _f="  查看容器：cd %s && docker compose ps" ;;
-    zh:next_status) _f="  查看状态：install.sh status" ;;
-    zh:restart_now) _f="是否立即生效（重启服务）？[y/N]: " ;;
-    zh:upgrade_current) _f="当前已是最新版 %s，无需升级。" ;;
-    zh:unknown_config_key) _f="未知的配置项：%s（可用：advertised-endpoint data-dir operator-http-listen version-pin）" ;;
-    zh:ask_config_key) _f="请选择要修改的配置项\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin" ;;
-    zh:ask_config_value) _f="请输入 %s 的新值: " ;;
-    zh:ask_service_action) _f="请选择服务操作\n  [1] 启动\n  [2] 停止\n  [3] 重启" ;;
-    zh:menu_invalid) _f="无效的选项：%s" ;;
-    zh:press_enter) _f="按回车键继续…" ;;
-    zh:bad_endpoint) _f="无效的 host:port：'%s'（示例：host.example:7443；留空则自动）" ;;
-    zh:op_cancelled) _f="已取消。" ;;
-    zh:ask_advertised_pub) _f="对外通告地址 [%s]（回车采用此默认值，输入 - 表示不设置/仅本机回环）: " ;;
-    zh:summary_title) _f="即将安装：" ;;
-    zh:sum_role) _f="  角色：%s" ;;
-    zh:sum_deploy) _f="  部署方式：%s" ;;
-    zh:sum_version) _f="  版本：%s" ;;
-    zh:sum_bindir) _f="  程序目录：%s" ;;
-    zh:sum_datadir) _f="  数据目录：%s" ;;
-    zh:sum_ophttp) _f="  运维 HTTP：%s" ;;
-    zh:sum_compose) _f="  compose 目录：%s" ;;
-    zh:sum_advertised) _f="  对外通告地址：%s" ;;
-    zh:prov_detected) _f="（自动探测到的公网 IP）" ;;
-    zh:prov_nic) _f="（本机网卡地址）" ;;
-    zh:prov_loopback) _f="（回环地址，仅本机可用）" ;;
-    zh:prov_user) _f="（手动输入）" ;;
-    zh:val_latest) _f="最新版（运行时解析）" ;;
-    zh:val_binary) _f="二进制 + 服务" ;;
-    zh:val_docker) _f="docker compose" ;;
-    zh:ask_domain) _f="Web UI 的 HTTPS 域名（留空则跳过 Caddy/HTTPS）: " ;;
-    zh:sum_domain) _f="  HTTPS 域名：%s" ;;
-    zh:bad_domain) _f="无效的域名：'%s'（需为完整域名，如 portunus.example.com）" ;;
-    zh:dns_check) _f="正在检查 %s 是否解析到本机（%s）…" ;;
-    zh:dns_ok) _f="DNS 校验通过：%s → %s" ;;
-    zh:dns_mismatch) _f="%s 的解析未指向本机。A 记录：%s ；本机公网 IP：%s" ;;
-    zh:dns_help) _f="请添加以下 DNS 记录，然后按回车重新校验（Ctrl-C 取消）：\n  %s  A  %s" ;;
-    zh:caddy_installing) _f="正在安装 Caddy…" ;;
-    zh:caddy_done) _f="Caddy 已为 %s 配置完成" ;;
-    zh:caddy_verify) _f="正在验证 https://%s/（Let's Encrypt 签发约需 30 秒）…" ;;
-    zh:caddy_verify_warn) _f="暂时无法验证 https://%s/。请检查：journalctl -u caddy -e；以及 DNS 是否已生效。" ;;
-    zh:https_ready) _f="HTTPS 已就绪：https://%s/" ;;
-    zh:https_public_note) _f="提示：Web UI 现已通过 HTTPS 公开可访问，仍由运维登录/令牌保护。" ;;
-    zh:adv_from_domain) _f="  对外通告地址：%s（由域名推导）" ;;
-    zh:config_na_standalone) _f="standalone 角色不支持 config get/set —— 请直接编辑 /etc/portunus/standalone.toml" ;;
-    zh:enroll_placed) _f="已将注册凭据写入 %s" ;;
-    zh:enroll_failed) _f="客户端注册失败；二进制与服务已安装，请用新的注册链接重试。" ;;
-    *:menu_title) _f="Portunus Manager" ;;
-    *:menu_install) _f="  [1] Install" ;;
-    *:menu_uninstall) _f="  [2] Uninstall" ;;
-    *:menu_upgrade) _f="  [3] Upgrade" ;;
-    *:menu_status) _f="  [4] Status" ;;
-    *:menu_service) _f="  [5] Service (start/stop/restart)" ;;
-    *:menu_config) _f="  [6] Config" ;;
-    *:menu_env) _f="  [7] Env" ;;
-    *:menu_exit) _f="  [0] Exit" ;;
-    *:menu_select) _f="Select [0-7]: " ;;
-    *:lang_prompt) _f="Select language\n  [1] English\n  [2] 中文" ;;
-    *:ask_role) _f="Install which role?\n  [1] server\n  [2] client\n  [3] standalone" ;;
-    *:ask_deploy_server) _f="Deploy form? (Enter = recommended)\n  [1] docker compose  (recommended)\n  [2] binary + service (systemd/OpenRC)" ;;
-    *:ask_deploy_client) _f="Deploy form? (Enter = recommended)\n  [1] binary + service (systemd/OpenRC)  (recommended)\n  [2] docker compose" ;;
-    *:ask_deploy_standalone) _f="Deploy form? (Enter = recommended)\n  [1] binary + service (systemd/OpenRC)  (recommended)\n  [2] docker compose" ;;
-    *:ask_version) _f="Version (blank = latest): " ;;
-    *:ask_bindir) _f="Install dir [%s]: " ;;
-    *:ask_datadir) _f="Server data dir (blank = default): " ;;
-    *:ask_ophttp) _f="Operator HTTP listen (blank = default): " ;;
-    *:confirm_proceed) _f="Proceed? [Y/n]: " ;;
-    *:confirm_uninstall) _f="Uninstall portunus-%s (%s)? [y/N]: " ;;
-    *:confirm_purge_typed) _f="Type 'purge' to also delete data at %s: " ;;
-    *:need_role) _f="role required: client, server, or standalone" ;;
-    *:no_install_found) _f="No Portunus install detected (no .install-meta and no probe match)." ;;
-    *:done_next) _f="Done. Next steps:" ;;
-    *:next_standalone_config) _f="  edit:    sudoedit %s" ;;
-    *:next_standalone_create) _f="  create config first: write your forwarding rules to %s (the service exits and won't start without it)" ;;
-    *:next_systemd) _f="  start:   sudo systemctl enable --now portunus-%s" ;;
-    *:next_docker) _f="  manage:  (cd %s && docker compose ps)" ;;
-    *:next_status) _f="  status:  install.sh status" ;;
-    *:restart_now) _f="Apply now (restart service)? [y/N]: " ;;
-    *:upgrade_current) _f="Already at %s; nothing to upgrade." ;;
-    *:unknown_config_key) _f="unknown config key: %s (allowed: advertised-endpoint data-dir operator-http-listen version-pin)" ;;
-    *:ask_config_key) _f="Config key\n  [1] advertised-endpoint\n  [2] data-dir\n  [3] operator-http-listen\n  [4] version-pin" ;;
-    *:ask_config_value) _f="New value for %s: " ;;
-    *:ask_service_action) _f="Service action\n  [1] start\n  [2] stop\n  [3] restart" ;;
-    *:menu_invalid) _f="invalid option: %s" ;;
-    *:press_enter) _f="Press Enter to continue…" ;;
-    *:bad_endpoint) _f="invalid host:port '%s' — expected like host.example:7443 (blank = auto)" ;;
-    *:op_cancelled) _f="cancelled." ;;
-    *:ask_advertised_pub) _f="Public advertised endpoint [%s] (Enter=accept, '-' = none/loopback): " ;;
-    *:summary_title) _f="About to install:" ;;
-    *:sum_role) _f="  role:                 %s" ;;
-    *:sum_deploy) _f="  deploy:               %s" ;;
-    *:sum_version) _f="  version:              %s" ;;
-    *:sum_bindir) _f="  bin dir:              %s" ;;
-    *:sum_datadir) _f="  data dir:             %s" ;;
-    *:sum_ophttp) _f="  operator http:        %s" ;;
-    *:sum_compose) _f="  compose dir:          %s" ;;
-    *:sum_advertised) _f="  advertised endpoint:  %s" ;;
-    *:prov_detected) _f="(detected public IP)" ;;
-    *:prov_nic) _f="(local NIC)" ;;
-    *:prov_loopback) _f="(loopback — local only)" ;;
-    *:prov_user) _f="(you entered)" ;;
-    *:val_latest) _f="latest (resolved at run time)" ;;
-    *:val_binary) _f="binary + service" ;;
-    *:val_docker) _f="docker compose" ;;
-    *:ask_domain) _f="HTTPS domain for the web UI (blank = skip Caddy/HTTPS): " ;;
-    *:sum_domain) _f="  https domain:         %s" ;;
-    *:bad_domain) _f="invalid domain '%s' — expected an FQDN like portunus.example.com" ;;
-    *:dns_check) _f="Checking %s resolves to this server (%s)…" ;;
-    *:dns_ok) _f="DNS OK: %s → %s" ;;
-    *:dns_mismatch) _f="DNS for %s does not point here. A record(s): %s ; this server: %s" ;;
-    *:dns_help) _f="Add this DNS record, then press Enter to re-check (Ctrl-C to abort):\n  %s  A  %s" ;;
-    *:caddy_installing) _f="Installing Caddy…" ;;
-    *:caddy_done) _f="Caddy configured for %s" ;;
-    *:caddy_verify) _f="Verifying https://%s/ (Let's Encrypt issuance can take ~30s)…" ;;
-    *:caddy_verify_warn) _f="Could not verify https://%s/ yet. Check: journalctl -u caddy -e ; DNS propagation." ;;
-    *:https_ready) _f="HTTPS ready: https://%s/" ;;
-    *:https_public_note) _f="Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token." ;;
-    *:adv_from_domain) _f="  advertised endpoint:  %s  (from domain)" ;;
-    *:config_na_standalone) _f="config get/set is not applicable for the standalone role — edit /etc/portunus/standalone.toml directly" ;;
-    *:enroll_placed) _f="Enrollment bundle placed at %s" ;;
-    *:enroll_failed) _f="Enrollment failed; the binary and service are installed — retry with a fresh enroll link." ;;
-    zh:next_openrc) _f="  启动服务：sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
-    *:next_openrc) _f="  start:   sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start" ;;
-    zh:next_manual) _f="  无受支持的 init 系统；手动后台运行：\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
-    *:next_manual) _f="  no supported init system; run it in the background manually:\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &" ;;
-    zh:srv_running) _f="✓ Portunus server %s 已安装并已启动运行。" ;;
-    zh:srv_installed_only) _f="✓ Portunus server %s 已安装（因 --no-service 未启动服务）。" ;;
-    zh:srv_start_hint) _f="  先启动服务：sudo systemctl enable --now portunus-server" ;;
-    zh:srv_next_title) _f="后续步骤：" ;;
-    zh:srv_step_token) _f="  1) 获取 onboarding setup token（仅首次，用于创建第一个管理员）：\n       sudo journalctl -u portunus-server | grep 'onboarding setup token'" ;;
-    zh:srv_step_ui) _f="  2) 在浏览器打开 Web UI：%s\n       （按设计只绑回环地址，公网访问不到）" ;;
-    zh:srv_step_ui_remote) _f="       服务器在远端？在你自己的机器上先建 SSH 隧道，再用本地浏览器打开上面的地址：\n       ssh -L %s:127.0.0.1:%s <用户名>@<服务器地址>" ;;
-    zh:srv_step_super) _f="  3) 把 token 粘贴到浏览器，创建第一个 _superadmin 账号。" ;;
-    zh:srv_handy) _f="常用命令：\n  查看状态：install.sh status\n  查看日志：sudo journalctl -u portunus-server -f\n  停止服务：sudo systemctl stop portunus-server" ;;
-    *:srv_running) _f="✓ Portunus server %s is installed and running." ;;
-    *:srv_installed_only) _f="✓ Portunus server %s is installed (service not started: --no-service)." ;;
-    *:srv_start_hint) _f="  Start it first:  sudo systemctl enable --now portunus-server" ;;
-    *:srv_next_title) _f="Next steps:" ;;
-    *:srv_step_token) _f="  1) Get the onboarding setup token (first run only, to create the first admin):\n       sudo journalctl -u portunus-server | grep 'onboarding setup token'" ;;
-    *:srv_step_ui) _f="  2) Open the Web UI in a browser:  %s\n       (bound to loopback by design — not reachable from the public network)" ;;
-    *:srv_step_ui_remote) _f="       Remote server? From your own machine, tunnel first, then open the URL locally:\n       ssh -L %s:127.0.0.1:%s <user>@<this-server>" ;;
-    *:srv_step_super) _f="  3) Paste the token in the browser, then create the first _superadmin account." ;;
-    *:srv_handy) _f="Handy commands:\n  status:  install.sh status\n  logs:    sudo journalctl -u portunus-server -f\n  stop:    sudo systemctl stop portunus-server" ;;
-    *) _f="$_k" ;;
-  esac
-  # shellcheck disable=SC2059
-  printf "$_f" "$@"
-}
 
 # ─── Meta ─────────────────────────────────────────────────────────────
 meta_path_for() {
@@ -415,7 +219,7 @@ place_client_bundle() {
   _tmp="$_tmpd/client.bundle.json"
   if ! "${BIN_DIR}/portunus-client" enroll "$_uri" --out "$_tmp" >/dev/null; then
     rm -rf "$_tmpd"
-    die "$(t enroll_failed)"
+    die "Enrollment failed; the binary and service are installed — retry with a fresh enroll link."
   fi
   ${SUDO:-} install -o root -g portunus-client -m 0640 "$_tmp" /etc/portunus/client.bundle.json \
     || { rm -rf "$_tmpd"; die "failed to place client bundle"; }
@@ -425,7 +229,7 @@ place_client_bundle() {
   elif command -v rc-service >/dev/null 2>&1 && rc-service portunus-client status >/dev/null 2>&1; then
     ${SUDO:-} rc-service portunus-client restart || true
   fi
-  t enroll_placed "/etc/portunus/client.bundle.json"; echo
+  echo "Enrollment bundle placed at /etc/portunus/client.bundle.json"
 }
 
 # systemd drop-in body for a custom standalone config path (empty otherwise).
@@ -506,7 +310,7 @@ openrc_remove()  { ${SUDO:-} rm -f "/etc/init.d/portunus-$1" "/etc/conf.d/portun
 
 # ── none driver (no supported init: binary + config only) ──
 none_install()      { ensure_svc_user "$1" 2>/dev/null || true; apply_config_path "$1" "$2" "$(svc_user_for "$1")" 2>/dev/null || true; }
-none_enable_start() { t next_manual "/usr/local/bin/portunus-$1" "${2:-$(config_default_for "$1")}"; echo; }
+none_enable_start() { printf '  no supported init system; run it in the background manually:\n  nohup %s --config %s > /var/log/portunus.log 2>&1 &\n' "/usr/local/bin/portunus-$1" "${2:-$(config_default_for "$1")}"; }
 none_start()   { :; }
 none_stop()    { :; }
 none_disable() { :; }
@@ -625,10 +429,22 @@ install_systemd_unit() {  # install_systemd_unit <role> — place the unit only
   ${SUDO:-} systemctl daemon-reload || true
 }
 
-# ─── Server config (drop-in / .env) ───────────────────────────────────
-# Pure: emit the drop-in body for the currently-set scoped values.
-# Mirrors the `Environment=` lines `config set` writes so install-time
-# --data-dir / --operator-http-listen persist identically (parity).
+# ─── Server config (systemd drop-in / openrc conf.d) ──────────────────
+# The server's scoped flags live in the systemd ExecStart override (systemd)
+# or /etc/conf.d/portunus-server's datadir=/server_args= (openrc). These paths
+# are root-owned; `config set` writes them via sudo. PORTUNUS_TEST_CONFIG_ROOT
+# (a directory prefix) is a test-only seam: when set, the files are written
+# under it WITHOUT sudo and WITHOUT systemctl, so `config get/set` can be
+# exercised unprivileged in CI. Production leaves it unset → real paths + sudo.
+systemd_dropin_dir()  { printf '%s/etc/systemd/system/portunus-server.service.d' "${PORTUNUS_TEST_CONFIG_ROOT:-}"; }
+systemd_dropin_file() { printf '%s/10-portunus.conf' "$(systemd_dropin_dir)"; }
+confd_file()          { printf '%s/etc/conf.d/portunus-server' "${PORTUNUS_TEST_CONFIG_ROOT:-}"; }
+# Honor the $SUDO convention (empty as root, "sudo" otherwise) like every other
+# privileged call — a hardcoded `sudo` breaks on root-but-no-sudo hosts (Alpine,
+# minimal openrc/musl images). Test seam set ⇒ write directly, no sudo.
+config_sudo() { if [ -n "${PORTUNUS_TEST_CONFIG_ROOT:-}" ]; then "$@"; else ${SUDO:-} "$@"; fi }
+
+# Pure: emit the systemd drop-in body for the currently-set scoped values.
 render_dropin() {
   # The server has no env binding for these; an inert Environment= line
   # is ignored. Emit a real ExecStart= override (cleared then re-set —
@@ -641,12 +457,43 @@ render_dropin() {
   return 0
 }
 write_server_dropin() {
-  local d="/etc/systemd/system/portunus-server.service.d" f
-  f="$d/10-portunus.conf"
-  sudo install -d -m 0755 "$d"
-  render_dropin | sudo tee "$f" >/dev/null
-  sudo systemctl daemon-reload || true
+  local d f; d="$(systemd_dropin_dir)"; f="$(systemd_dropin_file)"
+  config_sudo install -d -m 0755 "$d"
+  render_dropin | config_sudo tee "$f" >/dev/null
+  [ -n "${PORTUNUS_TEST_CONFIG_ROOT:-}" ] || sudo systemctl daemon-reload || true
   echo "→ wrote $f"
+}
+# openrc counterpart: rewrite /etc/conf.d/portunus-server from the current
+# scoped globals (datadir= + server_args=), mirroring openrc_install's seed.
+write_server_confd() {
+  local f; f="$(confd_file)"
+  config_sudo install -d -m 0755 "$(dirname "$f")"
+  render_confd server | config_sudo tee "$f" >/dev/null
+  echo "→ wrote $f"
+}
+# Load the server's current scoped values (DATA_DIR/OP_HTTP_LISTEN/ADVERTISED)
+# from the live binary config so `config get/set` reflects what is in effect.
+# systemd → the ExecStart override flags; openrc → datadir= + server_args=.
+hydrate_binary_config() {  # $1 = init (systemd|openrc|none)
+  DATA_DIR=""; OP_HTTP_LISTEN=""; ADVERTISED=""
+  if [ "$1" = openrc ]; then
+    # Tolerant parse: the canonical form is quoted (datadir="…"), but a
+    # hand-edited conf.d may carry a trailing comment or an unquoted value —
+    # both are valid POSIX-shell. Capture the quoted body first (ignoring
+    # anything after the closing quote), else an unquoted bareword. Missing a
+    # custom datadir here would silently revert it to the default on rewrite.
+    local conf sargs; conf="$(confd_file)"
+    DATA_DIR="$(sed -n 's/^datadir="\([^"]*\)".*/\1/p' "$conf" 2>/dev/null | tail -1)"
+    [ -n "$DATA_DIR" ] || DATA_DIR="$(sed -n 's/^datadir=\([^"#[:space:]][^#[:space:]]*\).*/\1/p' "$conf" 2>/dev/null | tail -1)"
+    sargs="$(sed -n 's/^server_args="\([^"]*\)".*/\1/p' "$conf" 2>/dev/null | tail -1)"
+    OP_HTTP_LISTEN="$(flag_value_from "$sargs" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$sargs" --advertised-endpoint)"
+  else
+    local line; line="$(grep -E '^ExecStart=.*portunus-server' "$(systemd_dropin_file)" 2>/dev/null | tail -1 || true)"
+    DATA_DIR="$(flag_value_from "$line" --data-dir)"
+    OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
+  fi
 }
 
 # Guided onboarding for a systemd server install. The generic one-liner
@@ -660,16 +507,17 @@ print_server_next_steps() {
     [ -n "$h" ] && [ "$h" != "0.0.0.0" ] && [ "$h" != "::" ] && host="$h"
   fi
   url="http://${host}:${port}"
-  if service_should_start; then t srv_running "$resolved_version"; echo
-  else t srv_installed_only "$resolved_version"; echo; t srv_start_hint; echo; fi
+  if service_should_start; then printf '✓ Portunus server %s is installed and running.\n' "$resolved_version"
+  else printf '✓ Portunus server %s is installed (service not started: --no-service).\n' "$resolved_version"
+       echo "  Start it first:  sudo systemctl enable --now portunus-server"; fi
   echo
-  t srv_next_title;      echo
-  t srv_step_token;      echo
-  t srv_step_ui "$url";  echo
-  t srv_step_ui_remote "$port" "$port"; echo
-  t srv_step_super;      echo
+  echo "Next steps:"
+  printf '  1) Get the onboarding setup token (first run only, to create the first admin):\n       sudo journalctl -u portunus-server | grep '\''onboarding setup token'\''\n'
+  printf '  2) Open the Web UI in a browser:  %s\n       (bound to loopback by design — not reachable from the public network)\n' "$url"
+  printf '       Remote server? From your own machine, tunnel first, then open the URL locally:\n       ssh -L %s:127.0.0.1:%s <user>@<this-server>\n' "$port" "$port"
+  echo "  3) Paste the token in the browser, then create the first _superadmin account."
   echo
-  t srv_handy;           echo
+  printf 'Handy commands:\n  status:  install.sh status\n  logs:    sudo journalctl -u portunus-server -f\n  stop:    sudo systemctl stop portunus-server\n'
 }
 
 # Actionable post-install hints. The service is started by default; these
@@ -682,25 +530,25 @@ print_next_steps() {
     print_server_next_steps
     return
   fi
-  echo "$(t done_next)"
+  echo "Done. Next steps:"
   if [ "${DEPLOY:-binary}" = "docker" ]; then
-    t next_docker "${COMPOSE_DIR:-$PWD}"; echo
+    printf '  manage:  (cd %s && docker compose ps)\n' "${COMPOSE_DIR:-$PWD}"
   else
     _cfg="${CONFIG_PATH:-/etc/portunus/standalone.toml}"
     if [ "$ROLE" = "standalone" ]; then
-      if [ -f "$_cfg" ]; then t next_standalone_config "$_cfg"; echo
-      else t next_standalone_create "$_cfg"; echo; fi
+      if [ -f "$_cfg" ]; then printf '  edit:    sudoedit %s\n' "$_cfg"
+      else printf "  create config first: write your forwarding rules to %s (the service exits and won't start without it)\n" "$_cfg"; fi
     fi
     # If we did not start the service, show how to start it.
     if ! service_should_start; then
       case "${INIT:-}" in
-        openrc) t next_openrc "$ROLE" "$ROLE"; echo ;;
+        openrc) printf '  start:   sudo rc-update add portunus-%s default && sudo rc-service portunus-%s start\n' "$ROLE" "$ROLE" ;;
         none)   none_enable_start "$ROLE" "$_cfg" ;;
-        *)      t next_systemd "$ROLE"; echo ;;
+        *)      printf '  start:   sudo systemctl enable --now portunus-%s\n' "$ROLE" ;;
       esac
     fi
   fi
-  t next_status; echo
+  echo "  status:  install.sh status"
 }
 
 # ─── Docker ───────────────────────────────────────────────────────────
@@ -816,12 +664,93 @@ install_docker() {
   # Record the deploy BEFORE pull/up: a port conflict that fails
   # `up -d` must not leave compose files on disk with no .install-meta.
   meta_write "$dir/.install-meta" "role=$ROLE" "deploy=docker" \
-    "version=${artifact_version:-$resolved_version}" "lang=${LANG_CODE:-en}" \
+    "version=${artifact_version:-$resolved_version}" \
     "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
   ( cd "$dir" && $dc pull && $dc up -d )
 }
 
-# ─── Arg parse + dispatch (minimal; expanded in Task 2) ───────────────
+# ─── Usage / help (layered: short by default, full via --help-all) ────
+print_usage() {
+  cat <<'USAGE'
+Portunus installer & lifecycle manager (flag-driven, non-interactive)
+
+Usage:
+  install.sh <role> [options]    install a role
+  install.sh <verb> [options]    manage an existing install
+
+Roles:
+  standalone   forward ports/traffic on THIS machine (no control plane)
+  server       run a control panel for many nodes (with Web UI)
+  client       connect THIS machine to an existing control panel
+
+Manage verbs:
+  status                         show what is installed and running
+  service start|stop|restart     control the service
+  upgrade                        upgrade to the latest release
+  config get|set <key> [value]   view/change a server config key
+  env                            print all server config keys + values
+  uninstall [--purge]            remove (--purge also deletes data)
+  domain <fqdn>                  set up HTTPS via Caddy (server)
+
+Options:
+  --version V                    install a specific version (default: latest)
+  --deploy binary|docker         deployment form (default: binary)
+  --bin-dir D                    binary install dir (default: /usr/local/bin)
+  --compose-dir D                docker compose project dir (default: cwd)
+  --enroll '<uri>'               (client) self-enroll during install
+  --domain FQDN                  (server) HTTPS via Caddy + Let's Encrypt
+  --acme-email A                 (server --domain) ACME contact email
+  --skip-dns-check               (server --domain) skip the DNS pre-check
+  --data-dir D                   (server) data directory
+  --advertised-endpoint H:P      (server) endpoint clients dial
+  --operator-http-listen A       (server) operator HTTP bind (default 127.0.0.1:7080)
+  --config PATH                  (standalone) config file the service reads
+  --no-service                   install but do not enable/start the service
+  --restart                      (config set) restart the service to apply
+  --purge                        (uninstall) also delete the data dir / volume
+  --dry-run                      print the plan and change nothing
+
+Examples:
+  install.sh server --advertised-endpoint panel.example:7443
+  install.sh server --deploy docker --compose-dir ~/portunus
+  install.sh server --domain panel.example.com --acme-email ops@example.com
+  install.sh client --enroll 'portunus://panel.example.com:7443/enroll?...'
+  install.sh standalone --config /etc/portunus/standalone.toml
+  install.sh status
+  install.sh service restart
+  install.sh upgrade
+  install.sh config set advertised-endpoint panel.example:7443 --restart
+  install.sh config get advertised-endpoint
+  install.sh uninstall --purge
+
+More:  install.sh --help-all     adds automation/CI seam flags
+USAGE
+}
+
+print_usage_all() {
+  print_usage
+  cat <<'USAGE'
+
+Automation / CI seams (stable; exercised by scripts/install.test.sh):
+  --effective-advertised         print the resolved advertised endpoint, exit
+  --detect-deploy [DIR]          print binary|docker for DIR/host, exit
+  --detect-init                  print systemd|openrc|none, exit
+  --detect-ip                    print "<ip> <provenance>", exit
+  --resolve-meta                 print the resolved .install-meta path, exit
+  --meta-write FILE k=v...       write an install-meta file, exit
+  --meta-read FILE KEY           read one key from an install-meta file, exit
+  --valid-endpoint H:P           exit 0/1 on host:port validity
+  --valid-fqdn FQDN              exit 0/1 on FQDN validity
+  --valid-email ADDR             exit 0/1 on ACME-email validity
+  --render-dropin                print the systemd ExecStart drop-in, exit
+  --render-caddy FQDN [PORT]     print the managed Caddy block, exit
+  --render-openrc ROLE           print the OpenRC init script, exit
+  --render-confd ROLE [CFG]      print the OpenRC conf.d body, exit
+  --render-config-dropin ROLE CFG  print the standalone config drop-in, exit
+USAGE
+}
+
+# ─── Arg parse + dispatch ─────────────────────────────────────────────
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -839,22 +768,18 @@ parse_args() {
       --skip-dns-check) SKIP_DNS_CHECK="yes" ;;
       --data-dir) shift; [ $# -gt 0 ] || die "--data-dir needs a value"; DATA_DIR="$1" ;;
       --operator-http-listen) shift; [ $# -gt 0 ] || die "--operator-http-listen needs a value"; OP_HTTP_LISTEN="$1" ;;
-      --lang) shift; [ $# -gt 0 ] || die "--lang needs a value"; LANG_CODE="$1" ;;
-      --systemd) : ;;  # back-compat no-op: the service is installed by default now
       --no-service) NO_SERVICE="yes" ;;
       --config) shift; [ $# -gt 0 ] || die "--config needs a value"; CONFIG_PATH="$1" ;;
       --enroll) shift; [ $# -gt 0 ] || die "--enroll needs a value"; ENROLL_URI="$1" ;;
-      --yes) ASSUME_YES="yes" ;;
+      --restart) RESTART="yes" ;;
       --purge) PURGE="yes" ;;
       --dry-run) DRY_RUN="yes" ;;
-      --print-i18n-keys) shift 2>/dev/null || true; for k in $I18N_KEYS; do echo "$k"; done; exit 0 ;;
-      --print-i18n) shift; [ $# -gt 0 ] || die "--print-i18n needs a key"; resolve_lang; t "$1"; echo; exit 0 ;;
-      -h|--help) echo "usage: install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain> [start|stop|restart] [get|set key [value]] [--version V] [--deploy binary|docker] [--config PATH (standalone)] [--enroll '<uri>' (client)] [--no-service] [--bin-dir D] [--compose-dir D] [--advertised-endpoint H:P] [--data-dir D] [--operator-http-listen A] [--domain FQDN] [--acme-email A] [--skip-dns-check] [--lang en|zh] [--reset-lang] [--yes] [--purge] [--dry-run]"; exit 0 ;;
+      -h|--help) print_usage; exit 0 ;;
+      --help-all) print_usage_all; exit 0 ;;
       --meta-write) shift; f="$1"; shift; meta_write "$f" "$@"; exit 0 ;;
       --meta-read) shift; f="$1"; k="$2"; meta_read "$f" "$k"; exit $? ;;
       --detect-deploy) shift; detect_deploy "${1:-}"; exit 0 ;;
       --detect-ip) detect_public_ip; printf '%s %s\n' "$DETECTED_IP" "$DETECTED_PROV"; exit 0 ;;
-      --reset-lang) rm -f "$LANG_CACHE" 2>/dev/null || true; echo "language preference reset ($LANG_CACHE); next interactive run will ask again"; exit 0 ;;
       --valid-fqdn) shift; valid_fqdn "${1:-}" && exit 0 || exit 1 ;;
       --valid-email) shift; valid_email "${1:-}" && exit 0 || exit 1 ;;
       --render-caddy) shift; DOMAIN="${1:-}"; render_caddy_block "${2:-7080}"; exit 0 ;;
@@ -866,7 +791,6 @@ parse_args() {
       --effective-advertised) PRINT_EFF=yes ;;
       --valid-endpoint) shift; valid_host_port "${1:-}" && exit 0 || exit 1 ;;
       --resolve-meta) current_meta_file && exit 0 || exit 1 ;;
-      --menu-stdin) MENU_FORCE_STDIN="yes" ;;  # defer to main so later --compose-dir et al. still parse
       *) if [ "$VERB" = domain ] && [ -z "$DOMAIN" ]; then DOMAIN="$1";
          elif [ "$VERB" = config ] && [ -z "$CONFIG_KEY" ]; then CONFIG_KEY="$1";
          elif [ "$VERB" = config ] && [ -z "$CONFIG_VALUE" ]; then CONFIG_VALUE="$1";
@@ -876,20 +800,12 @@ parse_args() {
   done
 }
 
-is_interactive() {
-  [ "${MENU_FORCE_STDIN:-no}" = yes ] && return 0   # scripted-menu seam forces the menu
-  if [ -t 0 ]; then return 0; fi
-  if [ -r /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then exec 3<&-; return 0; fi
-  return 1
-}
-
 main() {
   parse_args "$@"
-  resolve_lang
-  # No actionable verb/role and a TTY ⇒ interactive menu (Task 7).
+  # No actionable verb/role: this is a flag-only CLI — print usage and exit.
   if [ -z "$VERB" ] && [ -z "$ROLE" ]; then
-    if is_interactive; then run_menu; exit $?; fi
-    die "no command given and no terminal; run 'install.sh -h' or pass a role"
+    print_usage >&2
+    exit 2
   fi
   [ -n "$VERB" ] || VERB="install"
   [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
@@ -908,34 +824,23 @@ main() {
   if [ "$PRINT_EFF" = yes ]; then printf '%s\n' "$ADVERTISED"; exit 0; fi
   if [ "$DRY_RUN" = "yes" ]; then
     case "$VERB" in
-      install) [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0 ;;
-      config) validate_config_key; echo "verb: config ${CONFIG_OP:-get} ${CONFIG_KEY} (dry-run)"; exit 0 ;;
+      install) [ -n "$ROLE" ] || die "role required: client, server, or standalone"; print_plan; exit 0 ;;
+      config)
+        # Mirror the real path's server-only role guard so --dry-run does not
+        # report a config op as valid for a client/standalone install.
+        _dmf="$(current_meta_file 2>/dev/null || true)"
+        _drr="$([ -n "$_dmf" ] && meta_read "$_dmf" role 2>/dev/null || echo server)"
+        case "${_drr:-server}" in server) ;; *) echo "config get/set applies to the server role only (standalone: edit /etc/portunus/standalone.toml directly; client has no such knobs)" >&2; exit 2 ;; esac
+        validate_config_key; echo "verb: config ${CONFIG_OP:-get} ${CONFIG_KEY} (dry-run)"; exit 0 ;;
       *) echo "verb: ${VERB} (dry-run; no side effects)"; exit 0 ;;
     esac
   fi
   dispatch_verb
 }
 
-# ─── Interactive ──────────────────────────────────────────────────────
-MENU_FORCE_STDIN="no"
-ask() { # ask <prompt-msg-key> [printf-args...] ; echoes the answer
-  local p; p="$(t "$@")"; local a
-  printf '%s\n' "$p" >&2          # question on its own line; answer below
-  if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r a || a=""
-  else printf '> ' >&2; read -r a < /dev/tty 2>/dev/null || a=""; fi
-  printf '%s' "$a"
-}
-
-first_run_lang() {
-  [ -n "$LANG_CODE" ] && return 0
-  local a; a="$(ask lang_prompt)"
-  case "$a" in 2) LANG_CODE=zh ;; *) LANG_CODE=en ;; esac
-  mkdir -p "$(dirname "$LANG_CACHE")" 2>/dev/null \
-    && printf '%s' "$LANG_CODE" > "$LANG_CACHE" 2>/dev/null || true
-}
-
 # Seed the advertised-endpoint default. Public probe → local NIC →
-# loopback. Sets DETECTED_IP + DETECTED_PROV (an i18n key). Never fatal.
+# loopback. Sets DETECTED_IP + DETECTED_PROV (a provenance token,
+# surfaced only by the --detect-ip seam). Never fatal.
 # PORTUNUS_SKIP_IP_PROBE=1 skips the external probe (offline/test/CI).
 valid_ip() { case "$1" in ""|*[!0-9a-fA-F.:]*) return 1 ;; *[.:]*) return 0 ;; *) return 1 ;; esac; }
 detect_public_ip() {
@@ -957,36 +862,6 @@ detect_public_ip() {
   fi
   if valid_ip "$ip"; then DETECTED_IP="$ip"; DETECTED_PROV="prov_nic"; return 0; fi
   DETECTED_IP="127.0.0.1"; DETECTED_PROV="prov_loopback"; return 0
-}
-
-# Print every effective install value before the final confirm.
-print_install_summary() {
-  local adv_prov="$1"   # i18n key for advertised provenance, or ""
-  echo "$(t summary_title)"
-  t sum_role "$ROLE"; echo
-  if [ "$DEPLOY" = docker ]; then
-    t sum_deploy "$(t val_docker)"; echo
-  else
-    t sum_deploy "$(t val_binary)"; echo
-  fi
-  t sum_version "${VERSION:-$(t val_latest)}"; echo
-  if [ "$DEPLOY" = docker ]; then
-    t sum_compose "${COMPOSE_DIR:-$PWD}"; echo
-  else
-    t sum_bindir "${BIN_DIR:-$DEFAULT_BIN_DIR}"; echo
-  fi
-  if [ "$ROLE" = server ]; then
-    t sum_datadir "${DATA_DIR:-/var/lib/portunus}"; echo
-    t sum_ophttp "${OP_HTTP_LISTEN:-127.0.0.1:7080}"; echo
-    if [ "$ADVERTISED_FROM_DOMAIN" = yes ]; then
-      t adv_from_domain "$ADVERTISED"; echo
-    elif [ -n "$ADVERTISED" ]; then
-      t sum_advertised "$ADVERTISED $([ -n "$adv_prov" ] && t "$adv_prov")"; echo
-    else
-      t sum_advertised "$(t prov_loopback)"; echo
-    fi
-    [ -n "$DOMAIN" ] && { t sum_domain "$DOMAIN"; echo; }
-  fi
 }
 
 # ─── Caddy / HTTPS ────────────────────────────────────────────────────
@@ -1031,19 +906,14 @@ dns_a_records() {
 dns_points_here() {  # $1 domain ; uses detect_public_ip
   local d="$1" a ip
   detect_public_ip; ip="$DETECTED_IP"
-  t dns_check "$d" "$ip"; echo
-  while :; do
-    a="$(dns_a_records "$d" | tr '\n' ' ')"
-    if printf '%s' "$a" | grep -qw "$ip"; then
-      t dns_ok "$d" "$ip"; echo; return 0
-    fi
-    t dns_mismatch "$d" "${a:-none}" "$ip"; echo
-    if [ "$ASSUME_YES" = yes ] || ! { [ -t 0 ] || [ -r /dev/tty ]; }; then
-      die "DNS for $d must point to $ip (or pass --skip-dns-check)"
-    fi
-    t dns_help "$d" "$ip"; echo
-    read_tty "" || die "DNS for $d must point to $ip"
-  done
+  printf 'Checking %s resolves to this server (%s)…\n' "$d" "$ip"
+  a="$(dns_a_records "$d" | tr '\n' ' ')"
+  if printf '%s' "$a" | grep -qw "$ip"; then
+    printf 'DNS OK: %s → %s\n' "$d" "$ip"; return 0
+  fi
+  printf 'DNS for %s does not point here. A record(s): %s ; this server: %s\n' \
+    "$d" "${a:-none}" "$ip"
+  die "DNS for $d must point to $ip (or pass --skip-dns-check)"
 }
 
 render_caddy_block() {  # $1 op-http port ; prints managed block
@@ -1064,7 +934,7 @@ render_caddy_block() {  # $1 op-http port ; prints managed block
 
 ensure_caddy() {
   command -v caddy >/dev/null 2>&1 && return 0
-  echo "$(t caddy_installing)"
+  echo "Installing Caddy…"
   local id="" like=""
   [ -r /etc/os-release ] && . /etc/os-release && id="${ID:-}" && like="${ID_LIKE:-}"
   case "$id $like" in
@@ -1113,19 +983,19 @@ caddy_reload() {
 
 verify_https() {
   local d="$1"
-  t caddy_verify "$d"; echo
+  printf 'Verifying https://%s/ (Let'\''s Encrypt issuance can take ~30s)…\n' "$d"
   for _ in $(seq 1 12); do
     if curl -fsS --max-time 5 -o /dev/null "https://${d}/" 2>/dev/null; then
-      t https_ready "$d"; echo; return 0
+      printf 'HTTPS ready: https://%s/\n' "$d"; return 0
     fi
     sleep 5
   done
-  t caddy_verify_warn "$d"; echo; return 0
+  printf 'Could not verify https://%s/ yet. Check: journalctl -u caddy -e ; DNS propagation.\n' "$d"; return 0
 }
 
 setup_caddy_domain() {
   [ "$ROLE" = server ] || die "domain/HTTPS is server-only"
-  valid_fqdn "$DOMAIN" || die "$(t bad_domain "$DOMAIN")"
+  valid_fqdn "$DOMAIN" || die "invalid domain '$DOMAIN' — expected an FQDN like portunus.example.com"
   if [ "$DRY_RUN" = yes ]; then
     echo "domain:           $DOMAIN"
     echo "reverse_proxy:    127.0.0.1:$(op_http_port)"
@@ -1137,13 +1007,13 @@ setup_caddy_domain() {
   ensure_caddy
   write_caddy_block
   caddy_reload
-  t caddy_done "$DOMAIN"; echo
+  printf 'Caddy configured for %s\n' "$DOMAIN"
   verify_https "$DOMAIN"
-  t https_public_note; echo
+  echo "Note: the web UI is now publicly reachable over HTTPS; it stays protected by operator login/token."
 }
 
 lifecycle_domain() {
-  local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local mf; mf="$(current_meta_file)" || die "No Portunus install detected (no .install-meta and no probe match)."
   ROLE="$(meta_read "$mf" role || echo server)"
   [ "$ROLE" = server ] || die "domain/HTTPS is server-only"
   [ -n "$DOMAIN" ] || die "usage: install.sh domain <fqdn>"
@@ -1167,7 +1037,6 @@ lifecycle_domain() {
   if [ "$DRY_RUN" != yes ]; then
     meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" \
       "version=$(meta_read "$mf" version || echo '?')" \
-      "lang=${LANG_CODE:-en}" \
       "advertised_endpoint_set=$(meta_read "$mf" advertised_endpoint_set || echo no)" \
       "domain=$DOMAIN"
   fi
@@ -1180,7 +1049,6 @@ apply_advertised_default() {
   [ -n "$DOMAIN" ] || return 0
   [ -z "$ADVERTISED" ] || return 0
   ADVERTISED="${DOMAIN}:7443"
-  ADVERTISED_FROM_DOMAIN=yes
   return 0
 }
 
@@ -1203,141 +1071,10 @@ apply_install_defaults() {
   fi
 }
 
-wizard_install() {
-  local a adv_prov=""
-  a="$(ask ask_role)"; case "$a" in 2) ROLE=client ;; 3) ROLE=standalone ;; *) ROLE=server ;; esac
-  # Recommended deploy form differs by role: server ⇒ docker compose,
-  # client ⇒ binary. Enter (empty) accepts the recommended one.
-  if [ "$ROLE" = server ]; then
-    a="$(ask ask_deploy_server)"
-    case "$a" in 2|binary) DEPLOY=binary ;; *) DEPLOY=docker ;; esac
-  elif [ "$ROLE" = standalone ]; then
-    a="$(ask ask_deploy_standalone)"
-    case "$a" in 2) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
-  else
-    a="$(ask ask_deploy_client)"
-    case "$a" in 2|docker) DEPLOY=docker ;; *) DEPLOY=binary ;; esac
-  fi
-  if [ "$ROLE" = server ]; then
-    while :; do
-      DOMAIN="$(ask ask_domain)"
-      [ -z "$DOMAIN" ] && break
-      valid_fqdn "$DOMAIN" && break
-      t bad_domain "$DOMAIN"; echo
-    done
-    if [ -n "$DOMAIN" ]; then
-      ADVERTISED="${DOMAIN}:7443"; ADVERTISED_FROM_DOMAIN=yes
-    else
-      detect_public_ip
-      adv_prov="$DETECTED_PROV"
-      while :; do
-        a="$(ask ask_advertised_pub "${DETECTED_IP}:7443")"
-        if [ -z "$a" ]; then ADVERTISED="${DETECTED_IP}:7443"; break; fi
-        if [ "$a" = "-" ]; then ADVERTISED=""; adv_prov="prov_loopback"; break; fi
-        if valid_host_port "$a"; then ADVERTISED="$a"; adv_prov="prov_user"; break; fi
-        t bad_endpoint "$a"; echo
-      done
-    fi
-  fi
-  detect_platform; resolve_version_static
-  print_install_summary "$adv_prov"
-  confirm "$(t confirm_proceed)" || { echo "$(t op_cancelled)"; return 1; }
-  VERB=install; dispatch_verb
-}
-
-# An explicit CLI --compose-dir scopes the whole menu session; it must
-# survive the per-iteration reset (wizard-collected fields do not).
-MENU_COMPOSE_DIR=""
-reset_menu_state() {
-  ROLE=""; DEPLOY=""; VERSION=""; BIN_DIR="$DEFAULT_BIN_DIR"
-  COMPOSE_DIR="$MENU_COMPOSE_DIR"
-  ADVERTISED=""; DATA_DIR=""; OP_HTTP_LISTEN=""
-  SERVICE_ACTION=""; CONFIG_OP=""; CONFIG_KEY=""; CONFIG_VALUE=""; VERB=""
-}
-
-pause() {
-  [ "$MENU_FORCE_STDIN" = yes ] && return 0   # scripted seam: never block
-  read_tty "$(t press_enter)" || true
-}
-
-menu_service() {
-  local a
-  a="$(ask ask_service_action)"
-  case "$a" in
-    1|start)   SERVICE_ACTION="start" ;;
-    2|stop)    SERVICE_ACTION="stop" ;;
-    3|restart) SERVICE_ACTION="restart" ;;
-    *) t menu_invalid "$a"; echo; return 0 ;;
-  esac
-  VERB="service"; lifecycle_service
-}
-
-menu_config() {
-  local _mf _r
-  _mf="$(current_meta_file 2>/dev/null || true)"
-  _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || true)"
-  if [ "${_r:-$ROLE}" = "standalone" ]; then
-    echo "$(t config_na_standalone)" >&2
-    return 2
-  fi
-  local a k v
-  a="$(ask ask_config_key)"
-  case "$a" in
-    1|advertised-endpoint)  k="advertised-endpoint" ;;
-    2|data-dir)             k="data-dir" ;;
-    3|operator-http-listen) k="operator-http-listen" ;;
-    4|version-pin)          k="version-pin" ;;
-    *) t unknown_config_key "$a"; echo; return 0 ;;
-  esac
-  v="$(ask ask_config_value "$k")"
-  [ -n "$v" ] || { echo "$(t op_cancelled)"; return 0; }
-  if [ "$k" = "advertised-endpoint" ] && ! valid_host_port "$v"; then
-    t bad_endpoint "$v"; echo; return 0
-  fi
-  CONFIG_OP="set"; CONFIG_KEY="$k"; CONFIG_VALUE="$v"; VERB="config"; lifecycle_config
-}
-
-# Returns 2 to request menu exit; any other status keeps the loop alive.
-menu_handle() {
-  case "$1" in
-    1) wizard_install ;;
-    2) VERB="uninstall"; lifecycle_uninstall ;;
-    3) VERB="upgrade";   lifecycle_upgrade ;;
-    4) VERB="status";    lifecycle_status ;;
-    5) menu_service ;;
-    6) menu_config ;;
-    7) VERB="env";       lifecycle_env ;;
-    0|q|Q) return 2 ;;
-    *) t menu_invalid "$1"; echo; return 0 ;;
-  esac
-}
-
-run_menu() {
-  first_run_lang
-  MENU_COMPOSE_DIR="${COMPOSE_DIR:-}"
-  while :; do
-    reset_menu_state
-    echo; echo "$(t menu_title)"
-    echo "$(t menu_install)"; echo "$(t menu_uninstall)"; echo "$(t menu_upgrade)"
-    echo "$(t menu_status)"; echo "$(t menu_service)"; echo "$(t menu_config)"
-    echo "$(t menu_env)"; echo "$(t menu_exit)"
-    local c
-    printf '%s\n' "$(t menu_select)" >&2     # prompt on its own line; answer below
-    if [ "$MENU_FORCE_STDIN" = yes ] || [ -t 0 ]; then printf '> ' >&2; read -r c || return 0
-    else printf '> ' >&2; read -r c < /dev/tty || return 0; fi
-    case "$c" in 0|q|Q) return 0 ;; esac
-    # Subshell isolation: a die()/exit inside any lifecycle path ends
-    # only this action, never the whole interactive session.
-    local rc=0
-    ( menu_handle "$c" ) || rc=$?
-    [ "$rc" -eq 2 ] && return 0
-    pause
-  done
-}
 dispatch_verb() {
   case "$VERB" in
     install)
-      [ -n "$ROLE" ] || die "$(t need_role)"
+      [ -n "$ROLE" ] || die "role required: client, server, or standalone"
       [ -z "$DEPLOY" ] && DEPLOY="binary"
       if [ "$DEPLOY" = "docker" ]; then
         install_docker          # writes its own .install-meta pre-up
@@ -1349,14 +1086,14 @@ dispatch_verb() {
         # Record the install BEFORE attempting to start: the binary, unit,
         # and config are already on disk, so even if enable/start fails the
         # deploy is recoverable via uninstall/upgrade/status.
-        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
+        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "init=$INIT" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)"
         if [ "$ROLE" = client ] && [ -n "$ENROLL_URI" ]; then
           place_client_bundle "$ENROLL_URI"
         fi
         if service_should_start; then svc enable_start "$ROLE"; fi
       fi
       if [ "$ROLE" = server ] && [ -n "$DOMAIN" ]; then
-        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "lang=${LANG_CODE:-en}" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" "domain=$DOMAIN"
+        meta_write "$(meta_path_for)" "role=$ROLE" "deploy=$DEPLOY" "version=$resolved_version" "advertised_endpoint_set=$([ -n "$ADVERTISED" ] && echo yes || echo no)" "domain=$DOMAIN"
         setup_caddy_domain
       fi
       echo; print_next_steps
@@ -1367,10 +1104,10 @@ dispatch_verb() {
 }
 
 # ─── Lifecycle ────────────────────────────────────────────────────────
-SCOPED_KEYS="advertised-endpoint data-dir operator-http-listen version-pin"
+SCOPED_KEYS="advertised-endpoint data-dir operator-http-listen"
 validate_config_key() {
   [ -n "$CONFIG_KEY" ] || die "config key required (allowed: $SCOPED_KEYS)"
-  case " $SCOPED_KEYS " in *" $CONFIG_KEY "*) ;; *) die "$(t unknown_config_key "$CONFIG_KEY")" ;; esac
+  case " $SCOPED_KEYS " in *" $CONFIG_KEY "*) ;; *) die "unknown config key: $CONFIG_KEY (allowed: advertised-endpoint data-dir operator-http-listen)" ;; esac
 }
 
 current_meta_file() {
@@ -1398,7 +1135,7 @@ resolved_deploy() {
 
 lifecycle_status() {
   local mf d; mf="$(current_meta_file 2>/dev/null || true)"
-  if [ -z "$mf" ]; then echo "$(t no_install_found)"; return 0; fi
+  if [ -z "$mf" ]; then echo "No Portunus install detected (no .install-meta and no probe match)."; return 0; fi
   d="$(meta_read "$mf" deploy || echo binary)"
   echo "meta:    $mf"
   echo "role:    $(meta_read "$mf" role || echo '?')"
@@ -1414,7 +1151,7 @@ lifecycle_status() {
 
 lifecycle_service() {
   [ -n "$SERVICE_ACTION" ] || die "service action required: start|stop|restart"
-  local d r mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local d r mf; mf="$(current_meta_file)" || die "No Portunus install detected (no .install-meta and no probe match)."
   d="$(meta_read "$mf" deploy || echo binary)"; r="$(meta_read "$mf" role || echo server)"
   if [ "$d" = docker ]; then
     ( cd "$(dirname "$mf")" && case "$SERVICE_ACTION" in start) $(compose_cmd) up -d ;; stop) $(compose_cmd) stop ;; restart) $(compose_cmd) restart ;; esac )
@@ -1426,25 +1163,30 @@ lifecycle_service() {
 }
 
 lifecycle_upgrade() {
-  local mf cur; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local mf cur; mf="$(current_meta_file)" || die "No Portunus install detected (no .install-meta and no probe match)."
   ROLE="$(meta_read "$mf" role || echo server)"; DEPLOY="$(meta_read "$mf" deploy || echo binary)"
   cur="$(meta_read "$mf" version || echo 0)"
   detect_platform; resolve_latest_tag
-  if [ "$cur" = "$artifact_version" ]; then echo "$(t upgrade_current "$cur")"; return 0; fi
-  confirm "$(t confirm_proceed)" || return 0
-  if [ "$DEPLOY" = docker ]; then COMPOSE_DIR="$(dirname "$mf")"; install_docker
+  if [ "$cur" = "$artifact_version" ]; then echo "Already at $cur; nothing to upgrade."; return 0; fi
+  if [ "$DEPLOY" = docker ]; then
+    COMPOSE_DIR="$(dirname "$mf")"
+    # Bump the pinned image tag in the existing compose file. write_compose_file
+    # preserves an operator's compose.yml verbatim, so without this the upgrade
+    # would re-pull the OLD tag and only the recorded meta version would change.
+    _cf="$COMPOSE_DIR/compose.yml"; [ -f "$_cf" ] || _cf="$COMPOSE_DIR/compose.yaml"
+    [ -f "$_cf" ] && sed -i "s#\(ghcr.io/zingerlittlebee/portunus-[a-z]*:\)[^[:space:]\"]*#\1${artifact_version}#g" "$_cf"
+    install_docker
   else
     [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
     _i="$(meta_read "$mf" init 2>/dev/null || true)"; case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
     install_binary; svc restart "$ROLE" 2>/dev/null || true
   fi
-  meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" "version=$artifact_version" "lang=${LANG_CODE:-en}" "init=$INIT"
+  meta_write "$mf" "role=$ROLE" "deploy=$DEPLOY" "version=$artifact_version" "init=$INIT"
 }
 
 lifecycle_uninstall() {
-  local mf r d; mf="$(current_meta_file)" || die "$(t no_install_found)"
+  local mf r d; mf="$(current_meta_file)" || die "No Portunus install detected (no .install-meta and no probe match)."
   r="$(meta_read "$mf" role || echo server)"; d="$(meta_read "$mf" deploy || echo binary)"
-  if [ "$ASSUME_YES" != yes ]; then confirm "$(t confirm_uninstall "$r" "$d")" no || return 0; fi
   if [ "$d" = docker ]; then ( cd "$(dirname "$mf")" && $(compose_cmd) down )
   else
     [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"
@@ -1464,74 +1206,146 @@ lifecycle_uninstall() {
   fi
   if [ "$PURGE" = yes ]; then
     local dd; dd="$(dirname "$mf")"
-    read_tty "$(t confirm_purge_typed "$dd")" || REPLY_TTY=""
-    [ "$REPLY_TTY" = "purge" ] && { sudo rm -rf "$dd"; echo "→ purged $dd"; } || echo "purge skipped"
+    sudo rm -rf "$dd"; echo "→ purged $dd"
   fi
   rm -f "$mf" 2>/dev/null || true
 }
 
-lifecycle_config() {
-  local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
-  local _r; _r="$(meta_read "$mf" role 2>/dev/null || true)"
-  if [ "${_r:-$ROLE}" = "standalone" ]; then
-    echo "$(t config_na_standalone)" >&2
-    return 2
-  fi
-  validate_config_key
-  local d; d="$(meta_read "$mf" deploy || echo binary)"
-  local target_file
-  if [ "$d" = docker ]; then target_file="$(dirname "$mf")/.env"; else target_file="/etc/systemd/system/portunus-server.service.d/10-portunus.conf"; fi
-  local envkey
-  case "$CONFIG_KEY" in
-    advertised-endpoint) envkey="PORTUNUS_ADVERTISED_ENDPOINT" ;;
-    operator-http-listen) envkey="PORTUNUS_OPERATOR_HTTP_LISTEN" ;;
-    data-dir) envkey="PORTUNUS_DATA_DIR" ;;
-    version-pin) envkey="PORTUNUS_VERSION_PIN" ;;
+# Extract the token following a CLI flag from a command string. Handles both
+# the systemd ExecStart form (`--flag value`) and the compose `command:` form
+# (`"--flag", "value"`) by normalizing quotes/commas/brackets to spaces first.
+flag_value_from() {  # $1 = text, $2 = flag (e.g. --advertised-endpoint)
+  printf '%s' "$1" | tr ',"[]' '    ' | awk -v f="$2" '{for(i=1;i<=NF;i++) if($i==f){print $(i+1); exit}}'
+}
+
+# Map a scoped config key to the server CLI flag it controls.
+config_key_flag() {  # $1 = key
+  case "$1" in
+    advertised-endpoint)  echo "--advertised-endpoint" ;;
+    operator-http-listen) echo "--operator-http-listen" ;;
+    data-dir)             echo "--data-dir" ;;
   esac
+}
+
+# Validate a `config set` value before it is rendered into a CLI arg (systemd
+# ExecStart, openrc server_args, or the compose JSON command array). Reject
+# anything that could break out of the JSON string, inject a systemd directive
+# (a newline), or smuggle shell/quoting metacharacters. host:port keys get the
+# stricter valid_host_port; data-dir must be an absolute, path-safe string.
+valid_config_value() {  # $1 key, $2 value
+  [ -n "$2" ] || return 1
+  case "$1" in
+    advertised-endpoint|operator-http-listen)
+      case "$2" in *:*) ;; *) return 1 ;; esac   # require an explicit :port
+      valid_host_port "$2" ;;
+    data-dir)
+      case "$2" in /*) ;; *) return 1 ;; esac     # absolute path only
+      case "$2" in *[!A-Za-z0-9._/-]*) return 1 ;; *) return 0 ;; esac ;;
+    *) return 1 ;;
+  esac
+}
+
+# The server consumes advertised-endpoint / operator-http-listen / data-dir as
+# CLI flags ONLY — no env binding — so config reads/writes where the flags
+# actually live: the systemd ExecStart override or openrc conf.d server_args=
+# (binary), or the compose `command:` array (docker). config set re-renders
+# from the install primitive, hydrating siblings so one key changes in isolation.
+# Scoped keys are server-only, so the verb applies to the server role only.
+lifecycle_config() {
+  local mf; mf="$(current_meta_file)" || die "No Portunus install detected (no .install-meta and no probe match)."
+  # A role-less meta defaults to server (parity with status/upgrade/uninstall);
+  # only a concrete non-server role is rejected.
+  local _r; _r="$(meta_read "$mf" role 2>/dev/null || echo server)"
+  case "${_r:-server}" in server) ;; *) echo "config get/set applies to the server role only (standalone: edit /etc/portunus/standalone.toml directly; client has no such knobs)" >&2; return 2 ;; esac
+  validate_config_key
+  local d dir flag v
+  d="$(meta_read "$mf" deploy || echo binary)"; dir="$(dirname "$mf")"
+  flag="$(config_key_flag "$CONFIG_KEY")"
+
+  if [ "$d" = docker ]; then
+    # Operate on the file docker compose v2 actually uses: compose.yaml wins
+    # over compose.yml. The installer only ever writes compose.yml, so normally
+    # only one exists; this matters only if an operator added a second file.
+    local src line; src="$dir/compose.yaml"; [ -f "$src" ] || src="$dir/compose.yml"
+    line="$(grep -E '^[[:space:]]*command:' "$src" 2>/dev/null || true)"
+    if [ "${CONFIG_OP:-get}" = get ]; then
+      v="$(flag_value_from "$line" "$flag")"
+      if [ -n "$v" ]; then printf '%s\n' "$v"; else printf '%s\n' '<unset>'; fi
+      return 0
+    fi
+    [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
+    # data-dir maps to a fixed in-container volume path; changing it would
+    # desync the command from the volume mount, so it is not config-settable.
+    [ "$CONFIG_KEY" = data-dir ] && { echo "data-dir is fixed to the in-container volume path for Docker deploys and cannot be changed via config; edit the volume mount in compose.yml instead." >&2; return 2; }
+    valid_config_value "$CONFIG_KEY" "$CONFIG_VALUE" || { echo "invalid value for $CONFIG_KEY: $CONFIG_VALUE" >&2; return 2; }
+    # Hydrate from the compose so only the requested key changes, preserving the
+    # pinned image tag and keeping the published port in sync with
+    # operator-http-listen when we regenerate from the managed template.
+    ROLE="$(meta_read "$mf" role || echo server)"
+    OP_HTTP_LISTEN="$(flag_value_from "$line" --operator-http-listen)"
+    ADVERTISED="$(flag_value_from "$line" --advertised-endpoint)"
+    artifact_version="$(sed -n 's#.*ghcr.io/zingerlittlebee/portunus-[a-z]*:\([^"[:space:]]*\).*#\1#p' "$src" 2>/dev/null | head -1)"
+    [ -n "$artifact_version" ] || artifact_version="$(meta_read "$mf" version 2>/dev/null || true)"
+    [ -n "$artifact_version" ] || die "cannot determine the current image tag in $src"
+    case "$CONFIG_KEY" in
+      advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
+      operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
+    esac
+    # Regenerating overwrites operator hand-edits to the managed compose. Back
+    # up EVERY compose file present first (so nothing is lost and so a stale
+    # compose.yml cannot keep write_compose_file from regenerating), then
+    # regenerate and restore the operator's effective filename.
+    local _stamp _cf; _stamp="$(date +%Y%m%d%H%M%S)"
+    for _cf in "$dir/compose.yml" "$dir/compose.yaml"; do
+      if [ -f "$_cf" ]; then cp "$_cf" "${_cf}.portunus.${_stamp}.bak" 2>/dev/null || true; fi
+    done
+    rm -f "$dir/compose.yml" "$dir/compose.yaml"
+    write_compose_file "$dir"; write_compose_env "$dir"
+    [ "$src" = "$dir/compose.yaml" ] && [ -f "$dir/compose.yml" ] && mv "$dir/compose.yml" "$dir/compose.yaml"
+    echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+    # `compose restart` keeps the old command; only `up -d` recreates with it.
+    if [ "$RESTART" = yes ]; then ( cd "$dir" && $(compose_cmd) up -d )
+    else echo "→ restart to apply: re-run with --restart (recreates the container)"; fi
+    return 0
+  fi
+
+  # Binary: the flags live in the systemd ExecStart override OR the openrc
+  # conf.d, so config must follow the recorded init system — not assume systemd.
+  local init _i; _i="$(meta_read "$mf" init 2>/dev/null || true)"
+  case "$_i" in systemd|openrc|none) INIT="$_i" ;; *) detect_init ;; esac
+  init="$INIT"
+  hydrate_binary_config "$init"
   if [ "${CONFIG_OP:-get}" = get ]; then
-    grep -E "(Environment=)?${envkey}=" "$target_file" 2>/dev/null | sed "s/.*${envkey}=//" || echo "<unset>"
+    case "$CONFIG_KEY" in
+      advertised-endpoint)  v="$ADVERTISED" ;;
+      operator-http-listen) v="$OP_HTTP_LISTEN" ;;
+      data-dir)             v="$DATA_DIR" ;;
+    esac
+    if [ -n "$v" ]; then printf '%s\n' "$v"; else printf '%s\n' '<unset>'; fi
     return 0
   fi
   [ -n "$CONFIG_VALUE" ] || die "config set needs a value"
-  if [ "$d" = docker ]; then
-    grep -v "^${envkey}=" "$target_file" 2>/dev/null > "$target_file.tmp" || true
-    echo "${envkey}=${CONFIG_VALUE}" >> "$target_file.tmp"; mv "$target_file.tmp" "$target_file"
-  else
-    local keep=""
-    [ -f "$target_file" ] && keep="$(grep -E '^Environment=' "$target_file" 2>/dev/null | grep -vE "^Environment=${envkey}=" || true)"
-    sudo install -d -m 0755 "$(dirname "$target_file")"
-    { echo "[Service]"; [ -n "$keep" ] && printf '%s\n' "$keep"; echo "Environment=${envkey}=${CONFIG_VALUE}"; } | sudo tee "$target_file" >/dev/null
-    sudo systemctl daemon-reload 2>/dev/null || true
-  fi
-  echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
-  if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
-}
-
-lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir version-pin; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
-
-# Read one line straight from the terminal into REPLY_TTY. A per-prompt
-# `cat`/process-sub left a zombie reader on the tty, so a second prompt
-# in the same command (uninstall→purge, set→restart) raced it.
-read_tty() {
-  REPLY_TTY=""
-  printf '%s\n' "$1" >&2           # question on its own line; answer below
-  if [ -t 0 ]; then printf '> ' >&2; read -r REPLY_TTY
-  elif [ -r /dev/tty ]; then printf '> ' >&2; read -r REPLY_TTY </dev/tty
-  else return 1; fi
-}
-# confirm <prompt> [default]   default = yes (Enter ⇒ proceed) | no (Enter ⇒ abort)
-# The prompt text's [Y/n] vs [y/N] MUST match the default passed here.
-confirm() {
-  local prompt="$1" def="${2:-yes}"
-  [ "$ASSUME_YES" = yes ] && return 0
-  read_tty "$prompt" || return 1
-  case "$REPLY_TTY" in
-    y|Y|yes|YES) return 0 ;;
-    n|N|no|NO)   return 1 ;;
-    "")          [ "$def" = yes ] && return 0 || return 1 ;;
-    *)           return 1 ;;
+  valid_config_value "$CONFIG_KEY" "$CONFIG_VALUE" || { echo "invalid value for $CONFIG_KEY: $CONFIG_VALUE" >&2; return 2; }
+  case "$CONFIG_KEY" in
+    advertised-endpoint)  ADVERTISED="$CONFIG_VALUE" ;;
+    operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
+    data-dir)             DATA_DIR="$CONFIG_VALUE" ;;
   esac
+  [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"   # config_sudo honors $SUDO
+  # Back up the target before regenerating so a hand-edit (esp. an openrc
+  # conf.d the operator annotated) is recoverable, mirroring the docker path.
+  local tgt; [ "$init" = openrc ] && tgt="$(confd_file)" || tgt="$(systemd_dropin_file)"
+  # Best-effort backup: a failed cp (e.g. declined sudo) must NOT abort under
+  # set -e before the write — `|| true`, matching the docker path.
+  if [ -f "$tgt" ]; then config_sudo cp "$tgt" "${tgt}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null || true; fi
+  if [ "$init" = openrc ]; then write_server_confd; else write_server_dropin; fi
+  echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
+  if [ "$RESTART" = yes ]; then SERVICE_ACTION=restart; lifecycle_service
+  else echo "→ restart to apply: install.sh service restart (or re-run with --restart)"; fi
 }
+
+lifecycle_env() { CONFIG_OP="get"; for CONFIG_KEY in advertised-endpoint operator-http-listen data-dir; do printf '%s=' "$CONFIG_KEY"; lifecycle_config; done; }
+
 
 # Light host:port sanity (authoritative SAN/grammar check is the server's).
 valid_host_port() {

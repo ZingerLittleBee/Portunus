@@ -5,6 +5,32 @@ All notable changes to `Portunus` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The `install.sh` lifecycle manager becomes a pure flag-driven CLI. The
+interactive menu, the guided install wizard, and the bilingual (en/zh)
+output are removed; every action is now selected by arguments, and all
+output is English. The installer's executor — binary/Docker install,
+service lifecycle, scoped config rendering, and Caddy/HTTPS setup — is
+unchanged.
+
+### Changed
+- **No interactive mode.** Running `install.sh` with no role/verb now
+  prints usage and exits non-zero instead of launching a menu/wizard.
+- **Flags are consent.** `uninstall` and `upgrade` run immediately with
+  no confirmation. Data deletion is gated solely by `--purge` (the typed
+  `purge` challenge is gone). `config set` restarts the service only when
+  passed the new `--restart` flag. A `domain` DNS mismatch is a hard
+  error unless `--skip-dns-check` is given.
+- **English-only output.** The i18n table and language cache are removed.
+
+### Removed
+- The `--yes`, `--lang`, `--reset-lang`, `--menu-stdin`, `--print-i18n`,
+  `--print-i18n-keys`, and `--systemd` flags. Passing any of them is now
+  an "unknown argument" error. Scripts that passed `--yes` should drop it
+  (actions auto-proceed); scripts that passed `--systemd` should drop it
+  (the service is installed by default).
+
 ## [2.2.0] — 2026-06-14
 
 RBAC hardening and a Web UI QA pass. Non-superadmin operators no longer
