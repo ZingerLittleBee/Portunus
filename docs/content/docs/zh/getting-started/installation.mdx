@@ -133,17 +133,94 @@ sudo install -m 0755 target/release/portunus-standalone /usr/local/bin/
 
 ## 安装 Server
 
-最快的路径是一行安装脚本：
+Server 推荐用 **Docker** 部署。按 Client 如何找到 Server，分两种「对外地址」
+模式——用公网 **IP**，或用**域名 + 自动 HTTPS**；每种都提供 Docker（推荐）与
+二进制两种路径。通告地址（advertised endpoint）是 Client 接入时实际要连的
+`host:port`，所以 Server 安装应当**显式给出**——省略它 Server 仍会启动，但通告
+地址会在运行时自动推断、可能回落到 loopback，导致远程 Client 连不上。
+
+### 用 IP 部署
+
+用一个 Client 能连到的公网 IP 作为通告地址：
+
+<Tabs groupId="server-deploy" persist items={['Docker', '二进制']}>
+
+<Tab value="Docker">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+# 生成 compose.yml + .env，再 docker compose pull && up -d
+# 通告地址会写入 compose command: 数组与同级 .env
+# <SERVER_PUBLIC_IP>：换成 Client 能连到的 Server 公网 IP（7443 是 Client 控制面端口，一般不用改）
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443
 ```
 
-脚本会检测操作系统和架构，下载对应的 release 二进制，校验其 SHA-256，
-并将 `portunus-server` 安装到 `/usr/local/bin`。详见
-[install.sh 标志](/zh/docs/configuration/client#安装二进制)；标志表（`--version`、`--bin-dir`、`--no-service`）对两个角色均适用。
+</Tab>
 
-Docker Compose 是推荐的生产部署路径。
+<Tab value="二进制">
+
+```sh
+# 装二进制 + 加固服务（systemd / OpenRC）+ 服务用户并启动
+# 通告地址写入 systemd drop-in（…/portunus-server.service.d/10-portunus.conf）持久化
+# <SERVER_PUBLIC_IP>：换成 Client 能连到的 Server 公网 IP
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443
+```
+
+</Tab>
+
+</Tabs>
+
+### 用域名 + 自动 HTTPS 部署
+
+带 `--domain` 时，安装器额外为 Web UI 配置一个 **Caddy** 反向代理 + 自动
+Let's Encrypt HTTPS，并把通告地址推导为 `<域名>:7443`：
+
+<Tabs groupId="server-deploy" persist items={['Docker', '二进制']}>
+
+<Tab value="Docker">
+
+```sh
+# 装 server + 宿主 Caddy 自动 HTTPS；通告地址自动推导为 <域名>:7443
+# p.example.com：你的域名，A 记录须已指向本机公网 IP（否则 DNS 预检失败，可加 --skip-dns-check 跳过）
+# ops@example.com：ACME / Let's Encrypt 联系邮箱（可选但推荐，用于续期/吊销通知）
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --deploy docker --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+<Tab value="二进制">
+
+```sh
+# 装二进制 server + 宿主 Caddy 自动 HTTPS；通告地址自动推导为 <域名>:7443
+# p.example.com：你的域名，A 记录须已指向本机公网 IP（否则 DNS 预检失败，可加 --skip-dns-check 跳过）
+# ops@example.com：ACME / Let's Encrypt 联系邮箱（可选但推荐）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+</Tabs>
+
+Caddy 监听 80/443，并反代到 Server 的 loopback Operator 端口（默认
+`127.0.0.1:7080`）。
+
+→ 通告地址的完整语义见 [通告地址](/zh/docs/features/advertised-endpoint)；
+全部 verb / flag、生命周期与安全语义见
+[install.sh 管理器](/zh/docs/cli/installer)。
+
+首次启动后，从日志读取 onboarding setup token 创建第一个 superadmin
+（Docker：`docker compose logs | grep 'onboarding setup token'`；二进制：
+`journalctl -u portunus-server | grep 'onboarding setup token'`）。onboarding
+完成前该 token 每次重启都会轮换——完整引导见
+[Docker 部署](/zh/docs/deployment/docker)。
+
+下面给出 Docker 部署的**手动 Compose**（完全控制，不经 install.sh）与 Compose
+文件参考。
 
 ### 在 Server 主机上复制粘贴安装
 

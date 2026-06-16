@@ -141,18 +141,98 @@ and operational notes live in
 
 ## Server install
 
-The fastest path is the one-line installer:
+Server is best deployed with **Docker**. Depending on how clients reach the
+server, there are two "advertised address" modes — by public **IP**, or by
+**domain + automatic HTTPS**; each ships a Docker (recommended) and a binary
+path. The advertised endpoint is the `host:port` clients actually dial when they
+enroll, so a server install should set it **explicitly** — omit it and the
+server still starts, but the advertised address is auto-guessed at runtime and
+may fall back to loopback, leaving remote clients unable to connect.
+
+### Deploy with an IP
+
+Use a public IP that clients can reach as the advertised endpoint:
+
+<Tabs groupId="server-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server
+# Generates compose.yml + .env, then runs docker compose pull && up -d
+# The advertised endpoint is written into the compose command: array and the sibling .env
+# <SERVER_PUBLIC_IP>: the server's public IP that clients can reach (7443 is the client control-plane port; usually leave it)
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443
 ```
 
-This detects your OS/arch, downloads the matching release binary, verifies its
-SHA-256 against the published checksums, and installs `portunus-server` to
-`/usr/local/bin`. See [install.sh flags](/en/docs/configuration/client#install-the-binary)
-— the flag table (`--version`, `--bin-dir`, `--no-service`) applies to both roles.
+</Tab>
 
-Docker Compose is the recommended path for production.
+<Tab value="Binary">
+
+```sh
+# Installs the binary + a hardened service (systemd / OpenRC) + service user, and starts it
+# The advertised endpoint is persisted to a systemd drop-in (…/portunus-server.service.d/10-portunus.conf)
+# <SERVER_PUBLIC_IP>: the server's public IP that clients can reach
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443
+```
+
+</Tab>
+
+</Tabs>
+
+### Deploy with a domain + automatic HTTPS
+
+With `--domain`, the installer additionally configures a **Caddy** reverse proxy
++ automatic Let's Encrypt HTTPS for the Web UI, and derives the advertised
+endpoint as `<domain>:7443`:
+
+<Tabs groupId="server-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
+
+```sh
+# Installs the server + host Caddy with automatic HTTPS; the advertised endpoint is derived as <domain>:7443
+# p.example.com: your domain; its A record must already point at this host's public IP (otherwise the DNS precheck fails — pass --skip-dns-check to skip)
+# ops@example.com: ACME / Let's Encrypt contact email (optional but recommended, for renewal/revocation notices)
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --deploy docker --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+```sh
+# Installs the binary server + host Caddy with automatic HTTPS; the advertised endpoint is derived as <domain>:7443
+# p.example.com: your domain; its A record must already point at this host's public IP (otherwise the DNS precheck fails — pass --skip-dns-check to skip)
+# ops@example.com: ACME / Let's Encrypt contact email (optional but recommended)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+</Tabs>
+
+Caddy listens on 80/443 and reverse-proxies to the server's loopback operator
+port (default `127.0.0.1:7080`).
+
+→ For the full advertised-endpoint semantics see
+[Advertised endpoint](/en/docs/features/advertised-endpoint); for the complete
+verb/flag set, lifecycle, and security semantics see
+[install.sh manager](/en/docs/cli/installer).
+
+On first boot, read the onboarding setup token from the logs to create the first
+superadmin (Docker: `docker compose logs | grep 'onboarding setup token'`;
+binary: `journalctl -u portunus-server | grep 'onboarding setup token'`). The
+token rotates on each restart until onboarding completes — see
+[Deploy with Docker](/en/docs/deployment/docker).
+
+Below are the **manual Compose** (full control, without install.sh) and a Compose
+file reference for Docker deployments.
 
 ### Copy-paste install on the server host
 
