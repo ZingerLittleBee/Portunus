@@ -421,6 +421,78 @@ if $SH "$script" --compose-dir "$cl_tmp" config get advertised-endpoint >/dev/nu
 fi
 rm -rf "$cl_tmp"
 
+# --- --expose-operator-http: opt-in 0.0.0.0 publish for the operator HTTP/UI ---
+# Binary: the plan binds the listener to 0.0.0.0 (drives the systemd/openrc
+# ExecStart) and the insecurity warning lands on stderr, NOT in the plan.
+ex_bin_out="$($SH "$script" server --expose-operator-http --version 1.0.0 --dry-run 2>/tmp/ex_bin_err)" \
+  || fail "expose binary dry-run exit"
+echo "$ex_bin_out" | grep -q '^op_http_listen:[[:space:]]*0.0.0.0:7080$' || fail "expose binary: op_http_listen must bind 0.0.0.0"
+echo "$ex_bin_out" | grep -qi 'warning' && fail "expose: warning must not pollute the plan (stdout)"
+grep -qi 'warning:.*0.0.0.0:7080' /tmp/ex_bin_err || fail "expose: insecurity warning must be emitted on stderr"
+rm -f /tmp/ex_bin_err
+# A custom operator-http port is kept, only the host flips to 0.0.0.0.
+ex_port_out="$($SH "$script" server --expose-operator-http --operator-http-listen 127.0.0.1:9000 --version 1.0.0 --dry-run 2>/dev/null)" \
+  || fail "expose binary custom-port dry-run exit"
+echo "$ex_port_out" | grep -q '^op_http_listen:[[:space:]]*0.0.0.0:9000$' || fail "expose binary: custom port must be preserved on 0.0.0.0"
+# Docker: the plan shows the 0.0.0.0 host publish; default (no flag) stays loopback.
+ex_dk_out="$($SH "$script" server --deploy docker --expose-operator-http --version 1.0.0 --dry-run 2>/dev/null)" \
+  || fail "expose docker dry-run exit"
+echo "$ex_dk_out" | grep -q '^op_http_publish:[[:space:]]*0.0.0.0:7080 (PUBLIC' || fail "expose docker: publish must be 0.0.0.0 (PUBLIC)"
+df_dk_out="$($SH "$script" server --deploy docker --version 1.0.0 --dry-run 2>/dev/null)" \
+  || fail "default docker dry-run exit"
+echo "$df_dk_out" | grep -q '^op_http_publish:[[:space:]]*127.0.0.1:7080 (loopback only)$' || fail "default docker: publish must stay loopback"
+# The flag is server-only: client and standalone are rejected before any action.
+if $SH "$script" client --expose-operator-http --version 1.0.0 --dry-run >/dev/null 2>&1; then
+  fail "--expose-operator-http must be rejected for the client role"
+fi
+if $SH "$script" standalone --expose-operator-http --config /tmp/x.toml --version 1.0.0 --dry-run >/dev/null 2>&1; then
+  fail "--expose-operator-http must be rejected for the standalone role"
+fi
+
+# --- docker config set preserves the operator-http publish exposure ---
+# Regenerating the compose on `config set` must NOT silently re-close an exposed
+# port back to loopback — the exposure is re-read from .install-meta.
+ex_cfg="$(mktemp -d)"
+printf 'role=server\ndeploy=docker\nversion=2.2.0\nexpose_operator_http=yes\n' > "$ex_cfg/.install-meta"
+cat > "$ex_cfg/compose.yml" <<'YAML'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:2.2.0
+    container_name: portunus-server
+    env_file: [ .env ]
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
+    ports:
+      - "7443:7443"
+      - "0.0.0.0:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    restart: unless-stopped
+volumes:
+  portunus-data:
+    name: portunus-data
+YAML
+$SH "$script" --compose-dir "$ex_cfg" config set advertised-endpoint a.example:7443 >/dev/null 2>&1 \
+  || fail "expose-preserve: docker config set exit"
+grep -q '0.0.0.0:7080:7080' "$ex_cfg/compose.yml" || fail "expose-preserve: config set must keep the 0.0.0.0 publish (not revert to loopback)"
+grep -q '127.0.0.1:7080:7080' "$ex_cfg/compose.yml" && fail "expose-preserve: config set must NOT re-close the port to loopback"
+rm -rf "$ex_cfg"
+# Conversely, a meta WITHOUT the key (pre-feature install) regenerates loopback.
+lo_cfg="$(mktemp -d)"
+printf 'role=server\ndeploy=docker\nversion=2.2.0\n' > "$lo_cfg/.install-meta"
+cat > "$lo_cfg/compose.yml" <<'YAML'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:2.2.0
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
+    ports:
+      - "7443:7443"
+      - "127.0.0.1:7080:7080"
+YAML
+$SH "$script" --compose-dir "$lo_cfg" config set advertised-endpoint a.example:7443 >/dev/null 2>&1 \
+  || fail "loopback-default: docker config set exit"
+grep -q '127.0.0.1:7080:7080' "$lo_cfg/compose.yml" || fail "loopback-default: config set must keep loopback when meta has no expose key"
+rm -rf "$lo_cfg"
+
 # --- acme-email validation (security: Caddyfile directive injection) ---
 # A well-formed single-line email passes the predicate hook.
 $SH "$script" --valid-email "ops@example.com" || fail "valid acme-email rejected"
@@ -447,6 +519,7 @@ h="$($SH "$script" --help 2>&1)" || fail "--help exit"
 printf '%s\n' "$h" | grep -qi 'flag-driven' || fail "--help should state it is flag-driven"
 printf '%s\n' "$h" | grep -q 'Examples:' || fail "--help should carry an Examples block"
 printf '%s\n' "$h" | grep -q -- '--restart' || fail "--help should document --restart"
+printf '%s\n' "$h" | grep -q -- '--expose-operator-http' || fail "--help should document --expose-operator-http"
 if printf '%s\n' "$h" | grep -qiE 'interactive (wizard|menu)'; then fail "--help must not advertise an interactive wizard/menu"; fi
 if printf '%s\n' "$h" | grep -q -- '--meta-write'; then fail "--help must not expose CI seams"; fi
 ha="$($SH "$script" --help-all 2>&1)" || fail "--help-all exit"

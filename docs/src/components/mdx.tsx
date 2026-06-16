@@ -1,5 +1,6 @@
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { buttonVariants } from 'fumadocs-ui/components/ui/button';
 import { useCopyButton } from 'fumadocs-ui/utils/use-copy-button';
 import { CopyCheckIcon, LinkIcon } from 'lucide-react';
@@ -79,6 +80,8 @@ export function getMDXComponents(components?: MDXComponents) {
     ...defaultMdxComponents,
     Accordion,
     Accordions,
+    Tab,
+    Tabs,
     a: Anchor,
     h1: (p: ComponentProps<'h1'>) => <Heading as="h1" {...p} />,
     h2: (p: ComponentProps<'h2'>) => <Heading as="h2" {...p} />,

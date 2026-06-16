@@ -14,6 +14,18 @@ output is English. The installer's executor — binary/Docker install,
 service lifecycle, scoped config rendering, and Caddy/HTTPS setup — is
 unchanged.
 
+### Added
+- **`--expose-operator-http` (server).** Opt-in flag that publishes the
+  operator HTTP (Web UI + API) on `0.0.0.0:<port>` for both binary and
+  Docker deploys, instead of the loopback-only default. The binary binds
+  the listener to `0.0.0.0`; the Docker deploy switches the host port
+  publish from `127.0.0.1` to `0.0.0.0`. The exposure is recorded in
+  `.install-meta` and preserved across `config set` / `domain`
+  regeneration rather than silently reverting to loopback. It is guarded
+  only by the login password / token, so the installer prints an
+  insecurity warning and the docs steer operators toward a firewall,
+  `--domain` (HTTPS), or an SSH tunnel.
+
 ### Changed
 - **No interactive mode.** Running `install.sh` with no role/verb now
   prints usage and exits non-zero instead of launching a menu/wizard.
