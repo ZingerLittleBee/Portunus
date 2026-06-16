@@ -80,8 +80,16 @@ rm -rf "$sb"
 
 # config rejects unknown key
 if $SH "$script" config set bogus x --dry-run >/dev/null 2>&1; then fail "bogus config key accepted"; fi
-# config accepts a scoped key in dry-run
+# config accepts a scoped key in dry-run (no meta ⇒ defaults to server)
 $SH "$script" config get advertised-endpoint --dry-run >/dev/null 2>&1 || fail "config get scoped key"
+# --dry-run config mirrors the real path's server-only role guard
+for _role in client standalone; do
+  _rt="$(mktemp -d)"; printf 'role=%s\ndeploy=binary\nversion=2.2.0\nlang=en\n' "$_role" > "$_rt/.install-meta"
+  if $SH "$script" --compose-dir "$_rt" config get advertised-endpoint --dry-run >/dev/null 2>&1; then
+    fail "--dry-run config must reject the $_role role"
+  fi
+  rm -rf "$_rt"
+done
 # uninstall dry-run performs nothing and exits 0
 $SH "$script" uninstall server --dry-run >/dev/null 2>&1 || fail "uninstall dry-run"
 # status dry-run exits 0
@@ -223,6 +231,17 @@ PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" domain serverbee-test.900040.xyz --skip-d
 
 # --- Caddy: EN/ZH i18n parity for the new keys ---
 diff <($SH "$script" --print-i18n-keys en | sort) <($SH "$script" --print-i18n-keys zh | sort) >/dev/null || fail "EN/ZH i18n key parity broken"
+# The key-parity check above compares the same $I18N_KEYS string twice, so it
+# cannot catch a missing `zh:`/`*:` case arm (it falls through to the wildcard).
+# Assert each renders, and that EN and ZH actually differ, for the config keys
+# this work renamed/added.
+for _k in config_server_only bad_config_value; do
+  _en="$($SH "$script" --lang en --print-i18n "$_k")"
+  _zh="$($SH "$script" --lang zh --print-i18n "$_k")"
+  [ "$_en" != "$_k" ] || fail "i18n: en arm missing for $_k"
+  [ "$_zh" != "$_k" ] || fail "i18n: zh arm missing for $_k"
+  [ "$_en" != "$_zh" ] || fail "i18n: en/zh identical for $_k (a case arm is likely missing)"
+done
 
 # --- advertised precedence: domain derives, explicit wins ---
 ea1="$(PORTUNUS_SKIP_IP_PROBE=1 $SH "$script" server --domain d.example.com --effective-advertised 2>/dev/null)"
@@ -406,18 +425,51 @@ grep -q -- '--operator-http-listen 127.0.0.1:7080' "$dropin" || fail "binary/sys
   || fail "binary/systemd: get data-dir reads the ExecStart flag (regression: old code returned <unset>)"
 rm -rf "$bs_tmp" "$bs_root"
 
-# openrc keeps the flags in /etc/conf.d/portunus-server's server_args=/datadir=:
+# openrc keeps the flags in /etc/conf.d/portunus-server's server_args=/datadir=.
+# Seed a HAND-ANNOTATED custom datadir (trailing comment) to prove a non-default
+# value survives an unrelated set rather than reverting to /var/lib/portunus.
 or_tmp="$(mktemp -d)"; or_root="$(mktemp -d)"
 printf 'role=server\ndeploy=binary\nversion=2.2.0\nlang=en\ninit=openrc\n' > "$or_tmp/.install-meta"
 mkdir -p "$or_root/etc/conf.d"
-printf 'datadir="/var/lib/portunus"\nserver_args="--operator-http-listen 0.0.0.0:7080"\n' > "$or_root/etc/conf.d/portunus-server"
+printf 'datadir="/mnt/ssd/portunus"   # fast disk\nserver_args="--operator-http-listen 0.0.0.0:7080"\n' > "$or_root/etc/conf.d/portunus-server"
 [ "$(PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --compose-dir "$or_tmp" config get operator-http-listen 2>/dev/null)" = "0.0.0.0:7080" ] \
   || fail "binary/openrc: get op-http from server_args"
+[ "$(PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --compose-dir "$or_tmp" config get data-dir 2>/dev/null)" = "/mnt/ssd/portunus" ] \
+  || fail "binary/openrc: get data-dir tolerates a trailing comment"
 printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --menu-stdin --compose-dir "$or_tmp" config set advertised-endpoint h.example:7443 >/dev/null 2>&1 \
   || fail "binary/openrc config set advertised exit"
 grep -q -- '--operator-http-listen 0.0.0.0:7080 --advertised-endpoint h.example:7443' "$or_root/etc/conf.d/portunus-server" \
   || fail "binary/openrc: server_args must carry both flags (sibling preserved)"
+grep -q 'datadir="/mnt/ssd/portunus"' "$or_root/etc/conf.d/portunus-server" \
+  || fail "binary/openrc: custom datadir must survive an unrelated set (not revert to default)"
+ls "$or_root/etc/conf.d/portunus-server.portunus."*.bak >/dev/null 2>&1 \
+  || fail "binary/openrc: config set must leave a timestamped conf.d .bak"
+# data-dir IS settable on openrc (unlike docker): updates datadir=, leaves server_args
+printf 'n\n' | PORTUNUS_TEST_CONFIG_ROOT="$or_root" $SH "$script" --menu-stdin --compose-dir "$or_tmp" config set data-dir /srv/portunus >/dev/null 2>&1 \
+  || fail "binary/openrc config set data-dir exit"
+grep -q 'datadir="/srv/portunus"' "$or_root/etc/conf.d/portunus-server" || fail "binary/openrc: data-dir set did not update datadir="
+grep -q -- '--advertised-endpoint h.example:7443' "$or_root/etc/conf.d/portunus-server" || fail "binary/openrc: data-dir set must preserve server_args"
 rm -rf "$or_tmp" "$or_root"
+
+# docker config set preserves an operator's compose.yaml FILENAME (not just .yml)
+dy_tmp="$(mktemp -d)"
+printf 'role=server\ndeploy=docker\nversion=2.2.0\nlang=en\n' > "$dy_tmp/.install-meta"
+cat > "$dy_tmp/compose.yaml" <<'YAML'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:2.2.0
+    command: ["--data-dir", "/var/lib/portunus", "serve", "--operator-http-listen", "0.0.0.0:7080"]
+volumes:
+  portunus-data:
+    name: portunus-data
+YAML
+printf 'n\n' | $SH "$script" --menu-stdin --compose-dir "$dy_tmp" config set advertised-endpoint y.example:7443 >/dev/null 2>&1 \
+  || fail "docker config set (.yaml) exit"
+[ -f "$dy_tmp/compose.yaml" ] || fail "docker config set must keep the operator's compose.yaml filename"
+[ ! -f "$dy_tmp/compose.yml" ] || fail "docker config set must not leave a stray compose.yml"
+grep -q '"--advertised-endpoint", "y.example:7443"' "$dy_tmp/compose.yaml" || fail "docker .yaml: advertised not updated"
+ls "$dy_tmp/compose.yaml.portunus."*.bak >/dev/null 2>&1 || fail "docker .yaml: backup must be named compose.yaml.*.bak"
+rm -rf "$dy_tmp"
 
 # --- config get/set rejects the client role (keys are server-only) ---
 cl_tmp="$(mktemp -d)"

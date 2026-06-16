@@ -664,7 +664,10 @@ install_systemd_unit() {  # install_systemd_unit <role> — place the unit only
 systemd_dropin_dir()  { printf '%s/etc/systemd/system/portunus-server.service.d' "${PORTUNUS_TEST_CONFIG_ROOT:-}"; }
 systemd_dropin_file() { printf '%s/10-portunus.conf' "$(systemd_dropin_dir)"; }
 confd_file()          { printf '%s/etc/conf.d/portunus-server' "${PORTUNUS_TEST_CONFIG_ROOT:-}"; }
-config_sudo() { if [ -n "${PORTUNUS_TEST_CONFIG_ROOT:-}" ]; then "$@"; else sudo "$@"; fi }
+# Honor the $SUDO convention (empty as root, "sudo" otherwise) like every other
+# privileged call — a hardcoded `sudo` breaks on root-but-no-sudo hosts (Alpine,
+# minimal openrc/musl images). Test seam set ⇒ write directly, no sudo.
+config_sudo() { if [ -n "${PORTUNUS_TEST_CONFIG_ROOT:-}" ]; then "$@"; else ${SUDO:-} "$@"; fi }
 
 # Pure: emit the systemd drop-in body for the currently-set scoped values.
 render_dropin() {
@@ -699,9 +702,15 @@ write_server_confd() {
 hydrate_binary_config() {  # $1 = init (systemd|openrc|none)
   DATA_DIR=""; OP_HTTP_LISTEN=""; ADVERTISED=""
   if [ "$1" = openrc ]; then
+    # Tolerant parse: the canonical form is quoted (datadir="…"), but a
+    # hand-edited conf.d may carry a trailing comment or an unquoted value —
+    # both are valid POSIX-shell. Capture the quoted body first (ignoring
+    # anything after the closing quote), else an unquoted bareword. Missing a
+    # custom datadir here would silently revert it to the default on rewrite.
     local conf sargs; conf="$(confd_file)"
-    DATA_DIR="$(sed -n 's/^datadir="\(.*\)"$/\1/p' "$conf" 2>/dev/null | tail -1)"
-    sargs="$(sed -n 's/^server_args="\(.*\)"$/\1/p' "$conf" 2>/dev/null | tail -1)"
+    DATA_DIR="$(sed -n 's/^datadir="\([^"]*\)".*/\1/p' "$conf" 2>/dev/null | tail -1)"
+    [ -n "$DATA_DIR" ] || DATA_DIR="$(sed -n 's/^datadir=\([^"#[:space:]][^#[:space:]]*\).*/\1/p' "$conf" 2>/dev/null | tail -1)"
+    sargs="$(sed -n 's/^server_args="\([^"]*\)".*/\1/p' "$conf" 2>/dev/null | tail -1)"
     OP_HTTP_LISTEN="$(flag_value_from "$sargs" --operator-http-listen)"
     ADVERTISED="$(flag_value_from "$sargs" --advertised-endpoint)"
   else
@@ -1047,7 +1056,13 @@ main() {
   if [ "$DRY_RUN" = "yes" ]; then
     case "$VERB" in
       install) [ -n "$ROLE" ] || die "$(t need_role)"; print_plan; exit 0 ;;
-      config) validate_config_key; echo "verb: config ${CONFIG_OP:-get} ${CONFIG_KEY} (dry-run)"; exit 0 ;;
+      config)
+        # Mirror the real path's server-only role guard so --dry-run does not
+        # report a config op as valid for a client/standalone install.
+        _dmf="$(current_meta_file 2>/dev/null || true)"
+        _drr="$([ -n "$_dmf" ] && meta_read "$_dmf" role 2>/dev/null || echo server)"
+        case "${_drr:-server}" in server) ;; *) echo "$(t config_server_only)" >&2; exit 2 ;; esac
+        validate_config_key; echo "verb: config ${CONFIG_OP:-get} ${CONFIG_KEY} (dry-run)"; exit 0 ;;
       *) echo "verb: ${VERB} (dry-run; no side effects)"; exit 0 ;;
     esac
   fi
@@ -1461,11 +1476,10 @@ menu_service() {
 menu_config() {
   local _mf _r
   _mf="$(current_meta_file 2>/dev/null || true)"
-  _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || true)"
-  if [ "${_r:-$ROLE}" != "server" ]; then
-    echo "$(t config_server_only)" >&2
-    return 2
-  fi
+  # Role-less meta defaults to server (parity with lifecycle_config); only a
+  # concrete non-server role is rejected.
+  _r="$([ -n "$_mf" ] && meta_read "$_mf" role 2>/dev/null || echo server)"
+  case "${_r:-server}" in server) ;; *) echo "$(t config_server_only)" >&2; return 2 ;; esac
   local a k v
   a="$(ask ask_config_key)"
   case "$a" in
@@ -1758,11 +1772,10 @@ valid_config_value() {  # $1 key, $2 value
 # Scoped keys are server-only, so the verb applies to the server role only.
 lifecycle_config() {
   local mf; mf="$(current_meta_file)" || die "$(t no_install_found)"
-  local _r; _r="$(meta_read "$mf" role 2>/dev/null || true)"
-  if [ "${_r:-$ROLE}" != "server" ]; then
-    echo "$(t config_server_only)" >&2
-    return 2
-  fi
+  # A role-less meta defaults to server (parity with status/upgrade/uninstall);
+  # only a concrete non-server role is rejected.
+  local _r; _r="$(meta_read "$mf" role 2>/dev/null || echo server)"
+  case "${_r:-server}" in server) ;; *) echo "$(t config_server_only)" >&2; return 2 ;; esac
   validate_config_key
   local d dir flag v
   d="$(meta_read "$mf" deploy || echo binary)"; dir="$(dirname "$mf")"
@@ -1795,10 +1808,10 @@ lifecycle_config() {
       operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
     esac
     # Regenerating overwrites operator hand-edits to the managed compose. Back
-    # it up first (mirrors lifecycle_domain) and preserve the operator's
-    # filename so a customized compose stays recoverable from the .bak.
+    # it up first (mirrors lifecycle_domain) and remove ONLY the file we read +
+    # backed up — never a second compose file we did not back up.
     cp "$src" "${src}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null || true
-    rm -f "$dir/compose.yml" "$dir/compose.yaml"
+    rm -f "$src"
     write_compose_file "$dir"; write_compose_env "$dir"
     [ "$src" = "$dir/compose.yaml" ] && [ -f "$dir/compose.yml" ] && mv "$dir/compose.yml" "$dir/compose.yaml"
     echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
@@ -1829,6 +1842,11 @@ lifecycle_config() {
     operator-http-listen) OP_HTTP_LISTEN="$CONFIG_VALUE" ;;
     data-dir)             DATA_DIR="$CONFIG_VALUE" ;;
   esac
+  [ "$(id -u)" = 0 ] && SUDO="" || SUDO="sudo"   # config_sudo honors $SUDO
+  # Back up the target before regenerating so a hand-edit (esp. an openrc
+  # conf.d the operator annotated) is recoverable, mirroring the docker path.
+  local tgt; [ "$init" = openrc ] && tgt="$(confd_file)" || tgt="$(systemd_dropin_file)"
+  [ -f "$tgt" ] && config_sudo cp "$tgt" "${tgt}.portunus.$(date +%Y%m%d%H%M%S).bak" 2>/dev/null
   if [ "$init" = openrc ]; then write_server_confd; else write_server_dropin; fi
   echo "→ set ${CONFIG_KEY}=${CONFIG_VALUE}"
   if confirm "$(t restart_now)" no; then SERVICE_ACTION=restart; lifecycle_service; fi
