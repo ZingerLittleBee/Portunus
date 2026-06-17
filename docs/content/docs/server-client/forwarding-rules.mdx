@@ -1,0 +1,357 @@
+---
+title: Forwarding rules
+description: Create TCP, UDP, port-range, DNS-target, failover, and PROXY-protocol rules from the operator CLI.
+icon: ArrowRightLeft
+---
+
+## TCP forwarding
+
+*How it works: [TCP forwarding](/en/docs/overview/concepts/tcp-forwarding).*
+
+### Push a rule
+
+```sh
+portunus-server push-rule <client_name> <listen_port> <target_host>:<target_port>
+```
+
+Example:
+
+```sh
+portunus-server push-rule edge-01 8080 example.com:80
+# → rule_id=1
+```
+
+Within ~1 second (the ack budget) the rule transitions
+`Pending → Active` and the client starts accepting on port 8080.
+
+### Inspect
+
+```sh
+# Operator CLI
+portunus-server list-rules --client edge-01
+portunus-server rule-stats 1
+
+# Operator HTTP API
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     http://127.0.0.1:7080/v1/rules
+
+# Prometheus
+curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
+```
+
+### Remove
+
+```sh
+portunus-server remove-rule <rule_id>
+```
+
+In-flight connections drain up to `shutdown_drain_timeout_secs`
+(default 30 s). The listener stops accepting immediately.
+
+### Failure modes
+
+| Condition | Outcome |
+| --- | --- |
+| Listen port already in use on client | Rule state `Failed(port_in_use)`; remove + retry on a free port |
+| Target connect refused / timed out | Connection-level error; rule stays `Active`, no metric scrubbing |
+| Client disconnected when rule pushed | HTTP 4xx with `client_not_connected` |
+| Client reconnects | Rules persist server-side and re-push to the same client |
+
+### Metrics
+
+Per-rule collectors (one row per live rule, labels `{client, rule, owner}`):
+
+- `portunus_rule_bytes_in_total`
+- `portunus_rule_bytes_out_total`
+- `portunus_rule_active_connections`
+
+Byte counters update incrementally (every 64 KiB) even on the `splice`
+fast path, so long-lived connections (SSH, gRPC streams, WebSockets)
+report live throughput instead of staying frozen until the connection
+closes.
+
+See [Metrics](/en/docs/observability/metrics) for the full collector list.
+
+## UDP forwarding
+
+*How it works: [UDP forwarding](/en/docs/overview/concepts/udp-forwarding).*
+
+### Push a UDP rule
+
+```sh
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+```
+
+UDP and TCP rules can share the same listen port:
+
+```sh
+portunus-server push-rule edge-01 6000 upstream.local:9999                # TCP
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
+```
+
+### Tunables
+
+Both knobs live in `server.toml` and propagate to the client via the
+Welcome message:
+
+```toml
+# Idle window before a per-flow upstream socket is reaped.
+# Range: 30..=300. Default: 60.
+udp_flow_idle_secs = 60
+
+# Per-rule cap on simultaneous live UDP flows.
+# Range: 1..=65535. Default: 1024.
+udp_max_flows_per_rule = 1024
+```
+
+The cap is **per rule**, not per port: a port-range rule with
+`udp_max_flows_per_rule = N` admits at most `N` concurrent flows across
+**all** its listen ports combined — a single registry-wide counter, not
+`N × range_size`.
+
+When sustained churn from many distinct sources exceeds the cap,
+overflow drops increment `portunus_rule_flows_dropped_overflow_total`.
+Existing flows are **never** evicted to make room — idle eviction
+handles steady-state shrinkage.
+
+<Callout type="info">
+  Raise `udp_max_flows_per_rule` alongside `LimitNOFILE` in the systemd
+  unit if your traffic legitimately needs more concurrent end-user sources.
+</Callout>
+
+### Range + DNS support
+
+UDP works with [port-range rules](/en/docs/features/port-range) (one
+listener task per port, all sharing the rule's single flow registry and
+per-rule cap) and with [DNS-name targets](/en/docs/features/dns-targets)
+(resolver cache and single-flight semantics carry over verbatim).
+
+### Metrics
+
+```
+portunus_rule_udp_datagrams_in_total{client,rule,owner}
+portunus_rule_udp_datagrams_out_total{client,rule,owner}
+portunus_rule_active_flows{client,rule,owner}
+portunus_rule_flows_dropped_overflow_total{client,rule,owner}
+```
+
+`rule-stats` adds a `protocol` field plus the UDP-specific counters.
+
+### Capability gate
+
+Pushing a UDP rule against a v0.3.0-or-earlier client returns
+`unsupported_protocol` (HTTP 422 / exit 3). Upgrade the client first.
+
+### Verified performance
+
+- ~78,000 datagrams/s through the proxy on a developer-class macOS host
+  (criterion bench `udp_data_plane.single_flow_throughput`).
+- Per-flow isolation under 1000 concurrent source ports — zero misroutes
+  in stress test `test_udp_us1_thousand_source_isolation`.
+
+## Port range
+
+*How it works: [Port range](/en/docs/overview/concepts/port-range).*
+
+### Push a range rule
+
+```sh
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+# binds 51 ports atomically
+```
+
+UDP works the same way:
+
+```sh
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
+  --protocol udp
+```
+
+### Limits
+
+The default cap is **1024 ports per range**, configurable in `server.toml`:
+
+```toml
+# Maximum ports a single port-range rule may span.
+# Each port consumes one socket (one fd) on the client.
+range_rule_max_ports = 1024
+```
+
+<Callout type="warn">
+  Raising this above the default also requires raising `LimitNOFILE` on
+  the client's systemd unit. The cap exists so an operator typo can't
+  burst the client's RLIMIT_NOFILE.
+</Callout>
+
+### Per-port stats
+
+```sh
+# CLI
+portunus-server rule-stats <rule_id> --per-port
+
+# HTTP
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
+```
+
+Per-port byte counters surface only through the API/CLI on demand; they
+are **not** exported as separate Prometheus series. The Prometheus
+cardinality budget stays one row per rule no matter how wide the range.
+
+### Conflict handling
+
+Range conflicts reuse the v1 `port_in_use` error code with the offending
+port named in the message:
+
+```
+error: activation_failed: port_in_use (port 30005 already bound)
+```
+
+The whole range is atomic — if any port in the requested range is
+unavailable, the entire rule transitions to `Failed` and binds nothing.
+
+### Verified
+
+- 100-port range push wall-clock: **~18 ms** on a Linux x86_64 host.
+- Total fresh-deploy → traffic round-trip on 3 sample ports: **~0.93 s**.
+
+## DNS targets
+
+*How it works: [DNS targets](/en/docs/overview/concepts/dns-targets).*
+
+### Push a DNS-target rule
+
+```sh
+# IPv4-first (default)
+portunus-server push-rule edge-01 8443 api.example.com:443
+
+# AAAA-first; falls back to A if no AAAA
+portunus-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+```
+
+### Failure visibility
+
+DNS failures are exposed two ways:
+
+```sh
+# Per-rule field
+portunus-server rule-stats <id>
+# rule_id=… dns_failures=3 …
+
+# Prometheus
+curl -s 127.0.0.1:7081/metrics | grep dns_failures
+# portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="2"} 3
+```
+
+The collector is one row per rule (not one per failure), preserving
+the cardinality budget. The row is removed alongside
+`rule_active_connections` on `remove-rule`.
+
+### Resolver tunables
+
+Currently spec-fixed (no operator overrides yet). Listed here for
+visibility; a future release may surface them under `[resolver]` in
+`server.toml`:
+
+| Knob | Value |
+| --- | --- |
+| `cache_floor` | 5 s |
+| `cache_ceiling` | 5 min |
+| `stale_while_error_grace` | 30 s |
+| `attempt_timeout` | 3 s |
+| `negative_cache_retry` | 3 s |
+| `max_concurrent_resolves` | 64 |
+| `max_cache_entries` | 8192 |
+
+## Multi-target failover
+
+*How it works: [Multi-target failover](/en/docs/overview/concepts/multi-target-failover).*
+
+### Push a multi-target rule
+
+```sh
+# Repeat --target; lower priority wins
+portunus-server push-rule edge-01 8443 \
+  --target primary.example.com:443@1 \
+  --target backup.example.com:443@2 \
+  --target standby.example.com:443@3
+
+# Or pass a JSON literal
+portunus-server push-rule edge-01 8443 --targets-json '[
+  {"host":"primary.example.com","port":443,"priority":1},
+  {"host":"backup.example.com","port":443,"priority":2}
+]'
+```
+
+The HTTP API accepts a `targets[]` array on `POST /v1/rules`.
+The Web UI exposes an "Add another target" button on the rule push form.
+
+### Single-target rules are unchanged
+
+Single-target rules stay byte-identical to v0.6.0 — multi-target lives in
+a separate code path entered via `match targets.len()` at rule
+activation, so existing throughput is unaffected.
+
+### Per-target stats
+
+Per-target byte counters surface **only on demand** to keep the
+Prometheus cardinality bounded:
+
+```sh
+# CLI (single-target rules print a no-op note and exit 0)
+portunus-server rule-stats <id> --per-target
+
+# HTTP
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats?per_target=true'
+
+# SSE (live stream)
+curl -N -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats/stream?per_target=true'
+```
+
+The Web UI rule detail page shows health badges (`Healthy / Failed`),
+last-failure / last-success timestamps, and per-target byte counters
+that update on the existing 5-second SSE cadence.
+
+### Default `/metrics`
+
+One always-on counter:
+`portunus_rule_target_failovers_total{client,rule,owner}` captures
+Healthy↔Failed transitions per rule. Per-target byte counters are
+**never** in the default `/metrics` series.
+
+### Capability gate
+
+Multi-target push to a v0.6.0-or-earlier client is rejected at the HTTP
+layer with `422 multi_target_unsupported_by_client`.
+
+### Performance
+
+Since v1.7.0 the live byte counters and the Linux `splice(2)` fast path
+also apply to the multi-target failover path; per-target accounting is
+reconciled centrally and closed correctly on error.
+
+## PROXY protocol
+
+*How it works: [PROXY protocol](/en/docs/overview/concepts/proxy-protocol).*
+
+Per-target opt-in means a single rule can mix PROXY-aware and
+PROXY-unaware backends. `proxy_protocol` is set per target in the
+`targets[]` array — via `--targets-json` (or `POST /v1/rules`), or in a
+standalone TOML target. The repeatable `--target host:port[@priority]`
+shorthand cannot carry it.
+
+```sh
+# backend-a gets the v2 binary header; backend-b gets the legacy byte stream
+portunus-server push-rule edge-01 443 --targets-json '[
+  {"host":"backend-a.local","port":8080,"priority":1,"proxy_protocol":"v2"},
+  {"host":"backend-b.local","port":8080,"priority":2}
+]'
+```
+
+Running the standalone forwarder instead? Set `proxy_protocol` per target in TOML — see [Standalone → Forwarding rules](/en/docs/standalone/forwarding-rules#proxy-protocol).
+
+UDP rules carrying `proxy_protocol` are rejected with
+`validation.proxy_protocol_on_unsupported_rule`. The accepted values are
+`"v1"` and `"v2"`; anything else fails `validation.proxy_protocol_invalid`.
