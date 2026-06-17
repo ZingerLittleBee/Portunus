@@ -1,0 +1,138 @@
+---
+title: Web UI
+description: 嵌入到 Server 二进制中的单页 React 控制台。登录、管理规则、看实时统计、浏览审计日志。
+icon: LayoutDashboard
+---
+
+v0.6.0 起支持。UI 通过 `rust-embed` 嵌入 `portunus-server`，由现有操作员
+HTTP listener 在根路径 `/` 提供。**部署主机上无需任何 Node 运行时。**
+
+## 打开
+
+`portunus-server` 已内置打包好的 SPA。在浏览器中打开操作员 HTTP listener
+的地址即可：
+
+```
+http://127.0.0.1:7080/
+```
+
+支持的浏览器：Chrome / Firefox / Safari / Edge —— 最新两个版本。
+
+## 登录
+
+v1.1.0 起，Web UI 使用本地用户 ID + 密码登录。首次启动时，如果尚无任何
+启用的 `superadmin`，Server 会将 setup token 打印到 stderr，并且在 SQLite
+中只保存其哈希。打开 Web UI，输入该 setup token，然后创建第一个
+`superadmin`。
+
+- setup token 在 30 分钟后过期。
+- 若 onboarding 尚未完成，每次 server 进程启动都会轮换 setup token，旧
+  token 立即失效。
+- Web 登录会创建带 `HttpOnly` 标志的 `portunus_session` cookie。SPA 不会把登录凭据
+  写入 `sessionStorage` 或 `localStorage`。
+- 用户由管理员手动创建，并可设置初始密码。不支持公开自助注册。
+
+API Bearer Token 依然存在，但它与 Web 登录是两套独立机制。CLI 和自动化使用 API
+Token（`PORTUNUS_OPERATOR_TOKEN`），浏览器则使用密码登录。
+
+## 你能做什么
+
+![Web UI 仪表盘，显示已连接客户端与生效规则统计。](../../../../../src/screenshots/webui-dashboard.png)
+
+| 区块 | 说明 |
+| --- | --- |
+| **Dashboard** | 在线 Client 数、活跃规则数、关键指标 |
+| **Users** | （超管）添加 / 列出用户；签发凭据；查看 Grant |
+| **Credentials** | 当前用户自助旋转凭据 |
+| **Grants** | （超管）RBAC Grant 管理 |
+| **Rules** | push / list / remove。每条规则的实时统计通过 SSE 推送（5 秒一次；SSE 不可用时回退到轮询） |
+| **Clients** | 列出并查看已连接的 `portunus-client` 实例 |
+| **Audit log** | （超管）按操作结果过滤，cursor 翻页，导出 NDJSON |
+| **Metrics** | （超管）经 RBAC 鉴权后的原始 `/metrics` |
+| **Settings** | 主题与语言切换 |
+
+## 逐规则实时统计
+
+规则详情页订阅 `GET /v1/rules/{id}/stats/stream` —— 这是一个 SSE 通道，每个
+统计上报周期（默认 5 秒，由 `stats_report_interval_secs` 控制）推送一个
+`RuleStatsSnapshot`。新订阅者会立即收到缓存中的当前快照，随后接收来自
+per-rule `tokio::sync::broadcast` 的实时分发，因此成本是 `O(规则数)`
+而非 `O(规则 × 订阅者)`。每 30 秒发送一个 keep-alive 注释帧，以维持连接穿过中间设备。
+跟不上 broadcast 缓冲的慢消费者会丢失快照（`Lagged`），并打印一条
+`stats_stream.lagged` 警告。
+
+## 多目标规则
+
+规则详情的 Targets 区块展示健康徽标（Healthy / Degraded / Failed）、
+最近一次失败 / 成功的时间戳，以及按 SSE 节奏更新的逐目标字节计数。
+
+## 限流与 QoS
+
+规则编辑器中多出一节 "Quality of service"。Burst 覆写默认折叠在 "Advanced"
+下。规则列表多出一列紧凑的 `Caps`。Client 详情页多了一个 `Owner quotas`
+标签页，用于管理每个所有者的信封。
+
+![规则编辑器中的服务质量上限输入。](../../../../../src/screenshots/webui-rule-qos.png)
+
+![Client 详情页中的所有者配额标签。](../../../../../src/screenshots/webui-owner-quotas.png)
+
+## 主题与 i18n
+
+- **主题**：light / dark / `prefers-color-scheme`。
+- **语言**：English + 简体中文（在 Settings 中切换；跨刷新记忆）。
+
+CI 中有一项覆盖率单元测试 —— 一旦两个语言包之间的翻译键不一致就会失败。
+
+![设置页中的主题与语言切换。](../../../../../src/screenshots/webui-settings.png)
+
+## 监听地址
+
+操作员 HTTP listener 默认绑定 loopback。在容器或可信反向代理场景下，可以设置
+`operator_http_listen = "0.0.0.0:7080"`，再显式发布端口。远程访问由操作员负责：
+
+- 从工作站建立 **SSH 隧道** 连到 `127.0.0.1:7080`，或
+- 将 listener 置于带自有认证的 **反向代理** 之后。
+
+## 防密钥泄漏
+
+- Web 登录凭据不会写入浏览器存储。
+- session cookie 带 `HttpOnly`、`SameSite=Lax` 标志，启用 TLS 时还带 `Secure`。
+- API Token 和临时密码只在一次性的 reveal 对话框中显示，不会出现在 URL 中。
+
+## 密码恢复
+
+普通用户没有公开的 "forgot password" 自助入口，需由 `superadmin` 在用户详情页
+重置密码。重置会撤销该用户的 Web 会话，并默认撤销其 API Token；只有管理员明确
+勾选保留时才会保留。
+
+如果最后一个 `superadmin` 忘记密码，只能在本地恢复。此时须使用真实的超管用户
+ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的则是初始化时
+选定的 ID：
+
+```sh
+portunus-server --data-dir /var/lib/portunus reset-password admin --temporary
+```
+
+该命令只打印一次临时密码，并标记该账户下次登录时必须修改密码。不存在远程
+后门重置接口。
+
+## 构建
+
+SPA 位于 `webui/`。Release 流水线执行：
+
+```sh
+cd webui
+pnpm install --frozen-lockfile
+pnpm build      # vite build + size-limit 守门（gzip ≤ 500 KB）
+cd ..
+cargo build --release -p portunus-server
+```
+
+仅迭代后端时：
+
+```sh
+PORTUNUS_SKIP_WEBUI=1 cargo build -p portunus-server
+# 编译出 stub UI，让 rust-embed 始终有东西可嵌入。
+```
+
+Release 流水线绝不设置该环境变量。

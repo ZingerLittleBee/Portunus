@@ -1,0 +1,70 @@
+---
+title: 在 Railway 部署
+description: 直接拉取 GHCR 预构建镜像一键部署 Portunus server，配持久化卷和供客户端连接的 TCP Proxy。
+icon: Cloud
+---
+
+Railway 把 `portunus-server` 作为**单个服务**部署，直接拉取 GHCR 上的预构建多架构镜像
+——**不在 Railway 上构建**。Web UI 与 operator HTTP API 走 Railway 的公网 HTTP 域名，
+而供 `portunus-client` 连接的 gRPC 控制平面走指向内部端口 `7443` 的 Railway TCP Proxy。
+
+## 模板会创建什么
+
+一个完全通过环境变量配置的单服务：
+
+| 资源 | 取值 |
+| --- | --- |
+| 镜像 | `ghcr.io/zingerlittlebee/portunus-server:latest`（写完整 `ghcr.io` 路径） |
+| Image Auto Updates | 启用，跟踪 `:latest` |
+| 卷挂载 | `/var/lib/portunus` |
+| HTTP 域名目标端口 | `7080`（operator HTTP / Web UI） |
+| TCP Proxy | 启用，内部目标端口 `7443`（gRPC 控制平面） |
+
+卷不是可选项。它存储 `state.db`、生成的 TLS 材料以及 operator 状态。没有卷，重新部署会
+生成全新的服务身份并丢失超管。Railway 的 Image Auto Updates 会在推送新 `:latest` 时重新
+部署服务（会先备份卷，预期有短暂停机）。
+
+## 环境变量
+
+```
+PORTUNUS_ADVERTISED_ENDPOINT = ${{RAILWAY_TCP_PROXY_DOMAIN}}:${{RAILWAY_TCP_PROXY_PORT}}
+PORTUNUS_OPERATOR_HTTP_LISTEN = 0.0.0.0:7080
+```
+
+- `PORTUNUS_ADVERTISED_ENDPOINT` 会被写入客户端 bundle 和 gRPC 证书 SAN。TCP Proxy 分配后，
+  Railway 把 `${{ }}` 引用解析成单个 `host:port` 值。若 proxy 尚未分配，值会解析成无主机的 `:`
+  ——server 会优雅丢弃它，并在下次启动时拾取正确的端点，因此不会有任何 enrollment 用到坏地址。
+- `PORTUNUS_OPERATOR_HTTP_LISTEN` 让 operator HTTP 监听器绑定 `0.0.0.0`，这样 Railway 的 HTTP
+  边缘才能访问到它。默认是 loopback 绑定，Railway 无法路由。
+
+server 会自签 TLS 证书（advertised host 写进 SAN，host 变化时自动重新生成），CSRF 也有同源
+回退，因此无需 `openssl`、无需 shell wrapper、也无需设置 `operator_http_public_origin`。
+
+## 首次引导
+
+部署服务后，打开服务的 **Deploy Logs**。库为空时，server 会打印一个 setup token：
+
+```sh
+Portunus onboarding setup token: <token>
+```
+
+打开 Railway 的 HTTP 域名 —— Web UI 会把空库路由到引导页。粘贴 token 并创建第一个超管
+（用户名 + 密码）。该 token 30 分钟后过期，引导未完成期间每次重启都会轮换。
+
+## 客户端端点
+
+在 Web UI 的 **Clients** 页（或 `portunus-server enroll-client` CLI）生成一次性 enroll URI。
+它已内嵌 advertised endpoint（TCP Proxy 的 `host:port`）和钉住的证书指纹；`portunus-client
+enroll '<uri>'` 据此写出 bundle 并直接拨号 TCP Proxy。用 Docker（见
+[客户端配置](/zh/docs/server-client/configuration/client#docker)）或主机安装器
+（[`install.sh`](/zh/docs/server-client/configuration/client#install-the-binary)）安装并运行边缘客户端。
+
+## 说明
+
+- Railway 的 HTTP 域名只服务 Web UI 和 `/v1/*` operator API。
+- `portunus-client` 必须拨号 TCP Proxy 端点，而非 HTTP 域名。
+- Prometheus 指标监听器保持在 `127.0.0.1:7081`；Railway 不暴露它。
+- 自定义域名时，若反代后面同源 CSRF 回退不够用，可额外设置
+  `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN=https://your.custom.domain`。
+- 模板内部细节见
+  [`deploy/railway/README.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/deploy/railway/README.md)。

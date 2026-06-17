@@ -1,0 +1,147 @@
+---
+title: Server 配置
+description: server.toml 的所有配置项，包含取值范围和默认值。
+icon: ServerCog
+---
+
+`portunus-server` 会读取 `<data-dir>/server.toml` 这个可选文件。如果文件不存在，
+就使用内置默认值；如果文件存在，下面每一项都可省略，只覆写你关心的默认值。
+
+## 监听器
+
+```toml
+# gRPC 控制面 listener —— Client 连向此地址。
+# 跨主机部署绑 0.0.0.0；或绑到具体网卡（如 "10.0.0.5:7443"）。
+control_listen = "0.0.0.0:7443"
+
+# 操作员 HTTP API + Web UI。默认使用 loopback。
+# 只有容器端口发布或可信反向代理需要时才绑定 0.0.0.0。
+# 受保护的 /v1 路由仍然需要 Web session cookie 或
+# Authorization: Bearer <token>。
+operator_http_listen = "127.0.0.1:7080"
+
+# 可选的公开 Origin，用于 CSRF Origin 校验；在 v1.1+ 中也用于决定
+# 本地登录 session cookie 是否带 Secure 属性。
+# 当 UI 通过反向代理或公网域名访问时应显式设置它。
+# 必须以 http:// 或 https:// 开头，且结尾不能带 /。
+# 这里只能填 origin，不能带 path、query 或 fragment。允许显式端口。
+# IPv6 literal 必须使用方括号，例如：https://[::1]:7080
+# operator_http_public_origin = "https://ops.example.com"
+
+# Prometheus /metrics 端点。同样的 loopback 约束。
+metrics_listen = "127.0.0.1:7081"
+```
+
+如果未设置 `operator_http_public_origin`，Portunus 会回退到
+`http://<operator_http_listen>`，这对本机直连访问没问题。但如果浏览器看到的
+公网主机名和实际 bind 地址不同，就必须显式配置，否则 CSRF Origin 校验和
+cookie Secure 判定都会基于错误的 Origin。
+
+## TLS 证书
+
+```toml
+# 自签证书首次启动时若不存在会自动生成。
+# 默认 SAN 仅含 hostname + "localhost" + 127.0.0.1 ——
+# 路由到外网的部署应该换成由运维管理、SAN 含真实地址的证书。
+# server.key 必须是 mode 0600（loader 拒绝更宽松的权限）。
+tls_cert_path = "/var/lib/portunus/server.crt"
+tls_key_path  = "/var/lib/portunus/server.key"
+```
+
+v0.8 起大部分持久状态搬入 `<data-dir>/state.db`（SQLite）。详见
+[SQLite 存储](/zh/docs/server-client/features/sqlite-storage)。
+
+## 引导捷径
+
+```toml
+# 操作员 API 超管的旧一次性引导捷径（FR-006）。
+# 当身份存储里还没有任何超管时，Server 会用此 Token 自动签出
+# 保留账号 `_legacy` 超管。引导后保留此行（一旦有超管就被忽略）
+# 或删除均可。
+operator_token = "<43-char URL-safe-base64 token>"
+```
+
+生成 Token：`portunus-server gen-token`。
+
+或：`portunus-server bootstrap-superadmin --name ops` 一次性打印新 Bearer。
+
+v1.1+ 的正常 Web UI 设置推荐使用 `serve` 打印的 setup token 完成首次
+onboarding。`operator_token` 创建的是 API Token 访问，不是浏览器密码。
+
+## Drain 与日志
+
+```toml
+# SIGINT/SIGTERM 时已转发连接的优雅 drain 上限。
+# 超时后内核会回收剩余 socket。
+# 与 systemd unit 的 TimeoutStopSec 对齐，避免 drain 中途被 SIGKILL。
+shutdown_drain_timeout_secs = 30
+
+# "json"（默认 —— 结构化）或 "compact"（人类可读）。
+log_format = "json"
+```
+
+## 端口范围
+
+```toml
+# 一条端口范围规则可跨的端口数上限。
+# 每个端口在 Client 上消耗一个 TCP listener（一个 fd）。
+# 默认 1024。调高之前请先调高 systemd unit 的 LimitNOFILE。
+range_rule_max_ports = 1024
+```
+
+## UDP 参数
+
+```toml
+# 流空闲多久后回收上游 socket。
+# 范围 30..=300。默认 60。
+udp_flow_idle_secs = 60
+
+# 每条规则同时存活的 UDP 流上限。
+# 范围 1..=65535。默认 1024。
+# 持续抖动超出后，超额流会让 portunus_rule_flows_dropped_overflow_total 累加，
+# 已存在的流不会被驱逐。
+udp_max_flows_per_rule = 1024
+```
+
+## DNS 解析器
+
+当前发布将 spec 固定的默认值硬编码在 `ResolverConfig`（Client 端），
+尚未对外暴露：
+
+| 参数 | 值 |
+| --- | --- |
+| `cache_floor` | 5 s |
+| `cache_ceiling` | 5 min |
+| `stale_while_error_grace` | 30 s |
+| `attempt_timeout` | 3 s |
+| `negative_cache_retry` | 3 s |
+| `max_concurrent_resolves` | 64 |
+
+未来可能在 `[resolver]` 子表暴露上述项。
+
+## 运行路径
+
+```sh
+portunus-server --data-dir ./srv serve
+```
+
+这条命令会在存在 `./srv/server.toml` 时读取它，不存在时直接使用内置默认值。
+
+## 示例：production-ready server.toml
+
+```toml
+control_listen        = "0.0.0.0:7443"
+operator_http_listen  = "127.0.0.1:7080"
+operator_http_public_origin = "https://ops.example.com"
+metrics_listen        = "127.0.0.1:7081"
+
+tls_cert_path         = "/var/lib/portunus/server.crt"
+tls_key_path          = "/var/lib/portunus/server.key"
+
+shutdown_drain_timeout_secs = 30
+log_format = "json"
+
+range_rule_max_ports   = 1024
+udp_flow_idle_secs     = 60
+udp_max_flows_per_rule = 1024
+```

@@ -1,0 +1,19 @@
+---
+title: 故障排查
+description: 排查 portunus-standalone 的配置文件权限与挂载错误。
+icon: Wrench
+---
+
+## 常见故障
+
+- **配置文件权限敏感。**
+  - systemd：进程以 `User=portunus` 运行，并带
+    `ReadOnlyPaths=/etc/portunus`。Installer 会设
+    `chown root:portunus` + `chmod 0640`。严于此（如
+    `chmod 0600 root:root`）会导致启动失败。
+  - Docker：容器以 UID 65532 运行，宿主机文件必须对该 UID 可读
+    —— `chmod 0644` 最省事。
+- **Ubuntu snap 版 Docker** 限制 bind-mount source 只能在 `/home`、
+  `/media`、`/mnt` 等白名单路径下；从 `/root`、`/tmp`、`/etc` 挂载会
+  在容器内表现为 `No such file or directory`。把 `portunus.toml` 放
+  `/home` 下，或安装非 snap 的 `docker-ce` / `docker.io`。

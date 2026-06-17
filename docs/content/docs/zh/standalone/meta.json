@@ -1,0 +1,7 @@
+{
+  "root": true,
+  "title": "独立部署",
+  "description": "单机 TOML 转发",
+  "icon": "Box",
+  "pages": ["installation", "configuration", "forwarding-rules", "stats", "deployment", "troubleshooting"]
+}

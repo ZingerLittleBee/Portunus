@@ -1,0 +1,154 @@
+---
+title: Server Configuration
+description: Every setting in server.toml, with ranges and defaults.
+icon: ServerCog
+---
+
+`portunus-server` reads an optional `server.toml` from `<data-dir>/server.toml`.
+If the file is absent, built-in defaults are used. If the file exists, every
+key below is optional and only overrides the defaults you specify.
+
+## Listeners
+
+```toml
+# gRPC control-plane listener — clients dial this address.
+# Bind to 0.0.0.0 for cross-host clients, or to a specific interface.
+control_listen = "0.0.0.0:7443"
+
+# Operator HTTP API + Web UI. Defaults to loopback.
+# Bind 0.0.0.0 only when container port publishing or a trusted reverse proxy
+# needs it. Protected /v1 routes still require a Web session cookie or
+# Authorization: Bearer <token>.
+operator_http_listen = "127.0.0.1:7080"
+
+# Optional public origin used for CSRF Origin validation and, in v1.1+,
+# whether local-login session cookies get the Secure attribute.
+# Set this when the UI is reached through a reverse proxy / public hostname.
+# Must start with http:// or https:// and MUST NOT end with a trailing slash.
+# Origin only, no path, query, or fragment. Explicit ports are allowed.
+# IPv6 literals must use brackets, for example: https://[::1]:7080
+# operator_http_public_origin = "https://ops.example.com"
+
+# Prometheus /metrics endpoint. Same loopback constraint.
+metrics_listen = "127.0.0.1:7081"
+```
+
+If `operator_http_public_origin` is unset, Portunus falls back to
+`http://<operator_http_listen>`, which is fine for direct local access. When
+the browser sees a different public hostname than the bind address, set this
+explicitly or CSRF Origin checks and cookie security decisions will be based on
+the wrong origin.
+
+## TLS material
+
+```toml
+# Self-signed material is auto-generated on first run if missing.
+# The cert SAN includes hostname + "localhost" + 127.0.0.1 only —
+# for routable deployments, replace with operator-managed materials
+# whose SAN covers the address(es) clients will dial.
+# server.key MUST be mode 0600 (the loader rejects looser perms).
+tls_cert_path = "/var/lib/portunus/server.crt"
+tls_key_path  = "/var/lib/portunus/server.key"
+```
+
+Since v0.8 most persistent state lives in `<data-dir>/state.db` (SQLite). See
+[SQLite Storage](/en/docs/server-client/features/sqlite-storage).
+
+## Bootstrap shortcut
+
+```toml
+# Legacy one-shot bootstrap shortcut for an operator API superadmin.
+# When set AND the identity store has NO superadmin yet, the server
+# auto-mints the reserved `_legacy` superadmin with this exact token
+# on first start. After bootstrap, leave the line in (silently
+# ignored once a superadmin exists) or remove it.
+operator_token = "<43-char URL-safe-base64 token>"
+```
+
+Generate a token: `portunus-server gen-token`.
+
+Alternative: `portunus-server bootstrap-superadmin --name ops` prints
+a fresh bearer once.
+
+For normal v1.1+ Web UI setup, prefer first-run onboarding with the setup token
+printed by `serve`. `operator_token` creates API-token access, not a browser
+password.
+
+## Drain & logging
+
+```toml
+# Graceful drain timeout for forwarded connections on SIGINT/SIGTERM.
+# In-flight rules get up to this many seconds before kernel reaps.
+# Match the systemd unit's TimeoutStopSec to avoid kill -9 mid-drain.
+shutdown_drain_timeout_secs = 30
+
+# "json" (default — structured) or "compact".
+log_format = "json"
+```
+
+## Range rules
+
+```toml
+# Maximum ports a single port-range rule may span.
+# Each port consumes one TCP listener (one fd) on the client.
+# Default: 1024. Raise only after raising LimitNOFILE in the systemd unit.
+range_rule_max_ports = 1024
+```
+
+## UDP tunables
+
+```toml
+# Idle window before a per-flow upstream socket is reaped.
+# Range: 30..=300. Default: 60.
+udp_flow_idle_secs = 60
+
+# Per-rule cap on simultaneous live UDP flows.
+# Range: 1..=65535. Default: 1024.
+# Sustained churn beyond this bumps portunus_rule_flows_dropped_overflow_total
+# rather than evicting existing flows.
+udp_max_flows_per_rule = 1024
+```
+
+## DNS resolver
+
+The current release bakes the spec-fixed defaults into `ResolverConfig`
+(client-side); they are not yet exposed as operator overrides:
+
+| Knob | Value |
+| --- | --- |
+| `cache_floor` | 5 s |
+| `cache_ceiling` | 5 min |
+| `stale_while_error_grace` | 30 s |
+| `attempt_timeout` | 3 s |
+| `negative_cache_retry` | 3 s |
+| `max_concurrent_resolves` | 64 |
+
+A future release may expose these under a `[resolver]` table.
+
+## Runtime path
+
+```sh
+portunus-server --data-dir ./srv serve
+```
+
+That command reads `./srv/server.toml` if present, and otherwise uses the
+built-in defaults.
+
+## Example: production-ready server.toml
+
+```toml
+control_listen        = "0.0.0.0:7443"
+operator_http_listen  = "127.0.0.1:7080"
+operator_http_public_origin = "https://ops.example.com"
+metrics_listen        = "127.0.0.1:7081"
+
+tls_cert_path         = "/var/lib/portunus/server.crt"
+tls_key_path          = "/var/lib/portunus/server.key"
+
+shutdown_drain_timeout_secs = 30
+log_format = "json"
+
+range_rule_max_ports   = 1024
+udp_flow_idle_secs     = 60
+udp_max_flows_per_rule = 1024
+```

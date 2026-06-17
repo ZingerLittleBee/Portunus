@@ -1,0 +1,270 @@
+---
+title: 操作员 HTTP API
+description: 暴露在 operator_http_listen 上的 /v1 API。默认 loopback、session 或 Bearer 认证、RBAC 守门。
+icon: Code
+---
+
+`portunus-server` 在 `operator_http_listen` 上以 HTTP 形式提供操作员侧 API
+（默认 loopback）。大多数 `/v1/*` 请求需要 Web session cookie 或 API Bearer
+Token。
+
+## 认证
+
+Web UI 用户通过本地密码登录：
+
+```http
+POST /v1/auth/login
+Host: 127.0.0.1:7080
+Content-Type: application/json
+
+{"user_id":"admin","password":"correct horse battery staple"}
+```
+
+登录成功会返回 `{"password_change_required": false}`，并设置 `HttpOnly`
+的 `portunus_session` cookie。API 客户端和 CLI 自动化则继续使用 Bearer 凭据：
+
+```http
+GET /v1/clients
+Host: 127.0.0.1:7080
+Authorization: Bearer T006-quickstart-token
+```
+
+使用 cookie 认证的写请求（`POST`、`PUT`、`PATCH`、`DELETE`）必须带上严格同源的
+`Origin`、`X-Portunus-CSRF: 1`，并在有 body 时使用 JSON content type。Bearer
+Token 请求则不需要 CSRF 头。
+
+认证缺失或非法时的响应如下：
+
+| 状态 | Body | 原因 |
+| --- | --- | --- |
+| `401 unauthenticated` | `{"error":{"code":"unauthenticated","message":"..."}}` | 缺少或非法 Bearer / Web session |
+| `403 not_owner` | `{"error":{"code":"not_owner","message":"..."}}` | 已认证，但调用方不拥有该资源 |
+| `403 password_change_required` | `{"error":{"code":"password_change_required","message":"..."}}` | Web session 必须先修改临时密码 |
+| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC 信封拒绝（见 [RBAC](/zh/docs/server-client/features/rbac)） |
+| `403 csrf_*` | cookie 认证写请求未通过 CSRF 检查 |
+| `429 rate_limited` | 登录、onboarding 或密码重置尝试过多 |
+| `503 bootstrap_required` | Server 还没有任何超管 —— 完成 Web onboarding |
+
+## 按区域分组的端点
+
+### Auth
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/auth/status` | 公开状态：`{ onboarding_required }` |
+| `POST` | `/v1/auth/onboarding` | 公开首次管理员创建；无启用 `superadmin` 时需要 setup token |
+| `POST` | `/v1/auth/login` | 公开本地密码登录；设置 `portunus_session` |
+| `POST` | `/v1/auth/logout` | session 登出；需要 session cookie 和 CSRF 头 |
+
+### Self
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/users/me` | 调用方自身的 `{ user_id, role, display_name }`（SPA AuthGate 使用） |
+| `POST` | `/v1/users/me/password` | 修改自己的密码；body 包含 `current_password`、`new_password`、`new_password_confirm` |
+
+### Clients
+
+Client 维度的路由以稳定 `client_id`（接入时分配的 ULID）寻址。`client_name`
+是自由格式的显示标签，**不是**标识符——允许重名，改名也不改变 id。未知或格式
+非法的 `client_id` 在所有 Client 维度路由上一律返回 `404`（绝不泄漏是否存在同名
+冲突）。
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/client-enrollments` | 为新 Client 创建一次性接入命令。body 为 `{name, address?, ttl_secs?}`；`name` 自由格式 |
+| `POST` | `/v1/clients/{client_id}/enrollment` | 为已有 Client 创建一次性重新接入命令 |
+| `GET` | `/v1/clients` | 列出 Client（每行带 `client_id` + `client_name`）；超管可见全部 |
+| `PUT` | `/v1/clients/{client_id}` | 更新该 Client 的 advertised address；body 为 `{address}` |
+| `PATCH` | `/v1/clients/{client_id}/name` | 身份安全的改名；body 为 `{client_name}`。id 及所有依赖行不变，不中断活动会话 |
+| `POST` | `/v1/clients/{client_id}/revoke` | 撤销 + 断线 |
+| `DELETE` | `/v1/clients/{client_id}` | 删除已撤销的 Client 行 |
+
+### Rules
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/rules` | 推送规则（单目标 / 多目标 / 端口范围 / 含上限 / 含 SNI） |
+| `GET` | `/v1/rules` | 列出规则；非超管只看到自己拥有的。可选 `?client=<name>` 过滤 |
+| `GET` | `/v1/rules?owner=<user_id>` | 超管按所有者过滤 |
+| `PUT` | `/v1/rules/{rule_id}` | 仅热更新 `rate_limit`；`client`、监听、`protocol` 与目标必须保持不变 |
+| `DELETE` | `/v1/rules/{rule_id}` | drain 后移除 |
+| `GET` | `/v1/rules/{rule_id}/stats` | 聚合统计 |
+| `GET` | `/v1/rules/{rule_id}/stats?per_port=true` | 逐端口（端口范围规则） |
+| `GET` | `/v1/rules/{rule_id}/stats?per_target=true` | 逐目标（多目标规则） |
+| `GET` | `/v1/rules/{rule_id}/stats/stream` | SSE 流，5 秒节奏；支持 `?per_target=true`（v0.6+） |
+
+### Users
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/users` | 添加用户（超管）；可带 `initial_password` 与 `password_change_required` |
+| `GET` | `/v1/users` | 列出用户（超管） |
+| `GET` | `/v1/users/{id}` | 用户详情 |
+| `DELETE` | `/v1/users/{id}` | 级联删除（超管） |
+| `POST` | `/v1/users/{id}/password` | 重置用户密码（超管）；默认撤销 sessions 和 API Token |
+
+### Credentials
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/users/{id}/credentials` | 签发凭据 |
+| `GET` | `/v1/users/{id}/credentials` | 列出 |
+| `DELETE` | `/v1/users/{id}/credentials/{cred_id}` | 撤销 |
+| `POST` | `/v1/users/{id}/credentials/{cred_id}/rotate` | 旋转（自助 / 超管） |
+
+### Grants
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `POST` | `/v1/grants` | 添加 Grant（超管） |
+| `GET` | `/v1/grants` | 列出 Grant（超管） |
+| `DELETE` | `/v1/grants/{id}` | 级联撤销 |
+
+### Rate limiting（v0.11+）
+
+每条规则的上限随 `POST` / `PUT /v1/rules` 的 body 一并提交（见上文
+`rate_limit`）。下列端点设置的则是按 (owner, client) 维度的信封。
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/clients/{client_id}/owners` | 列出该 Client 下拥有规则的所有者 |
+| `GET` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | 读取按所有者维度的信封 |
+| `PUT` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | 设置按所有者维度的信封 |
+| `DELETE` | `/v1/clients/{client_id}/owners/{owner_id}/rate-limit` | 删除按所有者维度的信封 |
+
+### Traffic quotas（v0.13+）
+
+按 (user, client) 维度的月度流量配额，以及历史流量查询。流量查询必须带上 `from`
+与 `to`（Unix 秒），并可选 `bucket`（采样粒度）。
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/users/{user_id}/quotas` | 列出某用户的配额 |
+| `PUT` | `/v1/users/{user_id}/quotas/{client_id}` | 设置月度配额 |
+| `PATCH` | `/v1/users/{user_id}/quotas/{client_id}` | 更新 `monthly_bytes` 和/或清零当期用量 |
+| `DELETE` | `/v1/users/{user_id}/quotas/{client_id}` | 删除配额 |
+| `GET` | `/v1/users/{user_id}/quotas/{client_id}/status` | 当期用量与上限对比 |
+| `GET` | `/v1/users/{user_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某用户的历史流量 |
+| `GET` | `/v1/clients/{client_id}/quotas` | 列出某 Client 的配额 |
+| `GET` | `/v1/clients/{client_id}/traffic?from=<unix>&to=<unix>&bucket=<size>` | 某 Client 的历史流量 |
+| `GET` | `/v1/traffic/global?from=<unix>&to=<unix>&bucket=<size>` | 所有规则的历史流量汇总 |
+
+### Settings（v0.14+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/settings/advertised-endpoint` | 读取 advertised-endpoint 覆盖值与生效值（超管） |
+| `PUT` | `/v1/settings/advertised-endpoint` | 设置 / 清除覆盖值；host 必须被服务端证书 SAN 覆盖（超管） |
+
+### Audit（v0.6+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/audit?limit=N&outcome=allow\|deny` | v0.7 形态的 JSON 数组（向后兼容） |
+| `GET` | `/v1/audit?since=<RFC3339>&until=<RFC3339>&cursor=<base64>&limit=N` | v0.8 信封 `{entries, next_cursor?, count}` |
+
+### Metrics（v0.6+）
+
+| 方法 | 路径 | 备注 |
+| --- | --- | --- |
+| `GET` | `/v1/metrics` | RBAC 守门后的 `/metrics` 镜像；仅超管 |
+
+抓取面 `metrics_listen:7081/metrics` 保持不变（Prometheus 抓取仍不需要 Bearer）。
+
+## 常用写入端点的请求体
+
+下面是大多数自动化场景所需的 JSON 结构。未列出的字段均为可选。
+
+### `POST /v1/auth/onboarding`
+
+在还没有活跃 `superadmin` 时创建第一个管理员。需要提供 server 日志里打印的 setup
+token。
+
+```json
+{
+  "user_id": "admin",
+  "display_name": "Admin",
+  "password": "correct horse battery staple",
+  "password_confirm": "correct horse battery staple",
+  "setup_token": "<token from server logs>"
+}
+```
+
+返回 `201` 及 `{ user_id, display_name, role }`。**该接口不会设置 session cookie**
+——在发起任何已认证请求之前，还需接着调用 `POST /v1/auth/login`。
+
+### `POST /v1/auth/login`
+
+```json
+{ "user_id": "admin", "password": "correct horse battery staple" }
+```
+
+返回 `200 { "password_change_required": false }`，并设置 `HttpOnly` 的
+`portunus_session` cookie，供后续 cookie 认证调用使用。
+
+### `POST /v1/client-enrollments`
+
+```json
+{ "name": "edge-01", "address": "edge-01.example.com", "ttl_secs": 600 }
+```
+
+- `name` —— 要接入的 client 名称。
+- `address` —— 消费者连接该 client 转发端口时使用的**公网主机**。它必须是不含
+  端口的纯主机名（DNS 名或 IP），带端口的 `host:port` 值会被拒绝并返回
+  `400 invalid_client_address`。
+- `ttl_secs` —— 可选的接入码有效期（默认取 server 的设置）。
+
+返回 `{ client_name, expires_at, command, uri }`。在边缘主机上运行 `command`
+（或兑换 `uri`）即可。URI 中嵌入的 server endpoint 来自
+[通告地址](/zh/docs/server-client/features/advertised-endpoint)，未设置时回落到 `127.0.0.1:7443`。
+
+### `POST /v1/users/{id}/credentials`
+
+```json
+{ "label": "ops-cli" }
+```
+
+返回 `201 { credential_id, user_id, token, label, created_at }`。其中 `token`
+就是 bearer 凭据，只显示**一次**，请立即保存。
+
+## 状态码语义
+
+| 码 | 含义 |
+| --- | --- |
+| `200` | 成功（读） |
+| `201` | 资源已创建 |
+| `204` | 成功，无 body |
+| `400` | 校验错误 |
+| `401` | `unauthenticated` |
+| `403` | RBAC 拒绝、CSRF 拒绝或 `password_change_required` |
+| `404` | 资源不存在 |
+| `409` | 冲突（如 `conflict.legacy_to_sni_unsupported`） |
+| `422` | 能力门控（如 `multi_target_unsupported_by_client`、`sni_unsupported_by_client`、`rate_limit_unsupported_by_client`） |
+| `429` | 认证限流 |
+| `503` | `bootstrap_required` |
+
+完整的 code → exit-code → HTTP-status 映射已在 v1 冻结，详见各 spec 的契约文档
+[`specs/*/contracts/operator-api.md`](https://github.com/ZingerLittleBee/Portunus/tree/main/specs)。
+
+## 示例：推送一条带上限的规则
+
+```sh
+curl -sS -X POST http://127.0.0.1:7080/v1/rules \
+  -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client": "edge-01",
+    "listen_port": 8443,
+    "targets": [
+      {"host": "primary.local", "port": 443, "priority": 1},
+      {"host": "backup.local",  "port": 443, "priority": 2}
+    ],
+    "protocol": "tcp",
+    "sni_pattern": "*.example.com",
+    "rate_limit": {
+      "bandwidth_in_bps": 1048576,
+      "concurrent_connections": 1000
+    }
+  }'
+```

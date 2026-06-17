@@ -1,5 +1,0 @@
-{
-  "title": "Configuration",
-  "icon": "Settings",
-  "pages": ["server", "client", "standalone"]
-}

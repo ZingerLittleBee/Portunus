@@ -1,0 +1,7 @@
+{
+  "root": true,
+  "title": "Overview",
+  "description": "Concepts shared by both deployment modes",
+  "icon": "Compass",
+  "pages": ["index", "architecture", "performance", "performance-history", "concepts"]
+}

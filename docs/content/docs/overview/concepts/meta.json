@@ -1,0 +1,5 @@
+{
+  "title": "Forwarding concepts",
+  "icon": "Workflow",
+  "pages": ["tcp-forwarding", "udp-forwarding", "port-range", "dns-targets", "multi-target-failover", "proxy-protocol"]
+}

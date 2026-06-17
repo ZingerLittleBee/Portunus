@@ -1,0 +1,191 @@
+---
+title: Configuration
+description: TOML config schema, CLI flags, signals, and example configs for portunus-standalone.
+icon: Settings
+---
+
+## Config schema
+
+```toml
+# [global] section — all fields optional
+[global]
+label              = "my-forwarder"   # human label; informational only
+log_level          = "warn"           # tracing EnvFilter directive (default: "warn")
+log_format         = "json"           # "json" (default) or "pretty"
+shutdown_drain_secs = 30              # graceful-drain budget on SIGTERM (default: 30)
+
+# [defaults] section — values applied to rules that omit the field
+[defaults]
+protocol          = "tcp"    # optional; rules can still override
+udp_max_flows     = 1024     # per-rule UDP flow table cap (default: 1024)
+udp_flow_idle_secs = 60      # idle-flow expiry in seconds (default: 60)
+prefer_ipv6       = false    # address-family preference (default: false)
+
+# [[rule]] — one or more required
+[[rule]]
+name          = "ssh-tunnel"          # unique, used in log output
+protocol      = "tcp"                 # "tcp" or "udp"
+listen_port   = 2222                  # single port  }  mutually exclusive
+# listen_ports = "8000-8009"          # port range   }
+target        = "10.0.0.5:22"        # single target }  mutually exclusive
+# targets = [...]                     # multi-target  }
+prefer_ipv6   = false                 # per-rule override (optional)
+udp_max_flows = 1024                  # per-rule override for UDP (optional)
+udp_flow_idle_secs = 60              # per-rule override for UDP (optional)
+```
+
+## CLI flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--config <PATH>` | `./portunus.toml` | Path to the TOML config file |
+| `--check` | false | Validate config and exit (0 = valid, 2 = invalid) |
+| `--log-level <LEVEL>` | from config | Override log level |
+| `--log-format <FMT>` | from config | Override log format (`json` or `pretty`) |
+| `--no-stats` | false | Disable the `[stats]` UDS server (daemon only) |
+| `--stats-socket <PATH>` | from config | Override `[stats].socket_path` (daemon only) |
+
+The `stats` subcommand has its own flags — see [Live stats dashboard](/en/docs/standalone/stats).
+
+When `--config` is omitted the binary loads `./portunus.toml` from the
+working directory. Exit 2 if that file does not resolve.
+
+## Signals
+
+| Signal | Behaviour |
+| --- | --- |
+| `SIGTERM` / `SIGINT` | Graceful shutdown — active connections drain for up to `shutdown_drain_secs`, then the process exits 0. |
+| `SIGHUP` | No-op in the current release (config reload is not yet supported). |
+
+The shipped systemd unit deliberately omits `ExecReload`, so
+`systemctl reload portunus-standalone` reports "Job type reload is not
+applicable" rather than killing the service. Edit the TOML and run
+`systemctl restart portunus-standalone`.
+
+## Example configs
+
+### Minimal
+
+The smallest config that the binary will accept: one rule, no `[global]`
+or `[defaults]` blocks (every optional field falls back to its default).
+
+```toml
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+### Full
+
+Every field the schema recognises, plus one rule for each common case
+(single TCP, TCP range, multi-target failover with PROXY protocol,
+DNS target, single UDP, UDP range). Copy and trim as needed.
+
+```toml
+# ─────────── Global (all fields optional) ───────────
+[global]
+label               = "edge-1"     # informational label printed in logs
+log_level           = "warn"       # EnvFilter; e.g. "portunus=debug,info"
+log_format          = "json"       # "json" (default) or "pretty"
+shutdown_drain_secs = 30           # graceful-drain budget on SIGTERM
+
+# ─────────── Defaults (inherited by rules that omit the field) ───────────
+[defaults]
+protocol           = "tcp"         # default protocol when a rule omits it
+udp_max_flows      = 1024          # per-rule UDP flow table cap
+udp_flow_idle_secs = 60            # idle UDP flow expiry, seconds
+prefer_ipv6        = false         # DNS address-family preference
+
+# ─────────── Rules ───────────
+
+# 1) Single-port TCP
+[[rule]]
+name        = "ssh-jump"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+
+# 2) TCP port range (listen and target widths must match)
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+
+# 3) Multi-target failover + PROXY protocol v2
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+
+# 4) DNS target (resolved on each connect; `prefer_ipv6` overrides defaults)
+[[rule]]
+name        = "api"
+protocol    = "tcp"
+listen_port = 9000
+target      = "api.internal.example.com:443"
+prefer_ipv6 = false
+
+# 5) Single-port UDP with bumped flow cap + idle timeout
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_max_flows      = 4096
+udp_flow_idle_secs = 120
+
+# 6) UDP port range
+[[rule]]
+name         = "voice-udp"
+protocol     = "udp"
+listen_ports = "30000-30019"
+target       = "10.0.0.30:30000-30019"
+```
+
+Validate any config without starting the service:
+
+```sh
+# binary install
+portunus-standalone --check --config /etc/portunus/standalone.toml
+
+# docker
+docker run --rm \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest \
+  --config /etc/portunus/standalone.toml --check
+```
+
+Prints `ok` and exits 0 on success, exits 2 on error.
+
+## Observability
+
+`portunus-standalone` logs to **stderr** in JSON format by default
+(switch to `log_format = "pretty"` for human-readable output during
+development). Every rule emits structured events on startup, and a
+periodic reporter logs per-rule byte + connection counts every 60 seconds.
+
+There is no embedded HTTP server, Prometheus endpoint, or gRPC stream —
+those surfaces belong to `portunus-server`. Use log aggregation (e.g.
+`journald`, `docker logs`, a sidecar log shipper) to collect the JSON
+output.
+
+## Differences from portunus-client
+
+| Feature | `portunus-client` | `portunus-standalone` |
+| --- | --- | --- |
+| Control plane | gRPC stream to `portunus-server` | None — TOML only |
+| Dynamic rule updates | Yes (server push) | No — restart required |
+| RBAC / multi-user | Yes | No |
+| Rate limiting / QoS | Yes | No |
+| Prometheus metrics | Yes (loopback HTTP) | No |
+| Audit log | Via server | Structured log to stderr |
+| SNI routing | Yes | No |
+| TCP splice fast path (Linux) | Yes | Yes (same forwarder code) |
+| PROXY protocol out | Yes | Yes |

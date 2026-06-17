@@ -1,0 +1,22 @@
+---
+title: 多目标故障切换
+description: 每条规则最多 8 个按 priority 排序的目标，附带被动健康检测与可选的主动探测。
+icon: Workflow
+---
+
+> **如何配置：** [独立部署 (TOML)](/zh/docs/standalone/forwarding-rules#multi-target-failover) · [服务端 + 客户端 (operator)](/zh/docs/server-client/forwarding-rules#multi-target-failover)
+
+v0.7.0 起支持。把 `Rule.targets[]` 从单个目标扩展为最多 8 个目标的列表，
+并按 priority 值排序。
+
+## 工作原理
+
+- **priority 数字越小，优先级越高**。Client 总是优先尝试可用目标中优先级
+  最高的那个，失败后按 priority 值从小到大依次尝试其余目标。
+- **被动失败检测**：30 秒内连续 3 次连接失败就把目标置为 `Failed`；连续
+  2 次成功则恢复。
+- **主动探测**（每条规则可选）：设置 `health_check_interval_secs`
+  （范围 `1..=3600`）以从 Client 周期性发起 TCP 连接探测。
+- **全部失败时的兜底**：当所有目标都为 `Failed` 时，Client 仍会尝试
+  priority 最高的目标，而不是直接放弃。
+- 所有健康状态 **保存在 Client 端内存中** —— Client 重启后即丢失。

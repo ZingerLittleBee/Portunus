@@ -1,0 +1,512 @@
+---
+title: Troubleshooting
+description: Common failure modes, error codes, and the structured log lines that reveal them.
+icon: Stethoscope
+---
+
+Most failures surface as a structured log line **plus** a specific
+exit code or HTTP status. The combination uniquely identifies the
+cause.
+
+## Client cannot connect
+
+### `control.connect_failed` (TLS / certificate fingerprint mismatch)
+
+```json
+{"event":"control.connect_failed","error":"…"}
+```
+
+The server's leaf certificate fingerprint does not match the bundle's
+`server_cert_sha256`, so the TLS handshake aborts. There is no dedicated
+pin-mismatch event — the failure surfaces as `control.connect_failed`
+with the certificate/TLS detail in its `error=` field. **The client does
+not exit**; it retries with backoff. The server logs nothing (the TLS
+handshake never completed).
+
+**Fix**: generate a fresh enrollment command with `enroll-client` after the
+server's cert was regenerated, or restore the original `server.crt` +
+`server.key` on the server.
+
+### `auth.failure { reason: "token_revoked" }`
+
+```sh
+portunus-server revoke edge-01
+# ↓
+# Server log: client.disconnected reason=token_revoked
+# Restarted client log: auth.failure reason=token_revoked
+```
+
+**Fix**: generate a re-enrollment command and run it on the edge host.
+
+### Connect refused / network unreachable
+
+Check `control_listen` on the server matches what the bundle's
+`server_endpoint` says, and confirm a firewall isn't dropping
+`tcp/7443`.
+
+## Rule activation fails
+
+### `port_in_use`
+
+```sh
+portunus-server push-rule edge-01 18080 10.0.0.5:8080
+# exit 5: port_in_use: port 18080 already in use
+```
+
+Something on the client (another rule, an unrelated process) holds the
+listen port.
+
+**Fix**: pick a free port, or `remove-rule` the holder + retry. There
+is **no auto-retry** — failed rules block port reuse until removed
+(deliberate Q4 lifecycle decision).
+
+<Callout type="info">
+  Since **v1.6.1** the TCP listener binds with `SO_REUSEADDR`, so a
+  `docker restart` or fast process recycle no longer hits a spurious
+  `port_in_use` while `accept()`-ed child sockets from the dead process
+  linger in `TIME_WAIT` (previously held the port for ~`tcp_fin_timeout`,
+  60 s default). `SO_REUSEADDR` only relaxes the `TIME_WAIT` bind — two
+  live `LISTEN` sockets on the same port still conflict, so duplicate
+  rules are still rejected with `port_in_use`. If you see `port_in_use`
+  on a fresh start, the port is genuinely held by another process or rule.
+</Callout>
+
+### `client_not_connected`
+
+```sh
+portunus-server push-rule edge-01 18080 …
+# exit 4: client_not_connected
+```
+
+The client lost its gRPC stream. Rules persist server-side; the server
+re-pushes on reconnect. Confirm with:
+
+```sh
+portunus-server list-clients
+```
+
+## Target resolution (DNS)
+
+Rules with a DNS-name target resolve lazily on each new connection /
+flow. A resolution failure does **not** fail the rule — it drops the
+individual connection (TCP) or first packet (UDP) and emits a structured
+event:
+
+```json
+{"event":"rule.dns_failed","rule":"…","host":"…","reason":"…"}
+```
+
+UDP uses `rule.udp_dns_failed`. Each failure also bumps the per-rule
+Prometheus counter:
+
+```text
+portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="42"}
+```
+
+**Fix**: confirm the target hostname resolves from the client host
+(`dig`, `getent hosts`), and that the client's resolver / `/etc/resolv.conf`
+is reachable. Transient upstream-DNS outages surface as a rising counter
+that flattens once resolution recovers; the resolver caches successful
+answers (honouring TTL) and briefly serves stale entries across a failed
+refresh, so a flapping resolver does not necessarily drop every connection.
+
+The resolver cache is **bounded** (memory-leak guard, since v1.7): under
+a high-cardinality target workload it evicts the entries closest to
+expiry rather than growing without limit. It is an internal safeguard —
+there is no operator knob.
+
+## RBAC denials
+
+| Code | Cause |
+| --- | --- |
+| `unauthenticated` | Missing or invalid bearer API token / Web session |
+| `not_owner` | Authenticated but caller doesn't own the resource |
+| `client_not_granted` | Caller has no grant covering the requested client |
+| `port_outside_grant` | Listen port outside any single grant |
+| `protocol_not_granted` | Protocol (TCP/UDP) not enabled in a grant |
+| `password_change_required` | Web session is limited until the user changes a temporary password |
+
+Read [RBAC](/en/docs/server-client/features/rbac) for the closed-set matching rules.
+
+## Capability gates
+
+| Code | Cause |
+| --- | --- |
+| `unsupported_protocol` | UDP rule pushed to a pre-v0.4 client |
+| `multi_target_unsupported_by_client` | `targets[]` pushed to a pre-v0.7 client |
+| `sni_unsupported_by_client` | `sni_pattern` pushed to a pre-v0.9 client |
+| `rate_limit_unsupported_by_client` | `rate_limit` pushed to a pre-v0.11 client |
+| `conflict.legacy_to_sni_unsupported` | Mixing legacy plain-TCP with SNI on the same `(client, port)` |
+
+## Server startup failures
+
+### `startup.unsupported_filesystem`
+
+`--data-dir` is on NFS, tmpfs, or ramfs. Move it to a local writable
+filesystem.
+
+### `startup.store_in_use` (exit 1)
+
+Another `portunus-server serve` already holds the database. Find and
+stop the rogue process; clustering is out of scope.
+
+### `startup.schema_version_too_new` (exit 78)
+
+Running an older binary against a newer DB schema (e.g. after
+restoring a v0.11 backup on a v0.10 binary). Either keep the older
+backup or run the newer binary version.
+
+### `bootstrap_required` (HTTP 503)
+
+Server has no active superadmin yet. Since v1.1.0, start `serve`, read the setup
+token from stderr / logs, then open the Web UI and create the first
+`superadmin`:
+
+```sh
+journalctl -u portunus-server -n 100 --no-pager \
+  | grep 'Portunus onboarding setup token'
+```
+
+The setup token expires after 30 minutes and rotates on every server start while
+onboarding is incomplete. If a `superadmin` already exists, onboarding does not
+reopen; use the password recovery flow below.
+
+For legacy automation, `bootstrap-superadmin` or `operator_token` in
+`server.toml` can still create API-token access, but those paths do not create a
+Web password.
+
+## Web login and password recovery
+
+### `rate_limited`
+
+Login, onboarding, and password-reset attempts are rate-limited by subject and
+remote IP. Wait for the lockout to expire before retrying. Repeated guessing is
+supposed to be boring.
+
+### Last `superadmin` forgot the password
+
+Stop the server process, reset the existing account locally, then restart. Use
+the actual superadmin user ID. For `bootstrap-superadmin` installs that ID is
+`_superadmin`; for Web onboarding it is the ID chosen during setup, for example
+`admin`.
+
+```sh
+sudo systemctl stop portunus-server
+sudo -u portunus-server portunus-server \
+  --data-dir /var/lib/portunus \
+  reset-password admin --temporary
+sudo systemctl start portunus-server
+```
+
+The command prints `temporary_password=...` once, revokes Web sessions, revokes
+API tokens by default, and marks the account as requiring a password change.
+There is no remote "forgot password" endpoint for this case.
+
+## Performance complaints
+
+### "Throughput regressed after upgrading"
+
+Run the criterion bench to compare:
+
+```sh
+cargo bench -p portunus-client --bench data_plane
+```
+
+The CI regression gate
+(`.github/workflows/bench.yml` →
+`scripts/bench_regression_gate.py`) fails if any benchmark median is
+>25% slower than the v0.1.0 baseline. If you suspect a regression,
+bisect with `git bisect run cargo bench …`.
+
+### "Connections drop under sustained UDP load"
+
+Check `portunus_rule_flows_dropped_overflow_total`. If non-zero, raise
+`udp_max_flows_per_rule` in `server.toml` (and `LimitNOFILE` on the
+client systemd unit).
+
+Since **v1.5** the flow cap is enforced once **per rule**, not per listen
+port — a range rule with `udp_max_flows_per_rule = N` admits `N` flows
+total across all its ports (was `N × range_size`). If a range rule that
+worked on v1.4 now overflows, raise the cap proportionally or split the
+range; the field is capped at `65535`. See the
+[Upgrade Guide](/en/docs/server-client/operations/upgrade#v1x-data-plane-releases).
+
+Since **v1.7** the per-rule UDP listener loop is hardened against
+head-of-line blocking, so one slow upstream no longer stalls datagrams
+for other flows on the same rule. A single misbehaving flow may still be
+evicted early on a reflected ICMP error
+(`rule.udp_flow_evicted_icmp`) — the next datagram rebuilds it.
+
+### "TLS handshakes seem slow on SNI-mode listeners"
+
+Inspect the peek histogram:
+
+```text
+histogram_quantile(0.99,
+  rate(portunus_tls_client_hello_peek_duration_seconds_bucket[5m]))
+```
+
+A long tail (close to 3 s) usually means clients are sending
+ClientHellos in dribs and drabs over a slow network — not a
+Portunus issue.
+
+## Traffic quotas (v1.4+)
+
+See the [Traffic Quotas runbook](/en/docs/server-client/operations/runbook-traffic-quotas)
+for the full surface.
+
+### "End-user reports connection drops at a GB boundary"
+
+Suspect the pair hit its monthly quota. Check the live gauge:
+
+```text
+portunus_traffic_quota_exhausted{user="alice", client="edge-tokyo"} 1
+```
+
+A value of `1` means the data plane has hard-killed forwarding for
+this pair and is rejecting new connections. Confirm with the HTTP
+status endpoint:
+
+```sh
+curl -sS \
+  -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+  https://portunus.example.com/v1/users/alice/quotas/edge-tokyo/status
+```
+
+`exhausted: true` + a non-null `exhausted_at` confirms the trip.
+
+**Fix** — pick one:
+
+- Issue a one-shot credit (period boundary unchanged):
+
+  ```sh
+  curl -sS -X PATCH \
+    -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+    -d '{"clear_period_usage": true}'
+  ```
+
+- Or raise the monthly cap permanently:
+
+  ```sh
+  curl -sS -X PUT \
+    -H 'Authorization: Bearer '"$PORTUNUS_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    https://portunus.example.com/v1/users/alice/quotas/edge-tokyo \
+    -d '{"monthly_bytes": 2199023255552}'
+  ```
+
+The server pushes a fresh `TrafficQuotaUpdate { action: SET }` and
+the client resumes accepting connections without a reconnect.
+
+### "Quota state seems stuck"
+
+Symptoms: PUT/PATCH appears to succeed but the client keeps killing
+connections (or keeps allowing them).
+
+Check 1 — is the client session alive?
+
+```text
+portunus_clients_connected{client="edge-tokyo"} 1
+```
+
+A value of `0` means the control-plane stream is down; the server's
+quota change is queued and will be replayed on reconnect.
+
+Check 2 — did the client process the update? Grep the client log:
+
+```sh
+journalctl -u portunus-client | grep traffic_quota.applied_set
+```
+
+A `traffic_quota.applied_set` event line confirms the `QuotaHandle`
+was installed or replaced. Absence of this line means the
+`TrafficQuotaUpdate` never landed; check that the client binary is
+v1.4.0+.
+
+If the client did reconnect, the in-memory `QuotaHandle` is rebuilt
+from the server's `TrafficQuotaUpdate` replay step (which runs
+**before** rule replay so the handle is in place when the first rule
+binds its listener). No operator action needed — `bytes_used` may
+briefly look higher on the server than the actual delivered total
+during the StatsReport-period window after reconnect.
+
+### "Traffic chart looks empty"
+
+The chart in the Traffic tab pulls from
+`traffic_samples_1m` / `traffic_samples_1h`. Empty means either no
+samples were generated or the requested window falls outside
+retention.
+
+- **No samples** — the rollup task only writes a sample row when the
+  pair forwarded bytes in that minute / hour. An idle pair shows
+  gaps. Verify by pointing your query at a time window where you
+  know traffic was flowing.
+- **Out of retention** — `bucket=1m` rows are kept for **7 days**;
+  `bucket=1h` rows are kept for **90 days**. A query with `from`
+  older than the relevant retention returns
+  `422 quota_bucket_out_of_retention`. Narrow the window or switch
+  to the larger bucket.
+- **Just-past hour** — the rollup task runs at `H+1 min`. Between
+  `H` and `H+1 min` the `1h` row for hour `H` does not exist yet;
+  request `bucket=1m` for that range.
+
+If you do see traffic in the underlying gauges
+(`portunus_traffic_quota_bytes_used` ticked up) but the chart is
+blank, switch the bucket to `1m` and query the smallest window
+covering the activity.
+
+## Disabling the Linux fast path for triage
+
+On Linux, `portunus-client` automatically uses `splice(2)` to forward
+TCP traffic on rules that have no `bandwidth_in_bps` /
+`bandwidth_out_bps` (per-rule or per-owner). The optimization is
+operator-invisible by design — there is no rule field, config knob,
+or CLI flag for it. For diagnosis and bench-comparison the
+**internal** environment variable `PORTUNUS_DISABLE_SPLICE=1` forces
+every connection to the userspace path:
+
+```sh
+PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
+```
+
+This is intentionally not advertised in `--help`. Treat it as a
+debug-only escape hatch, not a stable API.
+
+### "I see `proxy.splice_unsupported_fallback` events"
+
+```json
+{"event":"proxy.splice_unsupported_fallback","errno_name":"ENOSYS"}
+```
+
+The kernel (or a sandbox / LSM / seccomp policy in front of it)
+rejected the `splice` syscall. The connection transparently fell
+back to the userspace path — functionality is unaffected, only peak
+throughput is reduced.
+
+**Fix**: relax the policy, or accept the fallback and silence the
+warn by setting `PORTUNUS_DISABLE_SPLICE=1`.
+
+### "I see recurring `proxy.splice_pipe_size_failed` events"
+
+```json
+{"event":"proxy.splice_pipe_size_failed",
+ "requested_bytes":1048576,
+ "actual_default_bytes":65536,
+ "errno_name":"EPERM"}
+```
+
+`/proc/sys/fs/pipe-max-size` is below the requested 1 MiB. The fast
+path still works at the kernel-default pipe size (64 KiB on most
+distros) but peak throughput on large-chunk workloads is reduced.
+
+**Fix**: raise the sysctl (per-host or in the systemd unit), or
+accept reduced peak throughput.
+
+### "Throughput on Linux equals the v1.2.0 baseline"
+
+The fast path is not active. Check, in order:
+
+1. `PORTUNUS_DISABLE_SPLICE` set on the client environment? Unset it.
+2. Rule has `bandwidth_in_bps` or `bandwidth_out_bps`? Per-chunk
+   userspace token accounting is required when bandwidth caps apply,
+   so the fast path is correctly disabled.
+3. Owner has a bandwidth cap? Same as #2.
+4. Inspect `proxy.splice_selected` (info-level) — it fires once per
+   rule when a rule first takes the fast path. Its absence indicates
+   ineligibility.
+
+Since **v1.6.1**, `bytes_in` / `bytes_out` update incrementally on the
+splice path (one `Relaxed` add per 64 KiB batch per direction) instead
+of only at connection close — so long-lived flows (SSH, gRPC, WebSocket)
+no longer leave the rate display frozen at 0. Since **v1.7** the splice
+fast path and live byte counters also apply on the multi-target failover
+path.
+
+### "`bytes_in` and bytes the upstream actually received do not match under RST"
+
+Behaviour is identical to the v1.2.0 userspace path: the counters
+count **delivered** bytes, never received-but-not-yet-delivered
+bytes. Under a mid-flow RST, in-flight bytes are dropped on both
+paths; the counters agree on the delivered total. This is not a
+regression introduced by the fast path.
+
+## Advertised endpoint
+
+See [Advertised Endpoint](/en/docs/server-client/features/advertised-endpoint) for the
+full model. The endpoint is resolved fail-closed and validated against
+the server certificate SAN.
+
+### `endpoint_invalid` (HTTP 422)
+
+`PUT /v1/settings/advertised-endpoint` (or the Web UI Save) rejected
+the value: it is not a bare `host:port` (it had a scheme, path, IPv6
+literal, whitespace, …).
+
+**Fix**: submit a bare `host:port`, e.g. `proxy.example.com:34567`. No
+`https://`, no trailing path.
+
+### `endpoint_not_in_cert_san` (HTTP 422)
+
+The host is well-formed but **not covered by the server certificate
+SAN**. The override is intentionally *not* persisted — the server
+fails closed rather than advertise a host it cannot prove over TLS.
+Same root cause when GET returns `effective: null` with a SAN
+`diagnostic`, or startup logs an uncovered seed.
+
+**Fix** (operator action):
+
+1. Confirm the client-facing `host:port` (the public address clients
+   dial — e.g. the Railway TCP-proxy domain).
+2. Inspect the deployed cert SAN:
+
+   ```sh
+   openssl x509 -in server.crt -noout -text \
+     | grep -A1 "Subject Alternative Name"
+   ```
+
+3. If the host *is* present (mind: wildcards match only the single
+   left-most label; an IP literal needs an IP SAN, not a DNS SAN), the
+   input used the wrong label — correct and retry.
+4. If absent, reissue/obtain a certificate whose SAN includes that
+   host (a DNS SAN, a single-label `*.` wildcard covering it, or an IP
+   SAN for IP literals), redeploy `server.crt` + `server.key`, restart.
+5. Re-apply the override (`PUT` / Web UI) or fix the seed
+   (`PORTUNUS_ADVERTISED_ENDPOINT` / `--advertised-endpoint`) — it now
+   returns `200`.
+6. Recreate enrollments created while the endpoint was wrong (they
+   froze the old value). Legacy `NULL`-endpoint enrollments need no
+   recreation — their redeem succeeds once the config is fixed.
+
+### Client bundle points at `127.0.0.1` / loopback
+
+No override and no seed were set, so resolution fell through to the
+tier-4 loopback (`127.0.0.1:<control_port>`), which a remote client
+cannot reach.
+
+**Fix**: set an explicit override (Web UI / `PUT`) or seed
+(`PORTUNUS_ADVERTISED_ENDPOINT`) to a SAN-covered public `host:port`,
+then recreate the affected enrollments.
+
+### Legacy enrollment redeem fails with `failed_precondition`
+
+A pre-upgrade enrollment (NULL stored endpoint) resolved fail-closed
+at redeem and the current configuration is invalid/uncovered. The
+enrollment is **not** consumed and the client token is **not** rotated.
+
+**Fix**: correct the advertised-endpoint configuration (see
+`endpoint_not_in_cert_san` above); the client can then redeem the
+same code again — it is idempotent until it succeeds.
+
+## Where to file bugs
+
+GitHub issues: https://github.com/ZingerLittleBee/Portunus/issues
+
+Include:
+
+- Output of `portunus-server --version` and `portunus-client --version`.
+- Relevant structured-log lines (the JSON event names alone usually
+  identify the failure mode).
+- Operator command + the exact error.
+- For data-plane issues, the rule definition and traffic shape.

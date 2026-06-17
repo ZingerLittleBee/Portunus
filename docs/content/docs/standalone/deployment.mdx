@@ -1,0 +1,57 @@
+---
+title: Deployment
+description: Operational notes, upgrade, and uninstall for portunus-standalone.
+icon: Package
+---
+
+## Operational notes
+
+- **No live config reload.** `SIGHUP` is a no-op and the shipped
+  systemd unit refuses `systemctl reload`. To change rules, edit the
+  TOML and `systemctl restart portunus-standalone` (or
+  `docker restart portunus-standalone`). Established TCP connections
+  drain on the way out (up to `shutdown_drain_secs`).
+- **Privileged listen ports (`< 1024`).** The systemd unit grants
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`, so listening on ports
+  like 22, 53, 80, 443 works without running as root. The Docker
+  image declares `NET_BIND_SERVICE` capability; pass `--cap-add
+  NET_BIND_SERVICE` if you constrain capabilities.
+- **File-descriptor limit.** The binary emits a
+  `standalone.rlimit_nofile` log on startup. The systemd unit sets
+  `LimitNOFILE=65535`. For Docker pass `--ulimit nofile=65535:65535`
+  if your daemon defaults are lower.
+- **TCP `splice(2)` zero-copy** is auto-selected on Linux when no
+  PROXY-protocol prelude is configured. You'll see a
+  `proxy.splice_selected` event on the first connection of the rule.
+- **Port-range rules bind atomically.** A rule that declares
+  `listen_ports = "8000-8009"` binds all 10 ports up-front; if any one
+  is unavailable the rule's startup fails and the others are released.
+
+## Upgrade and uninstall
+
+If you installed via the **one-click installer**:
+
+```sh
+# Upgrade to the latest release (in place, reusing recorded config):
+sh install.sh upgrade standalone
+
+# Status (binary version, service active, deploy form):
+sh install.sh status standalone
+
+# Service control passthrough:
+sh install.sh service standalone restart
+
+# Uninstall (keeps /etc/portunus by default):
+sh install.sh uninstall standalone
+
+# Purge: also wipe /etc/portunus and the portunus user:
+sh install.sh uninstall standalone --purge
+```
+
+If you installed via **Docker**:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-standalone:latest
+docker stop portunus-standalone && docker rm portunus-standalone
+# then re-run the `docker run …` from Installation → Docker (/en/docs/standalone/installation)
+```

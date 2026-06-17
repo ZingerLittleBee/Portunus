@@ -1,0 +1,12 @@
+{
+  "title": "Features",
+  "icon": "Sparkles",
+  "pages": [
+    "tls-sni-routing",
+    "rate-limiting",
+    "rbac",
+    "web-ui",
+    "advertised-endpoint",
+    "sqlite-storage"
+  ]
+}

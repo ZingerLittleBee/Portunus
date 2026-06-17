@@ -1,0 +1,187 @@
+---
+title: 配置
+description: portunus-standalone 的 TOML 配置 schema、CLI 参数、信号与示例配置。
+icon: Settings
+---
+
+## 配置 schema
+
+```toml
+# [global] 段 —— 所有字段可选
+[global]
+label              = "my-forwarder"   # 人类可读标签，仅作信息用途
+log_level          = "warn"           # tracing EnvFilter（默认 "warn"）
+log_format         = "json"           # "json"（默认）或 "pretty"
+shutdown_drain_secs = 30              # SIGTERM 后优雅关闭的预算秒数（默认 30）
+
+# [defaults] 段 —— 给未显式声明该字段的规则做兜底
+[defaults]
+protocol          = "tcp"    # 可选；规则可覆盖
+udp_max_flows     = 1024     # 每规则 UDP flow 表容量（默认 1024）
+udp_flow_idle_secs = 60      # idle flow 过期秒数（默认 60）
+prefer_ipv6       = false    # DNS 地址族偏好（默认 false）
+
+# [[rule]] —— 至少一条
+[[rule]]
+name          = "ssh-tunnel"          # 唯一名，写入日志
+protocol      = "tcp"                 # "tcp" 或 "udp"
+listen_port   = 2222                  # 单端口  }  二选一
+# listen_ports = "8000-8009"          # 端口段   }
+target        = "10.0.0.5:22"        # 单目标  }  二选一
+# targets = [...]                     # 多目标  }
+prefer_ipv6   = false                 # 单规则覆盖（可选）
+udp_max_flows = 1024                  # 单规则覆盖（仅 UDP，可选）
+udp_flow_idle_secs = 60              # 单规则覆盖（仅 UDP，可选）
+```
+
+## CLI 参数
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--config <PATH>` | `./portunus.toml` | TOML 配置文件路径 |
+| `--check` | false | 仅验证配置后退出（0 = 合法，2 = 非法）|
+| `--log-level <LEVEL>` | 取自配置 | 覆盖日志级别 |
+| `--log-format <FMT>` | 取自配置 | 覆盖日志格式（`json` 或 `pretty`）|
+| `--no-stats` | false | 关闭 `[stats]` UDS 服务（仅 daemon）|
+| `--stats-socket <PATH>` | 取自配置 | 覆盖 `[stats].socket_path`（仅 daemon）|
+
+`stats` 子命令有自己的标志，参见 [实时流量面板](/zh/docs/standalone/stats)。
+
+不传 `--config` 时，从工作目录加载 `./portunus.toml`；该文件不存在时以 2 退出。
+
+## 信号
+
+| 信号 | 行为 |
+| --- | --- |
+| `SIGTERM` / `SIGINT` | 优雅关闭 —— 已建立连接最多 drain `shutdown_drain_secs` 秒，进程以 0 退出 |
+| `SIGHUP` | 当前版本不处理（暂不支持 config reload）|
+
+随发行版附带的 systemd unit 故意不写 `ExecReload`，因此
+`systemctl reload portunus-standalone` 会报 "Job type reload is not
+applicable"，而不会终止服务。改完 TOML 后请用
+`systemctl restart portunus-standalone`。
+
+## 示例配置
+
+### 最简
+
+二进制能接受的最小配置：一条规则，没有 `[global]` 或 `[defaults]` 块（所有
+可选字段走默认）。
+
+```toml
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+### 完整
+
+涵盖 schema 所有字段，且常见场景各一条规则（单端口 TCP、TCP 端口段、带
+PROXY protocol 的多目标 failover、DNS 目标、单端口 UDP、UDP 端口段）。复制
+后按需裁剪。
+
+```toml
+# ─────────── Global（所有字段可选） ───────────
+[global]
+label               = "edge-1"     # 写入日志的标识
+log_level           = "warn"       # EnvFilter；例如 "portunus=debug,info"
+log_format          = "json"       # "json"（默认）或 "pretty"
+shutdown_drain_secs = 30           # SIGTERM 后优雅关闭预算
+
+# ─────────── Defaults（被未声明该字段的规则继承） ───────────
+[defaults]
+protocol           = "tcp"         # 规则未声明 protocol 时的默认值
+udp_max_flows      = 1024          # 每规则 UDP flow 表容量
+udp_flow_idle_secs = 60            # idle UDP flow 过期秒数
+prefer_ipv6        = false         # DNS 地址族偏好
+
+# ─────────── Rules ───────────
+
+# 1) 单端口 TCP
+[[rule]]
+name        = "ssh-jump"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+
+# 2) TCP 端口段（listen 和 target 宽度必须一致）
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+
+# 3) 多目标 failover + PROXY protocol v2
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+
+# 4) DNS 目标（每次 connect 时解析；prefer_ipv6 覆盖 defaults）
+[[rule]]
+name        = "api"
+protocol    = "tcp"
+listen_port = 9000
+target      = "api.internal.example.com:443"
+prefer_ipv6 = false
+
+# 5) 单端口 UDP，提升 flow 容量和 idle 超时
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_max_flows      = 4096
+udp_flow_idle_secs = 120
+
+# 6) UDP 端口段
+[[rule]]
+name         = "voice-udp"
+protocol     = "udp"
+listen_ports = "30000-30019"
+target       = "10.0.0.30:30000-30019"
+```
+
+启动前验证配置：
+
+```sh
+# 二进制
+portunus-standalone --check --config /etc/portunus/standalone.toml
+
+# Docker
+docker run --rm \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest \
+  --config /etc/portunus/standalone.toml --check
+```
+
+合法时打印 `ok` 并以 0 退出，非法时以 2 退出。
+
+## 可观测性
+
+`portunus-standalone` 默认以 JSON 格式写 **stderr**（本地迭代时可切换到
+`log_format = "pretty"`）。每条规则启动时写结构化事件，且有一个周期 reporter
+每 60 秒输出一次按规则汇总的字节数与连接数。
+
+不内嵌 HTTP / Prometheus / gRPC 任何接口 —— 那些是 `portunus-server` 的范畴。
+用日志聚合器（`journald`、`docker logs`、sidecar log shipper 等）来收集 JSON 输出。
+
+## 与 portunus-client 的差异
+
+| 功能 | `portunus-client` | `portunus-standalone` |
+| --- | --- | --- |
+| 控制面 | 到 `portunus-server` 的 gRPC 流 | 无 —— 仅 TOML |
+| 动态规则更新 | 支持（server push） | 不支持 —— 需重启 |
+| RBAC / 多用户 | 支持 | 不支持 |
+| 限流 / QoS | 支持 | 不支持 |
+| Prometheus 指标 | 支持（loopback HTTP） | 不支持 |
+| 审计日志 | 通过 server | 结构化 stderr 日志 |
+| SNI 路由 | 支持 | 不支持 |
+| TCP splice 零拷贝（Linux） | 支持 | 支持（同一份数据面代码） |
+| 上游 PROXY protocol | 支持 | 支持 |

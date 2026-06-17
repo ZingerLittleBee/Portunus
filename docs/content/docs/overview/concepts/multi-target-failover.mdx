@@ -1,0 +1,25 @@
+---
+title: Multi-target Failover
+description: Up to 8 priority-ordered targets per rule with passive health detection and optional active probes.
+icon: Workflow
+---
+
+> **How to set it up:** [Standalone (TOML)](/en/docs/standalone/forwarding-rules#multi-target-failover) · [Server + Client (operator)](/en/docs/server-client/forwarding-rules#multi-target-failover)
+
+Available since v0.7.0. Extends `Rule.targets[]` from a single target to
+an ordered list of up to 8.
+
+## How it works
+
+- **Lower priority number = higher preference**. The client always
+  attempts the highest-preference healthy target first, then walks the
+  remaining targets in priority order on failure.
+- **Passive failure detection**: 3 consecutive connect failures within
+  30 s flips a target to `Failed`; 2 consecutive successes flip it back.
+- **Active probes** (optional, per rule): set
+  `health_check_interval_secs` (range `1..=3600`) to drive periodic
+  TCP-connect probes from the client.
+- **All-failed fallback**: when every target is `Failed`, the client
+  still attempts the highest-priority target rather than giving up.
+- All health state is **client-side and ephemeral** — it does not
+  survive a client restart.

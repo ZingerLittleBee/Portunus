@@ -1,0 +1,179 @@
+---
+title: Client 配置
+description: portunus-client 如何拾取 bundle，以及哪些环境变量会影响行为。
+icon: Cog
+---
+
+`portunus-client` 通过兑换短期 **enrollment 命令** 完成配置。没有 `client.toml`。
+操作员通过 Web UI **Clients** 页面或 `portunus-server enroll-client` 发出一次性
+命令，边缘主机兑换后，client 会在本地写入包含 bearer token 的 bundle 文件。
+
+本页是安装与接入客户端的权威参考，部署指南（systemd、Docker、Railway）均链接至此。
+
+## 安装二进制
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+```
+
+`install.sh <client|server>` 会检测系统架构，下载对应发行版二进制，校验 SHA-256，并安装到 `/usr/local/bin`（用 `--bin-dir` 修改；仅特权步骤使用 `sudo`）。
+
+| 标志 | 作用 |
+| --- | --- |
+| `--version <X.Y.Z\|vX.Y.Z>` | 固定版本（默认最新）。两种格式均可。 |
+| `--bin-dir DIR` | 安装位置（默认 `/usr/local/bin`）。 |
+| `--no-service` | 仅安装二进制；跳过服务 unit。 |
+| `--deploy docker` | 用 Docker Compose 部署，替代二进制 + 服务 unit。 |
+| `--systemd` | 已废弃的空操作（为向后兼容保留）；现在默认就会安装加固 unit。 |
+| `--yes` | 非交互式；自动确认。前向兼容（目前尚无交互提示）。 |
+| `--dry-run` | 打印解析到的目标/URL 及计划动作；不实际执行。 |
+
+如果已是 root 环境：`curl -fsSL … | sudo sh -s -- client`。
+
+## 接入（enroll）
+
+```sh
+# 操作员侧（或使用 Web UI Clients 页面）：
+portunus-server enroll-client edge-01 --ttl-secs 600
+
+# 边缘主机：粘贴输出的命令
+portunus-client enroll 'portunus://host-A.example.com:7443/enroll?...' --out ./client.bundle.json
+```
+
+`portunus-server enroll-client` 是**离线**命令：它直接打开 `state.db`，若已有
+server 运行在同一 `--data-dir` 上，会以 `store_in_use` 失败。server 正在运行时
+（生产环境的常规情形），请从 Web UI **Clients** 页面，或经操作员 HTTP API /
+Docker `operator` 边车签发——这些路径都会走在线 server。主机二进制 CLI 仅用于
+服务启动前的初始化。
+
+`portunus-client enroll` 验证证书 pin 后，以 `0600` 写入 bundle；未指定 `--out`
+时写入默认位置。
+
+## bundle 文件
+
+```json
+{
+  "version": 1,
+  "client_name": "edge-01",
+  "client_id": "01J8XABCDEF0123456789ABCDE",
+  "server_endpoint": "host-A.example.com:7443",
+  "server_cert_sha256": "f5e7c2a1...",
+  "token": "<bearer>"
+}
+```
+
+`server_cert_sha256` 是 server 叶子证书 DER 的 64 位十六进制 SHA-256，是
+bundle 的**唯一信任锚**。TLS 握手时，client 会对 server 出示的叶子证书 DER
+计算 SHA-256，仅当其等于该 pin 时才接受连接，否则拒绝。
+
+<Callout type="warn">
+  如果主机 B 实际访问 Server 的地址与 Server 默认通告的不同，请编辑
+  `server_endpoint`。默认值是 Server 返回的 hostname，可能需要调整。
+</Callout>
+
+## 运行客户端
+
+### 显式 `--bundle`
+
+```sh
+portunus-client --bundle ./edge-01.bundle.json
+```
+
+### Bundle 自动解析（v0.8 起）
+
+省略 `--bundle` 时按以下顺序查找：
+
+1. `$PORTUNUS_CLIENT_BUNDLE`
+2. `$XDG_CONFIG_HOME/portunus/client.bundle.json`
+3. `$HOME/.config/portunus/client.bundle.json`
+4. `./client.bundle.json`
+
+全部失败时退出 `1` 并把尝试过的全部路径打印出来。
+
+```sh
+mkdir -p ~/.config/portunus
+mv edge-01.bundle.json ~/.config/portunus/client.bundle.json
+portunus-client
+```
+
+## systemd
+
+`install.sh client` 默认就会安装加固的 `portunus-client.service`（以
+`portunus-client` 用户运行，`--bundle /etc/portunus/client.bundle.json`）。
+加上 `--enroll` 可一步完成安装、接入、放置 bundle 并启动服务：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
+```
+
+`--enroll` 会把 bundle 放置到 `/etc/portunus/client.bundle.json`
+（`root:portunus-client 0640`），并自动执行 `systemctl enable --now
+portunus-client`。
+
+参见 [systemd 部署指南](/zh/docs/server-client/deployment/systemd)。
+
+## Docker
+
+客户端镜像设置了 `PORTUNUS_ENROLL_URI` 时，首次启动会自动完成接入。
+挂载一个 volume 到 `/etc/portunus`，让写出的 bundle 在容器重启后保留：
+
+```sh
+docker run -d --name portunus-client --network host \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+首次启动时，容器会把 `/etc/portunus/client.bundle.json` 写入 volume，
+然后开始转发。后续启动时，若 bundle 已存在，`PORTUNUS_ENROLL_URI` 会被忽略。
+
+参见 [Docker 部署指南](/zh/docs/server-client/deployment/docker)。
+
+## 标志
+
+| 标志 | 默认 | 用途 |
+| --- | --- | --- |
+| `--bundle <PATH>` |（解析链）| 显式 bundle 路径，覆盖解析链 |
+| `--reconnect-initial-delay-ms <N>` | 500 | 初始重连延迟；full-jitter 指数退避的基数 |
+| `--reconnect-max-delay-secs <N>` | 30 | 重连退避上限 |
+| `--shutdown-drain-timeout-secs <N>` | 30 | SIGTERM 时已转发连接 drain 的上限秒数 |
+| `--stats-report-interval-secs <N>` | 5 | 向 Server 上报每规则统计的间隔秒数 |
+
+`portunus-client --help` 给出当前权威的标志一览。
+
+## 环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `PORTUNUS_CLIENT_BUNDLE` | bundle 路径（解析链中优先级最高） |
+| `RUST_LOG` | 标准 `tracing-subscriber` env-filter |
+
+## TLS 指纹固定
+
+Client **按 SHA-256 指纹** 校验 Server 证书（来自 bundle 的
+`server_cert_sha256`），**不走 CA 链**。这是核心安全保证：即使 Server 的
+IP / DNS 被劫持，错误的证书也会在任何 Token 发出之前被拒绝。
+
+不匹配时会表现为一次 TLS 握手失败：Client 记录 `control.connect_failed`，
+并把证书 / TLS 错误放在其 `error=` 字段里，然后**按退避重试**（非终止 ——
+Client 不会退出）。Server **不会** 输出任何日志，因为 TLS 握手根本没完成。
+
+## 资源限制
+
+UDP 重负载或大跨度端口范围部署，请提高 `LimitNOFILE`：
+
+```ini
+# /etc/systemd/system/portunus-client.service
+[Service]
+LimitNOFILE=65535
+```
+
+普通 TCP 规则群默认即可。
+
+## 连接模型
+
+Client 维护 **一条** 到 Server 的双向 gRPC 流，断线后自动重连。Server
+会在 Client 断线时把推给该 Client 的规则以 HTTP 4xx + `client_not_connected`
+拒绝；规则不会排队。Client 重连后操作员自行重推，或依赖 Server 端的重推
+（规则 Server 端持久化）。

@@ -1,0 +1,7 @@
+{
+  "root": true,
+  "title": "服务端 + 客户端",
+  "description": "中心控制面 + 客户端",
+  "icon": "Network",
+  "pages": ["installation", "configuration", "forwarding-rules", "features", "cli", "api", "deployment", "observability", "operations"]
+}

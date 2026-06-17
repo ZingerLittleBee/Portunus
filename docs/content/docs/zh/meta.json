@@ -1,20 +1,4 @@
 {
   "title": "文档",
-  "pages": [
-    "index",
-    "---快速开始---",
-    "getting-started/installation",
-    "getting-started/architecture",
-    "getting-started/performance",
-    "---功能---",
-    "features",
-    "---参考---",
-    "configuration",
-    "cli",
-    "api",
-    "---运维---",
-    "deployment",
-    "observability",
-    "operations"
-  ]
+  "pages": ["overview", "standalone", "server-client"]
 }

@@ -1,0 +1,342 @@
+---
+title: 转发规则
+description: 通过操作员 CLI 创建 TCP、UDP、端口范围、DNS 域名目标、故障切换以及 PROXY 协议规则。
+icon: ArrowRightLeft
+---
+
+## TCP forwarding
+
+*工作原理：[TCP 转发](/zh/docs/overview/concepts/tcp-forwarding)。*
+
+### 推送规则
+
+```sh
+portunus-server push-rule <client_name> <listen_port> <target_host>:<target_port>
+```
+
+例：
+
+```sh
+portunus-server push-rule edge-01 8080 example.com:80
+# → rule_id=1
+```
+
+大约 1 秒内（ack 预算）规则会从 `Pending` 变为 `Active`，Client 即开始
+在 8080 端口接受连接。
+
+### 检视
+
+```sh
+# 操作员 CLI
+portunus-server list-rules --client edge-01
+portunus-server rule-stats 1
+
+# 操作员 HTTP API
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     http://127.0.0.1:7080/v1/rules
+
+# Prometheus
+curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
+```
+
+### 移除
+
+```sh
+portunus-server remove-rule <rule_id>
+```
+
+未结束的连接最长 drain `shutdown_drain_timeout_secs`（默认 30 秒）。监听器
+会立即停止 accept。
+
+### 失败模式
+
+| 条件 | 表现 |
+| --- | --- |
+| Client 上的监听端口已被占用 | 规则状态 `Failed(port_in_use)`；移除后换用其他端口重试 |
+| Target 拒绝连接 / 超时 | 连接级错误；规则保持 `Active`，不会清空指标 |
+| 推送时 Client 已断开 | HTTP 4xx，码值 `client_not_connected` |
+| Client 重连后 | 规则在 Server 端持久化，会重新下发到该 Client |
+
+### 指标
+
+每条规则的 collector（每条活规则一行，标签 `{client, rule, owner}`）：
+
+- `portunus_rule_bytes_in_total`
+- `portunus_rule_bytes_out_total`
+- `portunus_rule_active_connections`
+
+即便走 `splice` 快路径，字节计数也会增量更新（每 64 KiB 一次），因此长连接
+（SSH、gRPC 流、WebSocket）会实时上报吞吐量，而不会在连接关闭前一直停在零。
+
+完整 collector 列表见 [指标](/zh/docs/server-client/observability/metrics)。
+
+## UDP forwarding
+
+*工作原理：[UDP 转发](/zh/docs/overview/concepts/udp-forwarding)。*
+
+### 推送 UDP 规则
+
+```sh
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp
+```
+
+UDP 与 TCP 规则可以共用同一个监听端口：
+
+```sh
+portunus-server push-rule edge-01 6000 upstream.local:9999                # TCP
+portunus-server push-rule edge-01 6000 upstream.local:9999 --protocol udp # UDP
+```
+
+### 可调参数
+
+两项参数都在 `server.toml`，并通过 Welcome 消息下发到 Client：
+
+```toml
+# 流空闲多久后回收上游 socket。
+# 范围 30..=300。默认 60。
+udp_flow_idle_secs = 60
+
+# 每条规则同时存活的 UDP 流上限。
+# 范围 1..=65535。默认 1024。
+udp_max_flows_per_rule = 1024
+```
+
+该上限是 **按规则计**，而非按端口计：一条端口范围规则若设
+`udp_max_flows_per_rule = N`，则在其 **所有** 监听端口上合计最多接纳 `N` 条
+并发流（一个 registry 级的全局计数器），而不是 `N × 端口数`。
+
+当大量不同源持续频繁地建立、销毁流而触及上限时，被拒绝的流会让
+`portunus_rule_flows_dropped_overflow_total` 累加。**已存在的流不会被驱逐
+腾位** —— 稳态下的收缩交由空闲回收完成。
+
+<Callout type="info">
+  如果你的流量确实需要更多并发的终端源，请同时调高 systemd unit 中的
+  `LimitNOFILE` 和 `udp_max_flows_per_rule`。
+</Callout>
+
+### 与端口范围 / DNS 联动
+
+UDP 可与 [端口范围规则](/zh/docs/overview/concepts/port-range)（每个端口一个 listener
+任务，全部共享该规则的同一个流 registry 与按规则计的上限）和
+[DNS 域名目标](/zh/docs/overview/concepts/dns-targets)（解析器缓存与 single-flight
+语义直接复用）一起使用。
+
+### 指标
+
+```
+portunus_rule_udp_datagrams_in_total{client,rule,owner}
+portunus_rule_udp_datagrams_out_total{client,rule,owner}
+portunus_rule_active_flows{client,rule,owner}
+portunus_rule_flows_dropped_overflow_total{client,rule,owner}
+```
+
+`rule-stats` 会增加一个 `protocol` 字段以及上述 UDP 计数器。
+
+### 能力门控
+
+向 v0.3.0 或更早的 Client 推 UDP 规则会得到 `unsupported_protocol`
+（HTTP 422 / 退出码 3）。请先升级 Client。
+
+### 验证过的性能
+
+- 在一台开发机 macOS 上，criterion 基准
+  `udp_data_plane.single_flow_throughput` 显示约 **78,000 datagrams/s**。
+- 1000 个并发源端口的隔离压力测试 `test_udp_us1_thousand_source_isolation`
+  零误路由。
+
+## Port range
+
+*工作原理：[端口范围](/zh/docs/overview/concepts/port-range)。*
+
+### 推送一条范围规则
+
+```sh
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050
+# 原子地绑定 51 个端口
+```
+
+UDP 同样支持：
+
+```sh
+portunus-server push-rule edge-01 30000-30050 upstream.local:30000-30050 \
+  --protocol udp
+```
+
+### 上限
+
+默认上限是 **每个范围 1024 个端口**，可在 `server.toml` 中调整：
+
+```toml
+# 一条端口范围规则最多可跨多少个端口。
+# 每个端口在 Client 上消耗一个 socket（即一个 fd）。
+range_rule_max_ports = 1024
+```
+
+<Callout type="warn">
+  将该值调高的同时，必须在 Client 的 systemd unit 中相应调高 `LimitNOFILE`。
+  这条上限的存在，正是为了防止操作员误操作而耗尽 Client 的 RLIMIT_NOFILE。
+</Callout>
+
+### 逐端口统计
+
+```sh
+# CLI
+portunus-server rule-stats <rule_id> --per-port
+
+# HTTP
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats?per_port=true'
+```
+
+逐端口字节计数仅在通过 API/CLI 按需查询时返回，**不会**导出为独立的
+Prometheus series。无论范围多大，Prometheus 指标基数预算仍是每条规则一行。
+
+### 冲突处理
+
+范围冲突沿用 v1 的 `port_in_use` 错误码，并在错误消息里指明冲突端口：
+
+```
+error: activation_failed: port_in_use (port 30005 already bound)
+```
+
+整段范围是原子的：只要范围内任意端口不可用，整条规则就会进入 `Failed`，
+一个端口都不会被绑定。
+
+### 已验证
+
+- 100 端口范围的推送墙钟：**约 18 ms**（Linux x86_64）。
+- 从空环境到三个采样端口完成回环测试：**约 0.93 s**。
+
+## DNS targets
+
+*工作原理：[DNS 域名目标](/zh/docs/overview/concepts/dns-targets)。*
+
+### 推送 DNS 目标规则
+
+```sh
+# IPv4 优先（默认）
+portunus-server push-rule edge-01 8443 api.example.com:443
+
+# AAAA 优先；无 AAAA 时回退到 A
+portunus-server push-rule edge-01 8444 api.example.com:443 --prefer-ipv6
+```
+
+### 失败可见性
+
+DNS 失败有两种暴露途径：
+
+```sh
+# 规则字段
+portunus-server rule-stats <id>
+# rule_id=… dns_failures=3 …
+
+# Prometheus
+curl -s 127.0.0.1:7081/metrics | grep dns_failures
+# portunus_rule_dns_failures_total{client="edge-01",owner="alice",rule="2"} 3
+```
+
+该 collector 是每条规则一行（不是每次失败一行），保持基数预算。在
+`remove-rule` 时这一行会和 `rule_active_connections` 一起被回收。
+
+### 解析器参数
+
+目前由 spec 固定，未提供操作员级别的覆写。这里列出供参考；未来版本可能
+通过 `server.toml` 的 `[resolver]` 子表暴露：
+
+| 参数 | 值 |
+| --- | --- |
+| `cache_floor` | 5 s |
+| `cache_ceiling` | 5 min |
+| `stale_while_error_grace` | 30 s |
+| `attempt_timeout` | 3 s |
+| `negative_cache_retry` | 3 s |
+| `max_concurrent_resolves` | 64 |
+| `max_cache_entries` | 8192 |
+
+## Multi-target failover
+
+*工作原理：[多目标故障切换](/zh/docs/overview/concepts/multi-target-failover)。*
+
+### 推送多目标规则
+
+```sh
+# 重复 --target；priority 数字越小越优先
+portunus-server push-rule edge-01 8443 \
+  --target primary.example.com:443@1 \
+  --target backup.example.com:443@2 \
+  --target standby.example.com:443@3
+
+# 也可以用一段 JSON 字面量
+portunus-server push-rule edge-01 8443 --targets-json '[
+  {"host":"primary.example.com","port":443,"priority":1},
+  {"host":"backup.example.com","port":443,"priority":2}
+]'
+```
+
+HTTP API 的 `POST /v1/rules` 接受 `targets[]` 数组。
+Web UI 的规则推送表单提供 "添加另一个目标" 按钮。
+
+### 单目标规则不受影响
+
+单目标规则与 v0.6.0 二进制级别完全一致 —— 多目标走的是另一条代码路径，由规则
+激活时的 `match targets.len()` 选择，因此现有吞吐性能不受任何影响。
+
+### 逐目标统计
+
+为保持 Prometheus 基数受控，逐目标字节计数 **仅在按需查询时** 返回：
+
+```sh
+# CLI（单目标规则会打印一条空操作提示并以 0 退出）
+portunus-server rule-stats <id> --per-target
+
+# HTTP
+curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats?per_target=true'
+
+# SSE（实时流）
+curl -N -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
+     'http://127.0.0.1:7080/v1/rules/<id>/stats/stream?per_target=true'
+```
+
+Web UI 规则详情页会展示健康徽标（`Healthy / Failed`）、最近一次失败 / 成功
+时间戳，以及在现有 5 秒 SSE 节奏下更新的逐目标字节计数。
+
+### 默认 `/metrics`
+
+只有一个常驻计数器：
+`portunus_rule_target_failovers_total{client,rule,owner}`，用于记录每条
+规则 Healthy↔Failed 的切换次数。逐目标字节计数 **绝不** 默认进入
+`/metrics`。
+
+### 能力门控
+
+向 v0.6.0 或更早的 Client 推送多目标规则会在 HTTP 层被拒，错误码
+`422 multi_target_unsupported_by_client`。
+
+### 性能
+
+自 v1.7.0 起，实时字节计数与 Linux `splice(2)` 快路径同样适用于多目标
+故障切换路径；逐目标计数集中对账，并在出错时正确关闭。
+
+## PROXY protocol
+
+*工作原理：[PROXY 协议](/zh/docs/overview/concepts/proxy-protocol)。*
+
+逐目标开启意味着同一条规则里可以混合 PROXY-aware 与不感知的后端。
+`proxy_protocol` 在 `targets[]` 数组里逐目标设置 —— 通过 `--targets-json`
+（或 `POST /v1/rules`），或在 standalone TOML 的 target 中配置。可重复的
+`--target host:port[@priority]` 简写无法携带该字段。
+
+```sh
+# backend-a 收到 v2 二进制头部；backend-b 收到旧的字节流
+portunus-server push-rule edge-01 443 --targets-json '[
+  {"host":"backend-a.local","port":8080,"priority":1,"proxy_protocol":"v2"},
+  {"host":"backend-b.local","port":8080,"priority":2}
+]'
+```
+
+用独立部署转发器？在 TOML 里给每个 target 设 `proxy_protocol` —— 见 [独立部署 → 转发规则](/zh/docs/standalone/forwarding-rules#proxy-protocol)。
+
+带 `proxy_protocol` 的 UDP 规则会被
+`validation.proxy_protocol_on_unsupported_rule` 拒绝。取值仅接受 `"v1"`
+与 `"v2"`，其余会触发 `validation.proxy_protocol_invalid`。

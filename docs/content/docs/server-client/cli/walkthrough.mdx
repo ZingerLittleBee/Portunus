@@ -1,0 +1,153 @@
+---
+title: CLI Walkthrough
+description: Run through the raw CLI flow end to end, from bootstrap to pushing a rule and validating traffic.
+icon: Zap
+---
+
+This page is the raw end-to-end CLI flow. It mirrors `quickstart.md` from the
+v0.1 spec and doubles as the script the `portunus-e2e` integration tests
+exercise programmatically.
+
+## 0. Prerequisites
+
+You need two terminals (or two hosts):
+
+- Host A: [`portunus-server` installed](/en/docs/server-client/installation#server-install)
+  and on `PATH`.
+- Host B: [`portunus-client` installed](/en/docs/server-client/installation#client-install)
+  and on `PATH`.
+
+For a one-machine trial, install both binaries locally and treat the two
+terminals as Host A and Host B.
+
+## 1. Bootstrap an API operator (Host A)
+
+```sh
+mkdir -p ./srv
+portunus-server --data-dir ./srv bootstrap-superadmin --name ops
+# → superadmin user_id=_superadmin token=<bearer>
+```
+
+<Callout type="warn">
+  This is the legacy API-token bootstrap path for a raw CLI walkthrough. For
+  browser-first setup, start `serve` and complete Web UI onboarding with the
+  setup token printed by the running server.
+</Callout>
+
+The bearer is printed **exactly once**. Capture it now:
+
+```sh
+export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
+```
+
+Every operator subcommand below reads `PORTUNUS_OPERATOR_TOKEN` from env.
+
+## 2. Start the server (Host A)
+
+```sh
+portunus-server --data-dir ./srv serve
+```
+
+On first server launch the server creates `./srv/server.crt`,
+`./srv/server.key`, and any missing sidecar state. Logs are JSON lines:
+
+```json
+{"event":"tls.cert_generated","fingerprint_sha256":"…"}
+{"event":"server.listening","grpc":"0.0.0.0:7443","operator_http":"127.0.0.1:7080","metrics":"127.0.0.1:7081"}
+```
+
+## 3. Enroll a forwarding client
+
+```sh
+portunus-server --data-dir ./srv enroll-client edge-01
+```
+
+<Callout type="warn">
+`enroll-client` opens `state.db` directly and exits with `store_in_use`
+while a server is already running on the same `--data-dir`. With the server
+started above still live, create the client from the Web UI **Clients** page
+or the operator HTTP API instead — both go through the running server.
+Reserve the offline CLI for bootstrap before `serve` starts. See
+[Enroll](/en/docs/server-client/configuration/client#enroll).
+</Callout>
+
+On Host B, install the client then redeem the printed command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- client
+portunus-client enroll 'portunus://...' --out ./edge-01.bundle.json
+```
+
+It verifies the pinned certificate and writes the bundle with mode 0600.
+
+## 4. Start the client (Host B)
+
+```sh
+portunus-client --bundle ./edge-01.bundle.json
+```
+
+Within a few seconds the server logs `client.connected`. Verify:
+
+```sh
+portunus-server list-clients
+# CLIENT_ID                   NAME      STATE       REMOTE_ADDR          CONNECTED_AT
+# 01J8X4ZKQ9A1B2C3D4E5F6G7H8  edge-01   connected   203.0.113.10:51324   2026-05-06T12:01:30+00:00
+```
+
+## 5. Push a forwarding rule
+
+```sh
+# 18080 on edge-01 → 10.0.0.5:8080
+portunus-server push-rule edge-01 18080 10.0.0.5:8080
+# → 1
+```
+
+`push-rule` prints only the new rule's bare `rule_id` on stdout (here `1`).
+
+The rule transitions `Pending → Active` within a 2-second ack budget
+(controlled by `--ack-timeout`, default 2).
+The client now binds `0.0.0.0:18080` and forwards every accepted TCP
+connection to `10.0.0.5:8080`.
+
+## 6. Stream traffic through the rule
+
+```sh
+# Send 100 MB (assuming nc -lk 8080 > /tmp/out.bin on the target)
+dd if=/dev/urandom of=/tmp/in.bin bs=1M count=100
+nc <host-B> 18080 < /tmp/in.bin
+
+sha256sum /tmp/in.bin /tmp/out.bin   # hashes must match
+```
+
+## 7. Observe
+
+```sh
+# Aggregate counters via the operator CLI
+portunus-server rule-stats 1
+# → rule_id=1 client=edge-01 protocol=tcp bytes_in=104857600 bytes_out=0 active=0 dns_failures=0 target_failovers_total=0 updated_at=2026-05-06T12:05:00Z
+
+# Same numbers via Prometheus
+curl -s http://127.0.0.1:7081/metrics | grep '^portunus_rule'
+```
+
+## 8. Tear down
+
+```sh
+portunus-server remove-rule 1
+# Rule drains, in-flight connections finish within shutdown_drain_timeout_secs.
+```
+
+`SIGTERM` either binary; both drain in-flight connections (default 30 s)
+then exit `0`.
+
+## What's next?
+
+| You want… | Read |
+| --- | --- |
+| Add UDP rules | [UDP Forwarding](/en/docs/overview/concepts/udp-forwarding) |
+| Forward many ports at once | [Port-range Rules](/en/docs/overview/concepts/port-range) |
+| Use DNS targets | [DNS-name Targets](/en/docs/overview/concepts/dns-targets) |
+| Scope a teammate to one client | [Multi-user RBAC](/en/docs/server-client/features/rbac) |
+| Use the browser instead of the CLI | [Web UI](/en/docs/server-client/features/web-ui) |
+| Cap traffic per rule or per tenant | [Rate Limiting & QoS](/en/docs/server-client/features/rate-limiting) |
+| Run in production | [Deployment](/en/docs/server-client/deployment/systemd) |

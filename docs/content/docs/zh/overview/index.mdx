@@ -1,0 +1,44 @@
+---
+title: 从这里开始
+description: TCP / UDP 端口转发。可用单个 TOML 文件单机运行，也可用一台 Server 集中下发规则给 Client，并管理权限、指标和审计。
+icon: BookOpen
+---
+
+Portunus 用来转发远端机器上的 TCP / UDP 端口。运行方式有两种：一个由本地 TOML
+文件驱动的 standalone 二进制，或一台向 Client 下发规则、并管理用户权限、限速、
+指标和审计记录的 Server。无论哪种，业务流量只经过转发机器，不经过 Server，也
+不会被解密或改写。
+
+## 该用哪一种？
+
+| | [**Standalone**](/zh/docs/standalone/installation) | [**Server + Client**](/zh/docs/server-client/installation) |
+| --- | :---: | :---: |
+| 规则来源 | 本地 TOML 文件 | Server 实时推送 |
+| 适用场景 | 单机 / 边缘盒子 | 多主机、集中管控 |
+| 需要运维/加固/备份控制面 Server | 不需要 | 需要 |
+| 热更新规则（无需重启） | ✗ | ✓ |
+| 浏览器 Web UI、RBAC、审计日志 | ✗ | ✓ |
+| 限速 / QoS、按 owner 配额 | ✗ | ✓ |
+| TLS-SNI 路由 | ✗ | ✓ |
+| Prometheus 指标 | ✗ | ✓ |
+| 实时流量面板 | ✓ 终端 TUI（`portunus-standalone stats`） | ✓ Web UI + Prometheus |
+| TCP/UDP、端口范围、多目标故障转移、PROXY protocol、DNS 目标 | ✓ | ✓ |
+
+选定一种，按它的安装路径走：
+
+<Cards>
+  <Card title="独立部署" href="/zh/docs/standalone/installation" description="单机，规则来自本地 TOML 文件。大多数用户从这里开始。" />
+  <Card title="服务端 + 客户端" href="/zh/docs/server-client/installation" description="多台主机，规则由服务端下发：RBAC、Web UI、指标、配额。" />
+</Cards>
+
+## 了解更多
+
+<Cards>
+  <Card title="架构" href="/zh/docs/overview/architecture" />
+  <Card title="性能" href="/zh/docs/overview/performance" />
+  <Card title="转发概念" href="/zh/docs/overview/concepts/tcp-forwarding" />
+</Cards>
+
+## 许可证
+
+采用 [GNU Affero 通用公共许可证 v3.0](https://github.com/ZingerLittleBee/Portunus/blob/main/LICENSE)（`AGPL-3.0-only`）授权。

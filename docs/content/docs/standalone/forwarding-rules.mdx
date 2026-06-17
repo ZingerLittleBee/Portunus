@@ -1,0 +1,90 @@
+---
+title: Forwarding rules
+icon: ArrowRightLeft
+description: Express TCP, UDP, port-range, DNS-target, failover, and PROXY-protocol rules in TOML.
+---
+
+## TCP forwarding
+
+*How it works: [TCP forwarding](/en/docs/overview/concepts/tcp-forwarding).*
+
+```toml
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+## UDP forwarding
+
+*How it works: [UDP forwarding](/en/docs/overview/concepts/udp-forwarding).*
+
+```toml
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_max_flows      = 4096
+udp_flow_idle_secs = 120
+```
+
+## Port range
+
+*How it works: [Port range](/en/docs/overview/concepts/port-range).*
+
+Use `listen_ports` with a `"lo-hi"` string to map a contiguous listen
+window to the same-offset target window:
+
+```toml
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+```
+
+The listen and target ranges must have the same width.
+
+## DNS targets
+
+*How it works: [DNS targets](/en/docs/overview/concepts/dns-targets).*
+
+```toml
+[[rule]]
+name        = "api"
+protocol    = "tcp"
+listen_port = 9000
+target      = "api.internal.example.com:443"
+prefer_ipv6 = false
+```
+
+## Multi-target failover
+
+*How it works: [Multi-target failover](/en/docs/overview/concepts/multi-target-failover).*
+
+Use the `targets` list form for priority-ordered failover:
+
+```toml
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+```
+
+Lower `priority` value = higher preference. The forwarder tries the
+highest-priority healthy target; on connection failure it falls back in
+priority order.
+
+## PROXY protocol
+
+*How it works: [PROXY protocol](/en/docs/overview/concepts/proxy-protocol).*
+
+Set `proxy_protocol = "v1"` or `"v2"` on any target (single or inside
+`targets = [...]`) to prepend a PROXY protocol header before the upstream
+connection. Useful when the backend needs the original client address.

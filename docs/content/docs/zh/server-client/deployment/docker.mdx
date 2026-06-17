@@ -1,0 +1,282 @@
+---
+title: 用 Docker 部署
+description: 拉取已发布的 GHCR 镜像，挂载配置和状态目录，并用容器运行 Portunus。
+icon: Container
+---
+
+大多数安装场景推荐用 Docker Compose 部署。release pipeline 会把多架构 Linux
+镜像推送到 GitHub Container Registry，下面的示例默认使用 `:latest`：
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:latest
+docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+```
+
+如果需要完全可复现的生产部署，把 `:latest` 换成固定 release tag，例如
+`:2.2.0`。
+
+## Server Compose
+
+在 Server 主机上创建 `compose.yaml`：
+
+```yaml
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+      # Operator API + Web UI 端口，默认只绑宿主机 loopback，外部访问不到（推荐的安全默认值）。
+      # 想用公网 IP 直接访问、又不想架反向代理：改成 "7080:7080"，
+      # 并务必自行加固（防火墙限制来源 IP + 强密码），否则管理后台会暴露在公网。
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
+    restart: unless-stopped
+
+  operator:
+    profiles:
+      - cli
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    network_mode: "service:server"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    entrypoint:
+      - portunus-server
+      - --data-dir
+      - /var/lib/portunus
+    command:
+      - list-clients
+
+  volume-tools:
+    profiles:
+      - ops
+    image: alpine:3.20
+    volumes:
+      - portunus-data:/data
+      - .:/backup
+    working_dir: /backup
+    command:
+      - "true"
+
+volumes:
+  portunus-data:
+    name: portunus-data
+```
+
+启动 Server：
+
+```sh
+docker compose up -d server
+```
+
+named volume 挂在 `/var/lib/portunus`，只保存自动生成的 TLS 材料、SQLite
+数据库和守护进程持有的其他状态。如果 `/var/lib/portunus/server.toml` 不存在，
+Server 使用内置默认值。Web UI 和 operator API 在容器内绑定 `0.0.0.0:7080`，但
+只发布到 Server 主机的 loopback：`http://127.0.0.1:7080/`；Client 控制面
+listener 仍然监听 `0.0.0.0:7443`。
+
+首次 onboarding 时，从正在运行的 server 日志读取 setup token：
+
+```sh
+docker compose logs server | grep 'Portunus onboarding setup token'
+```
+
+打开 `http://127.0.0.1:7080/`，粘贴 setup token，并创建第一个 `superadmin`
+密码。token 30 分钟后过期；只要 onboarding 还没完成，每次 server 启动都会
+重新轮换 token。
+
+如果需要覆写默认值，再把可选 `server.toml` 挂进同一个 data-dir：
+
+```yaml
+services:
+  server:
+    volumes:
+      - portunus-data:/var/lib/portunus
+      - ./server.toml:/var/lib/portunus/server.toml:ro
+```
+
+## 操作员命令
+
+运行时镜像是 distroless，没有 shell。`operator` 服务是一次性 CLI sidecar，
+与 Server 共享网络命名空间和同一个 named volume。`docker compose run` 会覆盖
+服务里的 `command`，因此每次可以执行不同的子命令：
+
+操作员命令分两类，运行条件完全不同。
+
+**HTTP API 命令**（`push-rule`、`list-rules`、`remove-rule`、`rule-stats`、`list-clients`）走
+运行中 Server 的 operator HTTP API，因此需要 API Token，并且可以在 `server`
+运行时执行。Web onboarding 完成后，在 Web UI 的 Credentials 页面创建一个 API
+Token，再用 `PORTUNUS_OPERATOR_TOKEN` 传给 CLI：
+
+```sh
+docker compose run --rm \
+  -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
+  operator push-rule edge-01 18080 backend.internal:8080
+```
+
+`operator` sidecar 的默认 command 是 `list-clients`，它本身是 HTTP API 调用——
+运行时请用 `-e PORTUNUS_OPERATOR_TOKEN=…` 传 Token，例如 `docker compose run --rm
+-e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" operator list-clients`。
+
+**store-direct 命令**（`enroll-client`、`revoke`、
+`reset-password`、`onboarding-token`）直接打开 SQLite store 并取排他锁。它们
+**不**读取 `PORTUNUS_OPERATOR_TOKEN`，也无法在 `server` 持有 store 时运行——
+此时会以 `store_in_use`（退出码 1）退出。
+
+<Callout type="warn">
+**不要**通过 `operator` compose 服务运行 store-direct 命令。该服务与 Server
+共享网络命名空间（`network_mode: "service:server"`），因此 `docker compose run operator …`
+会把你刚停掉的 `server` 重新拉起——它会重新拿到 store 锁，再次触发
+`store_in_use`。加 `--no-deps` 也没用（此时会报 *"cannot join network of a non
+running container"*）。
+</Callout>
+
+请先停止 `server`，再在一个只挂数据卷的一次性容器里运行命令——既不走 compose
+服务，也不进网络命名空间：
+
+```sh
+docker compose stop server
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus enroll-client edge-01
+docker compose up -d server
+```
+
+在边缘主机执行输出的 `portunus-client enroll 'portunus://...'`。
+
+`onboarding-token` 主要用于离线维护；后续启动 `serve` 时还会再次轮换 setup
+token，所以浏览器 onboarding 通常使用 `server` 日志里打印的 token。
+`reset-password` 同样遵循先停 `server` + 一次性容器的流程：
+
+```sh
+docker compose stop server
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus reset-password admin --temporary
+docker compose up -d server
+```
+
+这里要使用真实的超管用户 ID：`bootstrap-superadmin` 创建的是 `_superadmin`，
+Web onboarding 创建的是初始化时选择的 ID，例如 `admin`。
+
+## Client
+
+设置 `PORTUNUS_ENROLL_URI` 后，客户端镜像首次启动会自动完成接入。
+挂载一个 named volume 到 `/etc/portunus`，让写出的 bundle 在容器重启后保留：
+
+```sh
+docker run -d --name portunus-client --network host \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+首次启动时，容器会把 `/etc/portunus/client.bundle.json` 写入 volume，
+然后开始转发。后续启动时，若 bundle 已存在，`PORTUNUS_ENROLL_URI` 会被忽略。
+
+Compose 等价写法（`compose.client.yaml`）：
+
+```yaml
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
+    volumes:
+      - portunus-client:/etc/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-client:
+```
+
+用 `PORTUNUS_ENROLL_URI='portunus://...' docker compose -f compose.client.yaml up -d`
+启动。`portunus-client` 用 host networking 最省心：operator 推送的规则会在 edge
+宿主机上绑定 listener，而 Docker 事先并不知道这些端口。二进制与 enroll 详情见
+[Client 配置](/zh/docs/server-client/configuration/client)。
+
+## 备份与迁移
+
+Server 状态全部存在一个 named volume 里，所以备份和迁移就是对卷操作，再加上
+很小的 Compose 项目文件：
+
+```sh
+tar -czf portunus-config.tar.gz compose.yaml
+docker compose stop server
+docker compose run --rm volume-tools \
+  tar -czf /backup/portunus-data.tar.gz -C /data .
+docker compose start server
+```
+
+在新主机上恢复：
+
+```sh
+tar -xzf portunus-config.tar.gz
+docker compose run --rm volume-tools \
+  tar -xzf /backup/portunus-data.tar.gz -C /data
+docker compose up -d server
+```
+
+如果用了覆写文件，请把 `server.toml` 和 `compose.yaml` 一起备份。
+
+## 卷与路径
+
+推荐 Compose 示例使用一个可写 named volume：
+
+| 卷 | 容器路径 | 用途 |
+| --- | --- | --- |
+| `portunus-data` | `/var/lib/portunus/` | 自动生成的 TLS 材料、可选 `server.toml`、`state.db` 与边车文件 |
+
+## 本地镜像构建
+
+仓库里仍然保留了 [`deploy/docker/docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/deploy/docker/docker-compose.yml)，
+用于从本地 checkout 构建运行时镜像。它适合开发和 release 验证，不是推荐安装路径：
+
+```sh
+./deploy/docker/prepare-build-context.sh
+docker compose -f deploy/docker/docker-compose.yml build
+```
+
+这个 helper 在 `rust:1.88-bookworm` 里编译，确保复制进镜像的二进制与 Debian
+12 distroless 运行时兼容。不要把在更新的宿主发行版上编译的二进制直接塞进这些
+镜像，否则容器启动时可能报 `GLIBC_2.38 not found`。
+
+## 注意事项
+
+- **Distroless 运行时没有 shell**。Portunus CLI 命令走
+  `docker compose run --rm operator`；需排查文件时可用临时 sidecar 容器。
+- **操作员 API / Web UI** 在容器内绑定 `0.0.0.0:7080`，这样 Docker 能发布端口；
+  示例只把它映射到宿主机 loopback：`127.0.0.1:7080:7080`。
+- **文件系统分类检查** 在容器中同样会触发 —— 请确保 bind-mount 源是真正
+  持久化的本地存储。
+- **`portunus-client`** 需要 bundle 落在
+  `/etc/portunus/client.bundle.json`（或 `PORTUNUS_CLIENT_BUNDLE`）。
+
+## 健康检查
+
+不要用 `list-clients`（或任何其他 operator 子命令）作为 `HEALTHCHECK` 探针。
+015 重构后 `list-clients` 是对运行中 Server operator API 的 HTTP 调用，需要有效的
+`PORTUNUS_OPERATOR_TOKEN`，未携带 Token 的探针只会拿到鉴权拒绝，即便成功也只能
+证明 HTTP listener 存活。
+
+另外，distroless 运行时镜像没有 shell、`curl` 或 `wget`，所以在镜像内做 `CMD`
+探针并不现实。建议改在编排层用 TCP 连接探活，探测某个监听端口——例如 operator
+HTTP listener `127.0.0.1:7080` 或 metrics listener `127.0.0.1:7081`——或使用
+外部探针。在 Compose 里，这意味着用 sidecar 跑 TCP 探测、或依赖编排器原生的
+探活机制，而不是镜像内的 `CMD`。
+
+## 网络备注
+
+- 跨主机连接 Client 时，控制面 listener（`7443`）是 **唯一必须暴露的端口**。
+- 操作员 HTTP listener（`7080`）在容器内绑定 `0.0.0.0` 以便 Docker 发布端口；
+  示例只发布到宿主机 loopback。
+- metrics listener（`7081`）仍然保持 loopback-only。

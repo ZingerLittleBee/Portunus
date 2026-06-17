@@ -1,0 +1,84 @@
+---
+title: Deploy on Railway
+description: One-click deploy the Portunus server from the prebuilt GHCR image, with persistent state and a TCP Proxy for clients.
+icon: Cloud
+---
+
+Railway hosts `portunus-server` as a single service deployed straight from the
+prebuilt multi-arch image on GHCR — **nothing is built on Railway**. The Web UI
+and operator HTTP API use Railway's public HTTP domain, while the gRPC control
+plane for `portunus-client` uses a Railway TCP Proxy pointed at internal port
+`7443`.
+
+## What the template provisions
+
+A single service configured entirely through environment variables:
+
+| Resource | Value |
+| --- | --- |
+| Image | `ghcr.io/zingerlittlebee/portunus-server:latest` (use the full `ghcr.io` path) |
+| Image Auto Updates | enabled, tracking `:latest` |
+| Volume mount | `/var/lib/portunus` |
+| HTTP domain target port | `7080` (operator HTTP / Web UI) |
+| TCP Proxy | enabled, internal target port `7443` (gRPC control plane) |
+
+The volume is not optional. It stores `state.db`, generated TLS material, and
+operator state. Without it, redeploys create a fresh server identity and lose
+your superadmin. Railway's Image Auto Updates redeploys the service when a new
+`:latest` is pushed (it backs up the volume first; expect a short downtime).
+
+## Environment variables
+
+```
+PORTUNUS_ADVERTISED_ENDPOINT = ${{RAILWAY_TCP_PROXY_DOMAIN}}:${{RAILWAY_TCP_PROXY_PORT}}
+PORTUNUS_OPERATOR_HTTP_LISTEN = 0.0.0.0:7080
+```
+
+- `PORTUNUS_ADVERTISED_ENDPOINT` is baked into client bundles and the gRPC cert
+  SAN. Railway resolves the `${{ }}` references into a single `host:port` value
+  once the TCP Proxy is assigned. If the proxy is not yet assigned, the value
+  resolves to a host-less `:` — the server drops that gracefully and picks up
+  the real endpoint on the next start, so no enrollment uses a broken address.
+- `PORTUNUS_OPERATOR_HTTP_LISTEN` makes the operator HTTP listener bind `0.0.0.0`
+  so Railway's HTTP edge can reach it. The default is loopback-pinned, which
+  Railway cannot route to.
+
+The server self-signs its TLS cert (advertised host in the SAN, regenerated when
+the host changes), and the CSRF layer uses a same-origin fallback, so there is no
+`openssl`, no shell wrapper, and no `operator_http_public_origin` to set.
+
+## First-run onboarding
+
+Deploy the service, then open the service **Deploy Logs**. While the store is
+empty the server logs a setup token:
+
+```sh
+Portunus onboarding setup token: <token>
+```
+
+Open the Railway HTTP domain — the Web UI routes an empty store to the onboarding
+page. Paste the token and create the first superadmin (username + password). The
+token expires after 30 minutes and rotates on restart while onboarding is still
+incomplete.
+
+## Client endpoint
+
+From the Web UI **Clients** page (or the `portunus-server enroll-client` CLI), generate a
+one-time enroll URI. It embeds the advertised endpoint (the TCP Proxy `host:port`) and
+the pinned cert fingerprint; `portunus-client enroll '<uri>'` writes a bundle that dials
+the TCP Proxy directly.
+Install and run the edge client with Docker (see
+[Client Configuration](/en/docs/server-client/configuration/client#docker)) or the host installer
+([`install.sh`](/en/docs/server-client/configuration/client#install-the-binary)).
+
+## Notes
+
+- Railway's HTTP domain serves only the Web UI and `/v1/*` operator API.
+- `portunus-client` must dial the TCP Proxy endpoint, not the HTTP domain.
+- The Prometheus metrics listener stays on `127.0.0.1:7081`; Railway does not
+  expose it.
+- For a custom domain you may additionally set
+  `PORTUNUS_OPERATOR_HTTP_PUBLIC_ORIGIN=https://your.custom.domain` if the
+  same-origin CSRF fallback is insufficient behind your proxy.
+- Template internals are documented in
+  [`deploy/railway/README.md`](https://github.com/ZingerLittleBee/Portunus/blob/main/deploy/railway/README.md).

@@ -1,0 +1,46 @@
+---
+title: Start here
+description: TCP and UDP port forwarding. Run it from one TOML file, or from a central server that pushes rules to clients with permissions, metrics, and audit logs.
+icon: BookOpen
+---
+
+Portunus forwards TCP and UDP ports on remote hosts. There are two ways to run
+it: a single standalone binary driven by a local TOML file, or a server that
+pushes rules to clients and manages permissions, rate limits, metrics, and audit
+logs. Either way, business traffic flows through the forwarding host, not the
+server, and Portunus does not decrypt or edit it.
+
+## Which one should I use?
+
+| | [**Standalone**](/en/docs/standalone/installation) | [**Server + client**](/en/docs/server-client/installation) |
+| --- | :---: | :---: |
+| Rules come from | A local TOML file | The server, pushed live |
+| Best for | One host / edge box | Many hosts, central control |
+| Control-plane server to run, secure, back up | None | Required |
+| Live rule updates (no restart) | ✗ | ✓ |
+| Browser Web UI, RBAC, audit log | ✗ | ✓ |
+| Rate limiting / QoS, per-owner quotas | ✗ | ✓ |
+| TLS-SNI routing | ✗ | ✓ |
+| Prometheus metrics | ✗ | ✓ |
+| Live traffic dashboard | ✓ terminal TUI (`portunus-standalone stats`) | ✓ Web UI + Prometheus |
+| TCP/UDP, port ranges, multi-target failover, PROXY protocol, DNS targets | ✓ | ✓ |
+
+Pick a mode and follow its install path:
+
+<Cards>
+  <Card title="Standalone" href="/en/docs/standalone/installation" description="One host, rules from a local TOML file. Most users start here." />
+  <Card title="Server + Client" href="/en/docs/server-client/installation" description="Many hosts, rules pushed from a server: RBAC, Web UI, metrics, quotas." />
+</Cards>
+
+## Learn more
+
+<Cards>
+  <Card title="Architecture" href="/en/docs/overview/architecture" />
+  <Card title="Performance" href="/en/docs/overview/performance" />
+  <Card title="Forwarding concepts" href="/en/docs/overview/concepts/tcp-forwarding" />
+</Cards>
+
+## License
+
+Licensed under the [GNU Affero General Public License v3.0](https://github.com/ZingerLittleBee/Portunus/blob/main/LICENSE)
+(`AGPL-3.0-only`).

@@ -1,0 +1,62 @@
+---
+title: PROXY Protocol
+description: Per-target PROXY v1/v2 prelude so backends see the original client IP instead of the forwarder's.
+icon: Shield
+---
+
+> **How to set it up:** [Standalone (TOML)](/en/docs/standalone/forwarding-rules#proxy-protocol) · [Server + Client (operator)](/en/docs/server-client/forwarding-rules#proxy-protocol)
+
+Available since v0.10.0. A per-target **PROXY-protocol** prelude (v1 text
+or v2 binary).
+
+## Why it exists
+
+Once traffic is relayed through a forwarder, the backend sees the TCP
+connection as originating from the **forwarder's own IP**, not the real
+client. The original `(src, dst)` tuple is lost at that hop, which breaks:
+
+- **Audit / logging** — access logs record the forwarder IP, so you can
+  no longer trace a request back to the real visitor.
+- **IP-based controls** — rate limiting, WAF rules, geo-IP, and
+  allow/deny lists all key off the client IP and silently misfire.
+
+The PROXY protocol fixes this by sending the original address tuple to
+the backend *before* any real payload, so the backend can recover the
+client identity as if it were a direct connection.
+
+## How it works
+
+When a backend opts in via `proxy_protocol = "v1"` or `"v2"`, the client
+emits a PROXY header **before** any payload bytes from the original
+connection. The backend can then observe the original client's
+`(src_addr, src_port, dst_addr, dst_port)`.
+
+<Callout type="warn">
+The backend **must** be configured to expect a PROXY header. Sending one
+to a backend that does not understand it makes the backend parse the
+header as application data and corrupts the connection. This is a
+both-ends agreement — only enable it per target when the backend is
+PROXY-aware. TCP only; UDP paths are unaffected.
+</Callout>
+
+Per-target opt-in means a single rule can mix PROXY-aware and
+PROXY-unaware backends.
+
+UDP rules carrying `proxy_protocol` are rejected with
+`validation.proxy_protocol_on_unsupported_rule`. The accepted values are
+`"v1"` and `"v2"`; anything else fails `validation.proxy_protocol_invalid`.
+
+## Modes
+
+| Mode | Description |
+| --- | --- |
+| `v1` | Human-readable text header `PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>\r\n` (e.g. `PROXY TCP4 1.2.3.4 5.6.7.8 12345 80\r\n`; `TCP6` for IPv6) |
+| `v2` | Binary header — 16-byte signature/command prefix followed by the address block (28 bytes total for IPv4, 52 for IPv6) per the PROXY-protocol v2 spec |
+| absent (default) | No prelude — legacy byte stream |
+
+The choice is **per-target**, not per-rule, so multi-target rules can
+mix opt-in and opt-out backends.
+
+Since v1.7.0 the prelude write is **time-boxed**: a slow or stuck
+upstream can no longer hang connection setup while the header is being
+written.

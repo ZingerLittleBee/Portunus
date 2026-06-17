@@ -1,0 +1,24 @@
+---
+title: 端口范围规则
+description: 用一条规则把一段连续监听端口映射到同偏移的目标端口段。
+icon: ListOrdered
+---
+
+> **如何配置：** [独立部署 (TOML)](/zh/docs/standalone/forwarding-rules#port-range) · [服务端 + 客户端 (operator)](/zh/docs/server-client/forwarding-rules#port-range)
+
+v0.2.0 起支持。一条规则可以原子地绑定多个监听端口。
+
+## 工作原理
+
+端口范围规则把一段连续的监听端口映射到 **同偏移** 的目标端口段
+（指向同一个上游主机）。
+
+```
+监听 30000-30050  →  upstream.local:30000-30050
+                     ^ 每个端口转发到同偏移目标
+                       （30005 → upstream.local:30005，依此类推）
+```
+
+无论范围多大，范围规则在 `list-rules` 中只占 **一行**，在
+`/metrics` 中每个 collector 也只占 **一行**。如需逐端口的细节，请使用
+`--per-port`。

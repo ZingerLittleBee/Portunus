@@ -1,0 +1,389 @@
+---
+title: Installation
+description: Install the control-plane server and edge clients with Docker or the one-click binary installer.
+icon: Download
+---
+
+## Prerequisites
+
+- **curl** for the one-line installer.
+- **Docker / Podman** for the recommended container path.
+- **Rust 1.88+ stable** only when building from source. `protoc` is
+  vendored via `prost-build`; no system install is required.
+- **Two reachable hosts** for a real server+client deployment (one host
+  with two terminals is enough for a local trial).
+- **Linux or macOS**. Linux is the supported production target.
+
+<Accordions>
+<Accordion title="Don't have Docker yet? Install it on a fresh Linux host">
+
+Use Docker's official convenience script:
+
+```sh
+sudo curl -fsSL https://get.docker.com | sh
+```
+
+</Accordion>
+</Accordions>
+
+## Server install
+
+Server is best deployed with **Docker**. Depending on how clients reach the
+server, there are two "advertised address" modes — by public **IP**, or by
+**domain + automatic HTTPS**; each ships a Docker (recommended) and a binary
+path. The advertised endpoint is the `host:port` clients actually dial when they
+enroll, so a server install should set it **explicitly** — omit it and the
+server still starts, but the advertised address is auto-guessed at runtime and
+may fall back to loopback, leaving remote clients unable to connect.
+
+### Deploy with an IP
+
+Use a public IP that clients can reach as the advertised endpoint:
+
+<Tabs groupId="server-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
+
+```sh
+# Generates compose.yml + .env, then runs docker compose pull && up -d
+# The advertised endpoint is written into the compose command: array and the sibling .env
+# <SERVER_PUBLIC_IP>: the server's public IP that clients can reach (7443 is the client control-plane port; usually leave it)
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+```sh
+# Installs the binary + a hardened service (systemd / OpenRC) + service user, and starts it
+# The advertised endpoint is persisted to a systemd drop-in (…/portunus-server.service.d/10-portunus.conf)
+# <SERVER_PUBLIC_IP>: the server's public IP that clients can reach
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443
+```
+
+</Tab>
+
+</Tabs>
+
+By default the operator HTTP (Web UI + API) binds loopback only
+(`127.0.0.1:7080`), and the Docker deploy publishes the port only on
+`127.0.0.1` — so a fresh install is reachable from the server host only. Two safe
+ways to reach it remotely: use the **domain + automatic HTTPS** deploy below, or
+open an SSH tunnel (`ssh -L 7080:127.0.0.1:7080 user@server`, then browse
+`http://127.0.0.1:7080/`).
+
+#### Expose the operator UI / API publicly (optional, insecure)
+
+If you accept the risk and want the Web UI / API to listen on `0.0.0.0:7080`
+directly, add `--expose-operator-http` to the IP deploy (both Docker and binary
+support it):
+
+<Callout type="warn">
+`--expose-operator-http` exposes the operator API and Web UI to any network,
+**guarded only by the login password / token**. Restrict the source IPs with a
+firewall and set a strong password — otherwise prefer `--domain` (HTTPS) or an
+SSH tunnel.
+</Callout>
+
+<Tabs groupId="server-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
+
+```sh
+# Same as the IP deploy, but the host publishes the port on 0.0.0.0:7080 (publicly reachable, insecure)
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443 --expose-operator-http
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+```sh
+# Same as the IP deploy, but the server binds operator HTTP to 0.0.0.0:7080 (publicly reachable, insecure)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443 --expose-operator-http
+```
+
+</Tab>
+
+</Tabs>
+
+Later lifecycle operations (`config set`, `domain`, …) preserve this exposure
+(recorded in `.install-meta`) instead of silently reverting the port to
+loopback.
+
+### Deploy with a domain + automatic HTTPS
+
+With `--domain`, the installer additionally configures a **Caddy** reverse proxy
++ automatic Let's Encrypt HTTPS for the Web UI, and derives the advertised
+endpoint as `<domain>:7443`:
+
+<Tabs groupId="server-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
+
+```sh
+# Installs the server + host Caddy with automatic HTTPS; the advertised endpoint is derived as <domain>:7443
+# p.example.com: your domain; its A record must already point at this host's public IP (otherwise the DNS precheck fails — pass --skip-dns-check to skip)
+# ops@example.com: ACME / Let's Encrypt contact email (optional but recommended, for renewal/revocation notices)
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --deploy docker --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+```sh
+# Installs the binary server + host Caddy with automatic HTTPS; the advertised endpoint is derived as <domain>:7443
+# p.example.com: your domain; its A record must already point at this host's public IP (otherwise the DNS precheck fails — pass --skip-dns-check to skip)
+# ops@example.com: ACME / Let's Encrypt contact email (optional but recommended)
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+</Tabs>
+
+Caddy listens on 80/443 and reverse-proxies to the server's loopback operator
+port (default `127.0.0.1:7080`).
+
+→ For the full advertised-endpoint semantics see
+[Advertised endpoint](/en/docs/server-client/features/advertised-endpoint); for the complete
+verb/flag set, lifecycle, and security semantics see
+[install.sh manager](/en/docs/server-client/cli/installer).
+
+On first boot, read the onboarding setup token from the logs to create the first
+superadmin (Docker: `docker compose logs | grep 'onboarding setup token'`;
+binary: `journalctl -u portunus-server | grep 'onboarding setup token'`). The
+token rotates on each restart until onboarding completes — see
+[Deploy with Docker](/en/docs/server-client/deployment/docker).
+
+### Manual Compose (without install.sh)
+
+`install.sh server --deploy docker` generates the `compose.yml` below for you
+(it additionally pins the version, writes `.env`, and injects
+`--advertised-endpoint` into `command`). Prefer to own it yourself? Write it in
+a working directory, then `docker compose up -d`:
+
+```sh
+mkdir -p ~/portunus-server && cd ~/portunus-server
+cat > compose.yml <<'EOF'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+      # Operator API + Web UI. Loopback-only by default (not reachable from
+      # outside — the recommended, safe default). To reach it directly over the
+      # public IP without a reverse proxy, change this to "7080:7080" and harden
+      # it yourself (firewall the source IPs + a strong password); otherwise the
+      # admin UI is exposed to the internet.
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
+    restart: unless-stopped
+
+volumes:
+  portunus-data:
+    name: portunus-data
+EOF
+docker compose up -d && docker compose logs -f -t
+```
+
+The Web UI is at `http://127.0.0.1:7080/` and the client control-plane listener
+stays on `0.0.0.0:7443`; generated TLS material and SQLite state live in the
+`portunus-data` volume. The example uses `:latest` — pin a version tag such as
+`:X.Y.Z` for a repeatable production deploy. For non-default listeners or other
+overrides, mount an optional `server.toml` at `<data-dir>/server.toml` (e.g.
+`./server.toml:/var/lib/portunus/server.toml:ro`).
+
+**Deploying behind a proxy / on a cloud host?** The enrollment URI must embed
+the **public** `host:port` an edge client can dial. Otherwise an enrollment
+created without a browser request (e.g. the Docker operator `enroll-client`)
+falls back to `127.0.0.1:7443`, which a remote client cannot reach. Set the
+advertised endpoint via `PORTUNUS_ADVERTISED_ENDPOINT=host:port` (or the Web UI
+**Settings → Client connect address**), and ensure the server certificate SAN
+covers that host — see [Advertised Endpoint](/en/docs/server-client/features/advertised-endpoint).
+
+See [Deploy with Docker](/en/docs/server-client/deployment/docker) for operator commands,
+client Compose, backup, migration, and production notes.
+
+For a source build:
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+# build the embedded operator Web UI first (required by portunus-server's build.rs)
+(cd webui && pnpm install --frozen-lockfile && pnpm build)
+cargo build --release -p portunus-server
+sudo install -m 0755 target/release/portunus-server /usr/local/bin/
+```
+
+For manual binary archives, see [Release binaries](#release-binaries) below.
+
+Verify on the server host:
+
+```sh
+portunus-server --version
+```
+
+## Client install
+
+The client needs a one-time **enrollment URI** from the server — it embeds the
+server's `host:port`, PIN, and code, which the client uses to self-enroll and
+exchange for long-lived credentials, so installing without a URI is pointless.
+Get the URI from the operator first (Web UI **Clients** page → **Connect
+client**, or the `POST /v1/client-enrollments` API), then pick Docker
+(recommended for production) or binary; replace the example `'portunus://…'`
+with the URI you were given.
+
+<Tabs groupId="client-deploy" persist items={['Docker', 'Binary']}>
+
+<Tab value="Docker">
+
+```sh
+# Generates compose.yml + .env, then runs docker compose pull && up -d; the container self-enrolls on first boot
+# Docker passes the URI via PORTUNUS_ENROLL_URI (--enroll is binary-only) — put it on the sh side so
+# install.sh's up -d forwards it to the container
+# Replace the whole 'portunus://…' with the one-time enrollment URI from the operator
+mkdir -p ~/portunus-client && cd ~/portunus-client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' sh -s -- client --deploy docker
+```
+
+</Tab>
+
+<Tab value="Binary">
+
+```sh
+# Installs the binary + a hardened service (systemd / OpenRC, detected from the host) + the portunus-client service user
+# Enrolls and places the bundle (root:portunus-client 0640, readable by the unprivileged service user), then enables and starts the service
+# Replace the whole 'portunus://…' with the one-time enrollment URI from the operator
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
+```
+
+</Tab>
+
+</Tabs>
+
+On first boot the container/service writes `/etc/portunus/client.bundle.json`
+(Docker writes it into the named volume) and then starts forwarding. On
+subsequent starts `PORTUNUS_ENROLL_URI` is ignored if a bundle already exists.
+
+→ For the binary's bundle resolution order, `0600` permissions, and default
+locations see [Client Configuration — Enroll](/en/docs/server-client/configuration/client#enroll);
+for the enrollment URI, `--network host`, and production notes see
+[Client Configuration](/en/docs/server-client/configuration/client#docker) and
+[Deploy with Docker](/en/docs/server-client/deployment/docker).
+
+### Equivalent docker run / Compose
+
+Prefer not to let install.sh generate the compose? A direct `docker run` (or a
+hand-written Compose) works too — it also self-enrolls from `PORTUNUS_ENROLL_URI`
+on first boot and persists the bundle in a named volume:
+
+```sh
+# -e PORTUNUS_ENROLL_URI: the one-time URI the container self-enrolls from (replace with yours)
+# --network host: forwarded listen ports are created later by operator rules and must bind on the edge host
+# -v portunus-client:/etc/portunus: persists the written bundle so restarts reuse it
+docker run -d --name portunus-client --network host \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+Compose (`compose.client.yaml`):
+
+```yaml
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
+    volumes:
+      - portunus-client:/etc/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-client:
+```
+
+Start it with `PORTUNUS_ENROLL_URI='portunus://…' docker compose -f
+compose.client.yaml up -d`. `--network host` is recommended for the client
+because forwarded listen ports are created later by operator rules; without
+host networking, publish each forwarded port explicitly.
+
+For a source build:
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-client
+sudo install -m 0755 target/release/portunus-client /usr/local/bin/
+```
+
+For manual binary archives, see [Release binaries](#release-binaries) below.
+
+Verify on the client host:
+
+```sh
+portunus-client --version
+```
+
+## Release binaries
+
+The recommended install is `install.sh` — it resolves the latest release,
+downloads the right archive, and verifies the SHA-256 checksum automatically.
+
+For a manual download, visit the GitHub
+[releases page](https://github.com/ZingerLittleBee/Portunus/releases) and pick
+the archive that matches your platform. Asset names follow the pattern
+`portunus-<version>-<target>.tar.gz` for these four targets:
+
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+The Linux archives are **static musl** binaries (since v1.8.0): one archive
+runs on every Linux distribution — glibc, Alpine/musl, or busybox. A
+`portunus-<version>-checksums.txt` is published alongside each release.
+
+Extract and install:
+
+```sh
+# pick the asset for your platform from the releases page, then:
+tar -xzf portunus-<version>-<target>.tar.gz
+sudo install -m 0755 portunus-<version>-<target>/portunus-server /usr/local/bin/
+sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
+```
+
+## Next steps
+
+- **Want the raw CLI flow?** → [CLI Walkthrough](/en/docs/server-client/cli/walkthrough)
+  takes you from a fresh checkout to "100 MB streamed through a rule".
+- **Going to production?** → [Deploy with Docker](/en/docs/server-client/deployment/docker)
+  or [Deploy with systemd](/en/docs/server-client/deployment/systemd).
+- **Want the big picture first?** → [Architecture](/en/docs/overview/architecture).
+- **Managing an existing install?** → the [install.sh manager](/en/docs/server-client/cli/installer)
+  covers uninstall / upgrade / status / service / config / env lifecycle
+  operations (flag-driven, non-interactive).

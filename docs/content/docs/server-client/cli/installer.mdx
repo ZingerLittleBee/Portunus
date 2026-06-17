@@ -1,0 +1,310 @@
+---
+title: install.sh manager
+description: The self-contained POSIX-sh lifecycle manager — install, upgrade, status, service, config, env, and uninstall for binary deployments (systemd or OpenRC) and Docker Compose.
+icon: Terminal
+---
+
+`scripts/install.sh` is a single self-contained **POSIX sh** script that
+covers the whole lifecycle of a Portunus node:
+
+```
+install · uninstall · upgrade · status · service · config · env
+```
+
+It manages both deploy forms — a **release binary + service unit** and a
+**Docker Compose** stack — across the `server`, `client`, and
+`standalone` roles. By default an
+install also **starts** the service; pass `--no-service` to lay down the
+binary only. For the binary form it picks whichever init the host runs —
+**systemd** or **OpenRC** (Alpine); a host with neither still gets the
+binary plus printed run instructions. The installer never writes a config
+for you — you author it (see the standalone guide); the service exits if
+it is missing. For a server it
+can also provision a **Caddy** reverse proxy with automatic Let's
+Encrypt HTTPS for the Web UI. It is a non-interactive, flag-driven CLI —
+every action is selected by arguments, with no prompts.
+
+The same script is reachable two ways:
+
+```sh
+# Always-current copy, piped:
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sh -s -- server --advertised-endpoint host:7443
+
+# A checked-out / downloaded copy, run directly:
+sh scripts/install.sh <verb> [flags]
+```
+
+<Callout type="info">
+Pure **POSIX sh** — runs under `dash` and busybox `ash`, no `bash`
+required. `curl … | sh` works on any distro, including Alpine/musl.
+</Callout>
+
+## Synopsis
+
+```text
+install.sh <client|server|standalone|install|uninstall|upgrade|status|service|config|env|domain>
+           [start|stop|restart] [get|set <key> [value]] [<fqdn>]
+           [--version V] [--deploy binary|docker]
+           [--bin-dir DIR] [--compose-dir DIR]
+           [--advertised-endpoint HOST:PORT] [--data-dir DIR]
+           [--operator-http-listen ADDR] [--expose-operator-http]
+           [--config PATH] [--no-service] [--enroll '<uri>']
+           [--domain FQDN] [--acme-email ADDR] [--skip-dns-check]
+           [--restart] [--purge] [--dry-run]
+```
+
+A bare role is shorthand for install: `client` ≡ `install client`,
+`server` ≡ `install server`, `standalone` ≡ `install standalone`.
+
+## Verbs
+
+| Verb | What it does |
+| --- | --- |
+| `install <client\|server\|standalone>` | Flag-driven install. Default deploy form is `binary`, and the service is started unless `--no-service`. |
+| `uninstall [client\|server\|standalone]` | Remove the binary + service unit (systemd unit/drop-in or OpenRC init.d/conf.d), or `docker compose down`. Runs immediately; pair with `--purge` to also delete data. |
+| `upgrade [client\|server\|standalone]` | Resolve latest, compare to recorded version, reuse recorded config. No-op when current. |
+| `status` | Recorded metadata + a live probe (`systemctl is-active` / `rc-service status` / `docker compose ps`). Read-only. |
+| `service <start\|stop\|restart>` | Dispatch to `systemctl`, `rc-service`, or `docker compose` by the recorded init / deploy form. |
+| `config <get\|set> <key> [value]` | Read/write one scoped key (see below). |
+| `env` | Print all scoped keys and their persisted values. |
+| `domain <fqdn>` | Server-only. Provision/refresh the Caddy HTTPS front for an existing install (see [Domain & HTTPS](#domain--https)). |
+
+## Flags
+
+| Flag | Meaning |
+| --- | --- |
+| `--version <X.Y.Z\|vX.Y.Z>` | Pin a release. Omitted ⇒ latest, resolved at run time. |
+| `--deploy <binary\|docker>` | Deploy form. Default `binary`. |
+| `--bin-dir <DIR>` | Binary install dir (default `/usr/local/bin`). |
+| `--compose-dir <DIR>` | Docker compose directory (default: current directory). |
+| `--advertised-endpoint <HOST:PORT>` | Server reach address (see below). Blank ⇒ runtime auto. |
+| `--data-dir <DIR>` | Server data dir (default `/var/lib/portunus`). |
+| `--operator-http-listen <ADDR>` | Operator HTTP listen address override. |
+| `--expose-operator-http` | **Server only.** Publish the operator HTTP (Web UI + API) on `0.0.0.0:<port>` so it is reachable from any network (binary binds the listener; Docker switches the host port publish to `0.0.0.0`). **Insecure**: guarded only by the login password / token — restrict the source IPs with a firewall and set a strong password, or prefer `--domain` / an SSH tunnel. The default stays loopback-only. The choice is recorded in `.install-meta` and preserved across later `config set` / `domain`. A hard error for `client` / `standalone`. |
+| `--config <PATH>` | **Standalone only.** Config file the service reads (default `/etc/portunus/standalone.toml`). Points the unit/conf.d at `PATH` and fixes its permissions — **you create the file** (the service exits without it). A hard error for `client` / `server`, which use `--bundle` / `--data-dir`. |
+| `--enroll '<uri>'` | **Client only, binary only.** Self-enroll during install: runs `portunus-client enroll <uri>` and places the bundle. A hard error for `server` / `standalone` or with `--deploy docker` — for Docker, pass `PORTUNUS_ENROLL_URI` to the container instead. |
+| `--no-service` | Install the binary (and service unit) but do **not** enable/start it. Prints the manual start command. |
+| `--domain <FQDN>` | Server-only. Provision a Caddy HTTPS front for the Web UI; also derives the advertised endpoint as `<FQDN>:7443` when `--advertised-endpoint` is unset. |
+| `--acme-email <ADDR>` | ACME / Let's Encrypt contact email for the Caddy domain. |
+| `--skip-dns-check` | Skip the pre-flight check that the domain's DNS resolves to this host. |
+| `--restart` | With `config set`, restart the service so the new value takes effect. Default: write the value but do not restart. |
+| `--purge` | With `uninstall`, also delete the data dir / compose volume. No confirmation prompt. |
+| `--dry-run` | Print the plan; perform **zero** network and **zero** filesystem changes. |
+
+A bare role is shorthand for install (e.g. `server` ≡ `install server`).
+
+## Deploy forms
+
+### Binary + service (systemd / OpenRC)
+
+```sh
+# binary + service, started (default)
+curl -fsSL .../scripts/install.sh | sudo sh -s -- server \
+  --advertised-endpoint host.example:7443
+# binary only, do not start
+curl -fsSL .../scripts/install.sh | sudo sh -s -- server --no-service --version 1.4.2
+```
+
+Downloads the release archive, verifies its SHA-256, and installs
+`portunus-<role>` to `--bin-dir`. It then detects the host init and
+installs a service: on **systemd** the hardened unit (plus, for the
+server, a **drop-in** at
+`/etc/systemd/system/portunus-server.service.d/10-portunus.conf` carrying
+the advertised endpoint); on **OpenRC** a `supervise-daemon` init script
+in `/etc/init.d` with its knobs in `/etc/conf.d`. Either way it creates
+the `portunus` / `portunus-server` / `portunus-client` service user and
+directories, then enables and starts the service — unless `--no-service`,
+which stops after laying down the unit. A host with neither init manager
+gets the binary plus printed run instructions. The shipped unit is never
+edited — server config goes through the drop-in / conf.d.
+
+For **standalone**, the installer never writes a config; create it first
+(default `/etc/portunus/standalone.toml`, or wherever `--config` points).
+The service auto-starts only once that file exists — a bare install with
+no config lays down the unit and prints how to create it and start. The
+binary exits with code 2 if started without a config.
+
+### Docker Compose
+
+```sh
+mkdir -p ~/portunus && cd ~/portunus
+curl -fsSL .../scripts/install.sh | sh -s -- server --deploy docker \
+  --compose-dir ~/portunus --advertised-endpoint host.example:7443
+```
+
+Writes `compose.yml` (kept if it already exists) and a sibling `.env`
+holding the scoped variables, then `docker compose pull && up -d`.
+Docker Compose **v2** is required (legacy `docker-compose` is detected
+but v2 is preferred). Server config goes through the compose `command:`
+array; an existing compose file is never rewritten.
+
+For **standalone** with `--deploy docker`, the compose file bind-mounts
+`<compose-dir>/portunus.toml` into the container — create it **before**
+installing (the installer errors if it is missing rather than letting
+Docker create a bogus directory):
+
+```sh
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+curl -fsSL .../scripts/install.sh | sh -s -- standalone --deploy docker
+```
+
+## Install metadata
+
+Each install records an `.install-meta` file (shell `key=value`) so later
+subcommands know how to act:
+
+| Deploy form / role | Path |
+| --- | --- |
+| binary server | `<data-dir>/.install-meta` (default `/var/lib/portunus/.install-meta`) |
+| binary client / standalone | `/etc/portunus/.install-meta` |
+| docker | `<compose-dir>/.install-meta` |
+
+Fields include `role`, `deploy`, `version`, `init`
+(`systemd` / `openrc` / `none`), `advertised_endpoint_set`, `domain`,
+`installed_at`, `installer_version`. Lifecycle verbs read `init` back to
+pick the right service manager.
+
+Lifecycle verbs resolve the metadata in this order: an explicit
+`--compose-dir`, then the **current directory**, then
+`/var/lib/portunus`, then `/etc/portunus`. For a Docker deployment, run
+lifecycle commands **from the compose directory** (or pass
+`--compose-dir`) so a stale binary install does not shadow it.
+
+## Scoped config & env
+
+`config get/set` applies to the **`server` role only** — its keys are all
+server-only CLI flags. For a `standalone` install edit its config file
+directly (default `/etc/portunus/standalone.toml`, or wherever `--config`
+pointed it); a `client` has no such knobs. The accepted keys are
+(anything else is a hard error):
+
+| Key | Server CLI flag |
+| --- | --- |
+| `advertised-endpoint` | `--advertised-endpoint` |
+| `data-dir` | `--data-dir` |
+| `operator-http-listen` | `--operator-http-listen` |
+
+The server consumes these as **command-line flags**, not environment
+variables (a `--flag` always overrides the matching `PORTUNUS_*` env, and
+`--data-dir` has no env binding at all). So `set` writes them where the
+flags actually live: the systemd `ExecStart=` override drop-in (systemd),
+`/etc/conf.d/portunus-server`'s `server_args=`/`datadir=` (OpenRC), or the
+compose `command:` array (docker). It **hydrates the current values
+first**, so changing one key preserves the others, validates the value,
+then — when you pass `--restart` — restarts the service (`up -d`
+recreates the container for docker). Without `--restart` the value is
+written but not applied until the next restart. `get` reads the
+persisted flag value back (`<unset>` if none); `env` dumps all keys.
+
+For a **docker** deploy, `set` regenerates `compose.yml` from the managed
+template (keeping the pinned image tag and re-syncing the published port);
+a timestamped `.portunus.*.bak` of the prior file is written first, so any
+hand-edits you added are recoverable. `data-dir` is not settable on docker
+— it maps to the container's fixed `/var/lib/portunus` volume mount; edit
+`compose.yml` directly if you must relocate it.
+
+```sh
+# binary server (run anywhere — meta is at /var/lib/portunus)
+sudo sh install.sh config set advertised-endpoint host.example:7443
+sudo sh install.sh config set advertised-endpoint host.example:7443 --restart  # apply now
+sh install.sh config get advertised-endpoint
+sh install.sh env
+
+# docker (run from the compose dir, or pass --compose-dir)
+cd ~/portunus
+sh install.sh config set operator-http-listen 0.0.0.0:7080 --restart
+sh install.sh env
+```
+
+## Server advertised endpoint
+
+When installing a **server**, set the advertised endpoint with
+`--advertised-endpoint` — the public `host:port` that Clients dial. The server
+certificate SAN must cover that host. Leave it blank to let the server
+auto-resolve it at run time. The installer only does a light `host:port`
+sanity check and persists the value as the `--advertised-endpoint` flag
+(in the systemd `ExecStart=` drop-in, the OpenRC `server_args=`, or the
+compose `command:` array — the same place `config set advertised-endpoint`
+writes); authoritative SAN/grammar validation is performed by the server
+itself at startup.
+
+## Domain & HTTPS
+
+Server-only. When you supply a `--domain`, the installer fronts the Web
+UI with **Caddy** and automatic Let's Encrypt HTTPS:
+
+```sh
+# At install time
+curl -fsSL .../scripts/install.sh | sudo sh -s -- server \
+  --domain portunus.example.com --acme-email admin@example.com
+
+# Or attach / refresh HTTPS on an existing server install
+sudo sh install.sh domain portunus.example.com
+```
+
+What it does:
+
+- Pre-flight checks that the domain's DNS A record resolves to this
+  host; a mismatch is a hard error unless you pass `--skip-dns-check`.
+- Installs Caddy if absent (apt / dnf / yum), then writes a managed
+  block — delimited by `# >>> portunus >>>` / `# <<< portunus <<<` — into
+  `/etc/caddy/Caddyfile` reverse-proxying the domain to the operator HTTP
+  port. An existing Caddyfile is backed up and only the managed block is
+  rewritten.
+- `--acme-email` seeds the ACME contact for certificate issuance.
+- Reloads Caddy and polls `https://<domain>/` until issuance completes
+  (~30 s typical).
+
+Supplying `--domain` also derives the advertised endpoint as
+`<domain>:7443` when `--advertised-endpoint` is not set. After `domain`
+re-aligns the advertised endpoint, the server refreshes its gRPC
+certificate SAN on restart and **existing client bundles must be
+re-issued** (`portunus-server enroll-client <name>`).
+
+The Web UI becomes publicly reachable over HTTPS but stays protected by
+operator login / token.
+
+## Lifecycle examples
+
+```sh
+# Status (read-only): recorded meta + live probe
+sh install.sh status
+
+# Service control (dispatches systemctl or docker compose)
+sudo sh install.sh service restart
+sh install.sh service stop
+
+# Upgrade in place, reusing recorded config (no-op when already current)
+sudo sh install.sh upgrade
+
+# Uninstall (keeps data)
+sudo sh install.sh uninstall
+
+# Uninstall and delete data (no prompt)
+sudo sh install.sh uninstall --purge
+```
+
+## Safety
+
+- **`--dry-run`** prints the plan and performs zero network and zero
+  filesystem changes — for every verb.
+- **`--purge`** deletes the data dir / compose volume with no
+  confirmation — it is the explicit opt-in. Without it, `uninstall`
+  keeps data.
+- The shipped systemd unit and an existing base compose file are never
+  edited — server config is applied through the drop-in / compose
+  `command:` array.
+- Re-running `install` over an existing node is detected via
+  `.install-meta`; use `upgrade` to move versions while reusing the
+  recorded configuration.
+
+## See also
+
+- [Installation](/en/docs) — quick start and the other install paths.
+- [Docker deployment](/en/docs/server-client/deployment/docker) · [systemd deployment](/en/docs/server-client/deployment/systemd).

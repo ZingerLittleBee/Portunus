@@ -1,0 +1,311 @@
+---
+title: Deploy with Docker
+description: Pull the published GHCR images, mount config and state, and run Portunus in containers.
+icon: Container
+---
+
+Docker Compose is the recommended deployment path for most installs. The
+release pipeline publishes multi-arch Linux images to GitHub Container
+Registry; the examples below use the `:latest` tag by default:
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-server:latest
+docker pull ghcr.io/zingerlittlebee/portunus-client:latest
+```
+
+For fully repeatable production deploys, replace `:latest` with a pinned
+release tag such as `:2.2.0`.
+
+## Server compose
+
+Create `compose.yaml` on the server host:
+
+```yaml
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+      # Operator API + Web UI. Loopback-only by default (not reachable from
+      # outside — the recommended, safe default). To reach it directly over the
+      # public IP without a reverse proxy, change this to "7080:7080" and harden
+      # it yourself (firewall the source IPs + a strong password); otherwise the
+      # admin UI is exposed to the internet.
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
+    restart: unless-stopped
+
+  operator:
+    profiles:
+      - cli
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    network_mode: "service:server"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    entrypoint:
+      - portunus-server
+      - --data-dir
+      - /var/lib/portunus
+    command:
+      - list-clients
+
+  volume-tools:
+    profiles:
+      - ops
+    image: alpine:3.20
+    volumes:
+      - portunus-data:/data
+      - .:/backup
+    working_dir: /backup
+    command:
+      - "true"
+
+volumes:
+  portunus-data:
+    name: portunus-data
+```
+
+Start the server:
+
+```sh
+docker compose up -d server
+```
+
+The named volume keeps generated TLS material, the SQLite database, and other
+daemon-owned state under `/var/lib/portunus`. If
+`/var/lib/portunus/server.toml` is absent, the server uses built-in defaults.
+The Web UI and operator API bind to `0.0.0.0:7080` inside the container and are
+published only on the server host loopback interface as
+`http://127.0.0.1:7080/`. The client control-plane listener remains reachable
+on `0.0.0.0:7443`.
+
+For first-run onboarding, read the setup token from the running server logs:
+
+```sh
+docker compose logs server | grep 'Portunus onboarding setup token'
+```
+
+Open `http://127.0.0.1:7080/`, paste the setup token, and create the first
+`superadmin` password. The token expires after 30 minutes and is rotated every
+time the server starts while onboarding is incomplete.
+
+If you need overrides, mount an optional `server.toml` into the same data dir:
+
+```yaml
+services:
+  server:
+    volumes:
+      - portunus-data:/var/lib/portunus
+      - ./server.toml:/var/lib/portunus/server.toml:ro
+```
+
+> The interactive installer (`curl … | bash`) can manage a Docker
+> Compose deployment end to end — see
+> [Installation → Interactive manager](/en/docs).
+
+## Operator commands
+
+The runtime image is distroless, so it has no shell. The `operator` service is
+a one-shot CLI sidecar that shares the server network namespace and the same
+named volume. `docker compose run` overrides the service `command`, so each
+invocation can run a different subcommand:
+
+Operator commands fall into two groups, and they have very different runtime
+requirements.
+
+**HTTP API commands** (`push-rule`, `list-rules`, `remove-rule`, `rule-stats`,
+`list-clients`) talk to the running server's operator HTTP API, so they require an API token
+and can run while `server` is up. After Web onboarding, create a token from the
+Web UI Credentials page and pass it as `PORTUNUS_OPERATOR_TOKEN`:
+
+```sh
+docker compose run --rm \
+  -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" \
+  operator push-rule edge-01 18080 backend.internal:8080
+```
+
+The `operator` sidecar's default command is `list-clients`, itself an HTTP API
+call — pass `-e PORTUNUS_OPERATOR_TOKEN=…` when you run it, e.g. `docker compose
+run --rm -e PORTUNUS_OPERATOR_TOKEN="$PORTUNUS_OPERATOR_TOKEN" operator list-clients`.
+
+**Store-direct commands** (`enroll-client`, `revoke`, `reset-password`,
+`onboarding-token`) open the SQLite store directly and take an
+exclusive lock. They do **not** read `PORTUNUS_OPERATOR_TOKEN`, and they cannot
+run while `server` holds the store — a running server makes them exit with
+`store_in_use` (exit 1).
+
+<Callout type="warn">
+Do **not** run a store-direct command through the `operator` compose service.
+That service shares the server's network namespace
+(`network_mode: "service:server"`), so `docker compose run operator …`
+transparently **restarts** the `server` you just stopped — which re-acquires
+the store lock and reproduces `store_in_use`. `--no-deps` does not help either
+(it then fails with *"cannot join network of a non running container"*).
+</Callout>
+
+Stop `server` and run the command in a throwaway container bound only to the
+data volume — no compose service, no network namespace:
+
+```sh
+docker compose stop server
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus enroll-client edge-01
+docker compose up -d server
+```
+
+Run the printed `portunus-client enroll 'portunus://...'` command on the edge
+host.
+
+`onboarding-token` is mainly an offline maintenance command; a later `serve`
+start rotates the setup token again, so browser onboarding normally uses the
+token printed in the `server` logs. `reset-password` follows the same
+stop-server + throwaway-container pattern:
+
+```sh
+docker compose stop server
+docker run --rm -v portunus-data:/var/lib/portunus \
+  ghcr.io/zingerlittlebee/portunus-server:latest \
+  --data-dir /var/lib/portunus reset-password admin --temporary
+docker compose up -d server
+```
+
+Use the actual superadmin user ID. For `bootstrap-superadmin` installs that ID
+is `_superadmin`; for Web onboarding it is the ID chosen during setup, for
+example `admin`.
+
+## Client
+
+The client image self-enrolls on first boot when `PORTUNUS_ENROLL_URI` is
+set. Mount a named volume at `/etc/portunus` so the bundle persists across
+restarts:
+
+```sh
+docker run -d --name portunus-client --network host \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+On first boot the container writes `/etc/portunus/client.bundle.json` into
+the volume and then starts forwarding. On subsequent starts
+`PORTUNUS_ENROLL_URI` is ignored if a bundle already exists.
+
+Compose equivalent (`compose.client.yaml`):
+
+```yaml
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
+    volumes:
+      - portunus-client:/etc/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-client:
+```
+
+Start it with `PORTUNUS_ENROLL_URI='portunus://...' docker compose -f
+compose.client.yaml up -d`. Host networking is the least surprising mode
+for `portunus-client`: pushed rules bind listeners on the edge host and
+Docker cannot know those ports before the operator creates the rules.
+Binary and enroll details:
+[Client Configuration](/en/docs/server-client/configuration/client).
+
+## Backup & migration
+
+With the server state in one named volume, backup and migration are volume
+operations plus the small Compose project files:
+
+```sh
+tar -czf portunus-config.tar.gz compose.yaml
+docker compose stop server
+docker compose run --rm volume-tools \
+  tar -czf /backup/portunus-data.tar.gz -C /data .
+docker compose start server
+```
+
+Restore on a new host:
+
+```sh
+tar -xzf portunus-config.tar.gz
+docker compose run --rm volume-tools \
+  tar -xzf /backup/portunus-data.tar.gz -C /data
+docker compose up -d server
+```
+
+If you use an override file, back up `server.toml` alongside `compose.yaml`.
+
+## Volumes & paths
+
+The recommended Compose example uses one writable named volume:
+
+| Volume | Container path | Purpose |
+| --- | --- | --- |
+| `portunus-data` | `/var/lib/portunus/` | Generated TLS material, optional `server.toml`, `state.db`, and sidecar files |
+
+## Local image build
+
+The repository also includes [`deploy/docker/docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/deploy/docker/docker-compose.yml)
+for building runtime images from a local checkout. That compose file is for
+development and release verification, not the recommended install path:
+
+```sh
+./deploy/docker/prepare-build-context.sh
+docker compose -f deploy/docker/docker-compose.yml build
+```
+
+The helper builds inside `rust:1.88-bookworm` so the copied binaries are
+compatible with the Debian 12 distroless runtime image. Do not copy binaries
+from a newer host distribution into these images; that can produce
+`GLIBC_2.38 not found` failures at container startup.
+
+## Considerations
+
+- **Distroless runtime** has no shell. Use `docker compose run --rm operator`
+  for Portunus CLI commands, or use a temporary sidecar container for file
+  inspection.
+- **Operator API / Web UI exposure** is a two-step decision: the process binds
+  `0.0.0.0:7080` inside the container so Docker can publish it, while the sample
+  maps that port to host loopback only.
+- **Filesystem class check** still fires inside containers — make sure
+  the Docker volume backend is persistent local storage.
+- **`portunus-client`** needs the bundle present at
+  `/etc/portunus/client.bundle.json` (or `PORTUNUS_CLIENT_BUNDLE`).
+
+## Health checks
+
+Do not use `list-clients` (or any other operator subcommand) as a
+`HEALTHCHECK` probe. Since the 015 refactor `list-clients` is an HTTP call to
+the running server's operator API that needs a valid `PORTUNUS_OPERATOR_TOKEN`,
+so an unauthenticated probe just gets an auth denial — and even a success only
+proves the HTTP listener is up.
+
+The distroless runtime image also has no shell, `curl`, or `wget`, so a
+container-internal `CMD` probe is impractical. Instead, drive liveness from the
+orchestration layer with a TCP connect check against a listening port — for
+example the operator HTTP listener on `127.0.0.1:7080` or the metrics listener
+on `127.0.0.1:7081` — or an external probe. In Compose this means a `healthcheck`
+that runs a TCP check from a sidecar or relies on your orchestrator's native
+probes rather than an in-image `CMD`.
+
+## Networking notes
+
+- The control-plane listener (`7443`) is the only port that **must**
+  be exposed for cross-host clients.
+- The operator HTTP listener (`7080`) binds to `0.0.0.0` inside the container
+  so Docker can publish it, but the sample maps it to host loopback only:
+  `127.0.0.1:7080:7080`.
+- The metrics listener (`7081`) remains loopback-only.

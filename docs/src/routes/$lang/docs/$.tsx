@@ -1,6 +1,12 @@
-import { createFileRoute, Link, notFound } from '@tanstack/react-router';
+import {
+  createFileRoute,
+  Link,
+  notFound,
+  redirect,
+} from '@tanstack/react-router';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import { createServerFn } from '@tanstack/react-start';
+import { OLD_TO_NEW } from '@/lib/redirects';
 import { slugsToMarkdownPath, source } from '@/lib/source';
 import browserCollections from 'collections/browser';
 import {
@@ -20,6 +26,24 @@ import { useMDXComponents } from '@/components/mdx';
 
 export const Route = createFileRoute('/$lang/docs/$')({
   component: Page,
+  beforeLoad: ({ params }) => {
+    const oldSlug = params._splat ?? '';
+    // The docs root has no page of its own — land on the Overview section.
+    if (oldSlug === '') {
+      throw redirect({
+        to: '/$lang/docs/$',
+        params: { lang: params.lang, _splat: 'overview' },
+        statusCode: 301,
+      });
+    }
+    if (oldSlug in OLD_TO_NEW) {
+      throw redirect({
+        to: '/$lang/docs/$',
+        params: { lang: params.lang, _splat: OLD_TO_NEW[oldSlug] },
+        statusCode: 301,
+      });
+    }
+  },
   loader: async ({ params }) => {
     const slugs = params._splat?.split('/') ?? [];
     const data = await loader({ data: { slugs, lang: params.lang } });

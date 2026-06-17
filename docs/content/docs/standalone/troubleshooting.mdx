@@ -1,0 +1,21 @@
+---
+title: Troubleshooting
+description: Fix config-file permission and bind-mount errors for portunus-standalone.
+icon: Wrench
+---
+
+## Common failures
+
+- **Config-file permissions matter.**
+  - systemd: the process runs as `User=portunus` with
+    `ReadOnlyPaths=/etc/portunus`. The installer sets
+    `chown root:portunus` + `chmod 0640`. Anything stricter
+    (e.g. `chmod 0600 root:root`) will cause startup to fail.
+  - Docker: the container runs as UID 65532. The host file must be
+    readable by that UID — `chmod 0644` is the simplest fix.
+- **Snap-packaged Docker on Ubuntu** confines bind-mount sources to
+  `/home`, `/media`, `/mnt`, and a few other allowlisted paths.
+  Bind-mounts from `/root`, `/tmp`, or `/etc` will surface as
+  `No such file or directory` inside the container. Keep
+  `portunus.toml` under `/home`, or install the non-snap
+  `docker-ce`/`docker.io` packages.

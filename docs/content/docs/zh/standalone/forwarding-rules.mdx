@@ -1,0 +1,88 @@
+---
+title: 转发规则
+icon: ArrowRightLeft
+description: 用 TOML 表达 TCP、UDP、端口段、DNS 目标、failover 与 PROXY protocol 规则。
+---
+
+## TCP forwarding
+
+*工作原理：[TCP 转发](/zh/docs/overview/concepts/tcp-forwarding)。*
+
+```toml
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+```
+
+## UDP forwarding
+
+*工作原理：[UDP 转发](/zh/docs/overview/concepts/udp-forwarding)。*
+
+```toml
+[[rule]]
+name               = "game-udp"
+protocol           = "udp"
+listen_port        = 27015
+target             = "10.0.0.20:27015"
+udp_max_flows      = 4096
+udp_flow_idle_secs = 120
+```
+
+## Port range
+
+*工作原理：[端口段](/zh/docs/overview/concepts/port-range)。*
+
+用 `listen_ports = "lo-hi"` 把连续 listen 端口段一一对应映射到目标端口段：
+
+```toml
+[[rule]]
+name         = "web-range"
+protocol     = "tcp"
+listen_ports = "8000-8009"
+target       = "10.0.0.10:8000-8009"
+```
+
+listen 和 target 端口段宽度必须一致。
+
+## DNS targets
+
+*工作原理：[DNS 目标](/zh/docs/overview/concepts/dns-targets)。*
+
+```toml
+[[rule]]
+name        = "api"
+protocol    = "tcp"
+listen_port = 9000
+target      = "api.internal.example.com:443"
+prefer_ipv6 = false
+```
+
+## Multi-target failover
+
+*工作原理：[多目标 failover](/zh/docs/overview/concepts/multi-target-failover)。*
+
+用 `targets` 列表实现优先级 failover：
+
+```toml
+[[rule]]
+name        = "ha-https"
+protocol    = "tcp"
+listen_port = 8443
+targets = [
+  { host = "primary.internal",   port = 443, priority = 0,  proxy_protocol = "v2" },
+  { host = "secondary.internal", port = 443, priority = 10, proxy_protocol = "v2" },
+]
+```
+
+`priority` 值越小优先级越高。转发器先尝试最高优先级的健康目标，连接失败时
+按优先级回落。
+
+## PROXY protocol
+
+*工作原理：[PROXY protocol](/zh/docs/overview/concepts/proxy-protocol)。*
+
+在任意目标（单目标或 `targets = [...]` 中的某项）上设
+`proxy_protocol = "v1"` 或 `"v2"`，转发器会在上游连接前注入 PROXY protocol
+头。后端需要拿到原始客户端地址时用。

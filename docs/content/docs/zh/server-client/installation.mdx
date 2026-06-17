@@ -1,0 +1,367 @@
+---
+title: 安装
+description: 用 Docker 或一键二进制安装器安装控制面 Server 与边缘 Client。
+icon: Download
+---
+
+## 前置条件
+
+- **curl** 用于一行安装脚本。
+- **Docker / Podman** 用于推荐的容器路径。
+- **Rust 1.88+ 稳定版** 仅在从源码编译时需要。`protoc` 已通过
+  `prost-build` 内联，无需额外安装。
+- 真实部署需要 **两台可互通的主机**；本地试用可用一台主机两个终端。
+- **Linux 或 macOS**。Linux 是生产支持目标。
+
+<Accordions>
+<Accordion title="还没装 Docker？在全新 Linux 主机上安装">
+
+在一台全新的 Linux 主机上，可以直接使用 Docker 官方的 convenience script：
+
+```sh
+sudo curl -fsSL https://get.docker.com | sh
+```
+
+</Accordion>
+</Accordions>
+
+## 安装 Server
+
+Server 推荐用 **Docker** 部署。按 Client 如何找到 Server，分两种「对外地址」
+模式——用公网 **IP**，或用**域名 + 自动 HTTPS**；每种都提供 Docker（推荐）与
+二进制两种路径。通告地址（advertised endpoint）是 Client 接入时实际要连的
+`host:port`，所以 Server 安装应当**显式给出**——省略它 Server 仍会启动，但通告
+地址会在运行时自动推断、可能回落到 loopback，导致远程 Client 连不上。
+
+### 用 IP 部署
+
+用一个 Client 能连到的公网 IP 作为通告地址：
+
+<Tabs groupId="server-deploy" persist items={['Docker', '二进制']}>
+
+<Tab value="Docker">
+
+```sh
+# 生成 compose.yml + .env，再 docker compose pull && up -d
+# 通告地址会写入 compose command: 数组与同级 .env
+# <SERVER_PUBLIC_IP>：换成 Client 能连到的 Server 公网 IP（7443 是 Client 控制面端口，一般不用改）
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443
+```
+
+</Tab>
+
+<Tab value="二进制">
+
+```sh
+# 装二进制 + 加固服务（systemd / OpenRC）+ 服务用户并启动
+# 通告地址写入 systemd drop-in（…/portunus-server.service.d/10-portunus.conf）持久化
+# <SERVER_PUBLIC_IP>：换成 Client 能连到的 Server 公网 IP
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443
+```
+
+</Tab>
+
+</Tabs>
+
+默认 Operator HTTP（Web UI + API）只绑定 loopback（`127.0.0.1:7080`），Docker
+部署也只把端口发布到 `127.0.0.1`——装好后仅 Server 本机可访问。安全的远程访问方式
+有二：用下面的 **域名 + 自动 HTTPS**，或开一条 SSH 隧道
+（`ssh -L 7080:127.0.0.1:7080 user@server` 后访问 `http://127.0.0.1:7080/`）。
+
+#### 让 Operator 可公网访问（可选，不安全）
+
+如果你接受风险、要让 Web UI / API 直接监听 `0.0.0.0:7080`，给 IP 部署加上
+`--expose-operator-http`（Docker 与二进制都支持）：
+
+<Callout type="warn">
+`--expose-operator-http` 会把 Operator API 与 Web UI 暴露到任意网络，**只有登录
+口令 / token 这一层保护**。务必用防火墙限制来源 IP 并设置强口令——否则请优先用
+`--domain`（HTTPS）或 SSH 隧道。
+</Callout>
+
+<Tabs groupId="server-deploy" persist items={['Docker', '二进制']}>
+
+<Tab value="Docker">
+
+```sh
+# 同 IP 部署，但宿主把端口发布到 0.0.0.0:7080（公网可达，不安全）
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sh -s -- server --deploy docker --advertised-endpoint <SERVER_PUBLIC_IP>:7443 --expose-operator-http
+```
+
+</Tab>
+
+<Tab value="二进制">
+
+```sh
+# 同 IP 部署，但 server 把 Operator HTTP 绑到 0.0.0.0:7080（公网可达，不安全）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --advertised-endpoint <SERVER_PUBLIC_IP>:7443 --expose-operator-http
+```
+
+</Tab>
+
+</Tabs>
+
+后续 `config set` / `domain` 等生命周期操作会保留这一暴露设置（记录在
+`.install-meta`），不会把端口悄悄收回 loopback。
+
+### 用域名 + 自动 HTTPS 部署
+
+带 `--domain` 时，安装器额外为 Web UI 配置一个 **Caddy** 反向代理 + 自动
+Let's Encrypt HTTPS，并把通告地址推导为 `<域名>:7443`：
+
+<Tabs groupId="server-deploy" persist items={['Docker', '二进制']}>
+
+<Tab value="Docker">
+
+```sh
+# 装 server + 宿主 Caddy 自动 HTTPS；通告地址自动推导为 <域名>:7443
+# p.example.com：你的域名，A 记录须已指向本机公网 IP（否则 DNS 预检失败，可加 --skip-dns-check 跳过）
+# ops@example.com：ACME / Let's Encrypt 联系邮箱（可选但推荐，用于续期/吊销通知）
+mkdir -p ~/portunus-server && cd ~/portunus-server
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --deploy docker --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+<Tab value="二进制">
+
+```sh
+# 装二进制 server + 宿主 Caddy 自动 HTTPS；通告地址自动推导为 <域名>:7443
+# p.example.com：你的域名，A 记录须已指向本机公网 IP（否则 DNS 预检失败，可加 --skip-dns-check 跳过）
+# ops@example.com：ACME / Let's Encrypt 联系邮箱（可选但推荐）
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- server --domain p.example.com --acme-email ops@example.com
+```
+
+</Tab>
+
+</Tabs>
+
+Caddy 监听 80/443，并反代到 Server 的 loopback Operator 端口（默认
+`127.0.0.1:7080`）。
+
+→ 通告地址的完整语义见 [通告地址](/zh/docs/server-client/features/advertised-endpoint)；
+全部 verb / flag、生命周期与安全语义见
+[install.sh 管理器](/zh/docs/server-client/cli/installer)。
+
+首次启动后，从日志读取 onboarding setup token 创建第一个 superadmin
+（Docker：`docker compose logs | grep 'onboarding setup token'`；二进制：
+`journalctl -u portunus-server | grep 'onboarding setup token'`）。onboarding
+完成前该 token 每次重启都会轮换——完整引导见
+[Docker 部署](/zh/docs/server-client/deployment/docker)。
+
+### 手动 Compose（不经 install.sh）
+
+`install.sh server --deploy docker` 自动生成的就是下面这份 `compose.yml`（它会
+额外 pin 版本号、写入 `.env`，并把 `--advertised-endpoint` 注入 `command`）。想
+自己掌控就手写它——在工作目录里创建后 `docker compose up -d`：
+
+```sh
+mkdir -p ~/portunus-server && cd ~/portunus-server
+cat > compose.yml <<'EOF'
+services:
+  server:
+    image: ghcr.io/zingerlittlebee/portunus-server:latest
+    container_name: portunus-server
+    ports:
+      - "7443:7443"
+      # Operator API + Web UI 端口，默认只绑宿主机 loopback，外部访问不到（推荐的安全默认值）。
+      # 想用公网 IP 直接访问、又不想架反向代理：改成 "7080:7080"，
+      # 并务必自行加固（防火墙限制来源 IP + 强密码），否则管理后台会暴露在公网。
+      - "127.0.0.1:7080:7080"
+    volumes:
+      - portunus-data:/var/lib/portunus
+    command:
+      - --data-dir
+      - /var/lib/portunus
+      - serve
+      - --operator-http-listen
+      - 0.0.0.0:7080
+    restart: unless-stopped
+
+volumes:
+  portunus-data:
+    name: portunus-data
+EOF
+docker compose up -d && docker compose logs -f -t
+```
+
+Web UI 在 `http://127.0.0.1:7080/`，Client 控制面 listener 是 `0.0.0.0:7443`；
+自动生成的 TLS 材料与 SQLite 状态都在 `portunus-data` 卷里。示例用 `:latest`，
+生产请固定到具体版本 tag（如 `:X.Y.Z`）。需要非默认监听或其他覆写，再把可选
+`server.toml` 挂到 `<data-dir>/server.toml`（例如
+`./server.toml:/var/lib/portunus/server.toml:ro`）。
+
+**部署在反向代理 / 云主机后面？** enrollment URI 中必须嵌入边缘 client 能连上的
+**公网** `host:port`。否则未经浏览器请求创建的 enrollment（例如 Docker operator 的
+`enroll-client`）会回落到 `127.0.0.1:7443`，导致远程 client 无法连接。请通过
+`PORTUNUS_ADVERTISED_ENDPOINT=host:port`（或 Web UI **设置 → 客户端连接地址**）
+设置通告地址，并确保服务器证书 SAN 覆盖该主机——参见
+[通告地址](/zh/docs/server-client/features/advertised-endpoint)。
+
+操作员命令、Client Compose、备份迁移和生产注意事项见
+[Docker 部署](/zh/docs/server-client/deployment/docker)。
+
+如果从源码编译：
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+# 先构建内嵌的 operator Web UI（portunus-server 的 build.rs 需要它）
+(cd webui && pnpm install --frozen-lockfile && pnpm build)
+cargo build --release -p portunus-server
+sudo install -m 0755 target/release/portunus-server /usr/local/bin/
+```
+
+如需手动下载二进制归档，请参见下方 [Release 二进制](#release-二进制)。
+
+在 Server 主机上验证：
+
+```sh
+portunus-server --version
+```
+
+## 安装 Client
+
+Client 需要一个来自 Server 的**一次性接入 URI**（enrollment URI）——它内嵌了
+Server 的 `host:port`、PIN 与 code，Client 用它自助接入并换取长期凭证，所以
+裸装而不带 URI 没有意义。先在 Operator 侧拿到 URI（Web UI **Clients** 页面 →
+**Connect client**，或 `POST /v1/client-enrollments` API），再选 Docker（生产
+推荐）或二进制安装；把示例里的 `'portunus://…'` 整段换成你拿到的 URI。
+
+<Tabs groupId="client-deploy" persist items={['Docker', '二进制']}>
+
+<Tab value="Docker">
+
+```sh
+# 生成 compose.yml + .env，再 docker compose pull && up -d；容器首启自助接入
+# Docker 用环境变量 PORTUNUS_ENROLL_URI 传 URI（--enroll 仅二进制）——写在 sh 一侧，
+# install.sh 的 up -d 会把它带给容器
+# 把整段 'portunus://…' 换成 Operator 给你的一次性接入 URI
+mkdir -p ~/portunus-client && cd ~/portunus-client
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' sh -s -- client --deploy docker
+```
+
+</Tab>
+
+<Tab value="二进制">
+
+```sh
+# 装二进制 + 加固服务（按主机 init 探测 systemd / OpenRC）+ portunus-client 服务用户
+# 接入并放置 bundle（root:portunus-client 0640，供非特权服务用户读取），然后启用并启动服务
+# 把整段 'portunus://…' 换成 Operator 给你的一次性接入 URI
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh \
+  | sudo sh -s -- client --enroll 'portunus://HOST:7443/enroll?pin=sha256:…&code=…'
+```
+
+</Tab>
+
+</Tabs>
+
+首次启动时，容器/服务会写好 `/etc/portunus/client.bundle.json`（Docker 写入
+named volume），然后开始转发。后续启动时若 bundle 已存在，`PORTUNUS_ENROLL_URI`
+会被忽略。
+
+→ 二进制的 bundle 解析顺序、`0600` 权限与默认路径见
+[Client 配置 — 接入](/zh/docs/server-client/configuration/client#接入enroll)；接入 URI、
+`--network host` 与生产注意事项见 [Client 配置](/zh/docs/server-client/configuration/client#docker)
+和 [Docker 部署](/zh/docs/server-client/deployment/docker)。
+
+### 等价的 docker run / Compose
+
+不想用 install.sh 生成 compose？直接 `docker run` 或自写 Compose 也行——同样靠
+`PORTUNUS_ENROLL_URI` 首启自助接入、named volume 持久化 bundle：
+
+```sh
+# -e PORTUNUS_ENROLL_URI：容器首启自助接入的一次性 URI（换成你的）
+# --network host：转发监听端口由 operator 推送规则动态创建，需在边缘主机直接绑定
+# -v portunus-client:/etc/portunus：持久化写出的 bundle，重启后复用
+docker run -d --name portunus-client --network host \
+  -e PORTUNUS_ENROLL_URI='portunus://HOST:7443/enroll?pin=sha256:…&code=…' \
+  -v portunus-client:/etc/portunus \
+  ghcr.io/zingerlittlebee/portunus-client
+```
+
+Compose（`compose.client.yaml`）：
+
+```yaml
+services:
+  client:
+    image: ghcr.io/zingerlittlebee/portunus-client:latest
+    container_name: portunus-client
+    network_mode: host
+    environment:
+      - PORTUNUS_ENROLL_URI=${PORTUNUS_ENROLL_URI:-}
+    volumes:
+      - portunus-client:/etc/portunus
+    restart: unless-stopped
+
+volumes:
+  portunus-client:
+```
+
+用 `PORTUNUS_ENROLL_URI='portunus://…' docker compose -f compose.client.yaml up -d`
+启动。Client 推荐 `--network host`，因为转发监听端口是在 operator 推送规则时
+动态创建的；不用 host networking 就得为每个监听端口显式做端口发布。
+
+如果从源码编译：
+
+```sh
+git clone https://github.com/ZingerLittleBee/Portunus.git
+cd Portunus
+cargo build --release -p portunus-client
+sudo install -m 0755 target/release/portunus-client /usr/local/bin/
+```
+
+如需手动下载二进制归档，请参见下方 [Release 二进制](#release-二进制)。
+
+在 Client 主机上验证：
+
+```sh
+portunus-client --version
+```
+
+## Release 二进制
+
+推荐的安装方式是 `install.sh`——它会自动解析最新版本，下载正确归档，并校验 SHA-256。
+
+如需手动下载，请访问 GitHub
+[releases 页面](https://github.com/ZingerLittleBee/Portunus/releases)，
+选择适合你平台的归档。归档命名格式为
+`portunus-<version>-<target>.tar.gz`，支持以下四个目标平台：
+
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+Linux 归档自 v1.8.0 起是**静态 musl** 二进制：一个归档即可在所有 Linux
+发行版（glibc、Alpine/musl、busybox）上运行。每次 release 同时发布对应的
+`portunus-<version>-checksums.txt`。
+
+解压并安装：
+
+```sh
+# pick the asset for your platform from the releases page, then:
+tar -xzf portunus-<version>-<target>.tar.gz
+sudo install -m 0755 portunus-<version>-<target>/portunus-server /usr/local/bin/
+sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
+```
+
+## 下一步
+
+- **想看原始 CLI 流程？** → [CLI 跑通示例](/zh/docs/server-client/cli/walkthrough)
+  会带你从全新 checkout 一路走到"让 100 MB 数据穿过转发规则"。
+- **准备上生产？** → [Docker 部署](/zh/docs/server-client/deployment/docker) 或
+  [systemd 部署](/zh/docs/server-client/deployment/systemd)。
+- **想先了解整体设计？** → [架构](/zh/docs/overview/architecture)。
+- **要管理已装实例？** → [install.sh 管理器](/zh/docs/server-client/cli/installer) 覆盖
+  卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量等生命周期操作（flag 驱动，非交互）。

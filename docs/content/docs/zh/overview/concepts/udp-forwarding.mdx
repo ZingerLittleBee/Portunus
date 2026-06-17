@@ -1,0 +1,31 @@
+---
+title: UDP 转发
+description: NAT 风格的 UDP 转发，每条源端流量自动获得一个内核分配的上游 socket。
+icon: Send
+---
+
+> **如何配置：** [独立部署 (TOML)](/zh/docs/standalone/forwarding-rules#udp-forwarding) · [服务端 + 客户端 (operator)](/zh/docs/server-client/forwarding-rules#udp-forwarding)
+
+v0.4.0 起支持。UDP 规则可以与 TCP 规则共用同一个监听端口 —— 内核会按协议
+分流。
+
+## 工作原理
+
+每条 UDP 规则为每个监听端口运行一个 listener 任务，每个任务持有一块固定大小
+的接收缓冲。来自新终端 `(源地址, 源端口)` 的数据报会开启一条 **流**：代理绑定
+一个新的上游 `UdpSocket`，一次性 `connect()` 到选定目标，并把该流登记到一个
+按 `(监听端口, 源地址)` 索引、规则级共享的 registry 中。回程数据报再通过这个
+registry 分流回原始源。
+
+接收缓冲的内存占用相对并发流数量是 **O(1)**：每个 listener 任务只持有一块
+固定大小的接收缓冲，不会随流的数量增长。空闲流由 idle reaper 关闭。
+
+在 Linux 上，listener 使用批量系统调用（`recvmmsg`/`sendmmsg`，每次最多 32 个
+数据报）来降低每包的系统调用开销。批量路径为每个 listener 持有一块固定的约
+2 MiB 接收 arena（32 个槽 × 64 KiB），外加一块 64 KiB 的单包回退缓冲；两者的
+大小都与流的数量无关。其它平台不使用批量 arena，走单块 64 KiB 的
+`recv_from`/`send` 路径。
+
+由于上游 socket 是 `connect()` 过的，Linux 会把 ICMP 错误
+（`ECONNREFUSED`、`EHOSTUNREACH`、`ENETUNREACH`）反射回代理。受影响的流会被
+立即驱逐；该源的下一个数据报会针对新选定的目标重建流。
