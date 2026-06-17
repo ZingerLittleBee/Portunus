@@ -1,88 +1,45 @@
 ---
 title: Portunus
-description: TCP and UDP port forwarding that can run from one TOML file or from a central server with clients, permissions, metrics, and audit logs.
+description: TCP and UDP port forwarding. Run it from one TOML file, or from a central server that pushes rules to clients with permissions, metrics, and audit logs.
 icon: BookOpen
 ---
 
 # Portunus
 
-Portunus forwards TCP and UDP ports on remote hosts. For one machine, run the
-standalone binary from a TOML file. For many machines, run a server that pushes
-rules to clients and manages permissions, rate limits, metrics, and audit logs.
-Business traffic flows through the forwarding host, not through the server, and
-Portunus does not decrypt or edit it.
+Portunus forwards TCP and UDP ports on remote hosts. There are two ways to run
+it: a single standalone binary driven by a local TOML file, or a server that
+pushes rules to clients and manages permissions, rate limits, metrics, and audit
+logs. Either way, business traffic flows through the forwarding host, not the
+server, and Portunus does not decrypt or edit it.
 
-Only need one host? The [standalone forwarder](/en/docs/configuration/standalone)
-reads local TOML and uses the same forwarding code, with no server or enrollment
-step.
+## Which one should I use?
+
+| | [**Standalone**](/en/docs/standalone/installation) | [**Server + client**](/en/docs/server-client/installation) |
+| --- | :---: | :---: |
+| Rules come from | A local TOML file | The server, pushed live |
+| Best for | One host / edge box | Many hosts, central control |
+| Control-plane server to run, secure, back up | None | Required |
+| Live rule updates (no restart) | ✗ | ✓ |
+| Browser Web UI, RBAC, audit log | ✗ | ✓ |
+| Rate limiting / QoS, per-owner quotas | ✗ | ✓ |
+| TLS-SNI routing | ✗ | ✓ |
+| Prometheus metrics | ✗ | ✓ |
+| Live traffic dashboard | ✓ terminal TUI (`portunus-standalone stats`) | ✓ Web UI + Prometheus |
+| TCP/UDP, port ranges, multi-target failover, PROXY protocol, DNS targets | ✓ | ✓ |
+
+Pick a mode and follow its install path:
 
 <Cards>
-  <Card title="Start in 60 seconds" href="/en/docs/getting-started/installation" />
-  <Card title="Open the architecture guide" href="/en/docs/getting-started/architecture" />
-  <Card title="Read the performance report" href="/en/docs/getting-started/performance" />
+  <Card title="Standalone" href="/en/docs/standalone/installation" description="One host, rules from a local TOML file. Most users start here." />
+  <Card title="Server + Client" href="/en/docs/server-client/installation" description="Many hosts, rules pushed from a server: RBAC, Web UI, metrics, quotas." />
 </Cards>
 
-## Performance
-
-On the benchmark host, uncapped TCP forwarding keeps up with `iptables` through
-20 Gbit/s. The current performance report is based on v1.6.1 measurements and
-includes the host details, commands, raw numbers, and caveats.
-
-| Case | What to expect |
-| --- | --- |
-| 100 Mbit/s - 20 Gbit/s | Hits the requested rate on the benchmark host. |
-| Standalone vs client | Same forwarding code; no measurable throughput difference in the current tests. |
-| Rate-limited rules | Keep the same metrics, counters, and audit behavior. |
+## Learn more
 
 <Cards>
-  <Card title="Methodology, raw numbers, and caveats" href="/en/docs/getting-started/performance" />
-</Cards>
-
-## What it gives you
-
-| Area | Capabilities |
-| --- | --- |
-| Forwarding | TCP and UDP rules, port ranges, DNS-name targets, multi-target failover. |
-| Routing | Route HTTPS by hostname without decrypting TLS, optional PROXY protocol headers. |
-| Management | CLI, HTTP API, embedded Web UI, and live rule updates to connected clients. |
-| Access control | Per-user grants by client, protocol, and port range, with server-enforced ownership. |
-| Limits | Per-rule and per-owner bandwidth, new-connection, and concurrent-connection caps. |
-| Operations | Prometheus metrics, structured logs, audit trail, bundled SQLite, backup and restore. |
-
-## Feature highlights
-
-<Cards>
-  <Card title="TCP & UDP forwarding" href="/en/docs/features/tcp-forwarding" />
-  <Card title="Port-range rules" href="/en/docs/features/port-range" />
-  <Card title="DNS-name targets" href="/en/docs/features/dns-targets" />
-  <Card title="Multi-target failover" href="/en/docs/features/multi-target-failover" />
-  <Card title="TLS SNI routing" href="/en/docs/features/tls-sni-routing" />
-  <Card title="PROXY protocol" href="/en/docs/features/proxy-protocol" />
-  <Card title="Rate limits and quotas" href="/en/docs/features/rate-limiting" />
-  <Card title="User permissions" href="/en/docs/features/rbac" />
-  <Card title="Web UI" href="/en/docs/features/web-ui" />
-  <Card title="SQLite storage" href="/en/docs/features/sqlite-storage" />
-</Cards>
-
-## Where it fits
-
-Use `Portunus` when you need to manage forwarding rules across machines, give
-users scoped access, watch traffic, or set per-user limits. If you only need one
-static local redirect and peak throughput is the only goal, kernel forwarding is
-simpler. If you want Portunus forwarding features on one host without a server,
-use the [standalone forwarder](/en/docs/configuration/standalone): the same
-forwarding code, driven entirely by a TOML file.
-
-## Quick links
-
-<Cards>
-  <Card title="Install in 60 seconds" href="/en/docs/getting-started/installation" />
-  <Card title="CLI walkthrough" href="/en/docs/cli/walkthrough" />
-  <Card title="Architecture" href="/en/docs/getting-started/architecture" />
-  <Card title="Configuration reference" href="/en/docs/configuration/server" />
-  <Card title="Standalone forwarder" href="/en/docs/configuration/standalone" />
-  <Card title="CLI reference" href="/en/docs/cli/portunus-server" />
-  <Card title="Operator HTTP API" href="/en/docs/api/operator-http" />
+  <Card title="Architecture" href="/en/docs/overview/architecture" />
+  <Card title="Performance" href="/en/docs/overview/performance" />
+  <Card title="Forwarding concepts" href="/en/docs/overview/concepts/tcp-forwarding" />
 </Cards>
 
 ## License
