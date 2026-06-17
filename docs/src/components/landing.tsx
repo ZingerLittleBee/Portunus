@@ -266,7 +266,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
                   to="/$lang/docs/$"
                   params={{
                     lang: locale,
-                    _splat: "getting-started/performance",
+                    _splat: "overview/performance",
                   }}
                   className="fr-cta-secondary"
                 >
@@ -373,7 +373,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
               </p>
               <Link
                 to="/$lang/docs/$"
-                params={{ lang: locale, _splat: "getting-started/performance" }}
+                params={{ lang: locale, _splat: "overview/performance" }}
                 className="mt-8 inline-flex items-center gap-2 text-sm font-medium text-[#c8f36f] transition hover:text-[#dcff8e]"
               >
                 {t.secondary}
