@@ -4,7 +4,7 @@ description: v1.6.1 之前的基线——v1.3.0 splice 引入时的表格与 v0.
 icon: Archive
 ---
 
-本页逐字保留当前 [v1.6.1 报告](/zh/docs/getting-started/performance) 之前的基线，
+本页逐字保留当前 [v1.6.1 报告](/zh/docs/overview/performance) 之前的基线，
 以便每一版报告都能对照固定的旧基线复现——日常使用 Portunus 不必看这一页。
 
 - **v1.3.0** 引入了 Linux TCP `splice` 快路径，是第一个在 12.5 Gbit/s 以上把差距
@@ -12,7 +12,7 @@ icon: Archive
 - **v0.11** 是 splice 之前的最后一个基线，v1.3.0 的数字正是对照它测的。
 
 最新的对比（在同一台机器上重测，并新增 `portunus-standalone` 与
-`portunus-client` 对比）见 [v1.6.1 报告](/zh/docs/getting-started/performance)。
+`portunus-client` 对比）见 [v1.6.1 报告](/zh/docs/overview/performance)。
 
 ---
 
@@ -121,5 +121,5 @@ TMPDIR=/root scripts/perf_loopback.py --seconds 5 --omit-seconds 1 \
 
 在 12.5 Gbit/s offered 以上，iptables 仍紧贴 offered 速率，而 splice 之前的 Portunus
 用户态路径早早就饱和了。这正是 v1.3.0 splice 快路径抹平的区间（见上），也是
-[v1.6.1 报告](/zh/docs/getting-started/performance#offered-load-sweep) 在同一台机器
+[v1.6.1 报告](/zh/docs/overview/performance#offered-load-sweep) 在同一台机器
 上再次确认的结论。

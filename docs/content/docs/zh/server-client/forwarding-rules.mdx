@@ -68,7 +68,7 @@ portunus-server remove-rule <rule_id>
 即便走 `splice` 快路径，字节计数也会增量更新（每 64 KiB 一次），因此长连接
 （SSH、gRPC 流、WebSocket）会实时上报吞吐量，而不会在连接关闭前一直停在零。
 
-完整 collector 列表见 [指标](/zh/docs/observability/metrics)。
+完整 collector 列表见 [指标](/zh/docs/server-client/observability/metrics)。
 
 ## UDP forwarding
 
@@ -116,9 +116,9 @@ udp_max_flows_per_rule = 1024
 
 ### 与端口范围 / DNS 联动
 
-UDP 可与 [端口范围规则](/zh/docs/features/port-range)（每个端口一个 listener
+UDP 可与 [端口范围规则](/zh/docs/overview/concepts/port-range)（每个端口一个 listener
 任务，全部共享该规则的同一个流 registry 与按规则计的上限）和
-[DNS 域名目标](/zh/docs/features/dns-targets)（解析器缓存与 single-flight
+[DNS 域名目标](/zh/docs/overview/concepts/dns-targets)（解析器缓存与 single-flight
 语义直接复用）一起使用。
 
 ### 指标

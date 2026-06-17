@@ -40,7 +40,7 @@ Token 请求则不需要 CSRF 头。
 | `401 unauthenticated` | `{"error":{"code":"unauthenticated","message":"..."}}` | 缺少或非法 Bearer / Web session |
 | `403 not_owner` | `{"error":{"code":"not_owner","message":"..."}}` | 已认证，但调用方不拥有该资源 |
 | `403 password_change_required` | `{"error":{"code":"password_change_required","message":"..."}}` | Web session 必须先修改临时密码 |
-| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC 信封拒绝（见 [RBAC](/zh/docs/features/rbac)） |
+| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC 信封拒绝（见 [RBAC](/zh/docs/server-client/features/rbac)） |
 | `403 csrf_*` | cookie 认证写请求未通过 CSRF 检查 |
 | `429 rate_limited` | 登录、onboarding 或密码重置尝试过多 |
 | `503 bootstrap_required` | Server 还没有任何超管 —— 完成 Web onboarding |
@@ -217,7 +217,7 @@ token。
 
 返回 `{ client_name, expires_at, command, uri }`。在边缘主机上运行 `command`
 （或兑换 `uri`）即可。URI 中嵌入的 server endpoint 来自
-[通告地址](/zh/docs/features/advertised-endpoint)，未设置时回落到 `127.0.0.1:7443`。
+[通告地址](/zh/docs/server-client/features/advertised-endpoint)，未设置时回落到 `127.0.0.1:7443`。
 
 ### `POST /v1/users/{id}/credentials`
 

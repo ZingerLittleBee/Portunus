@@ -70,7 +70,7 @@ fast path, so long-lived connections (SSH, gRPC streams, WebSockets)
 report live throughput instead of staying frozen until the connection
 closes.
 
-See [Metrics](/en/docs/observability/metrics) for the full collector list.
+See [Metrics](/en/docs/server-client/observability/metrics) for the full collector list.
 
 ## UDP forwarding
 
@@ -121,9 +121,9 @@ handles steady-state shrinkage.
 
 ### Range + DNS support
 
-UDP works with [port-range rules](/en/docs/features/port-range) (one
+UDP works with [port-range rules](/en/docs/overview/concepts/port-range) (one
 listener task per port, all sharing the rule's single flow registry and
-per-rule cap) and with [DNS-name targets](/en/docs/features/dns-targets)
+per-rule cap) and with [DNS-name targets](/en/docs/overview/concepts/dns-targets)
 (resolver cache and single-flight semantics carry over verbatim).
 
 ### Metrics

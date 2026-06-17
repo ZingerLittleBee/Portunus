@@ -157,15 +157,15 @@ Caddy listens on 80/443 and reverse-proxies to the server's loopback operator
 port (default `127.0.0.1:7080`).
 
 → For the full advertised-endpoint semantics see
-[Advertised endpoint](/en/docs/features/advertised-endpoint); for the complete
+[Advertised endpoint](/en/docs/server-client/features/advertised-endpoint); for the complete
 verb/flag set, lifecycle, and security semantics see
-[install.sh manager](/en/docs/cli/installer).
+[install.sh manager](/en/docs/server-client/cli/installer).
 
 On first boot, read the onboarding setup token from the logs to create the first
 superadmin (Docker: `docker compose logs | grep 'onboarding setup token'`;
 binary: `journalctl -u portunus-server | grep 'onboarding setup token'`). The
 token rotates on each restart until onboarding completes — see
-[Deploy with Docker](/en/docs/deployment/docker).
+[Deploy with Docker](/en/docs/server-client/deployment/docker).
 
 ### Manual Compose (without install.sh)
 
@@ -219,9 +219,9 @@ created without a browser request (e.g. the Docker operator `enroll-client`)
 falls back to `127.0.0.1:7443`, which a remote client cannot reach. Set the
 advertised endpoint via `PORTUNUS_ADVERTISED_ENDPOINT=host:port` (or the Web UI
 **Settings → Client connect address**), and ensure the server certificate SAN
-covers that host — see [Advertised Endpoint](/en/docs/features/advertised-endpoint).
+covers that host — see [Advertised Endpoint](/en/docs/server-client/features/advertised-endpoint).
 
-See [Deploy with Docker](/en/docs/deployment/docker) for operator commands,
+See [Deploy with Docker](/en/docs/server-client/deployment/docker) for operator commands,
 client Compose, backup, migration, and production notes.
 
 For a source build:
@@ -288,10 +288,10 @@ On first boot the container/service writes `/etc/portunus/client.bundle.json`
 subsequent starts `PORTUNUS_ENROLL_URI` is ignored if a bundle already exists.
 
 → For the binary's bundle resolution order, `0600` permissions, and default
-locations see [Client Configuration — Enroll](/en/docs/configuration/client#enroll);
+locations see [Client Configuration — Enroll](/en/docs/server-client/configuration/client#enroll);
 for the enrollment URI, `--network host`, and production notes see
-[Client Configuration](/en/docs/configuration/client#docker) and
-[Deploy with Docker](/en/docs/deployment/docker).
+[Client Configuration](/en/docs/server-client/configuration/client#docker) and
+[Deploy with Docker](/en/docs/server-client/deployment/docker).
 
 ### Equivalent docker run / Compose
 
@@ -379,11 +379,11 @@ sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 
 ## Next steps
 
-- **Want the raw CLI flow?** → [CLI Walkthrough](/en/docs/cli/walkthrough)
+- **Want the raw CLI flow?** → [CLI Walkthrough](/en/docs/server-client/cli/walkthrough)
   takes you from a fresh checkout to "100 MB streamed through a rule".
-- **Going to production?** → [Deploy with Docker](/en/docs/deployment/docker)
-  or [Deploy with systemd](/en/docs/deployment/systemd).
-- **Want the big picture first?** → [Architecture](/en/docs/getting-started/architecture).
-- **Managing an existing install?** → the [install.sh manager](/en/docs/cli/installer)
+- **Going to production?** → [Deploy with Docker](/en/docs/server-client/deployment/docker)
+  or [Deploy with systemd](/en/docs/server-client/deployment/systemd).
+- **Want the big picture first?** → [Architecture](/en/docs/overview/architecture).
+- **Managing an existing install?** → the [install.sh manager](/en/docs/server-client/cli/installer)
   covers uninstall / upgrade / status / service / config / env lifecycle
   operations (flag-driven, non-interactive).

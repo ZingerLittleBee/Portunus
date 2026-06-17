@@ -147,15 +147,15 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 Caddy 监听 80/443，并反代到 Server 的 loopback Operator 端口（默认
 `127.0.0.1:7080`）。
 
-→ 通告地址的完整语义见 [通告地址](/zh/docs/features/advertised-endpoint)；
+→ 通告地址的完整语义见 [通告地址](/zh/docs/server-client/features/advertised-endpoint)；
 全部 verb / flag、生命周期与安全语义见
-[install.sh 管理器](/zh/docs/cli/installer)。
+[install.sh 管理器](/zh/docs/server-client/cli/installer)。
 
 首次启动后，从日志读取 onboarding setup token 创建第一个 superadmin
 （Docker：`docker compose logs | grep 'onboarding setup token'`；二进制：
 `journalctl -u portunus-server | grep 'onboarding setup token'`）。onboarding
 完成前该 token 每次重启都会轮换——完整引导见
-[Docker 部署](/zh/docs/deployment/docker)。
+[Docker 部署](/zh/docs/server-client/deployment/docker)。
 
 ### 手动 Compose（不经 install.sh）
 
@@ -204,10 +204,10 @@ Web UI 在 `http://127.0.0.1:7080/`，Client 控制面 listener 是 `0.0.0.0:744
 `enroll-client`）会回落到 `127.0.0.1:7443`，导致远程 client 无法连接。请通过
 `PORTUNUS_ADVERTISED_ENDPOINT=host:port`（或 Web UI **设置 → 客户端连接地址**）
 设置通告地址，并确保服务器证书 SAN 覆盖该主机——参见
-[通告地址](/zh/docs/features/advertised-endpoint)。
+[通告地址](/zh/docs/server-client/features/advertised-endpoint)。
 
 操作员命令、Client Compose、备份迁移和生产注意事项见
-[Docker 部署](/zh/docs/deployment/docker)。
+[Docker 部署](/zh/docs/server-client/deployment/docker)。
 
 如果从源码编译：
 
@@ -271,9 +271,9 @@ named volume），然后开始转发。后续启动时若 bundle 已存在，`PO
 会被忽略。
 
 → 二进制的 bundle 解析顺序、`0600` 权限与默认路径见
-[Client 配置 — 接入](/zh/docs/configuration/client#接入enroll)；接入 URI、
-`--network host` 与生产注意事项见 [Client 配置](/zh/docs/configuration/client#docker)
-和 [Docker 部署](/zh/docs/deployment/docker)。
+[Client 配置 — 接入](/zh/docs/server-client/configuration/client#接入enroll)；接入 URI、
+`--network host` 与生产注意事项见 [Client 配置](/zh/docs/server-client/configuration/client#docker)
+和 [Docker 部署](/zh/docs/server-client/deployment/docker)。
 
 ### 等价的 docker run / Compose
 
@@ -358,10 +358,10 @@ sudo install -m 0755 portunus-<version>-<target>/portunus-client /usr/local/bin/
 
 ## 下一步
 
-- **想看原始 CLI 流程？** → [CLI 跑通示例](/zh/docs/cli/walkthrough)
+- **想看原始 CLI 流程？** → [CLI 跑通示例](/zh/docs/server-client/cli/walkthrough)
   会带你从全新 checkout 一路走到"让 100 MB 数据穿过转发规则"。
-- **准备上生产？** → [Docker 部署](/zh/docs/deployment/docker) 或
-  [systemd 部署](/zh/docs/deployment/systemd)。
-- **想先了解整体设计？** → [架构](/zh/docs/getting-started/architecture)。
-- **要管理已装实例？** → [install.sh 管理器](/zh/docs/cli/installer) 覆盖
+- **准备上生产？** → [Docker 部署](/zh/docs/server-client/deployment/docker) 或
+  [systemd 部署](/zh/docs/server-client/deployment/systemd)。
+- **想先了解整体设计？** → [架构](/zh/docs/overview/architecture)。
+- **要管理已装实例？** → [install.sh 管理器](/zh/docs/server-client/cli/installer) 覆盖
   卸载 / 升级 / 状态 / 服务 / 配置 / 环境变量等生命周期操作（flag 驱动，非交互）。

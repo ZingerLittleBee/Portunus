@@ -87,10 +87,10 @@ server 后用本地 `reset-password`。
 
 - **v1.3（Linux `splice(2)` 快路径）** —— 在 Linux 上，对没有带宽上限的
   规则，TCP 吞吐约翻倍。对运维不可见；见
-  [故障排查 → 在排错时关闭 Linux 快路径](/zh/docs/operations/troubleshooting#在排错时关闭-linux-快路径)。
+  [故障排查 → 在排错时关闭 Linux 快路径](/zh/docs/server-client/operations/troubleshooting#在排错时关闭-linux-快路径)。
 - **v1.4（流量配额）** —— 自动应用 SQLite 迁移 `V008`（`traffic_quotas`
   + 历史表）。不做 backfill、不插默认行；未配置的 pair 转发逻辑完全不变。见
-  [流量配额运维手册](/zh/docs/operations/runbook-traffic-quotas)。
+  [流量配额运维手册](/zh/docs/server-client/operations/runbook-traffic-quotas)。
 - **v1.5 —— UDP 每规则 flow 上限修正。** `udp_max_flows_per_rule` 现在在
   整条规则范围内只统计一次，不再按每个监听端口分别统计。**range** UDP 规则
   的有效容量会缩减 `range_size` 倍。如果你依赖旧的虚高容量，请按比例调高

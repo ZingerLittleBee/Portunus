@@ -114,7 +114,7 @@ resolver 缓存有上界（v1.7 起加入的内存泄漏防护）：在高基数
 | `protocol_not_granted` | 协议（TCP/UDP）不在 Grant 中 |
 | `password_change_required` | Web 会话被限制，用户必须先修改临时密码 |
 
-闭集匹配规则见 [RBAC](/zh/docs/features/rbac)。
+闭集匹配规则见 [RBAC](/zh/docs/server-client/features/rbac)。
 
 ## Capability 守门
 
@@ -207,7 +207,7 @@ CI 的回归守门
 `udp_max_flows_per_rule = N` 的 range 规则在其所有端口上合计只允许 `N`
 条 flow（此前是 `N × range_size`）。如果一条在 v1.4 正常的 range 规则
 现在溢出，请按比例调高上限或拆分 range；该字段上限为 `65535`。见
-[升级指南](/zh/docs/operations/upgrade#v1x-数据面版本)。
+[升级指南](/zh/docs/server-client/operations/upgrade#v1x-数据面版本)。
 
 **v1.7** 起，每规则 UDP listener 循环对队头阻塞做了硬化，单个慢上游不再
 拖住同规则下其它 flow 的数据报。某条行为异常的 flow 仍可能在收到反射回来的
@@ -228,7 +228,7 @@ Portunus 的问题。
 
 ## 流量配额（v1.4+）
 
-完整说明见 [流量配额运维手册](/zh/docs/operations/runbook-traffic-quotas)。
+完整说明见 [流量配额运维手册](/zh/docs/server-client/operations/runbook-traffic-quotas)。
 
 ### "终端用户报告连接在 GB 边界被断开"
 
@@ -388,7 +388,7 @@ PORTUNUS_DISABLE_SPLICE=1 ./portunus-client --bundle ./edge.bundle.json
 
 ## 通告地址
 
-完整模型见 [通告地址](/zh/docs/features/advertised-endpoint)。该地址按
+完整模型见 [通告地址](/zh/docs/server-client/features/advertised-endpoint)。该地址按
 fail-closed 方式解析，并按服务器证书 SAN 校验。
 
 ### `endpoint_invalid`（HTTP 422）

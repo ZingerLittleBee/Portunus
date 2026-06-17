@@ -11,9 +11,9 @@ icon: Zap
 
 需要两个终端（或两台主机）：
 
-- 主机 A：已安装 [`portunus-server`](/zh/docs/getting-started/installation#安装-server)，
+- 主机 A：已安装 [`portunus-server`](/zh/docs/server-client/installation#安装-server)，
   并位于 `PATH`。
-- 主机 B：已安装 [`portunus-client`](/zh/docs/getting-started/installation#安装-client)，
+- 主机 B：已安装 [`portunus-client`](/zh/docs/server-client/installation#安装-client)，
   并位于 `PATH`。
 
 如果只是单机试用，可在本机同时安装两个二进制，把两个终端分别当作主机 A 和主机 B。
@@ -65,7 +65,7 @@ portunus-server --data-dir ./srv enroll-client edge-01
 运行时会以 `store_in_use` 失败。上面启动的 server 仍在运行时，请改用
 Web UI **Clients** 页面或 operator HTTP API 创建 client——两者都经由运行中的
 server。离线 CLI 仅用于 `serve` 启动前的 bootstrap。参见
-[Enroll](/zh/docs/configuration/client#enroll)。
+[Enroll](/zh/docs/server-client/configuration/client#enroll)。
 </Callout>
 
 在主机 B 上，先安装 client，再兑换上面输出的命令：
@@ -140,10 +140,10 @@ portunus-server remove-rule 1
 
 | 你想做的事 | 阅读 |
 | --- | --- |
-| 增加 UDP 规则 | [UDP 转发](/zh/docs/features/udp-forwarding) |
-| 一次转发多个端口 | [端口范围规则](/zh/docs/features/port-range) |
-| 用域名作为目标 | [DNS 域名目标](/zh/docs/features/dns-targets) |
-| 给同事限定可访问的 Client | [多用户 RBAC](/zh/docs/features/rbac) |
-| 用浏览器替代 CLI | [Web UI](/zh/docs/features/web-ui) |
-| 限制每条规则或每个租户的流量 | [限流与 QoS](/zh/docs/features/rate-limiting) |
-| 部署到生产 | [部署](/zh/docs/deployment/systemd) |
+| 增加 UDP 规则 | [UDP 转发](/zh/docs/overview/concepts/udp-forwarding) |
+| 一次转发多个端口 | [端口范围规则](/zh/docs/overview/concepts/port-range) |
+| 用域名作为目标 | [DNS 域名目标](/zh/docs/overview/concepts/dns-targets) |
+| 给同事限定可访问的 Client | [多用户 RBAC](/zh/docs/server-client/features/rbac) |
+| 用浏览器替代 CLI | [Web UI](/zh/docs/server-client/features/web-ui) |
+| 限制每条规则或每个租户的流量 | [限流与 QoS](/zh/docs/server-client/features/rate-limiting) |
+| 部署到生产 | [部署](/zh/docs/server-client/deployment/systemd) |

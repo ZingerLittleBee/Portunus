@@ -11,7 +11,7 @@ icon: Network
 完整的控制面部署是一套双进程系统：`portunus-server` 管理状态，并把规则下发给
 一个或多个 `portunus-client` 边缘进程。数据面本身位于独立的
 `portunus-forwarder` 库中，client 与单二进制的
-[`portunus-standalone`](/zh/docs/configuration/standalone) 转发器都复用它——
+[`portunus-standalone`](/zh/docs/standalone/configuration) 转发器都复用它——
 所以一台 TOML 驱动的 standalone 主机跑的也是同一套转发代码，完全不需要控制面。
 
 ## 组件
@@ -48,7 +48,7 @@ icon: Network
 ## Standalone 模式
 
 如果只有一台主机，想要同一套转发但不需要控制面，
-[`portunus-standalone`](/zh/docs/configuration/standalone) 会读取一份 TOML
+[`portunus-standalone`](/zh/docs/standalone/configuration) 会读取一份 TOML
 文件，直接运行 `portunus-forwarder` 数据面：
 
 ```
@@ -77,7 +77,7 @@ icon: Network
 配置就是这份 TOML 文件，在重启时重新加载；它的 schema 不提供 TLS SNI 路由和
 限流——这两项只能通过 Server 配置。实时吞吐可通过可选的统计 socket 和内置的
 `stats` TUI 查看。完整 schema 见
-[standalone 指南](/zh/docs/configuration/standalone)。
+[standalone 指南](/zh/docs/standalone/configuration)。
 
 ## 控制面
 
@@ -96,7 +96,7 @@ icon: Network
   send/recv 窗口外不加任何缓冲。在 Linux 上，未限速规则的字节走内核
   `splice + pipe` 快路径，负载根本不进用户态；任何带宽 cap、UDP 或非 Linux
   构建则回落到用户态拷贝。详见
-  [性能报告](/zh/docs/getting-started/performance)。
+  [性能报告](/zh/docs/overview/performance)。
 - **UDP**：每条规则运行一个集中式 runtime——每个监听端口一个 listener 任务、
   一个以 `(监听端口, 源地址)` 为键的共享流注册表、一个回程 demux 任务，以及一个
   空闲流回收器。每条流分配一个 `connect()` 过的上游 socket（多目标选择在建流时

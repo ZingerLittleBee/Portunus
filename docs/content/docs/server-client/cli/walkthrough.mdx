@@ -12,9 +12,9 @@ exercise programmatically.
 
 You need two terminals (or two hosts):
 
-- Host A: [`portunus-server` installed](/en/docs/getting-started/installation#server-install)
+- Host A: [`portunus-server` installed](/en/docs/server-client/installation#server-install)
   and on `PATH`.
-- Host B: [`portunus-client` installed](/en/docs/getting-started/installation#client-install)
+- Host B: [`portunus-client` installed](/en/docs/server-client/installation#client-install)
   and on `PATH`.
 
 For a one-machine trial, install both binaries locally and treat the two
@@ -68,7 +68,7 @@ while a server is already running on the same `--data-dir`. With the server
 started above still live, create the client from the Web UI **Clients** page
 or the operator HTTP API instead — both go through the running server.
 Reserve the offline CLI for bootstrap before `serve` starts. See
-[Enroll](/en/docs/configuration/client#enroll).
+[Enroll](/en/docs/server-client/configuration/client#enroll).
 </Callout>
 
 On Host B, install the client then redeem the printed command:
@@ -144,10 +144,10 @@ then exit `0`.
 
 | You want… | Read |
 | --- | --- |
-| Add UDP rules | [UDP Forwarding](/en/docs/features/udp-forwarding) |
-| Forward many ports at once | [Port-range Rules](/en/docs/features/port-range) |
-| Use DNS targets | [DNS-name Targets](/en/docs/features/dns-targets) |
-| Scope a teammate to one client | [Multi-user RBAC](/en/docs/features/rbac) |
-| Use the browser instead of the CLI | [Web UI](/en/docs/features/web-ui) |
-| Cap traffic per rule or per tenant | [Rate Limiting & QoS](/en/docs/features/rate-limiting) |
-| Run in production | [Deployment](/en/docs/deployment/systemd) |
+| Add UDP rules | [UDP Forwarding](/en/docs/overview/concepts/udp-forwarding) |
+| Forward many ports at once | [Port-range Rules](/en/docs/overview/concepts/port-range) |
+| Use DNS targets | [DNS-name Targets](/en/docs/overview/concepts/dns-targets) |
+| Scope a teammate to one client | [Multi-user RBAC](/en/docs/server-client/features/rbac) |
+| Use the browser instead of the CLI | [Web UI](/en/docs/server-client/features/web-ui) |
+| Cap traffic per rule or per tenant | [Rate Limiting & QoS](/en/docs/server-client/features/rate-limiting) |
+| Run in production | [Deployment](/en/docs/server-client/deployment/systemd) |

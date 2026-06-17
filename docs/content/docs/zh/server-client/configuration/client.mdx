@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scrip
 （`root:portunus-client 0640`），并自动执行 `systemctl enable --now
 portunus-client`。
 
-参见 [systemd 部署指南](/zh/docs/deployment/systemd)。
+参见 [systemd 部署指南](/zh/docs/server-client/deployment/systemd)。
 
 ## Docker
 
@@ -128,7 +128,7 @@ docker run -d --name portunus-client --network host \
 首次启动时，容器会把 `/etc/portunus/client.bundle.json` 写入 volume，
 然后开始转发。后续启动时，若 bundle 已存在，`PORTUNUS_ENROLL_URI` 会被忽略。
 
-参见 [Docker 部署指南](/zh/docs/deployment/docker)。
+参见 [Docker 部署指南](/zh/docs/server-client/deployment/docker)。
 
 ## 标志
 

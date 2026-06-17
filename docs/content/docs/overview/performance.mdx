@@ -17,7 +17,7 @@ end-to-end** and adds a direct **`portunus-standalone` vs
 `portunus-client`** comparison, because both binaries ship the same
 `portunus-forwarder` data plane. The earlier v1.3.0 and v0.11 baselines
 are preserved on the
-[Performance History](/en/docs/getting-started/performance-history) page.
+[Performance History](/en/docs/overview/performance-history) page.
 
 > **Quick read.** On a plain TCP rule with no bandwidth limit, Portunus
 > keeps pace with the kernel's own `iptables` forwarding all the way to
@@ -36,7 +36,7 @@ iperf 3.18 (cJSON 1.7.15)
 ```
 
 This is the **same 4-vCPU Debian 13 / kernel 6.12 machine** that produced
-the [v0.11 / v1.3.0 baselines](/en/docs/getting-started/performance-history).
+the [v0.11 / v1.3.0 baselines](/en/docs/overview/performance-history).
 Read each result as a **same-machine, back-to-back delta** — `iperf3` vs
 `iptables` vs Portunus in one run — not as an absolute number to compare
 across reports, since the toolchain and kernel point release move between
@@ -169,7 +169,7 @@ throughput. The small variation in the 18–20 Gbit/s rows (e.g. standalone
 ranking — the same noise that drives the uncapped-max swing above.
 
 This is the band the pre-splice
-[v0.11 baseline](/en/docs/getting-started/performance-history)
+[v0.11 baseline](/en/docs/overview/performance-history)
 could not hold: there, Portunus dropped to ~33–49% of iptables above
 12.5 Gbit/s. The splice fast path (introduced in v1.3.0) closed that gap,
 and v1.6.1 re-confirms it on the same host.
@@ -184,7 +184,7 @@ and v1.6.1 re-confirms it on the same host.
   bandwidth cap on the rule or its owner`. The `concurrent_connections`
   and `new_connections_per_sec` limits are checked when the connection is
   accepted and do **not** disable splice. See
-  [Rate Limiting & QoS — Interaction with the splice fast path](/en/docs/features/rate-limiting#interaction-with-the-splice-fast-path).
+  [Rate Limiting & QoS — Interaction with the splice fast path](/en/docs/server-client/features/rate-limiting#interaction-with-the-splice-fast-path).
 - Cross-platform behaviour is unchanged: macOS and Windows builds never
   use splice (it is gated to Linux with `#[cfg(target_os = "linux")]`;
   `nm` confirms zero splice symbols in the macOS release binary).
@@ -192,7 +192,7 @@ and v1.6.1 re-confirms it on the same host.
   field, no Web UI control, no CLI flag. The `PORTUNUS_DISABLE_SPLICE=1`
   environment variable exists only for troubleshooting and bench A/B
   testing (see
-  [Disabling the Linux fast path for triage](/en/docs/operations/troubleshooting#disabling-the-linux-fast-path-for-triage)).
+  [Disabling the Linux fast path for triage](/en/docs/server-client/operations/troubleshooting#disabling-the-linux-fast-path-for-triage)).
 
 ## Method
 
@@ -353,7 +353,7 @@ cargo bench -p portunus-server --bench operator_api -- --quick
 The pre-v1.6.1 reference numbers — the v1.3.0 splice-introduction tables
 (measured on the original Debian 13 host) and the v0.11 pre-splice Linux
 iptables comparison — live on their own page:
-[Performance History](/en/docs/getting-started/performance-history).
+[Performance History](/en/docs/overview/performance-history).
 Consult it only if you need the prior reference for traceability.
 
 ## Sources

@@ -5,7 +5,7 @@ icon: Archive
 ---
 
 This page preserves the baselines that precede the current
-[v1.6.1 report](/en/docs/getting-started/performance). It is kept verbatim
+[v1.6.1 report](/en/docs/overview/performance). It is kept verbatim
 so each successive report remains reproducible against a fixed prior
 reference — there is no operational reason to consult it during
 day-to-day use of Portunus.
@@ -18,7 +18,7 @@ day-to-day use of Portunus.
 
 The current head-to-head (re-measured on the same host, plus a
 `portunus-standalone` vs `portunus-client` comparison) is the
-[v1.6.1 report](/en/docs/getting-started/performance).
+[v1.6.1 report](/en/docs/overview/performance).
 
 ---
 
@@ -137,5 +137,5 @@ TMPDIR=/root scripts/perf_loopback.py --seconds 5 --omit-seconds 1 \
 Above 12.5 Gbit/s offered, iptables stays near the offered load while the
 pre-splice Portunus userspace path saturates much earlier. This is the
 band the v1.3.0 splice fast path closed (see above), and that the
-[v1.6.1 report](/en/docs/getting-started/performance#offered-load-sweep)
+[v1.6.1 report](/en/docs/overview/performance#offered-load-sweep)
 confirms on the same host.

@@ -97,11 +97,11 @@ Highlights operators may notice:
 
 - **v1.3 (Linux `splice(2)` fast path)** — TCP throughput roughly
   doubles on Linux for rules with no bandwidth caps. Operator-invisible;
-  see [Troubleshooting → Disabling the Linux fast path](/en/docs/operations/troubleshooting#disabling-the-linux-fast-path-for-triage).
+  see [Troubleshooting → Disabling the Linux fast path](/en/docs/server-client/operations/troubleshooting#disabling-the-linux-fast-path-for-triage).
 - **v1.4 (traffic quotas)** — adds SQLite migration `V008`
   (`traffic_quotas` + history tables) applied automatically. No backfill,
   no default rows; unconfigured pairs forward exactly as before. See the
-  [Traffic Quotas runbook](/en/docs/operations/runbook-traffic-quotas).
+  [Traffic Quotas runbook](/en/docs/server-client/operations/runbook-traffic-quotas).
 - **v1.5 — UDP per-rule flow cap correction.** `udp_max_flows_per_rule`
   is now enforced once across the whole rule instead of per listen port.
   A **range** UDP rule's effective capacity drops by a factor of

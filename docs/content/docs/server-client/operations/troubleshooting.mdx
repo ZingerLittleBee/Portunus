@@ -126,7 +126,7 @@ there is no operator knob.
 | `protocol_not_granted` | Protocol (TCP/UDP) not enabled in a grant |
 | `password_change_required` | Web session is limited until the user changes a temporary password |
 
-Read [RBAC](/en/docs/features/rbac) for the closed-set matching rules.
+Read [RBAC](/en/docs/server-client/features/rbac) for the closed-set matching rules.
 
 ## Capability gates
 
@@ -229,7 +229,7 @@ port — a range rule with `udp_max_flows_per_rule = N` admits `N` flows
 total across all its ports (was `N × range_size`). If a range rule that
 worked on v1.4 now overflows, raise the cap proportionally or split the
 range; the field is capped at `65535`. See the
-[Upgrade Guide](/en/docs/operations/upgrade#v1x-data-plane-releases).
+[Upgrade Guide](/en/docs/server-client/operations/upgrade#v1x-data-plane-releases).
 
 Since **v1.7** the per-rule UDP listener loop is hardened against
 head-of-line blocking, so one slow upstream no longer stalls datagrams
@@ -252,7 +252,7 @@ Portunus issue.
 
 ## Traffic quotas (v1.4+)
 
-See the [Traffic Quotas runbook](/en/docs/operations/runbook-traffic-quotas)
+See the [Traffic Quotas runbook](/en/docs/server-client/operations/runbook-traffic-quotas)
 for the full surface.
 
 ### "End-user reports connection drops at a GB boundary"
@@ -434,7 +434,7 @@ regression introduced by the fast path.
 
 ## Advertised endpoint
 
-See [Advertised Endpoint](/en/docs/features/advertised-endpoint) for the
+See [Advertised Endpoint](/en/docs/server-client/features/advertised-endpoint) for the
 full model. The endpoint is resolved fail-closed and validated against
 the server certificate SAN.
 

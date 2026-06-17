@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from '@tanstack/react-router';
 
-// A docs URL without a language prefix (e.g. /docs/getting-started/architecture)
+// A docs URL without a language prefix (e.g. /docs/overview/architecture)
 // defaults to English and redirects to its /en/docs equivalent.
 export const Route = createFileRoute('/docs/$')({
   beforeLoad: ({ params }) => {

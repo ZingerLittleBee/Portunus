@@ -12,7 +12,7 @@ The full control-plane deployment is a two-process system: `portunus-server`
 manages state and pushes rules to one or more `portunus-client` edge processes.
 The data plane itself lives in the standalone `portunus-forwarder` library,
 which both the client and the single-binary
-[`portunus-standalone`](/en/docs/configuration/standalone) forwarder consume —
+[`portunus-standalone`](/en/docs/standalone/configuration) forwarder consume —
 so a TOML-driven standalone host runs the same forwarding code without any
 control plane.
 
@@ -50,7 +50,7 @@ control plane.
 ## Standalone mode
 
 For a single host that needs the same forwarding without a control plane,
-[`portunus-standalone`](/en/docs/configuration/standalone) reads a TOML file
+[`portunus-standalone`](/en/docs/standalone/configuration) reads a TOML file
 and runs the `portunus-forwarder` data plane directly:
 
 ```
@@ -80,7 +80,7 @@ or Prometheus `/metrics`. Configuration is the TOML file, reloaded on
 restart, and its schema does not expose TLS SNI routing or rate limiting —
 both are configured only through the server. Live throughput is read from
 the optional stats socket and the built-in `stats` TUI. See the
-[standalone guide](/en/docs/configuration/standalone) for the full schema.
+[standalone guide](/en/docs/standalone/configuration) for the full schema.
 
 ## Control plane
 
@@ -103,7 +103,7 @@ the optional stats socket and the built-in `stats` TUI. See the
   Linux, an uncapped rule moves bytes through a kernel `splice + pipe` fast
   path so the payload never enters userspace; any bandwidth cap, UDP, or a
   non-Linux build falls back to the userspace copy. See the
-  [performance report](/en/docs/getting-started/performance).
+  [performance report](/en/docs/overview/performance).
 - **UDP**: each rule runs a single centralized runtime — one listener task
   per listen port, a shared flow registry keyed by `(listen_port,
   source-addr)`, a reply-demux task, and an idle-flow reaper. Each flow gets

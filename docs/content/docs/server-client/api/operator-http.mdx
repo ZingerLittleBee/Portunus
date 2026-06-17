@@ -42,7 +42,7 @@ Responses on missing / invalid authentication:
 | `401 unauthenticated` | `{"error":{"code":"unauthenticated","message":"..."}}` | Missing / invalid bearer or Web session |
 | `403 not_owner` | `{"error":{"code":"not_owner","message":"..."}}` | Authenticated, but caller does not own the resource |
 | `403 password_change_required` | `{"error":{"code":"password_change_required","message":"..."}}` | Web session must change a temporary password first |
-| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/en/docs/features/rbac)) |
+| `403 client_not_granted` / `port_outside_grant` / `protocol_not_granted` | RBAC envelope rejection (see [RBAC](/en/docs/server-client/features/rbac)) |
 | `403 csrf_*` | Cookie-authenticated write failed CSRF checks |
 | `429 rate_limited` | Too many login, onboarding, or password-reset attempts |
 | `503 bootstrap_required` | Server has no superadmin yet — complete Web onboarding |
@@ -223,7 +223,7 @@ Returns `200 { "password_change_required": false }` and sets the `HttpOnly`
 
 Returns `{ client_name, expires_at, command, uri }`. Run the `command` (or
 redeem `uri`) on the edge host. The server endpoint embedded in the URI comes
-from the [advertised endpoint](/en/docs/features/advertised-endpoint), falling
+from the [advertised endpoint](/en/docs/server-client/features/advertised-endpoint), falling
 back to `127.0.0.1:7443`.
 
 ### `POST /v1/users/{id}/credentials`
