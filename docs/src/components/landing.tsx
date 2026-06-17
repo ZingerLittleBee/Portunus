@@ -256,7 +256,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
               <div className="mt-9 flex flex-col gap-3 sm:flex-row">
                 <Link
                   to="/$lang/docs/$"
-                  params={{ lang: locale, _splat: "" }}
+                  params={{ lang: locale, _splat: "overview" }}
                   className="fr-cta-primary"
                 >
                   {t.primary}

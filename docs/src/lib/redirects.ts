@@ -1,8 +1,9 @@
 // Old docs slug -> new docs slug, for 301-redirecting pre-restructure URLs.
 // Keys/values are page slugs with no language prefix, no leading slash, no #fragment.
-// An empty-string value means the Overview picker at /{lang}/docs.
+// The bare docs root (/{lang}/docs) is redirected to the Overview landing in the
+// route's beforeLoad, not from this map.
 export const OLD_TO_NEW: Record<string, string> = {
-  'getting-started/installation': '',
+  'getting-started/installation': 'overview',
   'getting-started/architecture': 'overview/architecture',
   'getting-started/performance': 'overview/performance',
   'getting-started/performance-history': 'overview/performance-history',

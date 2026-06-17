@@ -28,6 +28,14 @@ export const Route = createFileRoute('/$lang/docs/$')({
   component: Page,
   beforeLoad: ({ params }) => {
     const oldSlug = params._splat ?? '';
+    // The docs root has no page of its own — land on the Overview section.
+    if (oldSlug === '') {
+      throw redirect({
+        to: '/$lang/docs/$',
+        params: { lang: params.lang, _splat: 'overview' },
+        statusCode: 301,
+      });
+    }
     if (oldSlug in OLD_TO_NEW) {
       throw redirect({
         to: '/$lang/docs/$',
