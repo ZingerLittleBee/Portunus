@@ -1,0 +1,36 @@
+---
+title: UDP Forwarding
+description: NAT-style UDP forwarding with kernel-allocated upstream sockets per source flow.
+icon: Send
+---
+
+> **How to set it up:** [Standalone (TOML)](/en/docs/standalone/forwarding-rules#udp-forwarding) · [Server + Client (operator)](/en/docs/server-client/forwarding-rules#udp-forwarding)
+
+Available since v0.4.0. UDP rules coexist with TCP rules on the same
+listen port — the kernel demuxes by protocol.
+
+## How it works
+
+Each UDP rule runs one listener task per listen port, each owning a
+fixed-size receive buffer. A datagram from a new end-user
+`(source-addr, source-port)` opens a **flow**: the proxy binds a fresh
+upstream `UdpSocket`, `connect()`s it to the selected target once, and
+registers the flow in a shared per-rule registry keyed by
+`(listen_port, source_addr)`. Return datagrams are demuxed back to the
+originating source through this registry.
+
+Receive-buffer memory is **O(1) in flow count** — each listener task
+owns one fixed-size receive buffer regardless of how many flows are
+live, not one buffer per flow. An idle reaper closes flows that go quiet.
+
+On Linux, the listener uses batched syscalls (`recvmmsg`/`sendmmsg`, up
+to 32 datagrams per call) to cut per-packet syscall overhead. The batch
+path holds a fixed ~2 MiB receive arena per listener (32 slots ×
+64 KiB), plus a single 64 KiB single-packet fallback buffer. Neither
+grows with flow count. Other platforms skip the batch arena and use the
+single 64 KiB `recv_from`/`send` path.
+
+Because the upstream socket is `connect()`-ed, Linux reflects ICMP
+errors (`ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`) back to the
+proxy. An affected flow is evicted immediately; the next datagram from
+that source rebuilds the flow against a freshly selected target.

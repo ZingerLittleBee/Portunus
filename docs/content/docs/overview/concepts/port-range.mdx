@@ -1,0 +1,24 @@
+---
+title: Port-range Rules
+description: A single rule maps a contiguous listen-port window onto a same-offset target window.
+icon: ListOrdered
+---
+
+> **How to set it up:** [Standalone (TOML)](/en/docs/standalone/forwarding-rules#port-range) · [Server + Client (operator)](/en/docs/server-client/forwarding-rules#port-range)
+
+Available since v0.2.0. A single rule binds many listeners atomically.
+
+## How it works
+
+A port-range rule maps a contiguous listen-port range onto the **same
+offset** in a contiguous target-port range on a single upstream host.
+
+```
+Listen 30000-30050  →  upstream.local:30000-30050
+                       ^ each port forwards to its same-offset target
+                         (30005 → upstream.local:30005, etc.)
+```
+
+Range rules collapse to **one row** in `list-rules` and **one row per
+collector** in `/metrics` regardless of range size. Per-port detail is
+opt-in via `--per-port`.

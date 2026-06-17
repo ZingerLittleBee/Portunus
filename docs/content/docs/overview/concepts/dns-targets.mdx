@@ -1,0 +1,42 @@
+---
+title: DNS-name Targets
+description: A rule target may be a hostname instead of an IP literal. Cached, single-flighted, RFC-8767 stale-while-error.
+icon: Globe
+---
+
+> **How to set it up:** [Standalone (TOML)](/en/docs/standalone/forwarding-rules#dns-targets) · [Server + Client (operator)](/en/docs/server-client/forwarding-rules#dns-targets)
+
+Available since v0.3.0. The target host in any push-rule may be a DNS
+name (e.g. `api.example.com:443`) instead of an IP literal.
+
+## How it works
+
+- Resolution happens **lazily on first connect** through `hickory-resolver`
+  reading `/etc/resolv.conf`.
+- Results cache per the resolver-reported TTL clamped to **`[5 s, 5 min]`**.
+  The cache is **bounded** (default 8192 entries) so high name-cardinality
+  workloads can't grow it without limit; expired entries are evicted first,
+  then the live entries closest to expiry if still over the cap.
+- On refresh failure the rule stays `Active` and the last-known answer
+  continues serving for **30 s of grace** (RFC 8767 stale-while-error).
+  After grace expiry, a fresh attempt is allowed every 3 s.
+- Per-rule **single-flight** collapses concurrent first-connects to ONE
+  upstream resolver call.
+- **Multi-A/AAAA fallback** tries each returned address in family-preference
+  order — a single dead IP doesn't fail the connection.
+- **IPv4-first by default**; pass `--prefer-ipv6` to flip per rule.
+
+## Hot path
+
+IP-literal targets skip the resolver entirely: `IpAddr::from_str`
+short-circuits straight to the dial. The dial itself is **time-boxed**
+by the per-attempt timeout (3 s), so a SYN-blackhole target (a firewall
+that drops rather than refuses) fails fast instead of wedging a task in
+kernel SYN-retransmit for ~75–127 s.
+
+DNS-target hot path performance:
+
+- **Cache-hit lookup**: ~75 ns median (one async-mutex acquire +
+  HashMap get + Vec clone).
+- **100 concurrent first-connects** to the same hostname: resolver
+  invoked exactly once.

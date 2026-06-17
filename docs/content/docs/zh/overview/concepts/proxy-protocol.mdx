@@ -1,0 +1,52 @@
+---
+title: PROXY 协议
+description: 每个上游可单独开启 PROXY v1 / v2 前缀，让后端看到原始客户端 IP 而非转发器 IP。
+icon: Shield
+---
+
+> **如何配置：** [独立部署 (TOML)](/zh/docs/standalone/forwarding-rules#proxy-protocol) · [服务端 + 客户端 (operator)](/zh/docs/server-client/forwarding-rules#proxy-protocol)
+
+v0.10.0 起支持。每目标可开启的 **PROXY 协议**（v1 文本或 v2 二进制）。
+
+## 为什么需要它
+
+流量经过转发器中转后，后端看到的 TCP 连接来源是**转发器自己的 IP**，
+而不是真正的客户端。原始的 `(源, 目标)` 四元组在这一跳就丢失了，导致：
+
+- **审计 / 日志** —— 访问日志记录的全是转发器 IP，无法把请求溯源到真实访客。
+- **基于 IP 的控制** —— 限流、WAF 规则、地理位置识别、黑白名单都以客户端
+  IP 为依据，会悄无声息地失效。
+
+PROXY 协议在转发**真实业务数据之前**先把原始地址四元组告诉后端，让后端
+能像直连一样恢复出客户端身份，从而解决上述问题。
+
+## 工作方式
+
+后端通过 `proxy_protocol = "v1"` 或 `"v2"` 显式开启时，Client 会在
+原始连接的负载之前先发送一段 PROXY 头部。后端就可以看到原始客户端的
+`(src_addr, src_port, dst_addr, dst_port)`。
+
+<Callout type="warn">
+后端**必须**配置为接收 PROXY 头部。如果给一个不认识 PROXY 协议的后端发送
+头部，它会把头部当成业务数据来解析，从而破坏连接。这是一个「两端都要约定
+好」的开关 —— 只在后端支持 PROXY 时才逐目标开启。仅 TCP；UDP 路径不受影响。
+</Callout>
+
+逐目标开启意味着同一条规则里可以混合 PROXY-aware 与不感知的后端。
+
+带 `proxy_protocol` 的 UDP 规则会被
+`validation.proxy_protocol_on_unsupported_rule` 拒绝。取值仅接受 `"v1"`
+与 `"v2"`，其余会触发 `validation.proxy_protocol_invalid`。
+
+## 模式
+
+| 模式 | 描述 |
+| --- | --- |
+| `v1` | 可读文本头部 `PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>\r\n`（例如 `PROXY TCP4 1.2.3.4 5.6.7.8 12345 80\r\n`；IPv6 用 `TCP6`） |
+| `v2` | 二进制头部 —— 16 字节的签名 / 命令前缀，后跟地址块（IPv4 共 28 字节，IPv6 共 52 字节），遵循 PROXY 协议 v2 规范 |
+| 缺省 | 无前缀 —— 旧的字节流 |
+
+选择是 **逐目标** 而非 **逐规则**，所以多目标规则可以混合开关。
+
+自 v1.7.0 起，前缀写入是 **限时** 的：上游缓慢或卡住时，不会再因写头部
+而阻塞连接建立。

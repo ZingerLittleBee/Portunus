@@ -100,3 +100,37 @@ portunus_tls_sni_routes_active
 
 根据审计隔离不变量（D13），数据面 SNI 事件 **不会** 写入 SQLite 操作员
 审计表。
+
+## SNI peek 时长直方图
+
+### 有什么作用
+
+在 SNI 路由模式下，listener 必须先「偷看」（peek）入站的 TLS ClientHello
+（但不消费它），从中提取 SNI 域名，才能决定这条连接归属哪个后端。这一步
+**同步**地串在连接建立路径上：它要等 ClientHello 到齐（可能跨多个 TCP 段），
+再解析 TLS 记录。慢速客户端、网络抖动或停滞的握手都会让这一步变慢，进而推高
+连接建立的尾延迟。
+
+直方图测量的正是这一步耗时，因此可以用来：
+
+- **观测 SNI 路由的代价** —— 看 p50/p99 的 peek 耗时，判断 SNI 分发是否
+  正在成为瓶颈。
+- **发现慢客户端 / 攻击迹象** —— 大量长耗时 peek 可能意味着 slowloris 式的
+  慢速握手攻击，或网络异常。
+- **容量与超时调优** —— 依据真实分布数据来设定 peek 超时，而非凭经验估计。
+
+### 指标
+
+当 listener 处于 SNI 路由模式时，Portunus 会记录 ClientHello peek + 解析
+所耗时间：
+
+```
+portunus_tls_client_hello_peek_duration_seconds_bucket{...}
+portunus_tls_client_hello_peek_duration_seconds_sum
+portunus_tls_client_hello_peek_duration_seconds_count
+```
+
+桶按 Prometheus 惯例划分，最大有限边界为 **3 秒**；超过 3 秒的观测值会让
+`_count` 与 `le="+Inf"` 同步增长，但不会增加 `le="3"`。
+
+旧的纯 TCP listener **不会** 暴露该直方图 —— 那些路径根本不做 peek。

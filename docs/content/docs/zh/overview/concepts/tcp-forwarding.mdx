@@ -1,0 +1,23 @@
+---
+title: TCP 转发
+description: 项目最基础的转发原语 —— 在边缘上绑定 TCP 监听，把每条 accept 到的连接以纯 L4 字节直通转发给配置的上游目标。
+icon: ArrowRightLeft
+---
+
+> **如何配置：** [独立部署 (TOML)](/zh/docs/standalone/forwarding-rules#tcp-forwarding) · [服务端 + 客户端 (operator)](/zh/docs/server-client/forwarding-rules#tcp-forwarding)
+
+TCP 转发是项目的核心原语。其它所有功能（UDP、端口范围、SNI 路由、限流）
+都建立在它之上。
+
+## 工作原理
+
+每条 TCP 规则在 Client 上运行一个 `accept` 循环。每当 accept 到一条新连接，
+Client 就 `TcpStream::connect` 上游目标，然后双向字节拷贝直到任意一侧关闭。
+
+用户态 **不做任何缓冲**（内核 send/recv 窗口除外）。转发器是纯粹的 L4 字节
+直通：TLS 会话、HTTP 请求以及任意协议都能原样透传。
+
+在 Linux 上，没有带宽限制的连接走 `splice(2)` 快路径（数据零拷贝穿过内核）；
+配置了限流的连接则回退到用户态拷贝循环。监听器以 `SO_REUSEADDR` 绑定，因此
+进程快速重启（如 `docker restart`）能立即重新绑定，而不会在旧 socket 处于
+`TIME_WAIT` 期间因 `port_in_use` 失败。

@@ -105,3 +105,42 @@ Structured events with `target = "tls_sni"`:
 
 Per the audit-isolation invariant (D13), data-plane SNI events do **not**
 enter the SQLite operator audit ring.
+
+## SNI peek duration histogram
+
+### What it is for
+
+In SNI dispatch mode the listener must *peek* at the inbound TLS
+ClientHello — without consuming it — to extract the SNI hostname before
+it can decide which backend the connection belongs to. That peek sits
+synchronously on the connection-setup path: it has to wait for enough of
+the ClientHello to arrive (possibly across several TCP segments) and then
+parse the TLS record. Slow clients, network jitter, or stalled handshakes
+make this step slow and drag out connection-establishment tail latency.
+
+The histogram measures exactly that step, so you can:
+
+- **Observe the cost of SNI routing** — watch p50/p99 peek time to tell
+  whether SNI dispatch is becoming a bottleneck.
+- **Spot slow clients / abuse** — a mass of long peeks can signal a
+  slowloris-style slow-handshake attack or a network problem.
+- **Tune capacity and timeouts** — set peek timeouts from the real
+  distribution rather than guessing.
+
+### Metrics
+
+When a listener runs in SNI dispatch mode, Portunus records how long the
+ClientHello peek+parse takes:
+
+```
+portunus_tls_client_hello_peek_duration_seconds_bucket{...}
+portunus_tls_client_hello_peek_duration_seconds_sum
+portunus_tls_client_hello_peek_duration_seconds_count
+```
+
+Buckets follow Prometheus convention with finite boundaries up to
+**3 seconds**; observations above the 3 s boundary increment `_count`
+and `le="+Inf"` without bumping `le="3"`.
+
+The histogram does **not** exist for legacy plain-TCP listeners — no
+peek happens there.
