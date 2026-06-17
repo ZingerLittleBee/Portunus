@@ -123,7 +123,7 @@ REST 接口：`/v1/clients/{client_id}/owners/{owner_id}/rate-limit`
 
 v1.7.0 起，规则被移除时会回收其 per-rule 限流器（此前会泄漏）。
 
-## Capability gate
+## 能力门控
 
 向 v0.10 或更早的 Client 推送 `rate_limit`（或任何 owner 上限变更）会在
 任何规则激活之前返回 HTTP 422 `rate_limit_unsupported_by_client`。

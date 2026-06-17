@@ -61,7 +61,7 @@ portunus-server push-rule edge-01 443 fallback.example.com:8080
 - **通配符仅支持单层** —— `*.example.com` 匹配 `api.example.com`，
   但不匹配 `api.v2.example.com`。
 
-## Capability gate
+## 能力门控
 
 向 v0.8 或更早的 Client 推送带 `sni_pattern` 的规则，会在规则激活前返回
 HTTP 422 `sni_unsupported_by_client`。
@@ -85,7 +85,7 @@ portunus_tls_sni_routes_active
 
 旧版纯 TCP listener 不会暴露上述任何指标序列。
 
-## Tracing 事件
+## 追踪事件
 
 `target = "tls_sni"` 的结构化事件：
 
