@@ -1,20 +1,4 @@
 {
   "title": "Documentation",
-  "pages": [
-    "index",
-    "---Get Started---",
-    "getting-started/installation",
-    "getting-started/architecture",
-    "getting-started/performance",
-    "---Features---",
-    "features",
-    "---Reference---",
-    "configuration",
-    "cli",
-    "api",
-    "---Operations---",
-    "deployment",
-    "observability",
-    "operations"
-  ]
+  "pages": ["index", "overview", "standalone", "server-client"]
 }

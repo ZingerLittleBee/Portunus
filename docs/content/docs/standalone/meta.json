@@ -1,0 +1,7 @@
+{
+  "root": true,
+  "title": "Standalone",
+  "description": "Single-host TOML forwarder",
+  "icon": "Box",
+  "pages": ["installation", "configuration", "forwarding-rules", "stats", "deployment", "troubleshooting"]
+}

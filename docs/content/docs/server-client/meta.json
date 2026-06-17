@@ -1,0 +1,7 @@
+{
+  "root": true,
+  "title": "Server + Client",
+  "description": "Central control plane with clients",
+  "icon": "Network",
+  "pages": ["installation", "configuration", "forwarding-rules", "features", "cli", "api", "deployment", "observability", "operations"]
+}
