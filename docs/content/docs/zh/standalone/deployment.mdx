@@ -1,0 +1,53 @@
+---
+title: 部署
+description: portunus-standalone 的运维注意、升级与卸载。
+icon: Package
+---
+
+## 运维注意
+
+- **不支持热重载。** `SIGHUP` 是 no-op，随发行版附带的 systemd unit 拒绝
+  `systemctl reload`。改规则只能编辑 TOML 再
+  `systemctl restart portunus-standalone`（或
+  `docker restart portunus-standalone`）。已建立的 TCP 连接在退出时
+  drain（不超过 `shutdown_drain_secs`）。
+- **绑定特权端口（`< 1024`）。** systemd unit 已带
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`，所以 22/53/80/443 这些端口
+  不用 root 也能绑。Docker 镜像声明了 `NET_BIND_SERVICE` capability；
+  如果你额外约束了 capabilities，加 `--cap-add NET_BIND_SERVICE`。
+- **文件描述符上限。** 启动时输出 `standalone.rlimit_nofile`。systemd
+  unit 设 `LimitNOFILE=65535`；Docker 端可加
+  `--ulimit nofile=65535:65535`。
+- **TCP `splice(2)` 零拷贝**：未配置 PROXY-protocol 前缀时在 Linux 上
+  自动启用。规则首次连接时会输出 `proxy.splice_selected` 事件。
+- **端口段规则原子绑定。** `listen_ports = "8000-8009"` 启动时一次绑
+  10 个端口；任何一个不可用就整条规则启动失败、其它已绑端口释放。
+
+## 升级与卸载
+
+如果用 **一键脚本** 安装：
+
+```sh
+# 升级到最新 release（原地升级，复用已记录的配置）：
+sh install.sh upgrade standalone
+
+# 状态（二进制版本、服务是否 active、部署形态）：
+sh install.sh status standalone
+
+# 服务控制透传：
+sh install.sh service standalone restart
+
+# 卸载（默认保留 /etc/portunus）：
+sh install.sh uninstall standalone
+
+# Purge：连 /etc/portunus 和 portunus 用户一起清掉：
+sh install.sh uninstall standalone --purge
+```
+
+如果用 **Docker** 安装：
+
+```sh
+docker pull ghcr.io/zingerlittlebee/portunus-standalone:latest
+docker stop portunus-standalone && docker rm portunus-standalone
+# 然后用「安装 → Docker」(/zh/docs/standalone/installation) 里的 docker run … 重新启动
+```

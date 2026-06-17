@@ -1,0 +1,145 @@
+---
+title: Installation
+description: Install portunus-standalone with Docker or the one-click binary installer, then verify traffic flows.
+icon: Download
+---
+
+`portunus-standalone` is a self-contained TCP/UDP forwarder configured
+entirely from a TOML file. It uses the same data-plane code as
+`portunus-client` but requires no running `portunus-server` — suitable for
+single-host deployments, edge devices, and scenarios where a control-plane
+server is unnecessary.
+
+## Install
+
+Two supported install paths. Pick **Docker** for container hosts and
+**One-click installer** for plain Linux servers (systemd or OpenRC).
+
+### Docker
+
+The GHCR image `ghcr.io/zingerlittlebee/portunus-standalone:<version>` is
+published on every release (multi-arch: `linux/amd64`, `linux/arm64`).
+
+```sh
+# 1. write your forwarding rules (the container mounts this file read-only):
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # the container runs as UID 65532 and must read it
+
+# 2. Run the container:
+docker run -d --network host \
+  --name portunus-standalone \
+  --restart unless-stopped \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+Notes:
+
+- Pin a specific version in production (e.g. `:X.Y.Z` rather than `:latest`).
+- The container runs as **UID 65532** (`nonroot`). The host file must be
+  readable by that UID — `chmod 0644 portunus.toml` is the simplest fix.
+  If you get `error: io error: Permission denied (os error 13)`, this is
+  why.
+- `--network host` lets port-range and arbitrary-port rules work without
+  per-port mapping. On Docker Desktop or when host networking is
+  unavailable, switch to bridge mode and enumerate ports — see
+  [`contrib/docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml).
+- The path **inside** the container (`/etc/portunus/standalone.toml`) is
+  fixed by the image's default `CMD`. The host path can be anywhere.
+- `docker compose` and Kubernetes manifests live in
+  [`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib).
+
+### One-click installer (binary + service)
+
+For Linux servers without Docker. The installer never writes a config —
+the binary exits if one is missing — so **create the config first**, then
+install and it starts automatically:
+
+```sh
+# 1. write your forwarding rules
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. install + start
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
+```
+
+The installer:
+
+1. Detects OS/arch, downloads the latest release, verifies its SHA-256.
+2. Installs the binary to `/usr/local/bin/portunus-standalone` (mode `0755`).
+3. Creates the `portunus` system user/group if missing.
+4. Fixes ownership/permissions on your `/etc/portunus/standalone.toml`
+   (mode `0640`, owner `root:portunus`) so the service user can read it.
+   It does **not** create the file — that is yours to author. Point at a
+   different file with `--config /path/to/your.toml`.
+5. Installs a hardened service unit — on systemd at
+   `/etc/systemd/system/portunus-standalone.service`
+   (`LimitNOFILE=65535`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`,
+   `ProtectSystem=strict`, `NoNewPrivileges=true`); on Alpine an OpenRC
+   `supervise-daemon` script in `/etc/init.d`.
+6. Enables and starts the service — because the config exists. If you
+   install before creating the config, it lays down the unit but does not
+   start it and prints how to create the config and start; `--no-service`
+   always skips the start.
+
+Validate or manage it afterwards:
+
+```sh
+portunus-standalone --check --config /etc/portunus/standalone.toml
+sudo systemctl restart portunus-standalone   # after editing the config
+sudo systemctl status portunus-standalone --no-pager
+```
+
+Running `sh install.sh` with no arguments opens an interactive menu —
+pick option 3 for the standalone role.
+
+## Verifying the installation
+
+Confirm the rule is active and traffic actually flows.
+
+**systemd install:**
+
+```sh
+systemctl status portunus-standalone --no-pager
+journalctl -u portunus-standalone -n 20 --no-pager
+ss -ltn | grep 2222     # check the listen port is bound
+```
+
+**Docker install:**
+
+```sh
+docker logs portunus-standalone | head -20
+docker exec portunus-standalone ss -ltn 2>/dev/null || ss -ltn | grep 2222
+```
+
+You should see one event per rule on startup:
+
+```json
+{"event":"standalone.rlimit_nofile","soft":65535,"hard":65535,…}
+{"event":"rule.activated","rule_id":"…","listen_port":2222,…,"target":"10.0.0.5:22-22"}
+```
+
+End-to-end TCP echo (replace 7777/7778 with your rule's ports; run the
+upstream first so the connect succeeds):
+
+```sh
+sudo apt-get install -y socat
+nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log 2>&1 &
+( echo "verify-payload"; sleep 1 ) | socat -t 3 - TCP:127.0.0.1:7777
+#   → verify-payload
+```
+
+The forwarder logs `rule.conn_closed` with non-zero `bytes_in`/`bytes_out`
+for each closed connection.

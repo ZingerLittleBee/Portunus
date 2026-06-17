@@ -1,0 +1,137 @@
+---
+title: 安装
+description: 用 Docker 或一键二进制安装器安装 portunus-standalone，并验证流量。
+icon: Download
+---
+
+`portunus-standalone` 是一个完全由 TOML 文件驱动的 TCP/UDP 转发器，**单机自给
+自足、不依赖控制面**。它与 `portunus-client` 共享同一套数据面代码，但无需运行
+`portunus-server` —— 适用于单机部署、边缘设备以及不需要控制面服务器的场景。
+
+## 安装
+
+只有两种受支持的安装方式：容器宿主选 **Docker**，普通 Linux（systemd / OpenRC）选
+**一键脚本**。
+
+### Docker
+
+每次发布都会向 GHCR 推送多架构镜像
+`ghcr.io/zingerlittlebee/portunus-standalone:<version>`
+（支持 `linux/amd64`、`linux/arm64`）。
+
+```sh
+# 1. 写入你的转发规则（容器会只读挂载这个文件）：
+cat > portunus.toml <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+chmod 0644 portunus.toml   # 容器以 UID 65532 运行,必须能读到它
+
+# 2. 启动容器：
+docker run -d --network host \
+  --name portunus-standalone \
+  --restart unless-stopped \
+  -v "$PWD/portunus.toml:/etc/portunus/standalone.toml:ro" \
+  ghcr.io/zingerlittlebee/portunus-standalone:latest
+```
+
+注意事项：
+
+- 生产环境固定到具体版本（如 `:X.Y.Z` 而非 `:latest`）。
+- 容器以 **UID 65532**（`nonroot`）运行，宿主机文件必须对该 UID 可读 ——
+  `chmod 0644 portunus.toml` 是最简单的做法。如果看到
+  `error: io error: Permission denied (os error 13)` 就是这个原因。
+- `--network host` 让端口段和任意端口规则不必逐端口映射。Docker Desktop
+  或不支持 host 网络时改成 bridge 模式并显式列出端口，参考
+  [`contrib/docker-compose.yml`](https://github.com/ZingerLittleBee/Portunus/blob/main/crates/portunus-standalone/contrib/docker-compose.yml)。
+- 容器**内部**路径 `/etc/portunus/standalone.toml` 是镜像默认 `CMD` 写死的，
+  宿主机路径任意。
+- `docker compose` 和 Kubernetes manifests 见
+  [`crates/portunus-standalone/contrib/`](https://github.com/ZingerLittleBee/Portunus/tree/main/crates/portunus-standalone/contrib)。
+
+### 一键脚本（二进制 + 服务）
+
+不用 Docker 的 Linux 服务器走这条。安装器**不会**替你写配置——配置缺失时
+二进制会直接退出——所以请**先创建配置**,再安装,它就会自动启动:
+
+```sh
+# 1. 写入你的转发规则
+sudo sh -c 'mkdir -p /etc/portunus && cat > /etc/portunus/standalone.toml' <<'EOF'
+[[rule]]
+name        = "ssh"
+protocol    = "tcp"
+listen_port = 2222
+target      = "10.0.0.5:22"
+EOF
+
+# 2. 安装并启动
+curl -fsSL https://raw.githubusercontent.com/ZingerLittleBee/Portunus/main/scripts/install.sh | sudo sh -s -- standalone
+```
+
+它依次做这些事：
+
+1. 检测 OS / 架构，下载最新 release 产物并校验 SHA-256。
+2. 把二进制安装到 `/usr/local/bin/portunus-standalone`（mode `0755`）。
+3. 若不存在，创建 `portunus` 系统用户/组。
+4. 修正你的 `/etc/portunus/standalone.toml` 的属主/权限（mode `0640`，
+   属主 `root:portunus`）,使服务用户能读取它。它**不会**创建该文件——
+   配置由你自行编写。用 `--config /path/to/your.toml` 可指向其它文件。
+5. 安装加固版服务 unit——systemd 上位于
+   `/etc/systemd/system/portunus-standalone.service`
+   （`LimitNOFILE=65535`、`AmbientCapabilities=CAP_NET_BIND_SERVICE`、
+   `ProtectSystem=strict`、`NoNewPrivileges=true`）;Alpine 上是 `/etc/init.d`
+   里的 OpenRC `supervise-daemon` 脚本。
+6. 启用并启动服务——因为配置已存在。若你在创建配置前就安装,它只放置 unit
+   而不启动,并打印如何创建配置、如何启动;`--no-service` 则始终跳过启动。
+
+之后校验或管理：
+
+```sh
+portunus-standalone --check --config /etc/portunus/standalone.toml
+sudo systemctl restart portunus-standalone   # 编辑配置后
+sudo systemctl status portunus-standalone --no-pager
+```
+
+不带参数运行 `sh install.sh` 进入交互菜单，选 `3` 即 standalone。
+
+## 验证安装
+
+确认规则已激活，并且流量真的能转发。
+
+**systemd 安装：**
+
+```sh
+systemctl status portunus-standalone --no-pager
+journalctl -u portunus-standalone -n 20 --no-pager
+ss -ltn | grep 2222     # 检查 listen 端口是否已绑定
+```
+
+**Docker 安装：**
+
+```sh
+docker logs portunus-standalone | head -20
+ss -ltn | grep 2222
+```
+
+启动时每条规则应输出一条事件：
+
+```json
+{"event":"standalone.rlimit_nofile","soft":65535,"hard":65535,…}
+{"event":"rule.activated","rule_id":"…","listen_port":2222,…,"target":"10.0.0.5:22-22"}
+```
+
+端到端 TCP echo（把 7777/7778 换成你规则上的端口；先起 upstream 否则
+connect 失败）：
+
+```sh
+sudo apt-get install -y socat
+nohup socat TCP-LISTEN:7778,reuseaddr,fork EXEC:/bin/cat </dev/null >/tmp/up.log 2>&1 &
+( echo "verify-payload"; sleep 1 ) | socat -t 3 - TCP:127.0.0.1:7777
+#   → verify-payload
+```
+
+每条连接关闭时，转发器会输出 `rule.conn_closed`，包含非零的
+`bytes_in` / `bytes_out`。

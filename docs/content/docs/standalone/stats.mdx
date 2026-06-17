@@ -1,0 +1,65 @@
+---
+title: Live stats
+description: Watch per-rule traffic with the standalone stats TUI over a Unix socket.
+icon: Activity
+---
+
+## Live stats dashboard
+
+`portunus-standalone stats` is a TUI dashboard that streams per-rule
+traffic counters from the running daemon over a Unix-domain socket.
+No HTTP, no Prometheus, no extra processes — just a single binary
+subcommand.
+
+```sh
+# Interactive TUI (in a terminal):
+portunus-standalone stats
+
+# One-shot JSON snapshot (scriptable):
+portunus-standalone stats --once | jq '.snapshot.r[] | {id, in, out, conns_active}'
+```
+
+For Docker installs:
+
+```sh
+docker exec -it portunus-standalone portunus-standalone stats
+```
+
+The dashboard shows three tabs:
+
+- **Overview** — per-rule table: current in/out rate, active
+  connections, UDP flow count.
+- **Detail** — 60 s sparklines for the selected rule, plus cumulative
+  totals and (for UDP) a saturation gauge against `udp_max_flows`.
+- **Errors** — non-zero cumulative failure counters per rule
+  (`port_in_use`, `upstream_connect_failed`, `icmp_evict`, `emsgsize`,
+  `wouldblock`, `addflow_dropped`, `dns_failures`,
+  `flows_dropped_overflow`).
+
+Default keybindings: `q` quit, `?` help, `Tab`/`h`/`l`/`←`/`→` cycle
+tab, `↑↓jk` select row, `p` pause, `s` cycle sort, `r` reverse sort,
+`/` filter, `c` reset baseline.
+
+### Configuration
+
+```toml
+[stats]
+enabled     = true                                # default true
+socket_path = "/run/portunus/standalone.sock"     # Linux default
+refresh_ms  = 1000                                # 250..=5000
+```
+
+Daemon-side overrides: `--no-stats`, `--stats-socket <PATH>`.
+`stats`-subcommand flags: `--socket <PATH>` (override the socket the
+client connects to) and `--once` (print one JSON snapshot and exit).
+
+The TUI client picks the default socket per platform:
+
+- Linux → `/run/portunus/standalone.sock` (`RuntimeDirectory=portunus`
+  in the shipped systemd unit creates this automatically)
+- macOS → `$TMPDIR/portunus-standalone.sock`
+- Override with `--socket <PATH>` if either default doesn't apply.
+
+The snapshot cadence is daemon-driven; the client has no request
+channel. To change the cadence, edit `[stats] refresh_ms` and restart
+the daemon.
