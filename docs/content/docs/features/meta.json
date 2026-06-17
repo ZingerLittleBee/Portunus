@@ -7,12 +7,6 @@
     "port-range",
     "dns-targets",
     "multi-target-failover",
-    "tls-sni-routing",
-    "proxy-protocol",
-    "rate-limiting",
-    "rbac",
-    "web-ui",
-    "advertised-endpoint",
-    "sqlite-storage"
+    "proxy-protocol"
   ]
 }
