@@ -1,13 +1,15 @@
 ---
 title: TCP Forwarding
-description: The core forwarding primitive — a TCP listener forwards every accepted connection to a configured upstream target as a pure L4 byte passthrough.
+description: A TCP listener forwards every accepted connection straight to its target — a pure L4 byte passthrough.
 icon: ArrowRightLeft
 ---
 
 > **How to set it up:** [Standalone (TOML)](/en/docs/standalone/forwarding-rules#tcp-forwarding) · [Server + Client (operator)](/en/docs/server-client/forwarding-rules#tcp-forwarding)
 
-TCP forwarding is the core primitive. Every other feature (UDP, port
-ranges, SNI routing, rate limiting) layers on top of it.
+TCP forwarding is the simplest rule type: accept a connection, open one
+to the target, and copy bytes both ways until either side closes. SNI
+routing and PROXY protocol build on this same TCP path; UDP forwarding
+is the datagram equivalent.
 
 ## How it works
 

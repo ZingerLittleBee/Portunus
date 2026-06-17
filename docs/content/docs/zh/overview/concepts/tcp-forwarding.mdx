@@ -1,13 +1,14 @@
 ---
 title: TCP 转发
-description: 项目最基础的转发原语 —— 在边缘上绑定 TCP 监听，把每条 accept 到的连接以纯 L4 字节直通转发给配置的上游目标。
+description: 在边缘绑定 TCP 监听，把每条 accept 到的连接以纯 L4 字节直通转发给上游目标。
 icon: ArrowRightLeft
 ---
 
 > **如何配置：** [独立部署 (TOML)](/zh/docs/standalone/forwarding-rules#tcp-forwarding) · [服务端 + 客户端 (operator)](/zh/docs/server-client/forwarding-rules#tcp-forwarding)
 
-TCP 转发是项目的核心原语。其它所有功能（UDP、端口范围、SNI 路由、限流）
-都建立在它之上。
+TCP 转发是最简单的规则类型：accept 一条连接、向目标建立连接、双向拷贝字节，
+直到任意一侧关闭。SNI 路由和 PROXY protocol 都基于这条 TCP 路径；UDP 转发
+则是数据报侧的对应形式。
 
 ## 工作原理
 
