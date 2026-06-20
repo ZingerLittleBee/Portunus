@@ -198,8 +198,10 @@ fn drive_through(listen_port: u16, bytes: usize, timeout: Duration) -> Vec<u8> {
 // (`post_grants` rejects reserved `_`-prefixed ids via `UserId::from_str`).
 //
 // The quota/rate-limit ENFORCEMENT logic itself remains covered by the
-// `portunus-core` rate-limit and quota unit tests; only this process-level
-// e2e is parked. Restoring it would require teaching the rust e2e harness a
+// `portunus-forwarder` quota unit tests
+// (`crates/portunus-forwarder/src/forwarder/quota/mod.rs`); only this
+// process-level e2e is parked. Restoring it would require teaching the rust
+// e2e harness a
 // non-superadmin password-login session-cookie auth path so a regular user
 // can push their own rule — a follow-up, out of scope for the credential-
 // surface removal.

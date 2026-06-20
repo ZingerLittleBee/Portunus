@@ -3,7 +3,6 @@
 //   - Users / Audit / Provision-client links are absent in nav
 //   - /users renders <PermissionDenied /> with NO /v1/users request
 //   - /users/bob renders <PermissionDenied />
-//   - /rules shows only alice's rules (server-side filter)
 
 import { test, expect } from "./fixtures/server";
 import { loginAs, provisionUser } from "./fixtures/helpers";
