@@ -77,15 +77,12 @@ pub struct AdminPasswordResetRequest {
     pub new_password: Option<String>,
     #[serde(default)]
     pub temporary_password: Option<bool>,
-    #[serde(default)]
-    pub keep_api_tokens: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PasswordResetResponse {
     pub user_id: String,
     pub sessions_revoked: usize,
-    pub api_tokens_revoked: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temporary_password: Option<String>,
 }
@@ -236,7 +233,7 @@ pub async fn post_self_password(
     let new_hash = hash_password(&body.new_password).map_err(password_error)?;
     state
         .operator_store
-        .reset_password_state(&identity.user_id, &new_hash, false, false, false)
+        .reset_password_state(&identity.user_id, &new_hash, false, false)
         .map_err(api_store)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -426,23 +423,15 @@ fn reset_user_password(
         .clone()
         .unwrap_or_else(portunus_auth::token::generate_token);
     let password_change_required = generated || body.temporary_password.unwrap_or(false);
-    let revoke_api_tokens = body.keep_api_tokens != Some(true);
     let new_hash = hash_password(&new_password).map_err(password_error)?;
     let summary = state
         .operator_store
-        .reset_password_state(
-            target,
-            &new_hash,
-            password_change_required,
-            true,
-            revoke_api_tokens,
-        )
+        .reset_password_state(target, &new_hash, password_change_required, true)
         .map_err(api_store)?;
 
     let response = PasswordResetResponse {
         user_id: target.as_str().to_string(),
         sessions_revoked: summary.sessions_revoked,
-        api_tokens_revoked: summary.api_tokens_revoked,
         temporary_password: generated.then_some(new_password),
     };
     state.audit.push(AuditEntry {
@@ -458,10 +447,8 @@ fn reset_user_password(
         resource_value: Some(target.as_str().to_string()),
         details: Some(serde_json::json!({
             "sessions_revoked": response.sessions_revoked,
-            "api_tokens_revoked": response.api_tokens_revoked,
             "temporary_password_generated": generated,
             "password_change_required": password_change_required,
-            "api_tokens_kept": !revoke_api_tokens,
         })),
     });
     Ok(response)

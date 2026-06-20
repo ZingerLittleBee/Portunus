@@ -61,10 +61,10 @@ async fn build_harness() -> Harness {
             .expect("create user");
     }
     let (_, alice_token) = operator_store
-        .issue_credential(&alice_id, None)
+        .seed_credential_for_test(&alice_id, None)
         .expect("issue alice cred");
     let (_, bob_token) = operator_store
-        .issue_credential(&bob_id, None)
+        .seed_credential_for_test(&bob_id, None)
         .expect("issue bob cred");
 
     let state = Arc::new(

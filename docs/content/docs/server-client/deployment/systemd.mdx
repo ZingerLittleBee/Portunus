@@ -184,11 +184,12 @@ onboarding completes.
 ## Smoke check
 
 Web onboarding above creates a password-based superadmin, not an API bearer
-token. To probe the operator API, first create a token on the Web UI
-**Credentials** page and export it as `PORTUNUS_OPERATOR_TOKEN`:
+token. To probe the operator API, machines authenticate with the static
+`operator_token` from `server.toml` (generate one with `portunus-server
+gen-token`) and export it as `PORTUNUS_OPERATOR_TOKEN`:
 
 ```sh
-export PORTUNUS_OPERATOR_TOKEN=<token-from-web-ui>
+export PORTUNUS_OPERATOR_TOKEN=<operator_token-from-server.toml>
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/users/me
 ```

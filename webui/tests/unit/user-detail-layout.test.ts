@@ -8,7 +8,7 @@ function source(path: string) {
 }
 
 describe("UserDetail layout", () => {
-  it("does not wrap the credentials, quota, and traffic sections in outer cards", () => {
+  it("does not wrap the quota and traffic sections in outer cards", () => {
     const text = source("src/pages/UserDetail.tsx");
 
     expect(text).not.toContain("@/components/ui/card");

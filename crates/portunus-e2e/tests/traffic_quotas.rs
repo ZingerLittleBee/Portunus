@@ -184,7 +184,31 @@ fn drive_through(listen_port: u16, bytes: usize, timeout: Duration) -> Vec<u8> {
     received
 }
 
+// IGNORED after the removal of the per-user self-issued API-token surface
+// (feat/remove-user-api-token). This end-to-end quota *enforcement* check
+// fundamentally needs a NON-superadmin owner that BOTH (a) holds a grant
+// for the client and (b) owns the live rule whose traffic is metered:
+// the client resolves a rule's `QuotaHandle` by the rule's
+// `owner_user_id` (control.rs `quota_scope.lookup(owner_id)`), and
+// `put_quota`'s `require_grant` only accepts a quota target that holds a
+// grant. Owning the rule requires pushing it AS that owner, which used the
+// now-removed per-user credential token. A reserved superadmin (`_legacy`,
+// the operator_token shortcut) cannot stand in: it holds no grant
+// (`put_quota` → 422 `quota_target_not_found`) and cannot be granted one
+// (`post_grants` rejects reserved `_`-prefixed ids via `UserId::from_str`).
+//
+// The quota/rate-limit ENFORCEMENT logic itself remains covered by the
+// `portunus-forwarder` quota unit tests
+// (`crates/portunus-forwarder/src/forwarder/quota/mod.rs`); only this
+// process-level e2e is parked. Restoring it would require teaching the rust
+// e2e harness a
+// non-superadmin password-login session-cookie auth path so a regular user
+// can push their own rule — a follow-up, out of scope for the credential-
+// surface removal.
 #[test]
+#[ignore = "needs a non-superadmin owner that holds a grant AND owns a live rule; \
+            that owner's rule-push relied on the removed per-user token, and a reserved \
+            superadmin can neither hold a grant nor be a quota target (see doc comment)"]
 #[allow(clippy::too_many_lines)]
 fn quota_hard_kill_then_recovery_via_reset() {
     // ----- 1. Server + connected client -----
@@ -231,7 +255,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
         &http_addr,
         "/v1/users",
         SUPER,
-        json!({"user_id": "alice", "display_name": "Alice"}),
+        json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
     );
     assert_eq!(st, StatusCode::CREATED, "user-add alice; body={body}");
 

@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use portunus_auth::{
-    ActiveTag, ClientScope, Credential, CredentialId, CredentialStatus, Grant, GrantId,
-    IdentityStoreError, OperatorAuthenticator, OperatorIdentity, OperatorRole, ProtocolSet,
-    RbacError, RevokedDetails, User, UserId, UserRemoveSummary, token::hash_token,
+    ClientScope, Credential, CredentialId, CredentialStatus, Grant, GrantId, IdentityStoreError,
+    OperatorAuthenticator, OperatorIdentity, OperatorRole, ProtocolSet, RbacError, User, UserId,
+    UserRemoveSummary, token::hash_token,
 };
 use portunus_core::{ClientName, fingerprint};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -55,7 +55,6 @@ pub(crate) struct WebSession {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PasswordResetSummary {
     pub sessions_revoked: usize,
-    pub api_tokens_revoked: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,43 +115,6 @@ impl SqliteOperatorStore {
                 Ok(row)
             })
             .unwrap_or(None)
-    }
-
-    pub fn count_active_credentials(&self, user_id: &UserId) -> usize {
-        self.store
-            .with_conn(|c| {
-                let n: i64 = c
-                    .query_row(
-                        "SELECT COUNT(*) FROM credentials \
-                         WHERE user_id = ? AND status = 'active'",
-                        params![user_id.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(map_rusqlite)?;
-                Ok(n as usize)
-            })
-            .unwrap_or(0)
-    }
-
-    pub fn list_credentials(&self, user_id: &UserId) -> Vec<Credential> {
-        self.store
-            .with_conn(|c| {
-                let mut stmt = c
-                    .prepare(
-                        "SELECT credential_id, user_id, hash, label, status, issued_at, revoked_at, last_used_at \
-                         FROM credentials WHERE user_id = ? ORDER BY credential_id ASC",
-                    )
-                    .map_err(map_rusqlite)?;
-                let mut out = Vec::new();
-                let rows = stmt
-                    .query_map(params![user_id.as_str()], row_to_credential)
-                    .map_err(map_rusqlite)?;
-                for r in rows {
-                    out.push(r.map_err(map_rusqlite)?);
-                }
-                Ok(out)
-            })
-            .unwrap_or_default()
     }
 
     pub fn list_grants(&self, user_filter: Option<&UserId>) -> Vec<Grant> {
@@ -275,7 +237,6 @@ impl SqliteOperatorStore {
         hash: &str,
         password_change_required: bool,
         revoke_sessions: bool,
-        revoke_api_tokens: bool,
     ) -> Result<PasswordResetSummary, IdentityStoreError> {
         let uid_for_err = user_id.clone();
         let now = Utc::now().to_rfc3339();
@@ -305,22 +266,7 @@ impl SqliteOperatorStore {
                     0
                 };
 
-                let api_tokens_revoked = if revoke_api_tokens {
-                    tx.execute(
-                        "UPDATE credentials \
-                         SET status = 'revoked', revoked_at = ? \
-                         WHERE user_id = ? AND status = 'active'",
-                        params![now, user_id.as_str()],
-                    )
-                    .map_err(map_rusqlite)?
-                } else {
-                    0
-                };
-
-                Ok(PasswordResetSummary {
-                    sessions_revoked,
-                    api_tokens_revoked,
-                })
+                Ok(PasswordResetSummary { sessions_revoked })
             })
             .map_err(|e| match e {
                 StoreError::Conflict { detail } if detail == "user_not_found" => {
@@ -966,7 +912,12 @@ impl SqliteOperatorStore {
             })
     }
 
-    pub fn issue_credential(
+    /// Test-only seam: the user-facing credential-issuance surface (HTTP/CLI/UI)
+    /// was removed. This mints a bearer token by inserting a credential row
+    /// directly (same mechanism `bootstrap_legacy_superadmin` uses) so in-process
+    /// integration tests can authenticate a seeded operator user. NOT a product API.
+    #[doc(hidden)]
+    pub fn seed_credential_for_test(
         &self,
         user_id: &UserId,
         label: Option<String>,
@@ -1000,115 +951,6 @@ impl SqliteOperatorStore {
                 other => IdentityStoreError::WriteFailed(other.to_string()),
             })?;
         Ok((cred, raw))
-    }
-
-    pub fn revoke_credential(
-        &self,
-        user_id: &UserId,
-        cred_id: &CredentialId,
-    ) -> Result<(), IdentityStoreError> {
-        let cred_for_err = *cred_id;
-        let now = Utc::now().to_rfc3339();
-        self.store
-            .with_write_tx(|tx| {
-                let owner: Option<String> = tx
-                    .query_row(
-                        "SELECT user_id FROM credentials WHERE credential_id = ?",
-                        params![cred_id.to_string()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(map_rusqlite)?;
-                let Some(owner_uid) = owner else {
-                    return Err(StoreError::Conflict {
-                        detail: "credential_not_found".into(),
-                    });
-                };
-                if owner_uid != user_id.as_str() {
-                    return Err(StoreError::Conflict {
-                        detail: "credential_not_found".into(),
-                    });
-                }
-                tx.execute(
-                    "UPDATE credentials SET status = 'revoked', revoked_at = ? \
-                     WHERE credential_id = ? AND status = 'active'",
-                    params![now, cred_id.to_string()],
-                )
-                .map_err(map_rusqlite)?;
-                Ok(())
-            })
-            .map_err(|e| match e {
-                StoreError::Conflict { detail } if detail == "credential_not_found" => {
-                    IdentityStoreError::CredentialNotFound(cred_for_err)
-                }
-                other => IdentityStoreError::WriteFailed(other.to_string()),
-            })
-    }
-
-    pub fn rotate_credential(
-        &self,
-        user_id: &UserId,
-        cred_id: &CredentialId,
-        new_label: Option<String>,
-    ) -> Result<(Credential, String), IdentityStoreError> {
-        let raw = portunus_auth::token::generate_token();
-        let new_cred = Credential {
-            id: CredentialId::new(),
-            user_id: user_id.clone(),
-            token_hash: hash_token(&raw),
-            label: new_label,
-            created_at: Utc::now(),
-            last_used_at: None,
-            status: CredentialStatus::active(),
-        };
-        let cred_for_err = *cred_id;
-        let uid_for_err = user_id.clone();
-        let new_cred_clone = new_cred.clone();
-        let now = Utc::now().to_rfc3339();
-        self.store
-            .with_write_tx(|tx| {
-                if !user_exists(tx, user_id)? {
-                    return Err(StoreError::Conflict {
-                        detail: "user_not_found".into(),
-                    });
-                }
-                let owner: Option<String> = tx
-                    .query_row(
-                        "SELECT user_id FROM credentials WHERE credential_id = ?",
-                        params![cred_id.to_string()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(map_rusqlite)?;
-                let Some(owner_uid) = owner else {
-                    return Err(StoreError::Conflict {
-                        detail: "credential_not_found".into(),
-                    });
-                };
-                if owner_uid != user_id.as_str() {
-                    return Err(StoreError::Conflict {
-                        detail: "credential_not_found".into(),
-                    });
-                }
-                tx.execute(
-                    "UPDATE credentials SET status = 'revoked', revoked_at = ? \
-                     WHERE credential_id = ? AND status = 'active'",
-                    params![now, cred_id.to_string()],
-                )
-                .map_err(map_rusqlite)?;
-                insert_credential(tx, &new_cred_clone)?;
-                Ok(())
-            })
-            .map_err(|e| match e {
-                StoreError::Conflict { detail } if detail == "user_not_found" => {
-                    IdentityStoreError::UserNotFound(uid_for_err)
-                }
-                StoreError::Conflict { detail } if detail == "credential_not_found" => {
-                    IdentityStoreError::CredentialNotFound(cred_for_err)
-                }
-                other => IdentityStoreError::WriteFailed(other.to_string()),
-            })?;
-        Ok((new_cred, raw))
     }
 
     pub fn add_grant(&self, grant: Grant) -> Result<(), IdentityStoreError> {
@@ -1337,79 +1179,6 @@ fn row_to_user(r: &Row<'_>) -> rusqlite::Result<User> {
     })
 }
 
-fn row_to_credential(r: &Row<'_>) -> rusqlite::Result<Credential> {
-    let credential_id: String = r.get(0)?;
-    let user_id: String = r.get(1)?;
-    let hash: String = r.get(2)?;
-    let label: Option<String> = r.get(3)?;
-    let status: String = r.get(4)?;
-    let issued_at: String = r.get(5)?;
-    let revoked_at: Option<String> = r.get(6)?;
-    let last_used_at: Option<String> = r.get(7)?;
-
-    let id = ulid::Ulid::from_string(&credential_id).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("bad ULID: {e}"),
-            )),
-        )
-    })?;
-    let token_hash = hex_to_32(&hash).ok_or_else(|| {
-        rusqlite::Error::FromSqlConversionFailure(
-            2,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "bad token hash hex",
-            )),
-        )
-    })?;
-    let uid = parse_user_id(&user_id, 1)?;
-    let cs = match status.as_str() {
-        "active" => CredentialStatus::Active(ActiveTag::Active),
-        "revoked" => {
-            let ts = revoked_at.ok_or_else(|| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    6,
-                    rusqlite::types::Type::Text,
-                    Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "revoked status missing revoked_at",
-                    )),
-                )
-            })?;
-            CredentialStatus::Revoked {
-                revoked: RevokedDetails {
-                    revoked_at: parse_ts_rusqlite(&ts, 6)?,
-                },
-            }
-        }
-        other => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("unknown credential status {other}"),
-                )),
-            ));
-        }
-    };
-    let last_used_at = last_used_at.map(|s| parse_ts_rusqlite(&s, 7)).transpose()?;
-    Ok(Credential {
-        id: CredentialId(id),
-        user_id: uid,
-        token_hash,
-        label,
-        status: cs,
-        created_at: parse_ts_rusqlite(&issued_at, 5)?,
-        last_used_at,
-    })
-}
-
 fn row_to_grant(r: &Row<'_>) -> rusqlite::Result<Grant> {
     let grant_id: String = r.get(0)?;
     let user_id: String = r.get(1)?;
@@ -1560,29 +1329,6 @@ fn parse_ts_rusqlite(s: &str, col: usize) -> rusqlite::Result<DateTime<Utc>> {
                 )),
             )
         })
-}
-
-fn hex_to_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    let bytes = s.as_bytes();
-    for i in 0..32 {
-        let hi = nibble(bytes[i * 2])?;
-        let lo = nibble(bytes[i * 2 + 1])?;
-        out[i] = (hi << 4) | lo;
-    }
-    Some(out)
-}
-
-fn nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 // ---- OperatorAuthenticator impl ----
@@ -1773,40 +1519,76 @@ mod tests {
     }
 
     #[test]
-    fn issue_credential_then_verify_round_trip() {
+    fn seed_credential_then_verify_round_trip() {
         let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
         s.add_user(alice()).unwrap();
-        let (_, raw) = s
-            .issue_credential(&UserId::from_str("alice").unwrap(), Some("laptop".into()))
+        // Seed a User-role credential via the shared low-level helper (the
+        // public issue_credential was removed); verify it authenticates.
+        let raw = "alice-laptop-tok";
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: alice_id.clone(),
+            token_hash: hash_token(raw),
+            label: Some("laptop".into()),
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &cred))
             .unwrap();
-        let id = s.verify(&raw).unwrap();
+        let id = s.verify(raw).unwrap();
         assert_eq!(id.user_id.as_str(), "alice");
         assert_eq!(id.role, OperatorRole::User);
     }
 
     #[test]
-    fn revoke_credential_blocks_verify() {
+    fn verify_rejects_revoked_credential() {
         let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
         s.add_user(alice()).unwrap();
-        let (cred, raw) = s
-            .issue_credential(&UserId::from_str("alice").unwrap(), None)
+        // Seed a revoked credential row directly (insert_credential
+        // serializes the revoked case); verify() must reject it.
+        let raw = "alice-revoked-tok";
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: alice_id.clone(),
+            token_hash: hash_token(raw),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::revoked(fixed_ts()),
+        };
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &cred))
             .unwrap();
-        s.revoke_credential(&UserId::from_str("alice").unwrap(), &cred.id)
-            .unwrap();
-        let err = s.verify(&raw).unwrap_err();
+        let err = s.verify(raw).unwrap_err();
         assert_eq!(err, RbacError::CredentialInvalid);
     }
 
     #[test]
     fn remove_user_cascades_credentials_and_grants() {
         let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
         s.add_user(alice()).unwrap();
-        let (_, _) = s
-            .issue_credential(&UserId::from_str("alice").unwrap(), None)
+        // Seed a credential via the shared low-level helper so the cascade
+        // has a row to remove.
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: alice_id.clone(),
+            token_hash: hash_token("alice-tok"),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &cred))
             .unwrap();
         let g = Grant {
             id: GrantId::new(),
-            user_id: UserId::from_str("alice").unwrap(),
+            user_id: alice_id.clone(),
             client: ClientScope::Any,
             listen_port_start: 30000,
             listen_port_end: 30010,
@@ -1816,30 +1598,24 @@ mod tests {
         };
         s.add_grant(g).unwrap();
 
-        let summary = s.remove_user(&UserId::from_str("alice").unwrap()).unwrap();
+        let summary = s.remove_user(&alice_id).unwrap();
         assert_eq!(summary.removed_credential_ids.len(), 1);
         assert_eq!(summary.revoked_grant_ids.len(), 1);
         assert!(s.list_users().is_empty());
-        assert!(
-            s.list_credentials(&UserId::from_str("alice").unwrap())
-                .is_empty()
-        );
+        // The credential rows are gone (FK CASCADE on user delete).
+        let remaining_creds: i64 = s
+            .store
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM credentials WHERE user_id = ?",
+                    params![alice_id.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(remaining_creds, 0);
         assert!(s.list_grants(None).is_empty());
-    }
-
-    #[test]
-    fn rotate_credential_swaps_active() {
-        let (_d, s) = fresh();
-        s.add_user(alice()).unwrap();
-        let (cred, raw1) = s
-            .issue_credential(&UserId::from_str("alice").unwrap(), None)
-            .unwrap();
-        let (_new_cred, raw2) = s
-            .rotate_credential(&UserId::from_str("alice").unwrap(), &cred.id, None)
-            .unwrap();
-        assert_ne!(raw1, raw2);
-        assert!(s.verify(&raw1).is_err());
-        assert!(s.verify(&raw2).is_ok());
     }
 
     #[test]
@@ -2456,6 +2232,52 @@ mod tests {
         assert!(login_remote.locked_until.is_none());
         assert_eq!(reset_local.failures, 1);
         assert!(reset_local.locked_until.is_none());
+    }
+
+    #[test]
+    fn v013_predicate_purges_user_creds_keeps_reserved() {
+        let (_d, s) = fresh();
+
+        // Seed the reserved bootstrap credential via the dedicated path.
+        s.bootstrap_legacy_superadmin("legacy-tok").unwrap();
+
+        // Seed a regular user credential directly via the shared helper so
+        // this test is not coupled to issue_credential (removed in a later
+        // task).
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let alice_cred = Credential {
+            id: CredentialId::new(),
+            user_id: alice_id.clone(),
+            token_hash: hash_token("alice-tok"),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &alice_cred))
+            .unwrap();
+
+        // Run the V013 predicate.
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    r"DELETE FROM credentials WHERE user_id NOT LIKE '\_%' ESCAPE '\'",
+                    [],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+
+        // Reserved credential survives and still authenticates as superadmin.
+        let id = s.verify("legacy-tok").unwrap();
+        assert_eq!(id.role, OperatorRole::Superadmin);
+
+        // Regular user credential is gone.
+        let err = s.verify("alice-tok").unwrap_err();
+        assert_eq!(err, RbacError::CredentialInvalid);
     }
 
     #[test]

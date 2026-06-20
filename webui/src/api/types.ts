@@ -16,7 +16,6 @@ export interface UserView {
   role: "superadmin" | "user";
   disabled: boolean;
   created_at: string; // ISO-8601
-  credential_count: number;
   grant_count: number;
 }
 
@@ -39,33 +38,6 @@ export interface DeleteUserResponse {
   removed_credential_ids: string[];
   revoked_grant_ids: string[];
   removed_rule_ids?: number[];
-}
-
-// -----------------------------------------------------------------------------
-// /v1/users/{id}/credentials
-// -----------------------------------------------------------------------------
-
-export interface CredentialView {
-  credential_id: string;
-  user_id: string;
-  label: string | null;
-  created_at: string;
-  last_used_at: string | null;
-  status: "active" | "revoked";
-  revoked_at: string | null;
-}
-
-export interface IssueCredentialBody {
-  label?: string;
-}
-
-export interface IssueCredentialResponse {
-  credential_id: string;
-  user_id: string;
-  /// Raw bearer — shown ONCE in `<TokenRevealModal>`, never persisted.
-  token: string;
-  label: string | null;
-  created_at: string;
 }
 
 // -----------------------------------------------------------------------------

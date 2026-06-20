@@ -36,25 +36,18 @@ export async function api(
   return res.status() === 204 ? null : res.json();
 }
 
-export async function provisionUserWithToken(
+export async function provisionUser(
   request: APIRequestContext,
   baseURL: string,
   superadminToken: string,
   userId: string,
-): Promise<{ userId: string; password: string; token: string; credentialId: string }> {
+): Promise<{ userId: string; password: string }> {
   const password = userPassword(userId);
   await api(request, baseURL, superadminToken, "/v1/users", {
     method: "POST",
-    body: { user_id: userId, display_name: userId, initial_password: password },
+    body: { user_id: userId, display_name: userId, role: "user", initial_password: password },
   });
-  const cred = (await api(
-    request,
-    baseURL,
-    superadminToken,
-    `/v1/users/${userId}/credentials`,
-    { method: "POST", body: { label: "e2e" } },
-  )) as { credential_id: string; token: string };
-  return { userId, password, token: cred.token, credentialId: cred.credential_id };
+  return { userId, password };
 }
 
 function clientBin(): string {

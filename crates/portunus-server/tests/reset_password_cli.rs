@@ -65,7 +65,7 @@ fn reset_password_refuses_missing_user() {
 }
 
 #[test]
-fn reset_password_from_stdin_revokes_sessions_and_api_tokens_and_redacts_audit() {
+fn reset_password_from_stdin_revokes_sessions_and_redacts_audit() {
     let data = TempDir::new().expect("data tempdir");
     bootstrap(&data);
 
@@ -97,13 +97,6 @@ fn reset_password_from_stdin_revokes_sessions_and_api_tokens_and_redacts_audit()
     assert!(stdout.contains("password_reset=ok"), "stdout={stdout}");
     assert!(!stdout.contains("changed correct horse battery staple"));
 
-    assert_eq!(
-        scalar_i64(
-            &data,
-            "SELECT COUNT(*) FROM credentials WHERE user_id = '_superadmin' AND status = 'active'",
-        ),
-        0
-    );
     let password_hash = scalar_string(
         &data,
         "SELECT password_hash FROM users WHERE user_id = '_superadmin'",
@@ -115,12 +108,11 @@ fn reset_password_from_stdin_revokes_sessions_and_api_tokens_and_redacts_audit()
         "SELECT details_json FROM audit WHERE action = 'operator.password_reset' ORDER BY seq DESC LIMIT 1",
     );
     assert!(audit_json.contains("sessions_revoked"));
-    assert!(audit_json.contains("api_tokens_revoked"));
     assert!(!audit_json.contains("changed correct horse battery staple"));
 }
 
 #[test]
-fn reset_temporary_password_prints_secret_once_and_keeps_api_tokens_when_requested() {
+fn reset_temporary_password_prints_secret_once() {
     let data = TempDir::new().expect("data tempdir");
     bootstrap(&data);
 
@@ -130,7 +122,6 @@ fn reset_temporary_password_prints_secret_once_and_keeps_api_tokens_when_request
         .arg("reset-password")
         .arg("_superadmin")
         .arg("--temporary")
-        .arg("--keep-api-tokens")
         .output()
         .expect("reset-password");
 

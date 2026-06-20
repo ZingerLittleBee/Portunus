@@ -71,7 +71,7 @@ fn build_fixture() -> Fixture {
         })
         .expect("add alice");
     let _ = operator_store
-        .issue_credential(&alice_id, Some("test".to_string()))
+        .seed_credential_for_test(&alice_id, Some("test".to_string()))
         .expect("issue cred");
     let known_hash_hex =
         portunus_core::fingerprint::hex(&portunus_auth::token::hash_token(ALICE_TOKEN));

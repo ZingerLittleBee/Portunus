@@ -44,7 +44,7 @@ fn build_router_with_alice() -> (axum::Router, Arc<AppState>, String, TempDir) {
         })
         .expect("create alice");
     let (_cred, alice_token) = operator_store
-        .issue_credential(&alice_id, Some("alice-default".to_string()))
+        .seed_credential_for_test(&alice_id, Some("alice-default".to_string()))
         .expect("issue alice credential");
 
     let state = Arc::new(

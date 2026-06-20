@@ -69,7 +69,7 @@ fn build_fixture() -> Fixture {
         })
         .expect("add alice");
     let (_cred, alice_token) = operator_store
-        .issue_credential(&alice_id, Some("authz-test".to_string()))
+        .seed_credential_for_test(&alice_id, Some("authz-test".to_string()))
         .expect("issue alice credential");
 
     // Provision a victim client; the operator surface addresses it by

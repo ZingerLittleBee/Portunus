@@ -63,12 +63,6 @@ export function UsersList() {
       width: "120px",
     },
     {
-      key: "credentials",
-      header: t("users.credentials"),
-      render: (u) => u.credential_count,
-      width: "120px",
-    },
-    {
       key: "grants",
       header: t("users.grants"),
       render: (u) => u.grant_count,

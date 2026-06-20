@@ -211,6 +211,9 @@ enum Cmd {
         display_name: String,
         #[arg(long, default_value = "user")]
         role: String,
+        /// Read the initial password from the first stdin line.
+        #[arg(long)]
+        password_stdin: bool,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
         #[arg(long, default_value = "127.0.0.1:7080")]
@@ -236,39 +239,6 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
-    /// Issue a fresh credential for a user. Prints raw token in JSON exactly once.
-    CredentialIssue {
-        user_id: String,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
-    CredentialList {
-        user_id: String,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
-    CredentialRevoke {
-        user_id: String,
-        credential_id: String,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
-    CredentialRotate {
-        user_id: String,
-        credential_id: String,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
     /// Reset a local user's password directly against the store.
     ResetPassword {
         user_id: String,
@@ -278,9 +248,6 @@ enum Cmd {
         /// Generate a one-time password, print it once, and require change on login.
         #[arg(long)]
         temporary: bool,
-        /// Keep active bearer API tokens for this user.
-        #[arg(long)]
-        keep_api_tokens: bool,
     },
     /// Rotate the first-run onboarding setup token for an unbootstrapped store.
     OnboardingToken,
@@ -499,6 +466,20 @@ fn resolve_operator_http_listen(
     }
 }
 
+/// Read a single password line from stdin, trimming the trailing
+/// newline. Mirrors `password_cli`'s `--password-stdin` convention so
+/// piping a password works the same way for `user-add` and
+/// `reset-password`.
+fn read_password_stdin() -> Result<String, u8> {
+    use std::io::BufRead;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).map_err(|e| {
+        eprintln!("error: read_password_stdin: {e}");
+        1u8
+    })?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
 fn run(cli: Cli) -> Result<(), u8> {
     let data_dir = portunus_server::data_dir::resolve(cli.data_dir.clone());
     let seed = advertised_seed(&cli);
@@ -663,9 +644,24 @@ fn run(cli: Cli) -> Result<(), u8> {
             user_id,
             display_name,
             role,
+            password_stdin,
             format,
             http_endpoint,
-        } => identity_cli::user_add(&http_endpoint, &user_id, &display_name, &role, format),
+        } => {
+            let initial_password = if password_stdin {
+                Some(read_password_stdin()?)
+            } else {
+                None
+            };
+            identity_cli::user_add(
+                &http_endpoint,
+                &user_id,
+                &display_name,
+                &role,
+                initial_password.as_deref(),
+                format,
+            )
+        }
         Cmd::UserList {
             format,
             http_endpoint,
@@ -680,47 +676,11 @@ fn run(cli: Cli) -> Result<(), u8> {
             format,
             http_endpoint,
         } => identity_cli::user_remove(&http_endpoint, &user_id, format),
-        Cmd::CredentialIssue {
-            user_id,
-            label,
-            format,
-            http_endpoint,
-        } => identity_cli::credential_issue(&http_endpoint, &user_id, label.as_deref(), format),
-        Cmd::CredentialList {
-            user_id,
-            format,
-            http_endpoint,
-        } => identity_cli::credential_list(&http_endpoint, &user_id, format),
-        Cmd::CredentialRevoke {
-            user_id,
-            credential_id,
-            http_endpoint,
-        } => identity_cli::credential_revoke(&http_endpoint, &user_id, &credential_id),
-        Cmd::CredentialRotate {
-            user_id,
-            credential_id,
-            label,
-            format,
-            http_endpoint,
-        } => identity_cli::credential_rotate(
-            &http_endpoint,
-            &user_id,
-            &credential_id,
-            label.as_deref(),
-            format,
-        ),
         Cmd::ResetPassword {
             user_id,
             password_stdin,
             temporary,
-            keep_api_tokens,
-        } => password_cli::reset_password(
-            &data_dir,
-            &user_id,
-            password_stdin,
-            temporary,
-            keep_api_tokens,
-        ),
+        } => password_cli::reset_password(&data_dir, &user_id, password_stdin, temporary),
         Cmd::OnboardingToken => password_cli::onboarding_token(&data_dir),
         Cmd::GrantAdd {
             user_id,

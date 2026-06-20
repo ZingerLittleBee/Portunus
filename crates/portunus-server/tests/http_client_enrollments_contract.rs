@@ -40,7 +40,7 @@ fn build_router() -> (axum::Router, Arc<SqliteTokenStore>, String, TempDir) {
         })
         .expect("create alice");
     let (_cred, alice_token) = operator_store
-        .issue_credential(&alice_id, Some("test".to_string()))
+        .seed_credential_for_test(&alice_id, Some("test".to_string()))
         .expect("issue alice credential");
     let state = Arc::new(
         AppState::new(

@@ -1,25 +1,25 @@
 // T048 — Audit + metrics walkthrough (US3).
 // Mirrors quickstart.md § 7. Drives a few operator API calls (allow + a
-// deliberate deny via 403 from a tenant token), then opens /audit and
+// deliberate deny via an unauthenticated bearer), then opens /audit and
 // /metrics in the browser and asserts the SPA renders them correctly.
 
 import { test, expect } from "./fixtures/server";
-import { loginAs, api, provisionUserWithToken } from "./fixtures/helpers";
+import { loginAs, api, provisionUser } from "./fixtures/helpers";
 
 test("superadmin sees mixed allow/deny entries; tenant cannot reach /audit", async ({
   page,
   request,
   server,
 }) => {
-  // Generate one ALLOW (superadmin lists users) and one DENY (alice tries to
-  // list users). Both are recorded by the audit ring.
+  // Generate one ALLOW (superadmin lists users) and one DENY (an
+  // unknown bearer hits /v1/users). Both are recorded by the audit ring.
   await api(request, server.httpUrl, server.superadminToken, "/v1/users");
-  const alice = await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");
-  // Alice is a tenant — listing users is denied with 403 role_required.
+  // An invalid bearer is rejected at the auth layer (401) and recorded as
+  // a deny by the audit ring (actor "_anonymous").
   const denied = await request.fetch(`${server.httpUrl}/v1/users`, {
-    headers: { Authorization: `Bearer ${alice.token}` },
+    headers: { Authorization: "Bearer not-a-real-token" },
   });
-  expect(denied.status()).toBe(403);
+  expect(denied.status()).toBe(401);
 
   // Drive the SPA as superadmin.
   await loginAs(page, server.superadminUserId, server.superadminPassword);
@@ -60,7 +60,7 @@ test("superadmin sees mixed allow/deny entries; tenant cannot reach /audit", asy
 });
 
 test("tenant /audit renders PermissionDenied", async ({ page, server, request }) => {
-  const alice = await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");
+  const alice = await provisionUser(request, server.httpUrl, server.superadminToken, "alice");
   await loginAs(page, alice.userId, alice.password);
   await page.goto("/audit");
   await expect(page.getByText(/permission denied/i)).toBeVisible();

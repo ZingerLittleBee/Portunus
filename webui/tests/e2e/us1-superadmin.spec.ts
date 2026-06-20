@@ -1,6 +1,6 @@
 // T023 — US1 happy path (superadmin walkthrough).
-// Login → dashboard → create alice → issue credential (token shown once,
-// copy works, scrubbed on close) → provision client → add grant.
+// Login → dashboard → create alice (with password) → provision client →
+// add grant.
 //
 // The rule-push step from quickstart.md §6 is omitted: the operator
 // rejects pushes for clients that aren't currently connected over the
@@ -18,28 +18,13 @@ test("superadmin happy path", async ({ page, request, server }) => {
   // Superadmin lands on the dashboard overview (h1 = "Dashboard").
   await expect(page.getByRole("heading", { level: 1 })).toContainText(/dashboard/i);
 
-  // Create alice via the SPA.
+  // Create alice via the SPA. A password is required at creation.
   await page.goto("/users/new");
   await page.getByLabel(/^id$/i).fill("alice");
   await page.getByLabel(/display name/i).fill("Alice");
+  await page.getByLabel(/initial password/i).fill("alice correct horse battery staple");
   await page.getByRole("button", { name: /create user/i }).click();
   await expect(page).toHaveURL(/\/users\/alice/);
-
-  // Issue credential — token shown ONCE.
-  await page.getByRole("button", { name: /issue credential/i }).click();
-  const tokenField = page.getByLabel(/api token.*one-time/i);
-  await expect(tokenField).toBeVisible();
-  const issued = (await tokenField.textContent())?.trim() ?? "";
-  expect(issued).not.toBe("");
-  // Copy-to-clipboard. Headless chromium doesn't always grant
-  // clipboard-write to http://127.0.0.1; the modal falls back to a
-  // selectAll() in that path. Assert only that the click does not throw
-  // and the modal stays open.
-  await page.getByRole("button", { name: /^copy$/i }).click();
-  await expect(page.getByLabel(/api token.*one-time/i)).toBeVisible();
-  await page.getByRole("button", { name: /dismiss/i }).click();
-  // Scrubbed: the token text is no longer present anywhere on the page.
-  expect(await page.evaluate(() => document.body.innerText)).not.toContain(issued);
 
   // Enroll a client through the same one-time command path the UI exposes.
   await enrollClient(request, server.httpUrl, server.superadminToken, "edge-01");

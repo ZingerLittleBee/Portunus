@@ -1,11 +1,14 @@
 ---
 title: Multi-user RBAC
-description: Users, local Web passwords, API credentials, and per-tenant grants scoped to clients, port ranges, and protocols.
+description: Users, local Web passwords, and per-tenant grants scoped to clients, port ranges, and protocols.
 icon: Users
 ---
 
 Available since v0.5.0. Replaces the single-operator model with a
 proper RBAC layer above the unchanged data plane.
+
+Machines authenticate with the static `operator_token`; humans use Web cookie
+login.
 
 ## Concepts
 
@@ -13,11 +16,11 @@ proper RBAC layer above the unchanged data plane.
   (`superadmin` / `user`), display name, optional `disabled` flag.
   Reserved `_`-prefix is rejected via the public constructor.
 - **Password** — since v1.1.0, Web UI login uses a local password hashed in
-  PHC/Argon2id format. Admins create users manually and can require a password
-  change on first login.
-- **Credential** — a bearer API token tied to a user. `blake3`-hashed at
-  rest; raw token visible only at issuance / rotation. Carries an
-  optional label, status (`active` / `revoked`), and `last_used_at`.
+  PHC/Argon2id format. Admins create users manually with an initial password
+  and can require a password change on first login.
+- **Operator token** — machines and CLI automation authenticate with the
+  static `operator_token` from `server.toml` (generated with `gen-token`).
+  See [Server config](/en/docs/server-client/configuration/server).
 - **Grant** — per-user authorisation triple `{client, listen-port range,
   protocol set}`. `client` is either a named `ClientName` or wildcard
   `"*"`.
@@ -70,9 +73,9 @@ prefer the onboarding flow.
 ## Add a constrained tenant
 
 ```sh
-portunus-server user-add alice --display-name Alice
-portunus-server credential-issue alice --label laptop
-# → bearer token printed once, store securely
+echo 's3cret-pw' | portunus-server user-add alice \
+  --display-name Alice --password-stdin
+# → user created with an initial password
 
 portunus-server grant-add --user-id alice --client edge-01 \
   --listen-port-start 30000 --listen-port-end 30050 \
@@ -99,16 +102,6 @@ HTTP 403 with one of:
 A `--client *` grant matches any client. A grant whose
 `--listen-port-end` equals `--listen-port-start` is a single-port grant.
 
-## API token rotation
-
-A user can rotate their own credential without superadmin help:
-
-```sh
-PORTUNUS_OPERATOR_TOKEN=<alice's old token> \
-  portunus-server credential-rotate alice <credential_id>
-# → new bearer printed once; old bearer 401s on next request
-```
-
 ## Read-side filtering
 
 `GET /v1/rules` projects only the caller's owned rules to non-superadmin
@@ -125,15 +118,14 @@ Every operator request emits one structured `event = "operator.allow"`
 emitter takes only the post-verify `OperatorIdentity`.
 
 Password-reset audit entries use `action = "operator.password_reset"` and record
-actor, target user, outcome, and whether Web sessions / API tokens were
-revoked. Raw passwords, temporary passwords, setup tokens, and bearer tokens are
-never written to audit.
+actor, target user, and outcome. Raw passwords, temporary passwords, setup
+tokens, and bearer tokens are never written to audit.
 
 ## Password recovery
 
 Normal users do not self-reset through a public "forgot password" form. A
-`superadmin` resets passwords from the Web UI. Resetting revokes Web sessions
-and revokes API tokens by default unless the admin explicitly keeps them.
+`superadmin` resets passwords from the Web UI. Resetting revokes the user's
+active Web sessions.
 
 If the last `superadmin` loses the password, stop the server and run the local
 break-glass command on the host that owns the data dir. Use the actual
@@ -155,7 +147,6 @@ backdoor.
 | --- | --- |
 | `user-add` / `user-list` / `user-get` / `user-remove` | Manage users |
 | `reset-password <user_id>` | Local password recovery against the data dir |
-| `credential-issue` / `credential-list` / `credential-revoke` / `credential-rotate` | Manage credentials |
 | `grant-add` / `grant-list` / `grant-revoke` | Manage grants |
 
 All take the operator token from `PORTUNUS_OPERATOR_TOKEN`

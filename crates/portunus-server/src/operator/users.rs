@@ -88,12 +88,11 @@ pub struct UserView {
     pub role: String,
     pub disabled: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub credential_count: usize,
     pub grant_count: usize,
 }
 
 impl UserView {
-    fn from_user(u: &User, credential_count: usize, grant_count: usize) -> Self {
+    fn from_user(u: &User, grant_count: usize) -> Self {
         Self {
             user_id: u.id.as_str().to_string(),
             display_name: u.display_name.clone(),
@@ -103,7 +102,6 @@ impl UserView {
             },
             disabled: u.disabled,
             created_at: u.created_at,
-            credential_count,
             grant_count,
         }
     }
@@ -141,24 +139,22 @@ pub async fn post_users(
         created_at: Utc::now(),
         disabled: false,
     };
-    if body.initial_password.is_none() && body.password_change_required {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "initial_password_required",
-            "password_change_required requires initial_password",
-        ));
-    }
-    let password_hash = body
-        .initial_password
-        .as_deref()
-        .map(hash_password)
-        .transpose()
-        .map_err(password_error)?;
+    let initial_password = match body.initial_password.as_deref() {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "initial_password_required",
+                "a user must be created with an initial password",
+            ));
+        }
+    };
+    let password_hash = hash_password(initial_password).map_err(password_error)?;
     state
         .operator_store
         .add_user_with_password(
             user.clone(),
-            password_hash.as_deref(),
+            Some(password_hash.as_str()),
             body.password_change_required,
         )
         .map_err(api_store)?;
@@ -188,9 +184,8 @@ pub async fn get_users(
     let users = state.operator_store.list_users();
     let mut out = Vec::with_capacity(users.len());
     for u in users {
-        let cred_count = state.operator_store.list_credentials(&u.id).len();
         let grant_count = state.operator_store.list_grants(Some(&u.id)).len();
-        out.push(UserView::from_user(&u, cred_count, grant_count));
+        out.push(UserView::from_user(&u, grant_count));
     }
     Ok(Json(out))
 }
@@ -206,9 +201,8 @@ pub async fn get_user(
         .operator_store
         .get_user(&id)
         .ok_or(api_rbac(RbacError::UserNotFound))?;
-    let cred_count = state.operator_store.list_credentials(&id).len();
     let grant_count = state.operator_store.list_grants(Some(&id)).len();
-    Ok(Json(UserView::from_user(&user, cred_count, grant_count)))
+    Ok(Json(UserView::from_user(&user, grant_count)))
 }
 
 #[derive(Debug, Serialize)]

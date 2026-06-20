@@ -56,7 +56,7 @@ fn build_router() -> (axum::Router, TempDir, Arc<AppState>) {
             })
             .unwrap();
         let _ = operator_store
-            .issue_credential(&id, Some(format!("u{i}-default")))
+            .seed_credential_for_test(&id, Some(format!("u{i}-default")))
             .unwrap();
     }
 

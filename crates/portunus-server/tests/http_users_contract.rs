@@ -4,13 +4,16 @@
 //! via the `bootstrap_legacy_superadmin` shortcut, then exercise the
 //! user CRUD surface end-to-end.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
+use portunus_auth::UserId;
 use portunus_server::clients::ConnectedClients;
 use portunus_server::operator::http;
 use portunus_server::state::AppState;
+use portunus_server::store::operator_store::SqliteOperatorStore;
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -82,7 +85,7 @@ async fn post_users_happy_path_creates_user() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -185,6 +188,38 @@ async fn post_users_rejects_initial_password_policy_errors_without_creating_user
 }
 
 #[tokio::test]
+async fn post_users_rejects_missing_initial_password() {
+    // User-issued API tokens are gone, so a password-less user would be
+    // locked out. User creation MUST supply an initial password; omitting
+    // it is a 422 `initial_password_required`, NOT a 201.
+    let (router, _dir, store) = build_router_with_store();
+    let resp = router
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({"user_id": "alice", "display_name": "Alice"}),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "initial_password_required");
+
+    let count: i64 = store
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE user_id = 'alice'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(portunus_server::store::map_rusqlite)
+        })
+        .expect("count alice users");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn post_users_rejects_password_change_required_without_initial_password() {
     let (router, _dir, store) = build_router_with_store();
     let resp = router
@@ -229,7 +264,7 @@ async fn post_users_duplicate_returns_409_user_already_exists() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -239,7 +274,7 @@ async fn post_users_duplicate_returns_409_user_already_exists() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -294,7 +329,7 @@ async fn delete_self_returns_409_cannot_remove_self() {
 /// any more, AND the disk file should agree.
 #[tokio::test]
 async fn user_remove_persists_identity_then_drops_rules() {
-    let (router, dir) = build_router();
+    let (router, dir, sqlite_store) = build_router_with_store();
     // Add alice + a credential + a grant; that's enough to populate
     // identity.json with non-trivial state. (Rules require a connected
     // client which we can't spin up in-process; the test still proves
@@ -305,22 +340,17 @@ async fn user_remove_persists_identity_then_drops_rules() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = router
-        .clone()
-        .oneshot(req(
-            "POST",
-            "/v1/users/alice/credentials",
-            SUPERADMIN_TOKEN,
-            json!({"label": "laptop"}),
-        ))
-        .await
-        .expect("oneshot");
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // The HTTP credential-issuance route was removed; seed alice a
+    // credential in-process so the remove-user cascade has one to drop.
+    let operator_store = SqliteOperatorStore::new(sqlite_store);
+    operator_store
+        .seed_credential_for_test(&UserId::from_str("alice").unwrap(), Some("laptop".into()))
+        .expect("seed credential");
     let resp = router
         .clone()
         .oneshot(req(
@@ -396,7 +426,7 @@ async fn user_remove_persists_identity_then_drops_rules() {
 
 #[tokio::test]
 async fn non_superadmin_cannot_create_users() {
-    let (router, _d) = build_router();
+    let (router, _d, sqlite_store) = build_router_with_store();
     // First, mint an alice user + credential so we have a non-superadmin token.
     let resp = router
         .clone()
@@ -404,26 +434,17 @@ async fn non_superadmin_cannot_create_users() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = router
-        .clone()
-        .oneshot(req(
-            "POST",
-            "/v1/users/alice/credentials",
-            SUPERADMIN_TOKEN,
-            json!({"label": "laptop"}),
-        ))
-        .await
-        .expect("oneshot");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let alice_token = body_json(resp).await["token"]
-        .as_str()
-        .expect("token")
-        .to_string();
+    // The HTTP credential-issuance route was removed; mint alice's bearer
+    // token in-process via the test-only store seam instead.
+    let operator_store = SqliteOperatorStore::new(sqlite_store);
+    let (_, alice_token) = operator_store
+        .seed_credential_for_test(&UserId::from_str("alice").unwrap(), Some("laptop".into()))
+        .expect("seed credential");
 
     // Alice tries to create a user — must be denied with 403.
     let resp = router

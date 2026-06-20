@@ -5,38 +5,39 @@
 //! over yet — the cross-cutting test for FR-011 with offline clients
 //! lives in T028a below).
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
+use portunus_auth::UserId;
 use portunus_server::clients::ConnectedClients;
 use portunus_server::operator::http;
 use portunus_server::state::AppState;
+use portunus_server::store::operator_store::SqliteOperatorStore;
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 const SUPER_TOKEN: &str = "T028-super";
 
-fn build_router() -> (axum::Router, TempDir) {
+fn build_router() -> (axum::Router, TempDir, Arc<SqliteOperatorStore>) {
     let dir = TempDir::new().expect("tempdir");
     let sqlite_store =
         std::sync::Arc::new(portunus_server::store::Store::open(dir.path()).unwrap());
     let tokens = Arc::new(portunus_server::store::token_store::SqliteTokenStore::new(
         std::sync::Arc::clone(&sqlite_store),
     ));
-    let operator_store = Arc::new(
-        portunus_server::store::operator_store::SqliteOperatorStore::new(std::sync::Arc::clone(
-            &sqlite_store,
-        )),
-    );
+    let operator_store = Arc::new(SqliteOperatorStore::new(std::sync::Arc::clone(
+        &sqlite_store,
+    )));
     operator_store
         .bootstrap_legacy_superadmin(SUPER_TOKEN)
         .expect("bootstrap");
     let state = Arc::new(
         AppState::new(
             tokens,
-            operator_store,
+            Arc::clone(&operator_store),
             ConnectedClients::default(),
             None,
             0,
@@ -47,7 +48,7 @@ fn build_router() -> (axum::Router, TempDir) {
         )
         .expect("AppState"),
     );
-    (http::router(state), dir)
+    (http::router(state), dir, operator_store)
 }
 
 fn req(method: &str, uri: &str, bearer: &str, body: serde_json::Value) -> Request<Body> {
@@ -76,7 +77,7 @@ async fn create_alice(router: &axum::Router) {
             "POST",
             "/v1/users",
             SUPER_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -85,7 +86,7 @@ async fn create_alice(router: &axum::Router) {
 
 #[tokio::test]
 async fn post_grant_named_client_happy() {
-    let (router, _d) = build_router();
+    let (router, _d, _store) = build_router();
     create_alice(&router).await;
 
     let resp = router
@@ -111,7 +112,7 @@ async fn post_grant_named_client_happy() {
 
 #[tokio::test]
 async fn post_grant_wildcard_client_happy() {
-    let (router, _d) = build_router();
+    let (router, _d, _store) = build_router();
     create_alice(&router).await;
     let resp = router
         .oneshot(req(
@@ -135,7 +136,7 @@ async fn post_grant_wildcard_client_happy() {
 
 #[tokio::test]
 async fn post_grant_empty_protocols_returns_422() {
-    let (router, _d) = build_router();
+    let (router, _d, _store) = build_router();
     create_alice(&router).await;
     let resp = router
         .oneshot(req(
@@ -157,7 +158,7 @@ async fn post_grant_empty_protocols_returns_422() {
 
 #[tokio::test]
 async fn post_grant_inverted_range_returns_422() {
-    let (router, _d) = build_router();
+    let (router, _d, _store) = build_router();
     create_alice(&router).await;
     let resp = router
         .oneshot(req(
@@ -179,7 +180,7 @@ async fn post_grant_inverted_range_returns_422() {
 
 #[tokio::test]
 async fn delete_grant_returns_grant_id_and_no_rules() {
-    let (router, _d) = build_router();
+    let (router, _d, _store) = build_router();
     create_alice(&router).await;
     let create_resp = router
         .clone()
@@ -226,7 +227,7 @@ async fn delete_grant_returns_grant_id_and_no_rules() {
 /// on `ConnectedClients` membership.
 #[tokio::test]
 async fn grant_for_offline_client_is_accepted_at_authorisation_time() {
-    let (router, _d) = build_router();
+    let (router, _d, operator_store) = build_router();
     create_alice(&router).await;
     // Create a grant for "client-z", which has never connected.
     let resp = router
@@ -247,22 +248,11 @@ async fn grant_for_offline_client_is_accepted_at_authorisation_time() {
         .expect("oneshot");
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Issue alice a credential to push from her own perspective.
-    let issue = router
-        .clone()
-        .oneshot(req(
-            "POST",
-            "/v1/users/alice/credentials",
-            SUPER_TOKEN,
-            json!({}),
-        ))
-        .await
-        .expect("oneshot");
-    assert_eq!(issue.status(), StatusCode::CREATED);
-    let alice_token = body_json(issue).await["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // Mint alice a credential to push from her own perspective. The HTTP
+    // credential-issuance route was removed; seed it in-process instead.
+    let (_, alice_token) = operator_store
+        .seed_credential_for_test(&UserId::from_str("alice").unwrap(), None)
+        .expect("seed credential");
 
     // Alice pushes a rule on client-z (offline). RBAC must permit
     // it (the grant covers this exact client + port + protocol).
@@ -304,7 +294,7 @@ async fn grant_for_offline_client_is_accepted_at_authorisation_time() {
 
 #[tokio::test]
 async fn list_grants_filter_by_user_id() {
-    let (router, _d) = build_router();
+    let (router, _d, _store) = build_router();
     create_alice(&router).await;
     // Add 2 grants for alice.
     for port in [30000_u16, 31000] {

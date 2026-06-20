@@ -112,8 +112,8 @@ services:
 
 **HTTP API 命令**（`push-rule`、`list-rules`、`remove-rule`、`rule-stats`、`list-clients`）走
 运行中 Server 的 operator HTTP API，因此需要 API Token，并且可以在 `server`
-运行时执行。Web onboarding 完成后，在 Web UI 的 Credentials 页面创建一个 API
-Token，再用 `PORTUNUS_OPERATOR_TOKEN` 传给 CLI：
+运行时执行。机器使用 `server.toml` 里的静态 `operator_token`（用 `portunus-server
+gen-token` 生成）认证，再用 `PORTUNUS_OPERATOR_TOKEN` 传给 CLI：
 
 ```sh
 docker compose run --rm \

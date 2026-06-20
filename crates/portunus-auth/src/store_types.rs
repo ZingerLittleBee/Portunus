@@ -3,8 +3,8 @@
 //!
 //! `IdentityStoreError` is the operator-store error taxonomy; the SQLite
 //! impl in `portunus-server` returns the same variants so the HTTP error
-//! mapping in `operator::users` / `operator::grants` /
-//! `operator::credentials` keeps working unchanged.
+//! mapping in `operator::users` / `operator::grants` keeps working
+//! unchanged.
 //!
 //! `UserRemoveSummary` is the `remove_user` cascade summary.
 //!

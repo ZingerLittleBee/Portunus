@@ -68,10 +68,10 @@ async fn build_fixture() -> Fixture {
             .unwrap();
     }
     let (_c1, alice_token) = operator_store
-        .issue_credential(&alice, Some("test".to_string()))
+        .seed_credential_for_test(&alice, Some("test".to_string()))
         .unwrap();
     let (_c2, bob_token) = operator_store
-        .issue_credential(&bob, Some("test".to_string()))
+        .seed_credential_for_test(&bob, Some("test".to_string()))
         .unwrap();
 
     let state = Arc::new(

@@ -198,9 +198,9 @@ sudo -u portunus-server portunus-server \
 sudo systemctl start portunus-server
 ```
 
-The command prints `temporary_password=...` once, revokes Web sessions, revokes
-API tokens by default, and marks the account as requiring a password change.
-There is no remote "forgot password" endpoint for this case.
+The command prints `temporary_password=...` once, revokes the account's active
+Web sessions, and marks the account as requiring a password change. There is no
+remote "forgot password" endpoint for this case.
 
 ## Performance complaints
 

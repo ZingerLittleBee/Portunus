@@ -64,6 +64,7 @@ test("mobile shell navigation closes and dense pages stay contained", async ({ p
   await page.goto("/users/new");
   await page.getByLabel(/^id$/i).fill("mobile-user");
   await page.getByLabel(/display name/i).fill("Mobile User");
+  await page.getByLabel(/initial password/i).fill("mobile-user correct horse battery staple");
   await page.getByRole("button", { name: /create user/i }).click();
   await expect(page).toHaveURL(/\/users\/mobile-user/);
 

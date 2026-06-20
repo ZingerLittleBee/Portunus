@@ -1,17 +1,10 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Trash2, RotateCcw } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
 
 import { useUser, useDeleteUser, useResetUserPassword } from "@/api/users";
-import {
-  credentialsKey,
-  useCredentialsList,
-  useIssueCredential,
-  useRevokeCredential,
-  useRotateCredential,
-} from "@/api/credentials";
 import { useAccessEntries } from "@/api/access-entries";
 import { useClientsList } from "@/api/clients";
 import { useUserQuotas, usePatchQuota } from "@/api/quotas";
@@ -56,10 +49,8 @@ interface InnerProps {
 function UserDetailInner({ userId, identity }: InnerProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const qc = useQueryClient();
 
   const user = useUser(userId);
-  const credentials = useCredentialsList(userId);
   const accessEntries = useAccessEntries(userId);
   const userQuotas = useUserQuotas(userId);
   const patchQuota = usePatchQuota(userId);
@@ -83,24 +74,17 @@ function UserDetailInner({ userId, identity }: InnerProps) {
     }
   }
   const isSuperadmin = identity?.role === "superadmin";
-  const issue = useIssueCredential(userId);
-  const revokeCred = useRevokeCredential(userId);
   const deleteUser = useDeleteUser();
   const resetPassword = useResetUserPassword(userId);
 
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
-  // The reveal modal is shared between API-token issuance and password reset;
-  // track which secret it currently holds so the copy reads correctly.
+  // The reveal modal is used for the password-reset temporary-password reveal.
   const [revealKind, setRevealKind] = useState<"token" | "password">("token");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [rotateTarget, setRotateTarget] = useState<string | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [temporaryPassword, setTemporaryPassword] = useState(true);
-  const [keepApiTokens, setKeepApiTokens] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
-
-  const rotate = useRotateCredential(userId, rotateTarget ?? "");
 
   const isSelf = identity?.user_id === userId;
 
@@ -132,62 +116,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           </div>
         )}
       </div>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
-            <KeyRound className="h-4 w-4" />
-            {t("userDetail.credentials")}
-          </h2>
-          <Button
-            size="sm"
-            onClick={async () => {
-              const res = await issue.mutateAsync({});
-              setRevealKind("token");
-              setIssuedToken(res.token);
-            }}
-            disabled={issue.isPending}
-          >
-            {t("userDetail.issueCredential")}
-          </Button>
-        </div>
-        <div className="flex flex-col gap-2">
-          {credentials.data && credentials.data.length > 0 ? (
-            credentials.data.map((c) => (
-              <div
-                key={c.credential_id}
-                className="flex flex-col gap-3 rounded-md border p-3 text-sm sm:flex-row sm:items-center"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="break-all font-mono text-xs">{c.credential_id}</div>
-                  <div className="text-muted-foreground">
-                    {c.label ?? "—"} · {c.status}
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={c.status !== "active"}
-                  onClick={() => setRotateTarget(c.credential_id)}
-                >
-                  <RotateCcw className="mr-1 h-3 w-3" />
-                  {t("userDetail.rotate")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={c.status !== "active"}
-                  onClick={() => revokeCred.mutate(c.credential_id)}
-                >
-                  {t("userDetail.revoke")}
-                </Button>
-              </div>
-            ))
-          ) : (
-            <p className="text-sm text-muted-foreground">{t("userDetail.noCredentials")}</p>
-          )}
-        </div>
-      </section>
 
       <ExhaustedBanner
         exhausted={exhaustedQuotas}
@@ -230,7 +158,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         title={t("userDetail.deleteTitle")}
         description={t("userDetail.deleteBody", { id: userId })}
         dependents={[
-          ...((credentials.data ?? []).map((c) => `credential ${c.credential_id}`)),
           ...((accessEntries.data ?? []).map((e) => `quota ${e.client_name}`)),
         ]}
         busy={deleteUser.isPending}
@@ -257,24 +184,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           : {})}
       />
 
-      {rotateTarget && (
-        <ConfirmDialog
-          open={!!rotateTarget}
-          onOpenChange={(open) => !open && setRotateTarget(null)}
-          title={t("userDetail.rotateTitle")}
-          description={t("userDetail.rotateBody")}
-          confirmLabel={t("userDetail.rotateConfirm")}
-          busy={rotate.isPending}
-          onConfirm={async () => {
-            const res = await rotate.mutateAsync({});
-            await qc.invalidateQueries({ queryKey: credentialsKey(userId) });
-            setRotateTarget(null);
-            setRevealKind("token");
-            setIssuedToken(res.token);
-          }}
-        />
-      )}
-
       <ConfirmDialog
         open={resetOpen}
         onOpenChange={(open) => {
@@ -282,7 +191,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
           if (!open) {
             setNewPassword("");
             setTemporaryPassword(true);
-            setKeepApiTokens(false);
             setResetError(null);
           }
         }}
@@ -297,7 +205,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             const res = await resetPassword.mutateAsync({
               ...(explicitPassword ? { new_password: newPassword } : {}),
               temporary_password: explicitPassword ? temporaryPassword : true,
-              keep_api_tokens: keepApiTokens,
             });
             setResetOpen(false);
             if (res.temporary_password) {
@@ -331,18 +238,6 @@ function UserDetailInner({ userId, identity }: InnerProps) {
             <FieldContent>
               <FieldLabel htmlFor="require-password-change" className="font-normal">
                 {t("userDetail.requirePasswordChange")}
-              </FieldLabel>
-            </FieldContent>
-          </Field>
-          <Field orientation="horizontal">
-            <Checkbox
-              id="keep-api-tokens"
-              checked={keepApiTokens}
-              onCheckedChange={(checked) => setKeepApiTokens(checked === true)}
-            />
-            <FieldContent>
-              <FieldLabel htmlFor="keep-api-tokens" className="font-normal">
-                {t("userDetail.keepApiTokens")}
               </FieldLabel>
             </FieldContent>
           </Field>

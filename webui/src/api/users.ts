@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/api/client";
-import { credentialsKey } from "@/api/credentials";
 import { ME_QUERY_KEY, useIdentity } from "@/auth/AuthGate";
 import { isSuperadmin } from "@/lib/permissions";
 import type {
@@ -73,13 +72,11 @@ export function useDeleteUser() {
 export interface ResetUserPasswordBody {
   new_password?: string;
   temporary_password?: boolean;
-  keep_api_tokens?: boolean;
 }
 
 export interface ResetUserPasswordResponse {
   user_id: string;
   sessions_revoked: number;
-  api_tokens_revoked: number;
   temporary_password?: string;
 }
 
@@ -94,7 +91,6 @@ export function useResetUserPassword(userId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: userKey(userId) });
       void qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
-      void qc.invalidateQueries({ queryKey: credentialsKey(userId) });
     },
   });
 }

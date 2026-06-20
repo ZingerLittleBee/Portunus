@@ -231,14 +231,10 @@ async fn self_password_change_requires_current_password() {
 }
 
 #[tokio::test]
-async fn admin_reset_revokes_sessions_and_api_tokens_by_default() {
-    let (router, _state, operator_store, store, _dir) = build_router();
+async fn admin_reset_revokes_sessions_by_default() {
+    let (router, _state, _operator_store, store, _dir) = build_router();
     create_admin(&router, &store, "admin").await;
     let cookie = login_cookie(&router, "admin", PASSWORD).await;
-    let admin_id = "admin".parse::<UserId>().expect("admin user id");
-    let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
-        .expect("issue api credential");
 
     let resp = router
         .clone()
@@ -255,10 +251,8 @@ async fn admin_reset_revokes_sessions_and_api_tokens_by_default() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["sessions_revoked"], 1);
-    assert_eq!(body["api_tokens_revoked"], 1);
 
     let old_session = router
-        .clone()
         .oneshot(request(
             Method::GET,
             "/v1/users/me",
@@ -270,19 +264,6 @@ async fn admin_reset_revokes_sessions_and_api_tokens_by_default() {
         .await
         .expect("users me");
     assert_eq!(old_session.status(), StatusCode::UNAUTHORIZED);
-
-    let old_api_token = router
-        .oneshot(request(
-            Method::GET,
-            "/v1/users/me",
-            json!(null),
-            None,
-            Some(&api_token),
-            false,
-        ))
-        .await
-        .expect("users me");
-    assert_eq!(old_api_token.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -298,8 +279,7 @@ async fn reserved_superadmin_can_be_reset_and_login_with_local_password() {
             Method::POST,
             "/v1/users/_superadmin/password",
             json!({
-                "new_password": "changed correct horse battery staple",
-                "keep_api_tokens": true
+                "new_password": "changed correct horse battery staple"
             }),
             None,
             Some(bearer),
@@ -332,49 +312,6 @@ async fn reserved_superadmin_can_be_reset_and_login_with_local_password() {
 }
 
 #[tokio::test]
-async fn admin_reset_can_keep_api_tokens_explicitly() {
-    let (router, _state, operator_store, store, _dir) = build_router();
-    create_admin(&router, &store, "admin").await;
-    let cookie = login_cookie(&router, "admin", PASSWORD).await;
-    let admin_id = "admin".parse::<UserId>().expect("admin user id");
-    let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
-        .expect("issue api credential");
-
-    let resp = router
-        .clone()
-        .oneshot(request(
-            Method::POST,
-            "/v1/users/admin/password",
-            json!({
-                "new_password": "changed correct horse battery staple",
-                "keep_api_tokens": true
-            }),
-            Some(&cookie),
-            None,
-            true,
-        ))
-        .await
-        .expect("admin reset");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["api_tokens_revoked"], 0);
-
-    let preserved = router
-        .oneshot(request(
-            Method::GET,
-            "/v1/users/me",
-            json!(null),
-            None,
-            Some(&api_token),
-            false,
-        ))
-        .await
-        .expect("users me");
-    assert_eq!(preserved.status(), StatusCode::OK);
-}
-
-#[tokio::test]
 async fn generated_admin_reset_password_is_always_temporary() {
     let (router, _state, _operator_store, store, _dir) = build_router();
     create_admin(&router, &store, "admin").await;
@@ -386,8 +323,7 @@ async fn generated_admin_reset_password_is_always_temporary() {
             Method::POST,
             "/v1/users/admin/password",
             json!({
-                "temporary_password": false,
-                "keep_api_tokens": true
+                "temporary_password": false
             }),
             Some(&cookie),
             None,
@@ -447,7 +383,6 @@ async fn admin_reset_writes_audit_event_without_password() {
     let audit_json = serde_json::to_string(reset).expect("audit json");
     assert!(!audit_json.contains(new_password));
     assert!(audit_json.contains("sessions_revoked"));
-    assert!(audit_json.contains("api_tokens_revoked"));
 
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let durable = store.query_audit_recent(20, None).expect("durable audit");
@@ -461,5 +396,4 @@ async fn admin_reset_writes_audit_event_without_password() {
     let durable_json = serde_json::to_string(durable_reset).expect("durable audit json");
     assert!(!durable_json.contains(new_password));
     assert!(durable_json.contains("sessions_revoked"));
-    assert!(durable_json.contains("api_tokens_revoked"));
 }

@@ -8,15 +8,15 @@
 // provide via the UI.
 
 import { test, expect } from "./fixtures/server";
-import { loginAs, api, enrollClient, provisionUserWithToken } from "./fixtures/helpers";
+import { loginAs, api, enrollClient, provisionUser } from "./fixtures/helpers";
 
 test("quickstart walkthrough end-to-end", async ({ page, request, server }) => {
   // § 3 — login.
   await loginAs(page, server.superadminUserId, server.superadminPassword);
 
   // § 4 — provision alice + bob and a client.
-  await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "alice");
-  await provisionUserWithToken(request, server.httpUrl, server.superadminToken, "bob");
+  await provisionUser(request, server.httpUrl, server.superadminToken, "alice");
+  await provisionUser(request, server.httpUrl, server.superadminToken, "bob");
   await enrollClient(request, server.httpUrl, server.superadminToken, "edge-01");
 
   // § 5 — add a grant for alice.
