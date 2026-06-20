@@ -70,14 +70,14 @@
     "cascadePreview": "以下资源也会被一并删除："
   },
   "tokenReveal": {
-    "title": "已签发 API 令牌",
-    "description": "请立即复制此 API 令牌——之后将不会再显示。",
+    "title": "已设置临时密码",
+    "description": "请立即复制此临时密码——之后将不会再显示。",
     "passwordTitle": "已设置临时密码",
     "passwordDescription": "请立即复制此临时密码——之后将不会再显示。该用户下次登录时必须修改密码。",
     "copy": "复制",
     "copied": "已复制",
     "dismiss": "关闭",
-    "tokenLabel": "API 令牌或临时密码（仅显示一次）"
+    "tokenLabel": "临时密码（仅显示一次）"
   },
   "errorBanner": {
     "label": "请求失败",
@@ -132,7 +132,6 @@
     "id": "用户 ID",
     "displayName": "显示名",
     "role": "角色",
-    "credentials": "凭证",
     "grants": "授权",
     "newUser": "新建用户",
     "filterPlaceholder": "按 ID 或名称筛选",
@@ -152,28 +151,19 @@
     "initialQuotaPending": "用户创建后将在 {{client}} 上分配该配额。"
   },
   "userDetail": {
-    "credentials": "凭证",
     "grants": "授权",
-    "noCredentials": "暂未签发凭证。",
     "noGrants": "暂未分配授权。",
-    "issueCredential": "签发凭证",
-    "rotate": "轮换",
-    "revoke": "撤销",
     "revokeGrant": "撤销授权",
     "delete": "删除用户",
     "deleteTitle": "删除用户?",
     "deleteBody": "用户 {{id}} 将被删除,以下从属资源也会被一并清理。此操作不可撤销。",
-    "rotateTitle": "轮换该凭证?",
-    "rotateBody": "将签发新的 API 令牌,旧令牌将立即失效。",
-    "rotateConfirm": "轮换",
     "resetPassword": "重置密码",
     "resetPasswordTitle": "重置密码?",
     "resetPasswordBody": "重置 {{id}} 的 Web 登录密码。该用户的活跃 Web 会话会被撤销。",
     "resetPasswordConfirm": "重置密码",
     "newPasswordOptional": "新密码（可选）",
     "generateTemporary": "留空则生成临时密码",
-    "requirePasswordChange": "下次登录要求修改密码",
-    "keepApiTokens": "保留现有 API 令牌"
+    "requirePasswordChange": "下次登录要求修改密码"
   },
   "rules": {
     "title": "转发规则",

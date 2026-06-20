@@ -70,14 +70,14 @@
     "cascadePreview": "These resources will also be removed:"
   },
   "tokenReveal": {
-    "title": "API token issued",
-    "description": "Copy this API token now — it will not be shown again.",
+    "title": "Temporary password set",
+    "description": "Copy this temporary password now — it will not be shown again.",
     "passwordTitle": "Temporary password set",
     "passwordDescription": "Copy this temporary password now — it will not be shown again. The user must change it on next login.",
     "copy": "Copy",
     "copied": "Copied",
     "dismiss": "Dismiss",
-    "tokenLabel": "API token or temporary password (one-time)"
+    "tokenLabel": "Temporary password (one-time)"
   },
   "errorBanner": {
     "label": "Request failed",
@@ -132,7 +132,6 @@
     "id": "ID",
     "displayName": "Display name",
     "role": "Role",
-    "credentials": "Credentials",
     "grants": "Grants",
     "newUser": "New user",
     "filterPlaceholder": "Filter by id or name",
@@ -152,28 +151,19 @@
     "initialQuotaPending": "Will provision quota on {{client}} after user creation."
   },
   "userDetail": {
-    "credentials": "Credentials",
     "grants": "Grants",
-    "noCredentials": "No credentials issued.",
     "noGrants": "No grants assigned.",
-    "issueCredential": "Issue credential",
-    "rotate": "Rotate",
-    "revoke": "Revoke",
     "revokeGrant": "Revoke grant",
     "delete": "Delete user",
     "deleteTitle": "Delete user?",
     "deleteBody": "User {{id}} will be removed along with the dependents listed below. This cannot be undone.",
-    "rotateTitle": "Rotate this credential?",
-    "rotateBody": "A new API token will be issued and the current one will stop working.",
-    "rotateConfirm": "Rotate",
     "resetPassword": "Reset password",
     "resetPasswordTitle": "Reset password?",
     "resetPasswordBody": "Reset the Web login password for {{id}}. Active Web sessions are revoked.",
     "resetPasswordConfirm": "Reset password",
     "newPasswordOptional": "New password (optional)",
     "generateTemporary": "Leave blank to generate a temporary password",
-    "requirePasswordChange": "Require password change on next login",
-    "keepApiTokens": "Keep existing API tokens"
+    "requirePasswordChange": "Require password change on next login"
   },
   "rules": {
     "title": "Rules",
