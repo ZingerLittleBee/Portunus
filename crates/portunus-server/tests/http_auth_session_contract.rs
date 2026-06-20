@@ -305,7 +305,6 @@ async fn temporary_password_login_is_limited_until_password_change() {
             json!({
                 "new_password": TEMPORARY_PASSWORD,
                 "temporary_password": true,
-                "keep_api_tokens": true,
             }),
             Some(&admin_cookie),
             None,

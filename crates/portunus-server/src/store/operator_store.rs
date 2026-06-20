@@ -55,7 +55,6 @@ pub(crate) struct WebSession {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PasswordResetSummary {
     pub sessions_revoked: usize,
-    pub api_tokens_revoked: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +237,6 @@ impl SqliteOperatorStore {
         hash: &str,
         password_change_required: bool,
         revoke_sessions: bool,
-        revoke_api_tokens: bool,
     ) -> Result<PasswordResetSummary, IdentityStoreError> {
         let uid_for_err = user_id.clone();
         let now = Utc::now().to_rfc3339();
@@ -268,22 +266,7 @@ impl SqliteOperatorStore {
                     0
                 };
 
-                let api_tokens_revoked = if revoke_api_tokens {
-                    tx.execute(
-                        "UPDATE credentials \
-                         SET status = 'revoked', revoked_at = ? \
-                         WHERE user_id = ? AND status = 'active'",
-                        params![now, user_id.as_str()],
-                    )
-                    .map_err(map_rusqlite)?
-                } else {
-                    0
-                };
-
-                Ok(PasswordResetSummary {
-                    sessions_revoked,
-                    api_tokens_revoked,
-                })
+                Ok(PasswordResetSummary { sessions_revoked })
             })
             .map_err(|e| match e {
                 StoreError::Conflict { detail } if detail == "user_not_found" => {

@@ -18,7 +18,6 @@ pub fn reset_password(
     raw_user_id: &str,
     password_stdin: bool,
     temporary: bool,
-    keep_api_tokens: bool,
 ) -> Result<(), u8> {
     let user_id = parse_user_id(raw_user_id)?;
     let operator_store = open_operator_store(data_dir)?;
@@ -36,15 +35,8 @@ pub fn reset_password(
     };
     let password_change_required = temporary;
     let password_hash = hash_password(&password).map_err(password_error_exit)?;
-    let revoke_api_tokens = !keep_api_tokens;
     let summary = operator_store
-        .reset_password_state(
-            &user_id,
-            &password_hash,
-            password_change_required,
-            true,
-            revoke_api_tokens,
-        )
+        .reset_password_state(&user_id, &password_hash, password_change_required, true)
         .map_err(identity_error_exit)?;
 
     let audit_result = operator_store.insert_audit_entry(&AuditEntry {
@@ -60,10 +52,8 @@ pub fn reset_password(
         resource_value: Some(user_id.as_str().to_string()),
         details: Some(serde_json::json!({
             "sessions_revoked": summary.sessions_revoked,
-            "api_tokens_revoked": summary.api_tokens_revoked,
             "temporary_password_generated": temporary,
             "password_change_required": password_change_required,
-            "api_tokens_kept": keep_api_tokens,
             "source": "local_cli",
         })),
     });
@@ -72,10 +62,9 @@ pub fn reset_password(
     }
 
     println!(
-        "password_reset=ok user_id={} sessions_revoked={} api_tokens_revoked={}",
+        "password_reset=ok user_id={} sessions_revoked={}",
         user_id.as_str(),
-        summary.sessions_revoked,
-        summary.api_tokens_revoked
+        summary.sessions_revoked
     );
     if temporary {
         println!("temporary_password={password}");

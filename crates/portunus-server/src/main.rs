@@ -245,9 +245,6 @@ enum Cmd {
         /// Generate a one-time password, print it once, and require change on login.
         #[arg(long)]
         temporary: bool,
-        /// Keep active bearer API tokens for this user.
-        #[arg(long)]
-        keep_api_tokens: bool,
     },
     /// Rotate the first-run onboarding setup token for an unbootstrapped store.
     OnboardingToken,
@@ -651,14 +648,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             user_id,
             password_stdin,
             temporary,
-            keep_api_tokens,
-        } => password_cli::reset_password(
-            &data_dir,
-            &user_id,
-            password_stdin,
-            temporary,
-            keep_api_tokens,
-        ),
+        } => password_cli::reset_password(&data_dir, &user_id, password_stdin, temporary),
         Cmd::OnboardingToken => password_cli::onboarding_token(&data_dir),
         Cmd::GrantAdd {
             user_id,

@@ -67,7 +67,7 @@ function bootstrapSuperadmin(configDir: string): string {
   if (!token) throw new Error(`bootstrap-superadmin did not print token: ${stdout}`);
   runServerCommand(
     configDir,
-    ["reset-password", BOOTSTRAP_USER_ID, "--password-stdin", "--keep-api-tokens"],
+    ["reset-password", BOOTSTRAP_USER_ID, "--password-stdin"],
     `${SUPERADMIN_PASSWORD}\n`,
   );
   return token;
