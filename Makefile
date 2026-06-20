@@ -128,7 +128,7 @@ $(DATA_DIR)/.dev-credentials-set:
 	@echo ""
 	@echo "→ setting fixed dev password for _superadmin..."
 	printf '%s\n' "$(DEV_PASSWORD)" | PORTUNUS_SKIP_WEBUI=1 cargo run -p portunus-server -- \
-	  --data-dir $(DATA_DIR) reset-password _superadmin --password-stdin --keep-api-tokens
+	  --data-dir $(DATA_DIR) reset-password _superadmin --password-stdin
 	@touch $(DATA_DIR)/.dev-credentials-set
 	@echo ""
 	@echo "==============================================================="
