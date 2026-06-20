@@ -30,7 +30,7 @@ const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn router(state: Arc<AppState>) -> Router {
     use crate::operator::{
-        audit_http, credentials, grants, stats_stream, users, users_me, web_auth,
+        audit_http, grants, stats_stream, users, users_me, web_auth,
     };
 
     let protected = Router::new()
@@ -77,18 +77,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/users/{user_id}/password",
             post(web_auth::post_user_password),
-        )
-        .route(
-            "/v1/users/{user_id}/credentials",
-            get(credentials::get_credentials).post(credentials::post_credential),
-        )
-        .route(
-            "/v1/users/{user_id}/credentials/{cred_id}",
-            delete(credentials::delete_credential),
-        )
-        .route(
-            "/v1/users/{user_id}/credentials/{cred_id}/rotate",
-            post(credentials::post_credential_rotate),
         )
         .route("/v1/grants", get(grants::get_grants).post(grants::post_grants))
         .route("/v1/grants/{grant_id}", delete(grants::delete_grant))
