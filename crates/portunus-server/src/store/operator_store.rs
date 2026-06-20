@@ -2459,6 +2459,52 @@ mod tests {
     }
 
     #[test]
+    fn v013_predicate_purges_user_creds_keeps_reserved() {
+        let (_d, s) = fresh();
+
+        // Seed the reserved bootstrap credential via the dedicated path.
+        s.bootstrap_legacy_superadmin("legacy-tok").unwrap();
+
+        // Seed a regular user credential directly via the shared helper so
+        // this test is not coupled to issue_credential (removed in a later
+        // task).
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let alice_cred = Credential {
+            id: CredentialId::new(),
+            user_id: alice_id.clone(),
+            token_hash: hash_token("alice-tok"),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &alice_cred))
+            .unwrap();
+
+        // Run the V013 predicate.
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    r"DELETE FROM credentials WHERE user_id NOT LIKE '\_%' ESCAPE '\'",
+                    [],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+
+        // Reserved credential survives and still authenticates as superadmin.
+        let id = s.verify("legacy-tok").unwrap();
+        assert_eq!(id.role, OperatorRole::Superadmin);
+
+        // Regular user credential is gone.
+        let err = s.verify("alice-tok").unwrap_err();
+        assert_eq!(err, RbacError::CredentialInvalid);
+    }
+
+    #[test]
     fn grants_for_filters_and_orders() {
         let (_d, s) = fresh();
         s.add_user(alice()).unwrap();
