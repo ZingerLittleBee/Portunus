@@ -236,39 +236,6 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:7080")]
         http_endpoint: String,
     },
-    /// Issue a fresh credential for a user. Prints raw token in JSON exactly once.
-    CredentialIssue {
-        user_id: String,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
-    CredentialList {
-        user_id: String,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
-    CredentialRevoke {
-        user_id: String,
-        credential_id: String,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
-    CredentialRotate {
-        user_id: String,
-        credential_id: String,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-        #[arg(long, default_value = "127.0.0.1:7080")]
-        http_endpoint: String,
-    },
     /// Reset a local user's password directly against the store.
     ResetPassword {
         user_id: String,
@@ -680,35 +647,6 @@ fn run(cli: Cli) -> Result<(), u8> {
             format,
             http_endpoint,
         } => identity_cli::user_remove(&http_endpoint, &user_id, format),
-        Cmd::CredentialIssue {
-            user_id,
-            label,
-            format,
-            http_endpoint,
-        } => identity_cli::credential_issue(&http_endpoint, &user_id, label.as_deref(), format),
-        Cmd::CredentialList {
-            user_id,
-            format,
-            http_endpoint,
-        } => identity_cli::credential_list(&http_endpoint, &user_id, format),
-        Cmd::CredentialRevoke {
-            user_id,
-            credential_id,
-            http_endpoint,
-        } => identity_cli::credential_revoke(&http_endpoint, &user_id, &credential_id),
-        Cmd::CredentialRotate {
-            user_id,
-            credential_id,
-            label,
-            format,
-            http_endpoint,
-        } => identity_cli::credential_rotate(
-            &http_endpoint,
-            &user_id,
-            &credential_id,
-            label.as_deref(),
-            format,
-        ),
         Cmd::ResetPassword {
             user_id,
             password_stdin,

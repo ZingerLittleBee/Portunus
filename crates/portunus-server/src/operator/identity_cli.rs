@@ -1,5 +1,5 @@
 //! T037 (005-multi-user-rbac, US2) — operator-facing CLI subcommand
-//! HTTP wrappers for the user / credential / grant surface.
+//! HTTP wrappers for the user / grant surface.
 //!
 //! Symmetrical with [`crate::operator::rule_cli`]: each function takes
 //! the operator's `--http-endpoint` and the request shape, attaches
@@ -173,96 +173,6 @@ pub fn user_remove(endpoint: &str, user_id: &str, format: OutputFormat) -> Resul
     let resp = client()?
         .delete(&url)
         .bearer_auth(bearer()?)
-        .send()
-        .map_err(|e| {
-            eprintln!("error: http: {e}");
-            1
-        })?;
-    if !resp.status().is_success() {
-        return Err(extract_error(resp));
-    }
-    let v: Value = resp.json().map_err(|_| 1u8)?;
-    render(&v, format)
-}
-
-// ---------------- credentials ----------------
-
-pub fn credential_issue(
-    endpoint: &str,
-    user_id: &str,
-    label: Option<&str>,
-    format: OutputFormat,
-) -> Result<(), u8> {
-    let url = format!("http://{endpoint}/v1/users/{user_id}/credentials");
-    let mut body = serde_json::json!({});
-    if let Some(l) = label {
-        body["label"] = serde_json::Value::String(l.to_string());
-    }
-    let resp = client()?
-        .post(&url)
-        .bearer_auth(bearer()?)
-        .json(&body)
-        .send()
-        .map_err(|e| {
-            eprintln!("error: http: {e}");
-            1
-        })?;
-    if !resp.status().is_success() {
-        return Err(extract_error(resp));
-    }
-    let v: Value = resp.json().map_err(|_| 1u8)?;
-    render(&v, format)
-}
-
-pub fn credential_list(endpoint: &str, user_id: &str, format: OutputFormat) -> Result<(), u8> {
-    let url = format!("http://{endpoint}/v1/users/{user_id}/credentials");
-    let resp = client()?
-        .get(&url)
-        .bearer_auth(bearer()?)
-        .send()
-        .map_err(|e| {
-            eprintln!("error: http: {e}");
-            1
-        })?;
-    if !resp.status().is_success() {
-        return Err(extract_error(resp));
-    }
-    let v: Value = resp.json().map_err(|_| 1u8)?;
-    render(&v, format)
-}
-
-pub fn credential_revoke(endpoint: &str, user_id: &str, cred_id: &str) -> Result<(), u8> {
-    let url = format!("http://{endpoint}/v1/users/{user_id}/credentials/{cred_id}");
-    let resp = client()?
-        .delete(&url)
-        .bearer_auth(bearer()?)
-        .send()
-        .map_err(|e| {
-            eprintln!("error: http: {e}");
-            1
-        })?;
-    if !resp.status().is_success() {
-        return Err(extract_error(resp));
-    }
-    Ok(())
-}
-
-pub fn credential_rotate(
-    endpoint: &str,
-    user_id: &str,
-    cred_id: &str,
-    label: Option<&str>,
-    format: OutputFormat,
-) -> Result<(), u8> {
-    let url = format!("http://{endpoint}/v1/users/{user_id}/credentials/{cred_id}/rotate");
-    let mut body = serde_json::json!({});
-    if let Some(l) = label {
-        body["label"] = serde_json::Value::String(l.to_string());
-    }
-    let resp = client()?
-        .post(&url)
-        .bearer_auth(bearer()?)
-        .json(&body)
         .send()
         .map_err(|e| {
             eprintln!("error: http: {e}");
