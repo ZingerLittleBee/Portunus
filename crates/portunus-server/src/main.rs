@@ -211,6 +211,9 @@ enum Cmd {
         display_name: String,
         #[arg(long, default_value = "user")]
         role: String,
+        /// Read the initial password from the first stdin line.
+        #[arg(long)]
+        password_stdin: bool,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
         #[arg(long, default_value = "127.0.0.1:7080")]
@@ -463,6 +466,20 @@ fn resolve_operator_http_listen(
     }
 }
 
+/// Read a single password line from stdin, trimming the trailing
+/// newline. Mirrors `password_cli`'s `--password-stdin` convention so
+/// piping a password works the same way for `user-add` and
+/// `reset-password`.
+fn read_password_stdin() -> Result<String, u8> {
+    use std::io::BufRead;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).map_err(|e| {
+        eprintln!("error: read_password_stdin: {e}");
+        1u8
+    })?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
 fn run(cli: Cli) -> Result<(), u8> {
     let data_dir = portunus_server::data_dir::resolve(cli.data_dir.clone());
     let seed = advertised_seed(&cli);
@@ -627,9 +644,24 @@ fn run(cli: Cli) -> Result<(), u8> {
             user_id,
             display_name,
             role,
+            password_stdin,
             format,
             http_endpoint,
-        } => identity_cli::user_add(&http_endpoint, &user_id, &display_name, &role, format),
+        } => {
+            let initial_password = if password_stdin {
+                Some(read_password_stdin()?)
+            } else {
+                None
+            };
+            identity_cli::user_add(
+                &http_endpoint,
+                &user_id,
+                &display_name,
+                &role,
+                initial_password.as_deref(),
+                format,
+            )
+        }
         Cmd::UserList {
             format,
             http_endpoint,

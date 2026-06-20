@@ -40,7 +40,7 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
   const schema = z.object({
     user_id: z.string().regex(/^[a-z][a-z0-9-_]*$/, t("userCreate.invalidId")),
     display_name: z.string().min(1, t("userCreate.displayNameRequired")),
-    initial_password: z.string(),
+    initial_password: z.string().min(12, t("userCreate.passwordRequired")),
     force_password_change: z.boolean(),
   });
   const form = useForm<z.infer<typeof schema>>({
@@ -53,7 +53,6 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
     },
   });
   const userId = form.watch("user_id");
-  const initialPassword = form.watch("initial_password");
   const createEntry = useCreateAccessEntry(userId);
 
   async function onSubmit(values: z.infer<typeof schema>) {
@@ -62,12 +61,8 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
       const res = await create.mutateAsync({
         user_id: values.user_id,
         display_name: values.display_name,
-        ...(values.initial_password
-          ? {
-              initial_password: values.initial_password,
-              password_change_required: values.force_password_change,
-            }
-          : {}),
+        initial_password: values.initial_password,
+        password_change_required: values.force_password_change,
       });
       if (pendingQuota && res.user_id) {
         try {
@@ -123,7 +118,7 @@ export function UserCreateForm({ onSuccess, onCancel }: UserCreateFormProps) {
           control={form.control}
           name="force_password_change"
           label={t("userCreate.forcePasswordChange")}
-          disabled={!initialPassword || create.isPending}
+          disabled={create.isPending}
         />
         {error && (
           <Alert variant="destructive">

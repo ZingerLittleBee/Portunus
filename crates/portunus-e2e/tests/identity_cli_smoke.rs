@@ -8,7 +8,8 @@
 
 mod common;
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -21,6 +22,26 @@ fn run_subcmd(args: &[&str]) -> std::process::Output {
         .expect("spawn portunus-server")
 }
 
+/// Run a subcommand that reads a value from the first stdin line
+/// (e.g. `user-add --password-stdin`), feeding `stdin_line` to it.
+fn run_subcmd_with_stdin(args: &[&str], stdin_line: &str) -> std::process::Output {
+    let mut child = Command::new(common::workspace_bin("portunus-server"))
+        .args(args)
+        .env("PORTUNUS_OPERATOR_TOKEN", common::TEST_OPERATOR_TOKEN)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn portunus-server");
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(format!("{stdin_line}\n").as_bytes())
+        .expect("write password to stdin");
+    child.wait_with_output().expect("wait portunus-server")
+}
+
 #[test]
 fn cli_user_grant_roundtrip() {
     let server = common::spawn_server(&[]);
@@ -28,15 +49,19 @@ fn cli_user_grant_roundtrip() {
         .wait_listening(Duration::from_secs(10))
         .expect("server should listen within 10s");
 
-    // user-add alice
-    let out = run_subcmd(&[
-        "user-add",
-        "alice",
-        "--display-name",
-        "Alice",
-        "--http-endpoint",
-        &http,
-    ]);
+    // user-add alice (initial password piped via stdin)
+    let out = run_subcmd_with_stdin(
+        &[
+            "user-add",
+            "alice",
+            "--display-name",
+            "Alice",
+            "--password-stdin",
+            "--http-endpoint",
+            &http,
+        ],
+        "correct horse battery staple",
+    );
     assert!(
         out.status.success(),
         "user-add: {}\nstderr: {}",

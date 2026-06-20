@@ -84,7 +84,7 @@ fn rbac_walkthrough_happy_and_violation_paths() {
         &http_addr,
         "/v1/users",
         SUPER,
-        json!({"user_id": "alice", "display_name": "Alice"}),
+        json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
     );
     assert_eq!(st, StatusCode::CREATED, "user-add alice");
 
@@ -109,7 +109,7 @@ fn rbac_walkthrough_happy_and_violation_paths() {
         &http_addr,
         "/v1/users",
         SUPER,
-        json!({"user_id": "bob", "display_name": "Bob"}),
+        json!({"user_id": "bob", "display_name": "Bob", "initial_password": "correct horse battery staple"}),
     );
     assert_eq!(st, StatusCode::CREATED);
 

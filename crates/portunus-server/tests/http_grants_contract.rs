@@ -75,7 +75,7 @@ async fn create_alice(router: &axum::Router) {
             "POST",
             "/v1/users",
             SUPER_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");

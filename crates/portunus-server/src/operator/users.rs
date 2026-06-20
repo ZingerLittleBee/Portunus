@@ -139,24 +139,22 @@ pub async fn post_users(
         created_at: Utc::now(),
         disabled: false,
     };
-    if body.initial_password.is_none() && body.password_change_required {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "initial_password_required",
-            "password_change_required requires initial_password",
-        ));
-    }
-    let password_hash = body
-        .initial_password
-        .as_deref()
-        .map(hash_password)
-        .transpose()
-        .map_err(password_error)?;
+    let initial_password = match body.initial_password.as_deref() {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "initial_password_required",
+                "a user must be created with an initial password",
+            ));
+        }
+    };
+    let password_hash = hash_password(initial_password).map_err(password_error)?;
     state
         .operator_store
         .add_user_with_password(
             user.clone(),
-            password_hash.as_deref(),
+            Some(password_hash.as_str()),
             body.password_change_required,
         )
         .map_err(api_store)?;

@@ -145,7 +145,8 @@
     "displayNameRequired": "Display name is required.",
     "idHint": "Lowercase letters, digits, dash and underscore. Must start with a letter.",
     "initialPassword": "Initial password",
-    "initialPasswordHint": "Optional. Leave blank to create the user without Web login password.",
+    "initialPasswordHint": "Required. The user signs in to the Web UI with this password.",
+    "passwordRequired": "Password must be at least 12 characters.",
     "forcePasswordChange": "Require password change on first login",
     "initialQuotaToggle": "Assign initial quota (optional)",
     "initialQuotaPending": "Will provision quota on {{client}} after user creation."

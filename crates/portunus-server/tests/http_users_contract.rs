@@ -85,7 +85,7 @@ async fn post_users_happy_path_creates_user() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -188,6 +188,38 @@ async fn post_users_rejects_initial_password_policy_errors_without_creating_user
 }
 
 #[tokio::test]
+async fn post_users_rejects_missing_initial_password() {
+    // User-issued API tokens are gone, so a password-less user would be
+    // locked out. User creation MUST supply an initial password; omitting
+    // it is a 422 `initial_password_required`, NOT a 201.
+    let (router, _dir, store) = build_router_with_store();
+    let resp = router
+        .oneshot(req(
+            "POST",
+            "/v1/users",
+            SUPERADMIN_TOKEN,
+            json!({"user_id": "alice", "display_name": "Alice"}),
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "initial_password_required");
+
+    let count: i64 = store
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE user_id = 'alice'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(portunus_server::store::map_rusqlite)
+        })
+        .expect("count alice users");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn post_users_rejects_password_change_required_without_initial_password() {
     let (router, _dir, store) = build_router_with_store();
     let resp = router
@@ -232,7 +264,7 @@ async fn post_users_duplicate_returns_409_user_already_exists() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -242,7 +274,7 @@ async fn post_users_duplicate_returns_409_user_already_exists() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -308,7 +340,7 @@ async fn user_remove_persists_identity_then_drops_rules() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");
@@ -402,7 +434,7 @@ async fn non_superadmin_cannot_create_users() {
             "POST",
             "/v1/users",
             SUPERADMIN_TOKEN,
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
         ))
         .await
         .expect("oneshot");

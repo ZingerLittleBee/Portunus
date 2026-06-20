@@ -253,7 +253,7 @@ fn quota_hard_kill_then_recovery_via_reset() {
         &http_addr,
         "/v1/users",
         SUPER,
-        json!({"user_id": "alice", "display_name": "Alice"}),
+        json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
     );
     assert_eq!(st, StatusCode::CREATED, "user-add alice; body={body}");
 

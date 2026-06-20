@@ -58,6 +58,9 @@ fn code_to_exit(code: &str) -> u8 {
         "invalid_user_id"
         | "invalid_display_name"
         | "reserved_user_id"
+        | "initial_password_required"
+        | "password_too_short"
+        | "password_too_long"
         | "invalid_port_range"
         | "empty_protocol_set"
         | "invalid_client" => 3,
@@ -110,14 +113,18 @@ pub fn user_add(
     user_id: &str,
     display_name: &str,
     role: &str,
+    initial_password: Option<&str>,
     format: OutputFormat,
 ) -> Result<(), u8> {
     let url = format!("http://{endpoint}/v1/users");
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "user_id": user_id,
         "display_name": display_name,
         "role": role,
     });
+    if let Some(password) = initial_password {
+        body["initial_password"] = serde_json::Value::String(password.to_string());
+    }
     let resp = client()?
         .post(&url)
         .bearer_auth(bearer()?)

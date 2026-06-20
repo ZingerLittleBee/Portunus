@@ -377,7 +377,7 @@ async fn temporary_password_login_is_limited_until_password_change() {
         .oneshot(authed_req(
             Method::POST,
             "/v1/users",
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
             Some(&temporary_cookie),
             None,
             true,
@@ -577,7 +577,7 @@ async fn bearer_post_does_not_need_csrf() {
         .oneshot(authed_req(
             Method::POST,
             "/v1/users",
-            json!({"user_id": "alice", "display_name": "Alice"}),
+            json!({"user_id": "alice", "display_name": "Alice", "initial_password": "correct horse battery staple"}),
             None,
             Some(&api_token),
             false,
