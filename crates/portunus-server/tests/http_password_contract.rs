@@ -237,7 +237,7 @@ async fn admin_reset_revokes_sessions_and_api_tokens_by_default() {
     let cookie = login_cookie(&router, "admin", PASSWORD).await;
     let admin_id = "admin".parse::<UserId>().expect("admin user id");
     let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
+        .seed_credential_for_test(&admin_id, Some("api".into()))
         .expect("issue api credential");
 
     let resp = router
@@ -338,7 +338,7 @@ async fn admin_reset_can_keep_api_tokens_explicitly() {
     let cookie = login_cookie(&router, "admin", PASSWORD).await;
     let admin_id = "admin".parse::<UserId>().expect("admin user id");
     let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
+        .seed_credential_for_test(&admin_id, Some("api".into()))
         .expect("issue api credential");
 
     let resp = router

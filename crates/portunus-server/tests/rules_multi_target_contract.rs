@@ -79,7 +79,7 @@ fn build_fixture() -> Fixture {
         })
         .expect("add alice");
     let _ = operator_store
-        .issue_credential(&alice_id, Some("test".to_string()))
+        .seed_credential_for_test(&alice_id, Some("test".to_string()))
         .expect("issue cred");
     // 008-sqlite-storage T044: rewrite alice's credential hash via SQL
     // (the legacy identity.json mutation path is gone in v0.8).

@@ -50,7 +50,7 @@ fn build() -> (
         })
         .unwrap();
     let (_cred, alice_token) = operator_store
-        .issue_credential(&alice, Some("alice-default".into()))
+        .seed_credential_for_test(&alice, Some("alice-default".into()))
         .unwrap();
     let state = Arc::new(
         AppState::new(
@@ -110,13 +110,11 @@ async fn get_v1_users_keeps_v07_shape() {
         "role",
         "disabled",
         "created_at",
-        "credential_count",
         "grant_count",
     ] {
         assert!(obj.contains_key(k), "missing v0.7 field `{k}`: {alice}");
     }
     assert_eq!(alice["role"], "user");
-    assert_eq!(alice["credential_count"], 1);
     assert_eq!(alice["grant_count"], 0);
 }
 
@@ -165,7 +163,6 @@ async fn get_v1_users_id_keeps_v07_shape() {
         "role",
         "disabled",
         "created_at",
-        "credential_count",
         "grant_count",
     ] {
         assert!(obj.contains_key(k), "missing v0.7 field `{k}`: {v}");

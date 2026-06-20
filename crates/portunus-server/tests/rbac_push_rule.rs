@@ -67,7 +67,7 @@ fn build_fixture() -> Fixture {
         })
         .expect("add alice");
     let (_alice_cred, _raw) = operator_store
-        .issue_credential(&alice_id, Some("test".to_string()))
+        .seed_credential_for_test(&alice_id, Some("test".to_string()))
         .expect("issue cred");
     // 008-sqlite-storage T044: inject a known token by patching the
     // SQLite-backed credential row directly. The file-store path that

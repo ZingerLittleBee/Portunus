@@ -503,7 +503,7 @@ async fn login_ignores_bearer_authorization_without_correct_body() {
     create_password_user(&router, &store, "admin").await;
     let admin_id = "admin".parse::<UserId>().expect("admin user id");
     let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
+        .seed_credential_for_test(&admin_id, Some("api".into()))
         .expect("issue api credential");
 
     let resp = router
@@ -571,7 +571,7 @@ async fn bearer_post_does_not_need_csrf() {
     create_password_user(&router, &store, "admin").await;
     let admin_id = "admin".parse::<UserId>().expect("admin user id");
     let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
+        .seed_credential_for_test(&admin_id, Some("api".into()))
         .expect("issue api credential");
 
     let resp = router
@@ -595,7 +595,7 @@ async fn invalid_cookie_does_not_fall_back_to_valid_bearer() {
     create_password_user(&router, &store, "admin").await;
     let admin_id = "admin".parse::<UserId>().expect("admin user id");
     let (_credential, api_token) = operator_store
-        .issue_credential(&admin_id, Some("api".into()))
+        .seed_credential_for_test(&admin_id, Some("api".into()))
         .expect("issue api credential");
 
     let resp = router
