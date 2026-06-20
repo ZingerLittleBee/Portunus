@@ -35,9 +35,10 @@ that setup token, and create the first `superadmin` account.
 - Admins create users manually and may set an initial password. Self-service
   public registration is intentionally not supported.
 
-API bearer tokens still exist, but they are separate from Web login. Use API
-tokens for CLI and automation (`PORTUNUS_OPERATOR_TOKEN`); use passwords for
-the browser.
+Machines authenticate with the static `operator_token`
+([`gen-token`](/en/docs/server-client/configuration/server) → `server.toml`,
+sourced via `PORTUNUS_OPERATOR_TOKEN`); humans use Web cookie login. The two are
+separate mechanisms.
 
 ## What you get
 
@@ -46,8 +47,7 @@ the browser.
 | Section | Notes |
 | --- | --- |
 | **Dashboard** | Connected clients, active rules, top metrics |
-| **Users** | (superadmin) Add/list users; issue credentials; track grants |
-| **Credentials** | Self-service rotation for the logged-in user |
+| **Users** | (superadmin) Add/list users; track grants |
 | **Grants** | (superadmin) RBAC grant management |
 | **Rules** | Push, list, remove. Per-rule live stats over SSE (5 s cadence; falls back to polling if SSE blocked) |
 | **Clients** | List and inspect connected `portunus-client` instances |
@@ -110,15 +110,14 @@ port intentionally. Remote access stays an operator concern:
 - Web login secrets are never written to browser storage.
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` when TLS is
   enabled.
-- API tokens and temporary passwords are shown only in one-time reveal dialogs
-  and are never placed in URLs.
+- Temporary passwords are shown only in one-time reveal dialogs and are never
+  placed in URLs.
 
 ## Password recovery
 
 Normal users do not self-reset through a public "forgot password" flow. A
 `superadmin` resets the password from the user detail page. The reset revokes
-Web sessions and revokes API tokens by default unless the admin explicitly
-keeps them.
+the user's active Web sessions.
 
 If the last `superadmin` forgets the password, recovery is local-only. Use the
 actual superadmin user ID (`_superadmin` for `bootstrap-superadmin`, or the ID

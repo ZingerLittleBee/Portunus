@@ -180,7 +180,7 @@ sudo -u portunus-server portunus-server \
 sudo systemctl start portunus-server
 ```
 
-该命令只打印一次 `temporary_password=...`，撤销 Web 会话，默认撤销 API Token，
+该命令只打印一次 `temporary_password=...`，撤销该账户的活跃 Web 会话，
 并标记账户下次登录必须改密码。这个场景没有远程 "forgot password" 接口。
 
 ## 性能问题

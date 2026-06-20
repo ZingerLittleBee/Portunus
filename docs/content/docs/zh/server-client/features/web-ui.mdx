@@ -32,8 +32,10 @@ v1.1.0 起，Web UI 使用本地用户 ID + 密码登录。首次启动时，如
   写入 `sessionStorage` 或 `localStorage`。
 - 用户由管理员手动创建，并可设置初始密码。不支持公开自助注册。
 
-API Bearer Token 依然存在，但它与 Web 登录是两套独立机制。CLI 和自动化使用 API
-Token（`PORTUNUS_OPERATOR_TOKEN`），浏览器则使用密码登录。
+机器使用静态 `operator_token`
+（[`gen-token`](/zh/docs/server-client/configuration/server) → `server.toml`，
+经 `PORTUNUS_OPERATOR_TOKEN` 注入）认证；人类使用 Web cookie 登录。两者是
+独立的机制。
 
 ## 你能做什么
 
@@ -42,8 +44,7 @@ Token（`PORTUNUS_OPERATOR_TOKEN`），浏览器则使用密码登录。
 | 区块 | 说明 |
 | --- | --- |
 | **Dashboard** | 在线 Client 数、活跃规则数、关键指标 |
-| **Users** | （超管）添加 / 列出用户；签发凭据；查看 Grant |
-| **Credentials** | 当前用户自助旋转凭据 |
+| **Users** | （超管）添加 / 列出用户；查看 Grant |
 | **Grants** | （超管）RBAC Grant 管理 |
 | **Rules** | push / list / remove。每条规则的实时统计通过 SSE 推送（5 秒一次；SSE 不可用时回退到轮询） |
 | **Clients** | 列出并查看已连接的 `portunus-client` 实例 |
@@ -97,13 +98,12 @@ CI 中有一项覆盖率单元测试 —— 一旦两个语言包之间的翻译
 
 - Web 登录凭据不会写入浏览器存储。
 - session cookie 带 `HttpOnly`、`SameSite=Lax` 标志，启用 TLS 时还带 `Secure`。
-- API Token 和临时密码只在一次性的 reveal 对话框中显示，不会出现在 URL 中。
+- 临时密码只在一次性的 reveal 对话框中显示，不会出现在 URL 中。
 
 ## 密码恢复
 
 普通用户没有公开的 "forgot password" 自助入口，需由 `superadmin` 在用户详情页
-重置密码。重置会撤销该用户的 Web 会话，并默认撤销其 API Token；只有管理员明确
-勾选保留时才会保留。
+重置密码。重置会撤销该用户的活跃 Web 会话。
 
 如果最后一个 `superadmin` 忘记密码，只能在本地恢复。此时须使用真实的超管用户
 ID：`bootstrap-superadmin` 创建的是 `_superadmin`，Web onboarding 创建的则是初始化时

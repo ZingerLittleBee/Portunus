@@ -6,7 +6,10 @@ icon: Code
 
 `portunus-server` exposes its operator surface as an HTTP API on
 `operator_http_listen` (loopback by default). Most `/v1/*` requests require
-either a Web session cookie or an API bearer token.
+either a Web session cookie or the static operator bearer token. Machines
+authenticate with the static `operator_token`
+([`gen-token`](/en/docs/server-client/cli/portunus-server) → `server.toml`);
+humans use Web cookie login.
 
 ## Authentication
 
@@ -21,13 +24,13 @@ Content-Type: application/json
 ```
 
 Successful login returns `{"password_change_required": false}` and sets an
-`HttpOnly` `portunus_session` cookie. API clients and CLI automation continue
-to use bearer credentials:
+`HttpOnly` `portunus_session` cookie. API clients and CLI automation use the
+static `operator_token` configured in `server.toml`:
 
 ```http
 GET /v1/clients
 Host: 127.0.0.1:7080
-Authorization: Bearer T006-quickstart-token
+Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN
 ```
 
 Cookie-authenticated mutating requests (`POST`, `PUT`, `PATCH`, `DELETE`) must
@@ -105,16 +108,7 @@ client-scoped route (it never reveals whether a colliding name exists).
 | `GET` | `/v1/users` | List users (superadmin) |
 | `GET` | `/v1/users/{id}` | User detail |
 | `DELETE` | `/v1/users/{id}` | Cascading remove (superadmin) |
-| `POST` | `/v1/users/{id}/password` | Reset user password (superadmin); revokes sessions and API tokens by default |
-
-### Credentials
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/v1/users/{id}/credentials` | Issue a credential |
-| `GET` | `/v1/users/{id}/credentials` | List |
-| `DELETE` | `/v1/users/{id}/credentials/{cred_id}` | Revoke |
-| `POST` | `/v1/users/{id}/credentials/{cred_id}/rotate` | Rotate (self or superadmin) |
+| `POST` | `/v1/users/{id}/password` | Reset user password (superadmin); revokes the user's active Web sessions |
 
 ### Grants
 
@@ -225,15 +219,6 @@ Returns `{ client_name, expires_at, command, uri }`. Run the `command` (or
 redeem `uri`) on the edge host. The server endpoint embedded in the URI comes
 from the [advertised endpoint](/en/docs/server-client/features/advertised-endpoint), falling
 back to `127.0.0.1:7443`.
-
-### `POST /v1/users/{id}/credentials`
-
-```json
-{ "label": "ops-cli" }
-```
-
-Returns `201 { credential_id, user_id, token, label, created_at }`. The
-`token` is the bearer credential and is shown **once** — store it immediately.
 
 ## Status code semantics
 

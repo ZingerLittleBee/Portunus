@@ -123,8 +123,9 @@ requirements.
 
 **HTTP API commands** (`push-rule`, `list-rules`, `remove-rule`, `rule-stats`,
 `list-clients`) talk to the running server's operator HTTP API, so they require an API token
-and can run while `server` is up. After Web onboarding, create a token from the
-Web UI Credentials page and pass it as `PORTUNUS_OPERATOR_TOKEN`:
+and can run while `server` is up. Machines authenticate with the static
+`operator_token` from `server.toml` (generate one with `portunus-server
+gen-token`) and pass it as `PORTUNUS_OPERATOR_TOKEN`:
 
 ```sh
 docker compose run --rm \

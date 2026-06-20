@@ -5,14 +5,17 @@ icon: Terminal
 ---
 
 `portunus-server` is the control-plane binary. Most subcommands hit the
-loopback HTTP API, so they require `PORTUNUS_OPERATOR_TOKEN` to be set.
+loopback HTTP API, so they require `PORTUNUS_OPERATOR_TOKEN` to be set. Its
+value is the static `operator_token` from `server.toml` — generate one with
+[`gen-token`](#server-lifecycle) and paste it into the config:
 
 ```sh
-export PORTUNUS_OPERATOR_TOKEN=<paste-token-here>
+export PORTUNUS_OPERATOR_TOKEN=<paste-operator_token-here>
 ```
 
 Since v1.1.0, Web UI login uses local passwords and server-side session cookies.
-`PORTUNUS_OPERATOR_TOKEN` is still for API/CLI automation only.
+Machines authenticate with the static `operator_token`; humans use Web cookie
+login.
 
 Run `portunus-server --help` (or `portunus-server <subcommand> --help`)
 for the current authoritative flag surface — the tables below are a
@@ -69,11 +72,19 @@ for offline maintenance and tests.
 
 | Subcommand | Purpose |
 | --- | --- |
-| `user-add <id> --display-name <name> [--role admin\|user]` | Add a user (`--role` defaults to `user`) |
+| `user-add <id> --display-name <name> [--role admin\|user] --password-stdin` | Add a user (`--role` defaults to `user`). An initial password is required — pipe it via `--password-stdin` |
 | `user-list` | List users |
 | `user-get <id>` | Show user details |
 | `user-remove <id>` | Remove user (cascades grants + rules) |
-| `reset-password <user_id> [--temporary] [--password-stdin] [--keep-api-tokens]` | Local password recovery against the data dir |
+| `reset-password <user_id> [--temporary] [--password-stdin]` | Local password recovery against the data dir |
+
+`user-add` requires an initial password; pipe it on the first stdin line with
+`--password-stdin`:
+
+```sh
+echo 's3cret-pw' | portunus-server user-add alice \
+  --display-name Alice --role user --password-stdin
+```
 
 `reset-password` opens the SQLite store directly. Stop `serve` first if it is
 running against the same `--data-dir`.
@@ -87,18 +98,8 @@ Use the actual superadmin user ID. For `bootstrap-superadmin` installs that ID
 is `_superadmin`; for Web onboarding it is the ID chosen during setup.
 
 Without `--temporary`, the command prompts twice without echo. `--password-stdin`
-reads the new password from the first stdin line for automation. By default,
-password reset revokes Web sessions and active API tokens for that user; use
-`--keep-api-tokens` only when you are sure the reset is not incident response.
-
-## Credentials
-
-| Subcommand | Purpose |
-| --- | --- |
-| `credential-issue <user_id> --label <label>` | Issue a bearer token |
-| `credential-list <user_id>` | List credentials for a user |
-| `credential-revoke <user_id> <credential_id>` | Revoke a credential |
-| `credential-rotate <user_id> <credential_id>` | Rotate; old token 401s |
+reads the new password from the first stdin line for automation. Password reset
+revokes the user's active Web sessions.
 
 ## Grants
 

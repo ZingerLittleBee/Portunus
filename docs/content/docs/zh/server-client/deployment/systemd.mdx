@@ -173,11 +173,11 @@ setup token 30 分钟后过期，并且在 onboarding 完成前每次 server 启
 ## 烟雾测试
 
 上面的 Web onboarding 创建的是基于密码的 superadmin，而不是 API bearer Token。
-要探测 operator API，先在 Web UI 的 **Credentials** 页面创建一个 Token，并以
-`PORTUNUS_OPERATOR_TOKEN` 导出：
+要探测 operator API，机器使用 `server.toml` 里的静态 `operator_token`（用
+`portunus-server gen-token` 生成）认证，并以 `PORTUNUS_OPERATOR_TOKEN` 导出：
 
 ```sh
-export PORTUNUS_OPERATOR_TOKEN=<web-ui-生成的-token>
+export PORTUNUS_OPERATOR_TOKEN=<server.toml-里的-operator_token>
 curl -H "Authorization: Bearer $PORTUNUS_OPERATOR_TOKEN" \
      http://127.0.0.1:7080/v1/users/me
 ```
