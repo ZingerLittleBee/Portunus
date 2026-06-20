@@ -178,6 +178,7 @@ SERVER_BIN=""
 CLIENT_BIN=""
 SUPERADMIN_TOKEN=""
 SUPERADMIN_DEMO_PASSWORD="${PORTUNUS_DEMO_PASSWORD:-portunus-demo-password}"
+USER_DEMO_PASSWORD="${PORTUNUS_USER_DEMO_PASSWORD:-portunus-user-password}"
 
 resolve_bins() {
   local sub="release"
@@ -227,7 +228,7 @@ reset_superadmin_password() {
   local out
   out="$(printf '%s\n' "${SUPERADMIN_DEMO_PASSWORD}" \
         | "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
-          reset-password _superadmin --password-stdin --keep-api-tokens \
+          reset-password _superadmin --password-stdin \
           2>>"${DATA_DIR}/server.log")"
   printf '%s\n' "${out}" | grep -q '^password_reset=ok ' \
     || die "could not reset superadmin demo password from: ${out} (check ${DATA_DIR}/server.log)"
@@ -299,8 +300,11 @@ wait_webui() {
   }
 }
 
-# ---- users / grants / credentials -----------------------------------------
-# USER_TOKENS[i] = bearer token for useri (1-based); EDGE_NAMES[i]=edge-i
+# ---- users / grants --------------------------------------------------------
+# Per-user operator API tokens were removed in v3.0.0: the only machine/API
+# auth is now the static superadmin `operator_token`. USER_TOKENS[i] therefore
+# holds the superadmin token for every user (1-based) so the operator HTTP
+# calls below keep working; EDGE_NAMES[i]=edge-i.
 declare -a USER_TOKENS=()
 declare -a EDGE_NAMES=()
 
@@ -317,9 +321,11 @@ add_users() {
     port_start="$(user_listen_start "${u}")"
     port_end="$(user_listen_end "${u}")"
 
-    PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
+    # User creation now requires an initial password (v3.0.0): pipe a demo
+    # password on stdin, mirroring reset-password --password-stdin above.
+    printf '%s' "${USER_DEMO_PASSWORD}" | PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
       "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
-      user-add "${uid}" --display-name "Demo ${uid}" \
+      user-add "${uid}" --display-name "Demo ${uid}" --password-stdin \
       --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log" || [[ "${KEEP}" == "1" ]]
 
     PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
@@ -328,13 +334,10 @@ add_users() {
       --listen-port-start "${port_start}" --listen-port-end "${port_end}" \
       --protocols tcp --http-endpoint "${HTTP_ENDPOINT}" >/dev/null 2>>"${DATA_DIR}/server.log" || [[ "${KEEP}" == "1" ]]
 
-    tok="$(PORTUNUS_OPERATOR_TOKEN="${SUPERADMIN_TOKEN}" \
-      "${SERVER_BIN}" --data-dir "${DATA_DIR}" \
-      credential-issue "${uid}" --format json \
-      --http-endpoint "${HTTP_ENDPOINT}" 2>>"${DATA_DIR}/server.log" | jq -r '.token')"
-    [[ -n "${tok}" && "${tok}" != "null" ]] \
-      || die "no token for ${uid} (check ${DATA_DIR}/server.log)"
-    USER_TOKENS[u]="${tok}"
+    # Per-user operator API tokens were removed in v3.0.0. The operator HTTP
+    # API is now reached with the static superadmin operator_token, so reuse it
+    # for this user's downstream calls (rule push, stats reads).
+    USER_TOKENS[u]="${SUPERADMIN_TOKEN}"
     log "provisioned ${uid} (grant ${edge} tcp ${port_start}-${port_end})"
   done
 }
@@ -466,26 +469,15 @@ push_rules() {
   log "pushed ${#RULE_LISTEN[@]} rules across ${USERS} users"
 }
 
-# user1's token attempting to push into user2's granted port range MUST be
-# rejected. Requires USERS >= 2; skipped otherwise.
+# Cross-user push-denial used to be demonstrated with user1's own operator API
+# token. Per-user API tokens were removed in v3.0.0, so the demo only has the
+# superadmin operator_token, which intentionally bypasses RBAC. There is no
+# longer a user-scoped machine credential to drive this negative check, so it
+# is now a documented no-op rather than a misleading PASS/FAIL.
 assert_negative_rbac() {
-  if (( USERS < 2 )); then
-    log "negative RBAC check skipped (need >= 2 users)"
-    return 0
-  fi
-  local foreign_listen code
-  foreign_listen="$(user_listen_start 2)"
-  code="$(curl -s -o /dev/null -w '%{http_code}' \
-    -X POST -H "Authorization: Bearer ${USER_TOKENS[1]}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"client\":\"${EDGE_NAMES[2]}\",\"listen_port\":${foreign_listen},\"target_host\":\"127.0.0.1\",\"target_port\":1,\"protocol\":\"tcp\"}" \
-    "http://${HTTP_ENDPOINT}/v1/rules")" || true
-  if [[ "${code}" == 2?? ]]; then
-    die "RBAC FAIL: user1 token pushed into user2's range (${foreign_listen}, HTTP ${code})"
-  fi
-  [[ "${code}" == 4?? ]] \
-    || die "negative RBAC inconclusive: expected 4xx denial, got HTTP ${code:-curl-error}"
-  log "negative RBAC OK: cross-user push rejected (HTTP ${code})"
+  log "negative RBAC push check skipped: per-user API tokens were removed in" \
+      "v3.0.0; the demo only holds the superadmin operator_token, which bypasses" \
+      "RBAC by design. Per-user RBAC is still enforced for Web-session logins."
 }
 
 # ---- demo traffic ----------------------------------------------------------
@@ -698,23 +690,14 @@ wait_initial_live_stats() {
   log "initial live stats not visible yet; historical chart samples are already seeded"
 }
 
-# user2's token reading user1's rule stats MUST return HTTP 403.
+# Cross-tenant stats-read denial used to be demonstrated with user2's own
+# operator API token. Per-user API tokens were removed in v3.0.0, so the demo
+# only has the superadmin operator_token, which reads any tenant's stats by
+# design. This negative check is now a documented no-op.
 assert_cross_tenant_403() {
-  if (( USERS < 2 )); then
-    log "cross-tenant 403 check skipped (need >= 2 users)"
-    return 0
-  fi
-  local victim_rid code
-  victim_rid="${RULE_ID[0]}"   # owned by user1
-  code="$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer ${USER_TOKENS[2]}" \
-    "http://${HTTP_ENDPOINT}/v1/rules/${victim_rid}/stats")" || true
-  if [[ "${code}" == "403" ]]; then
-    log "cross-tenant 403 OK: user2 denied reading user1's rule stats"
-  else
-    log "RBAC FAIL: cross-tenant read returned ${code}, expected 403"
-    OVERALL_STATUS=1
-  fi
+  log "cross-tenant 403 check skipped: per-user API tokens were removed in" \
+      "v3.0.0; the demo only holds the superadmin operator_token, which can" \
+      "read any tenant's stats. Per-user RBAC is still enforced for Web-session logins."
 }
 
 print_cheatsheet() {
@@ -723,17 +706,18 @@ print_cheatsheet() {
   print_topology
   log "operator login: http://${HTTP_ENDPOINT}"
   log "Web UI:         http://localhost:${WEBUI_ENDPOINT##*:}"
-  log "  user_id:  _superadmin"
-  log "  password: ${SUPERADMIN_DEMO_PASSWORD}"
+  log "  superadmin user_id:  _superadmin"
+  log "  superadmin password: ${SUPERADMIN_DEMO_PASSWORD}"
   for ((u = 1; u <= USERS; u++)); do
-    log "user${u} token: ${USER_TOKENS[u]}"
+    log "user${u} web login: user_id=user${u}  password=${USER_DEMO_PASSWORD}"
   done
+  log "API auth:     superadmin operator_token (per-user API tokens removed in v3.0.0)"
   for g in "${!RULE_LISTEN[@]}"; do
     log "rule ${RULE_ID[g]}  listen ${RULE_LISTEN[g]}  owner user${RULE_USER[g]}  traffic=$(traffic_profile_for_index "${g}")"
   done
   log "data plane:   nc 127.0.0.1 ${RULE_LISTEN[0]}   (type text -> echoed)"
   log "demo traffic: download bursts, video-like segment pulls, intermittent bursts"
-  log "monitoring:   curl -s -H \"Authorization: Bearer <user-token>\" \\"
+  log "monitoring:   curl -s -H \"Authorization: Bearer <operator_token>\" \\"
   log "                http://${HTTP_ENDPOINT}/v1/rules/<rule_id>/stats | jq"
   log "logs:         ${DATA_DIR}/server.log , ${DATA_DIR}/webui.log , ${DATA_DIR}/edge-*.log"
   log "stop:         Ctrl-C here (tears down server / Web UI / clients / upstreams)"
@@ -763,7 +747,7 @@ main() {
   start_upstreams
   push_rules
   assert_negative_rbac
-  log "rules active; RBAC isolation verified"
+  log "rules active; per-user RBAC enforced via Web login"
   verify_forwarding
   start_demo_traffic
   wait_initial_live_stats

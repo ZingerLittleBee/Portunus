@@ -28,7 +28,9 @@ fn build_router() -> (axum::Router, TempDir, Arc<SqliteOperatorStore>) {
     let tokens = Arc::new(portunus_server::store::token_store::SqliteTokenStore::new(
         std::sync::Arc::clone(&sqlite_store),
     ));
-    let operator_store = Arc::new(SqliteOperatorStore::new(std::sync::Arc::clone(&sqlite_store)));
+    let operator_store = Arc::new(SqliteOperatorStore::new(std::sync::Arc::clone(
+        &sqlite_store,
+    )));
     operator_store
         .bootstrap_legacy_superadmin(SUPER_TOKEN)
         .expect("bootstrap");

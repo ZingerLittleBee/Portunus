@@ -29,9 +29,7 @@ use crate::state::AppState;
 const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn router(state: Arc<AppState>) -> Router {
-    use crate::operator::{
-        audit_http, grants, stats_stream, users, users_me, web_auth,
-    };
+    use crate::operator::{audit_http, grants, stats_stream, users, users_me, web_auth};
 
     let protected = Router::new()
         .route("/v1/clients", get(get_clients))
