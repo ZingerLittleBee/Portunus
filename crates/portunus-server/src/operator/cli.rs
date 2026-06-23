@@ -93,7 +93,10 @@ pub enum OperatorError {
     InvalidTargetHost { code: &'static str, message: String },
     #[error("invalid_client_address: {0}")]
     InvalidClientAddress(String),
-    #[error("invalid_enrollment_ttl: {0} must be greater than 0 seconds")]
+    #[error(
+        "invalid_enrollment_ttl: {0} seconds out of range (1..={})",
+        MAX_ENROLLMENT_TTL_SECS
+    )]
     InvalidEnrollmentTtl(u64),
     /// Range size > server-configured cap (FR-008, 002-port-range-forward).
     #[error("exceeds_cap: requested={requested} cap={cap}")]
@@ -489,6 +492,25 @@ pub struct EnrollmentCommand {
     pub uri: String,
 }
 
+/// Server-side hard cap on enrollment-code lifetime. Operators may
+/// request any positive TTL up to this bound; longer requests are
+/// rejected so a stray long-lived code cannot widen the redemption
+/// window indefinitely. Codes are already single-use and supersede
+/// prior unconsumed codes, so this is defense-in-depth, not the only
+/// guard — but an unbounded TTL is needless attack surface.
+const MAX_ENROLLMENT_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Validate a requested enrollment-code TTL against the server bound.
+/// Rejects 0 (a code that expires instantly is useless) and anything
+/// over [`MAX_ENROLLMENT_TTL_SECS`]. Both reuse `InvalidEnrollmentTtl`
+/// so the operator surface keeps a single out-of-range error code.
+fn validate_enrollment_ttl(ttl_secs: u64) -> Result<(), OperatorError> {
+    if ttl_secs == 0 || ttl_secs > MAX_ENROLLMENT_TTL_SECS {
+        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
+    }
+    Ok(())
+}
+
 /// Create a short-lived one-time enrollment URI for `portunus-client enroll`.
 pub fn enroll_client(
     state: &AppState,
@@ -498,9 +520,7 @@ pub fn enroll_client(
     req_host: Option<&str>,
 ) -> Result<EnrollmentCommand, OperatorError> {
     let name = ClientName::from_str(raw_name)?;
-    if ttl_secs == 0 {
-        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
-    }
+    validate_enrollment_ttl(ttl_secs)?;
     let address = client_address.map(validate_client_address).transpose()?;
 
     create_enrollment_command(
@@ -527,9 +547,7 @@ pub fn enroll_existing_client(
     req_host: Option<&str>,
 ) -> Result<EnrollmentCommand, OperatorError> {
     let name = ClientName::from_str(raw_name)?;
-    if ttl_secs == 0 {
-        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
-    }
+    validate_enrollment_ttl(ttl_secs)?;
 
     create_enrollment_command(
         state,
@@ -761,9 +779,7 @@ pub fn enroll_existing_client_by_id(
         .tokens
         .get_by_id(client_id)?
         .ok_or(OperatorError::ClientIdNotFound(client_id))?;
-    if ttl_secs == 0 {
-        return Err(OperatorError::InvalidEnrollmentTtl(ttl_secs));
-    }
+    validate_enrollment_ttl(ttl_secs)?;
     create_enrollment_command(
         state,
         client.client_name,
@@ -1817,6 +1833,30 @@ mod tests {
     fn parse_target_inverted_range_returns_range_invalid() {
         let err = parse_target("h:8090-8080").unwrap_err();
         assert!(matches!(err, OperatorError::RangeInvalid(_)));
+    }
+
+    // ---- enrollment-code TTL bounds ----
+
+    #[test]
+    fn validate_enrollment_ttl_accepts_within_bounds() {
+        assert!(validate_enrollment_ttl(1).is_ok());
+        assert!(validate_enrollment_ttl(600).is_ok());
+        assert!(validate_enrollment_ttl(MAX_ENROLLMENT_TTL_SECS).is_ok());
+    }
+
+    #[test]
+    fn validate_enrollment_ttl_rejects_zero() {
+        let err = validate_enrollment_ttl(0).unwrap_err();
+        assert!(matches!(err, OperatorError::InvalidEnrollmentTtl(0)));
+        assert_eq!(err.code(), "invalid_enrollment_ttl");
+    }
+
+    #[test]
+    fn validate_enrollment_ttl_rejects_over_max() {
+        let over = MAX_ENROLLMENT_TTL_SECS + 1;
+        let err = validate_enrollment_ttl(over).unwrap_err();
+        assert!(matches!(err, OperatorError::InvalidEnrollmentTtl(_)));
+        assert_eq!(err.code(), "invalid_enrollment_ttl");
     }
 
     // ---- T021 (US1): TargetError → OperatorError::InvalidTargetHost
