@@ -162,6 +162,10 @@ pub async fn run_tcp<R: Resolve + 'static>(
         let accept_rate_stats = rule.rate_limit_stats.clone();
         let accept_owner_limiter = rule.owner_rate_limit.clone();
         let accept_owner_stats = rule.owner_rate_limit_stats.clone();
+        // 013-traffic-quotas: thread the per-(user, client) byte budget
+        // into each multi-target accept loop so failover TCP rules debit
+        // the quota the same way the single-target path does.
+        let accept_quota = rule.quota.clone();
         let rule_id = rule.rule_id;
         let prefer_ipv6 = rule.prefer_ipv6;
         in_flight.spawn(async move {
@@ -181,6 +185,7 @@ pub async fn run_tcp<R: Resolve + 'static>(
                 accept_rate_stats,
                 accept_owner_limiter,
                 accept_owner_stats,
+                accept_quota,
             )
             .await;
         });
@@ -229,6 +234,9 @@ async fn accept_loop<R: Resolve + 'static>(
     owner_rate_limit_stats: Option<
         Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
     >,
+    // 013-traffic-quotas: per-(user, client) byte budget, threaded
+    // through to `handle_connection` so both copy branches debit it.
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) {
     use crate::forwarder::rate_limit::scope::{LayeredAcquire, try_acquire_layered};
     let mut local: JoinSet<()> = JoinSet::new();
@@ -297,6 +305,7 @@ async fn accept_loop<R: Resolve + 'static>(
                     let conn_rate_stats = rate_limit_stats.clone();
                     let conn_owner_limiter = owner_rate_limiter.clone();
                     let conn_owner_stats = owner_rate_limit_stats.clone();
+                    let conn_quota = quota.clone();
                     local.spawn(async move {
                         let admit_guards = (owner_admit, rule_admit);
                         handle_connection(
@@ -315,6 +324,7 @@ async fn accept_loop<R: Resolve + 'static>(
                             conn_rate_stats,
                             conn_owner_limiter,
                             conn_owner_stats,
+                            conn_quota,
                         )
                         .await;
                         drop(admit_guards);
@@ -367,6 +377,10 @@ async fn handle_connection<R: Resolve>(
     owner_rate_limit_stats: Option<
         Arc<crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator>,
     >,
+    // 013-traffic-quotas: per-(user, client) byte budget. Wired into
+    // BOTH the rate-limited and uncapped copy branches below so a
+    // multi-target TCP rule debits its quota like the single-target path.
+    quota: Option<Arc<crate::forwarder::quota::QuotaHandle>>,
 ) {
     let Ok(local_addr) = inbound.local_addr() else {
         warn!(
@@ -457,10 +471,18 @@ async fn handle_connection<R: Resolve>(
                     rate_limit_stats.clone(),
                     owner_rate_limit.clone(),
                     owner_rate_limit_stats.clone(),
+                    // 013-traffic-quotas: the rate-limited failover branch
+                    // must debit the budget too — otherwise a multi-target
+                    // rule with a bandwidth cap bypasses its quota.
+                    quota.clone(),
                 )
                 .await
             } else {
-                // quota: not threaded into the failover copy path (unchanged).
+                // 013-traffic-quotas: thread the rule's quota into the
+                // uncapped failover copy path so a multi-target TCP rule
+                // debits its budget exactly like the single-target path —
+                // copy_uncapped routes it through splice or the userspace
+                // quota-aware copy.
                 // preread / had_proxy_prelude: no SNI preread here, and the
                 // per-target PROXY prelude was already written in
                 // `dial_with_failover`; the flag is a tracing-only CopyCtx field.
@@ -470,7 +492,7 @@ async fn handle_connection<R: Resolve>(
                     rule_id,
                     rate_limit.as_deref(),
                     owner_rate_limit.as_deref(),
-                    None,
+                    quota.as_ref(),
                     false,
                     false,
                     Some(&live_sink),
@@ -839,5 +861,180 @@ impl ActiveGuard {
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.stats.dec_active(self.listen_port);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::forwarder::quota::{QuotaHandle, QuotaState};
+    use crate::resolver::{ResolveAnswer, ResolverConfig, ResolverError};
+    use portunus_core::{Hostname, Target};
+    use std::net::Ipv4Addr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Mutex;
+
+    /// IP targets never resolve — any call is a wiring bug.
+    #[derive(Debug, Default)]
+    struct PanickingResolver;
+
+    #[async_trait::async_trait]
+    impl Resolve for PanickingResolver {
+        async fn resolve(&self, name: &Hostname) -> Result<ResolveAnswer, ResolverError> {
+            panic!("PanickingResolver::resolve was called for {name}");
+        }
+    }
+
+    fn ip_resolver() -> LiveResolver<PanickingResolver> {
+        LiveResolver::new(Arc::new(PanickingResolver), ResolverConfig::default())
+    }
+
+    async fn spawn_echo() -> SocketAddr {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    while let Ok(n) = sock.read(&mut buf).await {
+                        if n == 0 || sock.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// Drive `push` bytes through a single-rule multi-target
+    /// `handle_connection` whose owner holds a `budget`-byte quota.
+    /// Returns `(quota_exhausted, bytes_echoed_back)`.
+    async fn drive_failover_quota(
+        rate_limit: Option<Arc<crate::forwarder::rate_limit::scope::RuleRateLimitHandle>>,
+        budget: i64,
+        push: usize,
+    ) -> (bool, usize) {
+        let echo = spawn_echo().await;
+        let front = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let front_addr = front.local_addr().unwrap();
+
+        let quota = Arc::new(QuotaHandle::new(
+            "alice".into(),
+            "edge-01".into(),
+            QuotaState {
+                monthly_bytes: 1_000_000,
+                budget_remaining_bytes: budget,
+                exhausted: false,
+            },
+        ));
+        let cancel = CancellationToken::new();
+        let q = Arc::clone(&quota);
+
+        let hc = tokio::spawn(async move {
+            let resolver = ip_resolver();
+            let targets = vec![MultiTarget {
+                spec: portunus_core::RuleTarget {
+                    host: echo.ip().to_string(),
+                    port: echo.port(),
+                    priority: 0,
+                    proxy_protocol: None,
+                },
+                target: Target::Ip(echo.ip()),
+            }];
+            let states = vec![Mutex::new(HealthState::new())];
+            let counter = AtomicU64::new(0);
+            let stats = RuleStats::new();
+            let (inbound, peer) = front.accept().await.unwrap();
+            handle_connection(
+                inbound,
+                peer,
+                0,
+                RuleId(0),
+                &resolver,
+                &targets,
+                &states,
+                &counter,
+                false,
+                cancel,
+                stats,
+                rate_limit,
+                None,
+                None,
+                None,
+                Some(q),
+            )
+            .await;
+        });
+
+        let client = TcpStream::connect(front_addr).await.unwrap();
+        let (mut crd, mut cwr) = client.into_split();
+        let writer = tokio::spawn(async move {
+            let payload = vec![0xAB_u8; push];
+            // write_all may fail once the proxy half-closes on quota — fine.
+            let _ = cwr.write_all(&payload).await;
+            let _ = cwr.shutdown().await;
+        });
+        let reader = tokio::spawn(async move {
+            let mut sink = Vec::new();
+            let _ = crd.read_to_end(&mut sink).await;
+            sink.len()
+        });
+
+        let _ = writer.await;
+        let echoed = reader.await.unwrap();
+        let _ = hc.await;
+        (quota.is_exhausted(), echoed)
+    }
+
+    /// 013-traffic-quotas: a multi-target TCP rule must debit its quota
+    /// on the UNCAPPED copy branch. Before the fix the failover path
+    /// passed `None` for quota (the self-admitting "not threaded into the
+    /// failover copy path" comment), so converting a single-target rule
+    /// to multi-target silently disabled TCP quota enforcement.
+    #[tokio::test]
+    async fn multi_target_uncapped_debits_quota() {
+        let (exhausted, echoed) = drive_failover_quota(None, 64 * 1024, 256 * 1024).await;
+        assert!(
+            exhausted,
+            "multi-target uncapped path must debit the quota to exhaustion"
+        );
+        assert!(
+            echoed < 256 * 1024,
+            "quota cutoff must truncate the echoed stream (got {echoed} bytes)"
+        );
+    }
+
+    /// 013-traffic-quotas: the OTHER failover branch — a multi-target
+    /// rule that ALSO carries a bandwidth cap routes through
+    /// `copy_bidirectional_with_rate_limit`, which must debit the quota
+    /// too. Otherwise a multi-target rule with a bandwidth cap bypasses
+    /// its budget on both counts.
+    #[tokio::test]
+    async fn multi_target_rate_limited_debits_quota() {
+        // High bandwidth cap forces the rate-limited branch without
+        // actually throttling this small transfer.
+        let scope = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        scope.install(
+            RuleId(0),
+            Some(&portunus_core::RateLimit {
+                bandwidth_in_bps: Some(1024 * 1024 * 1024),
+                bandwidth_out_bps: Some(1024 * 1024 * 1024),
+                ..Default::default()
+            }),
+        );
+        let limiter = Arc::new(
+            crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(RuleId(0), scope),
+        );
+
+        let (exhausted, echoed) = drive_failover_quota(Some(limiter), 64 * 1024, 256 * 1024).await;
+        assert!(
+            exhausted,
+            "multi-target rate-limited path must debit the quota to exhaustion"
+        );
+        assert!(
+            echoed < 256 * 1024,
+            "quota cutoff must truncate the echoed stream (got {echoed} bytes)"
+        );
     }
 }

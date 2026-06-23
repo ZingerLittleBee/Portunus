@@ -27,6 +27,7 @@ use super::scope::{
     BandwidthAcquire, BandwidthDirection, OwnerRateLimitHandle, RuleRateLimitHandle,
 };
 use super::stats::RateLimitStatsAccumulator;
+use crate::forwarder::quota::{ConsumeOutcome, QuotaHandle};
 
 /// Upper bound on the per-iteration chunk size. Matches the
 /// uncapped fast path's `PROXY_COPY_BUF_SIZE` so the throttling
@@ -83,6 +84,7 @@ fn chunk_for_direction(
 ///
 /// Errors propagate from either half — first error returned wins, and
 /// the still-running half is cancelled by drop.
+#[allow(clippy::too_many_arguments)]
 pub async fn copy_bidirectional_with_rate_limit<A, B>(
     inbound: &mut A,
     outbound: &mut B,
@@ -90,6 +92,12 @@ pub async fn copy_bidirectional_with_rate_limit<A, B>(
     stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_limiter: Option<Arc<OwnerRateLimitHandle>>,
     owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    // 013-traffic-quotas: per-(user, client) byte budget. `Some` when
+    // the rule carries BOTH a bandwidth cap and a quota — the budget is
+    // debited after each chunk is on the wire so the rate-limited path
+    // is no longer a quota-bypass branch. Both directions share one
+    // handle (atomic saturating consume), mirroring `quota/copy.rs`.
+    quota: Option<Arc<QuotaHandle>>,
 ) -> io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin,
@@ -102,6 +110,7 @@ where
     let stats_in = stats.clone();
     let owner_in = owner_limiter.clone();
     let owner_stats_in = owner_stats.clone();
+    let quota_in = quota.clone();
     let in_to_out = async {
         copy_with_cap(
             &mut in_read,
@@ -111,6 +120,7 @@ where
             stats_in.as_deref(),
             owner_in.as_deref(),
             owner_stats_in.as_deref(),
+            quota_in.as_ref(),
         )
         .await
     };
@@ -118,6 +128,7 @@ where
     let stats_out = stats.clone();
     let owner_out = owner_limiter.clone();
     let owner_stats_out = owner_stats.clone();
+    let quota_out = quota;
     let out_to_in = async {
         copy_with_cap(
             &mut out_read,
@@ -127,6 +138,7 @@ where
             stats_out.as_deref(),
             owner_out.as_deref(),
             owner_stats_out.as_deref(),
+            quota_out.as_ref(),
         )
         .await
     };
@@ -146,6 +158,12 @@ async fn copy_with_cap<R, W>(
     // accumulates into `owner_stats`; rule-direction into `stats`.
     owner_limiter: Option<&OwnerRateLimitHandle>,
     owner_stats: Option<&RateLimitStatsAccumulator>,
+    // 013-traffic-quotas: per-(user, client) byte budget. `None` keeps
+    // the byte-identical bandwidth-only path. `Some` debits the budget
+    // after each chunk is delivered and half-closes the writer once the
+    // budget straddles zero — same `read → write_all → consume(n)`
+    // ordering as `quota/copy.rs` so counters and budget agree.
+    quota: Option<&Arc<QuotaHandle>>,
 ) -> io::Result<u64>
 where
     R: AsyncRead + Unpin,
@@ -159,6 +177,15 @@ where
     let mut buf = vec![0u8; MAX_CHUNK];
     let mut total: u64 = 0;
     loop {
+        // 013-traffic-quotas: stop before reading more once the budget
+        // is gone — mirrors `quota/copy.rs`'s loop-top short-circuit so
+        // an already-exhausted handle half-closes without another read.
+        if let Some(q) = quota
+            && q.is_exhausted()
+        {
+            let _ = writer.shutdown().await;
+            return Ok(total);
+        }
         // Recompute on every iteration so a hot-reload that swaps
         // the per-rule or per-owner limiter (changing the effective
         // cap) is observed without restarting the connection. The
@@ -212,6 +239,19 @@ where
         }
         writer.write_all(&buf[..n]).await?;
         total += n as u64;
+        // 013-traffic-quotas: debit the budget AFTER the chunk is on the
+        // wire (same ordering as `quota/copy.rs`) so the byte counters
+        // and the budget agree. A straddling draw (Exhausted) half-closes
+        // the writer and ends this direction at the budget boundary.
+        if let Some(q) = quota
+            && matches!(
+                q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
+                ConsumeOutcome::Exhausted
+            )
+        {
+            let _ = writer.shutdown().await;
+            return Ok(total);
+        }
     }
 }
 
@@ -241,6 +281,91 @@ mod tests {
         let owner = crate::forwarder::rate_limit::scope::OwnerId::new("owner");
         mgr.install(&owner, Some(&rl));
         Arc::new(crate::forwarder::rate_limit::scope::OwnerRateLimitHandle::new(owner, mgr))
+    }
+
+    /// 013-traffic-quotas: a rule carrying BOTH a bandwidth cap and a
+    /// quota must debit the quota INSIDE the rate-limited copy loop.
+    /// Before the quota was threaded through `copy_with_cap`, this branch
+    /// forwarded unbounded bytes while the budget was never touched —
+    /// quota and rate-limit were mutually exclusive enforcement paths.
+    /// Push more than the budget and assert the loop halts at the
+    /// boundary and marks the handle exhausted.
+    #[tokio::test]
+    async fn rate_limited_copy_debits_quota_and_halts_at_budget() {
+        use crate::forwarder::quota::{QuotaHandle, QuotaState};
+        use tokio::io::AsyncReadExt;
+
+        // Generous bandwidth cap (won't bind for this small payload) so
+        // the only thing that can stop the copy is the quota.
+        let limiter = limiter_for(RateLimit {
+            bandwidth_in_bps: Some(1024 * 1024 * 1024),
+            ..Default::default()
+        });
+        let quota = Arc::new(QuotaHandle::new(
+            "alice".into(),
+            "edge-01".into(),
+            QuotaState {
+                monthly_bytes: 1_000_000,
+                budget_remaining_bytes: 100 * 1024,
+                exhausted: false,
+            },
+        ));
+
+        // duplex big enough to buffer the whole push so the producer
+        // never blocks — the copy loop, not back-pressure, decides when
+        // to stop.
+        let (mut peer, mut reader) = duplex(1024 * 1024);
+        let (mut writer, mut target) = duplex(1024 * 1024);
+
+        let q = Arc::clone(&quota);
+        let copier = tokio::spawn(async move {
+            copy_with_cap(
+                &mut reader,
+                &mut writer,
+                BandwidthDirection::In,
+                &limiter,
+                None,
+                None,
+                None,
+                Some(&q),
+            )
+            .await
+        });
+
+        // 320 KiB — well over the 100 KiB budget.
+        let push = 320 * 1024;
+        let producer = tokio::spawn(async move {
+            let payload = vec![0x5A_u8; push];
+            let _ = peer.write_all(&payload).await;
+            // Drop peer → EOF. Under the (buggy) no-quota path the loop
+            // runs to EOF and forwards everything; under the fixed path
+            // it stops on the quota before EOF.
+        });
+
+        let drainer = tokio::spawn(async move {
+            let mut sink = Vec::new();
+            let _ = target.read_to_end(&mut sink).await;
+            sink.len()
+        });
+
+        producer.await.unwrap();
+        let total = copier.await.unwrap().unwrap();
+        let received = drainer.await.unwrap();
+
+        assert!(
+            quota.is_exhausted(),
+            "quota must be exhausted after an over-budget transfer"
+        );
+        assert_eq!(quota.remaining(), 0, "remaining budget must saturate at 0");
+        assert!(
+            total < push as u64,
+            "copy must halt at the budget, not forward all {push} bytes (got {total})"
+        );
+        assert_eq!(
+            received,
+            usize::try_from(total).unwrap(),
+            "downstream received exactly what the copy delivered"
+        );
     }
 
     /// 011-rate-limiting-qos T010: TCP bandwidth-in cap shapes
@@ -274,6 +399,7 @@ mod tests {
                     &mut outbound,
                     limiter_task,
                     Some(acc_task),
+                    None,
                     None,
                     None,
                 )
@@ -360,6 +486,7 @@ mod tests {
                 Some(acc_clone),
                 None,
                 None,
+                None,
             )
             .await
         });
@@ -427,6 +554,7 @@ mod tests {
                 &mut outbound,
                 limiter_clone,
                 Some(acc_clone),
+                None,
                 None,
                 None,
             )
@@ -509,6 +637,7 @@ mod tests {
                 Some(task_rule_stats),
                 Some(task_owner),
                 Some(task_owner_stats),
+                None,
             )
             .await
         });
@@ -603,6 +732,7 @@ mod tests {
                 Some(task_rule_stats),
                 Some(task_owner),
                 Some(task_owner_stats),
+                None,
             )
             .await
         });
@@ -683,6 +813,7 @@ mod tests {
                 Some(task_rule_stats),
                 Some(task_owner),
                 Some(task_owner_stats),
+                None,
             )
             .await
         });
@@ -781,6 +912,7 @@ mod tests {
                 None,
                 Some(bw_owner_a),
                 Some(bw_owner_a_stats),
+                None,
             )
             .await
         });
@@ -794,6 +926,7 @@ mod tests {
                 None,
                 Some(bw_owner_b),
                 Some(bw_owner_b_stats),
+                None,
             )
             .await
         });
