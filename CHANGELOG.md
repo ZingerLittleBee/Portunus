@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Traffic quota is now enforced on the rate-limited and multi-target
+  failover TCP paths.** A TCP rule carrying both a monthly quota and a
+  bandwidth cap, or any multi-target (failover) TCP rule, previously
+  forwarded bytes without debiting its per-(user, client) budget, so the
+  budget never exhausted and the client-side cutoff never fired. The
+  quota handle is now threaded into the rate-limited copy loop (debited
+  after each chunk is on the wire, half-closing on a budget-straddling
+  draw) and through the failover `run_tcp → accept_loop →
+  handle_connection` chain so both its uncapped and rate-limited branches
+  enforce the budget — matching the single-target, SNI, and UDP paths.
+- **Enrollment-code TTL is now bounded server-side.** The `enroll` /
+  `enroll-existing` entry points (server CLI and operator HTTP)
+  previously rejected only a zero TTL, so an operator could mint a code
+  with an arbitrarily long lifetime. Requests now reject any TTL over a
+  24-hour hard maximum (`invalid_enrollment_ttl`), keeping the redemption
+  window bounded. Codes remain single-use and supersede prior unconsumed
+  codes, so this is defense-in-depth.
+
 ## [3.0.0] — 2026-06-21
 
 **Breaking: per-user operator API tokens are removed.** The whole

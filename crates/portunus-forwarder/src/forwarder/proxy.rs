@@ -302,6 +302,10 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
                     rate_limit_stats.clone(),
                     owner_rate_limit.clone(),
                     owner_rate_limit_stats.clone(),
+                    // 013-traffic-quotas: the rate-limited branch must
+                    // debit the budget too — otherwise a rule with a
+                    // bandwidth cap silently bypasses its monthly quota.
+                    quota.clone(),
                 )
                 .await
             } else {
@@ -529,6 +533,101 @@ mod tests {
         let (bin, bout) = result.expect("proxy returns counts");
         assert_eq!(bin, 13, "13 bytes sent inbound→outbound");
         assert_eq!(bout, 13, "13 bytes echoed outbound→inbound");
+    }
+
+    /// 013-traffic-quotas: a single-target rule carrying BOTH a bandwidth
+    /// cap and a quota must enforce the budget on the rate-limited copy
+    /// path. Before the fix the proxy passed `None` for quota on this
+    /// branch, so a rule with a bandwidth cap silently ignored its
+    /// monthly budget. Push far more than the budget and assert the
+    /// handle exhausts and the echoed stream is truncated.
+    #[tokio::test]
+    async fn proxy_enforces_quota_on_rate_limited_path() {
+        use crate::forwarder::quota::{QuotaHandle, QuotaState};
+        use portunus_core::RateLimit;
+
+        let echo = spawn_echo().await;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+
+        // Bandwidth cap forces the rate-limited branch; set very high so
+        // it never throttles this small transfer (the quota, not the
+        // bandwidth, is what must stop the copy).
+        let scope = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        scope.install(
+            RuleId(0),
+            Some(&RateLimit {
+                bandwidth_in_bps: Some(1024 * 1024 * 1024),
+                bandwidth_out_bps: Some(1024 * 1024 * 1024),
+                ..Default::default()
+            }),
+        );
+        let limiter = Arc::new(
+            crate::forwarder::rate_limit::scope::RuleRateLimitHandle::new(RuleId(0), scope),
+        );
+
+        // 64 KiB budget — far less than the 256 KiB we push.
+        let quota = Arc::new(QuotaHandle::new(
+            "alice".into(),
+            "edge-01".into(),
+            QuotaState {
+                monthly_bytes: 1_000_000,
+                budget_remaining_bytes: 64 * 1024,
+                exhausted: false,
+            },
+        ));
+
+        let cancel_proxy = cancel.clone();
+        let resolver = Arc::new(ip_resolver());
+        let q = Arc::clone(&quota);
+        let proxy_task = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            proxy(
+                sock,
+                resolver.as_ref(),
+                RuleId(0),
+                &Target::Ip(echo.ip()),
+                echo.port(),
+                false,
+                cancel_proxy,
+                None,
+                0,
+                Some(limiter),
+                None,
+                None,
+                None,
+                Some(q),
+            )
+            .await
+        });
+
+        let client = TcpStream::connect(proxy_addr).await.unwrap();
+        let (mut crd, mut cwr) = client.into_split();
+        let writer = tokio::spawn(async move {
+            let payload = vec![0xAB_u8; 256 * 1024];
+            // write_all may fail once the proxy half-closes on quota — fine.
+            let _ = cwr.write_all(&payload).await;
+            let _ = cwr.shutdown().await;
+        });
+        let reader = tokio::spawn(async move {
+            let mut sink = Vec::new();
+            let _ = crd.read_to_end(&mut sink).await;
+            sink.len()
+        });
+
+        let _ = writer.await;
+        let echoed = reader.await.unwrap();
+        let _ = proxy_task.await.unwrap();
+
+        assert!(
+            quota.is_exhausted(),
+            "quota must be exhausted after pushing 256 KiB through a 64 KiB budget"
+        );
+        assert!(
+            echoed < 256 * 1024,
+            "quota cutoff must truncate the echoed stream (got {echoed} bytes)"
+        );
     }
 
     #[tokio::test]
