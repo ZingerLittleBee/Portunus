@@ -285,4 +285,40 @@ mod tests {
         let b = RequestId::new();
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn client_name_into_inner_returns_owned_string() {
+        let n = ClientName::new("edge-01").unwrap();
+        assert_eq!(n.into_inner(), String::from("edge-01"));
+    }
+
+    #[test]
+    fn client_id_default_mints_fresh() {
+        assert_ne!(ClientId::default(), ClientId::default());
+    }
+
+    #[test]
+    fn rule_id_display_and_serde() {
+        assert_eq!(RuleId(42).to_string(), "42");
+        let json = serde_json::to_string(&RuleId(7)).unwrap();
+        assert_eq!(json, "7");
+        let back: RuleId = serde_json::from_str("7").unwrap();
+        assert_eq!(back, RuleId(7));
+    }
+
+    #[test]
+    fn request_id_default_and_display() {
+        // `default()` mints a fresh ULID on each call.
+        assert_ne!(RequestId::default(), RequestId::default());
+        // Display delegates to the inner ULID canonical form (26 chars).
+        assert_eq!(RequestId::default().to_string().len(), 26);
+    }
+
+    #[test]
+    fn request_id_serde_transparent_roundtrip() {
+        let id = RequestId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: RequestId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
 }

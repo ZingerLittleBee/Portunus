@@ -298,4 +298,68 @@ mod tests {
         assert_eq!(AuditOutcome::parse("deny"), Some(AuditOutcome::Deny));
         assert_eq!(AuditOutcome::parse("banana"), None);
     }
+
+    #[test]
+    fn outcome_as_str_round_trips_with_parse() {
+        for o in [AuditOutcome::Allow, AuditOutcome::Deny] {
+            assert_eq!(AuditOutcome::parse(o.as_str()), Some(o));
+        }
+    }
+
+    #[test]
+    fn debug_reports_len_and_drops() {
+        let ring = AuditRing::new();
+        // Empty ring: no entries, no drops.
+        let empty = format!("{ring:?}");
+        assert!(empty.contains("AuditRing"));
+        assert!(empty.contains("len: 0"));
+        assert!(empty.contains("drops: 0"));
+
+        // Overflow so both fields move off their zero values.
+        for i in 0..(AUDIT_RING_CAPACITY + 2) {
+            ring.push(entry(&format!("u{i}"), AuditOutcome::Allow));
+        }
+        let dbg = format!("{ring:?}");
+        assert!(dbg.contains(&format!("len: {AUDIT_RING_CAPACITY}")));
+        assert!(dbg.contains("drops: 2"));
+    }
+
+    #[test]
+    fn bound_drops_metric_increments_on_overflow() {
+        let ring = AuditRing::new();
+        let counter = IntCounter::new("test_audit_ring_drops", "test").unwrap();
+        ring.bind_drops_metric(counter.clone());
+
+        // Fill to capacity exactly: no eviction yet, metric stays at 0.
+        for i in 0..AUDIT_RING_CAPACITY {
+            ring.push(entry(&format!("u{i}"), AuditOutcome::Allow));
+        }
+        assert_eq!(counter.get(), 0);
+        assert_eq!(ring.dropped(), 0);
+
+        // Three more pushes evict three oldest entries; the bound
+        // Prometheus counter tracks the in-process drop counter in
+        // lockstep.
+        for i in 0..3 {
+            ring.push(entry(&format!("over{i}"), AuditOutcome::Allow));
+        }
+        assert_eq!(ring.dropped(), 3);
+        assert_eq!(counter.get(), 3);
+    }
+
+    #[test]
+    fn bind_drops_metric_replaces_previous_counter() {
+        let ring = AuditRing::new();
+        let first = IntCounter::new("test_audit_first", "test").unwrap();
+        let second = IntCounter::new("test_audit_second", "test").unwrap();
+        ring.bind_drops_metric(first.clone());
+        ring.bind_drops_metric(second.clone());
+
+        for i in 0..=AUDIT_RING_CAPACITY {
+            ring.push(entry(&format!("u{i}"), AuditOutcome::Allow));
+        }
+        // Only the most-recently-bound counter receives the increment.
+        assert_eq!(first.get(), 0);
+        assert_eq!(second.get(), 1);
+    }
 }

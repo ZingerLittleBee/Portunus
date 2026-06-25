@@ -77,4 +77,42 @@ mod tests {
         let r = tokio::time::timeout(Duration::from_secs(2), h).await;
         assert!(r.is_ok(), "reporter must exit promptly on cancel");
     }
+
+    // A poisoned `rule_stats` lock must warn-and-skip-tick rather than panic:
+    // the reporter task stays alive and still exits cleanly on cancel.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reporter_survives_poisoned_lock() {
+        let stats_map: Arc<RwLock<HashMap<RuleId, Arc<RuleStats>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        // Poison the lock by panicking while holding the write guard.
+        {
+            let poison = Arc::clone(&stats_map);
+            let _ = std::thread::spawn(move || {
+                let _guard = poison.write().unwrap();
+                panic!("intentional poison");
+            })
+            .join();
+        }
+        assert!(stats_map.read().is_err(), "lock should be poisoned");
+
+        let registry: Arc<HashMap<RuleId, String>> = Arc::new(HashMap::new());
+        let shutdown = Shutdown::new();
+        let h = spawn_standalone_reporter(
+            Arc::clone(&stats_map),
+            registry,
+            Duration::from_millis(10),
+            shutdown.token(),
+        );
+
+        // Give the loop a few ticks to hit the poisoned-read branch, then cancel.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        shutdown.trigger();
+
+        let r = tokio::time::timeout(Duration::from_secs(2), h).await;
+        assert!(
+            matches!(r, Ok(Ok(()))),
+            "reporter must survive a poisoned lock and exit on cancel"
+        );
+    }
 }

@@ -358,4 +358,138 @@ mod tests {
         assert!(!RejectReason::ConnConcurrent.is_owner_scope());
         assert!(RejectReason::OwnerConcurrent.is_owner_scope());
     }
+
+    #[test]
+    fn reject_reason_metric_labels_are_stable() {
+        assert_eq!(
+            RejectReason::ConnConcurrent.as_metric_label(),
+            "conn_concurrent"
+        );
+        assert_eq!(RejectReason::ConnRate.as_metric_label(), "conn_rate");
+        assert_eq!(RejectReason::UdpFlowRate.as_metric_label(), "udp_flow_rate");
+        assert_eq!(
+            RejectReason::OwnerConcurrent.as_metric_label(),
+            "owner_concurrent"
+        );
+        assert_eq!(
+            RejectReason::OwnerConnRate.as_metric_label(),
+            "owner_conn_rate"
+        );
+        assert_eq!(
+            RejectReason::OwnerUdpFlowRate.as_metric_label(),
+            "owner_udp_flow_rate"
+        );
+    }
+
+    #[test]
+    fn reject_reason_serde_roundtrip() {
+        for r in [
+            RejectReason::ConnConcurrent,
+            RejectReason::ConnRate,
+            RejectReason::UdpFlowRate,
+            RejectReason::OwnerConcurrent,
+            RejectReason::OwnerConnRate,
+            RejectReason::OwnerUdpFlowRate,
+        ] {
+            let j = serde_json::to_string(&r).unwrap();
+            let back: RejectReason = serde_json::from_str(&j).unwrap();
+            assert_eq!(r, back);
+        }
+    }
+
+    #[test]
+    fn concurrent_connections_cap_zero_rejected() {
+        let rl = RateLimit {
+            concurrent_connections: Some(0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate(&rl),
+            Err(RateLimitError::CapZero {
+                field: "concurrent_connections"
+            })
+        ));
+    }
+
+    #[test]
+    fn bandwidth_out_burst_without_rate_names_its_field() {
+        let rl = RateLimit {
+            bandwidth_out_burst: Some(1024),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate(&rl),
+            Err(RateLimitError::BurstWithoutRate {
+                field: "bandwidth_out_burst"
+            })
+        ));
+    }
+
+    #[test]
+    fn new_connections_burst_validation_paths() {
+        // burst supplied without a companion rate.
+        let rl = RateLimit {
+            new_connections_burst: Some(50),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate(&rl),
+            Err(RateLimitError::BurstWithoutRate {
+                field: "new_connections_burst"
+            })
+        ));
+        // burst below the rate/100 floor.
+        let rl = RateLimit {
+            new_connections_per_sec: Some(100_000),
+            new_connections_burst: Some(10),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate(&rl),
+            Err(RateLimitError::BurstRange {
+                field: "new_connections_burst",
+                ..
+            })
+        ));
+        // in-range burst accepted.
+        let rl = RateLimit {
+            new_connections_per_sec: Some(1_000),
+            new_connections_burst: Some(2_000),
+            ..Default::default()
+        };
+        assert!(validate(&rl).is_ok());
+    }
+
+    #[test]
+    fn new_connections_cap_zero_rejected() {
+        let rl = RateLimit {
+            new_connections_per_sec: Some(0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate(&rl),
+            Err(RateLimitError::CapZero {
+                field: "new_connections_per_sec"
+            })
+        ));
+    }
+
+    #[test]
+    fn effective_burst_u32_defaults_to_rate() {
+        assert_eq!(effective_burst_u32(Some(1000), None), Some(1000));
+        assert_eq!(effective_burst_u32(Some(1000), Some(5000)), Some(5000));
+        assert_eq!(effective_burst_u32(None, Some(5000)), None);
+    }
+
+    #[test]
+    fn burst_field_name_helpers_cover_all_arms() {
+        assert_eq!(burst_field_name_u64("bandwidth_in"), "bandwidth_in_burst");
+        assert_eq!(burst_field_name_u64("bandwidth_out"), "bandwidth_out_burst");
+        assert_eq!(burst_field_name_u64("unknown"), "burst");
+        assert_eq!(
+            burst_field_name_u32("new_connections"),
+            "new_connections_burst"
+        );
+        assert_eq!(burst_field_name_u32("unknown"), "burst");
+    }
 }

@@ -844,6 +844,189 @@ mod tests {
         assert!(s.contains("rules 1"), "footer missing rules count:\n{s}");
     }
 
+    /// Render `client` on the given tab with caller-supplied state tweaks.
+    fn draw_with<F>(client: &Client, w: u16, h: u16, tab: Tab, tweak: F) -> String
+    where
+        F: FnOnce(&mut super::super::state::AppState),
+    {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = super::super::state::AppState::new();
+        state.tab = tab;
+        tweak(&mut state);
+        terminal
+            .draw(|f| render(f, f.area(), client, &mut state))
+            .unwrap();
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn errors_tab_lists_cumulative_rows() {
+        // Errors tab walks the latest snapshot and pushes a row per
+        // non-zero counter (render_errors + push_err_row).
+        let mut client = fake_client();
+        if let Some(last) = client.ring.back_mut() {
+            last.r[0].err.upstream_connect_failed = 4;
+            last.r[0].err.port_in_use = 2;
+        }
+        let s = draw_with(&client, 100, 20, Tab::Errors, |_| {});
+        assert!(s.contains("Errors (cumulative)"), "missing title:\n{s}");
+        assert!(s.contains("upstream_connect_failed"), "missing event:\n{s}");
+        assert!(s.contains("smoke"), "missing rule name:\n{s}");
+        assert!(s.contains('4'), "missing count:\n{s}");
+    }
+
+    #[test]
+    fn errors_tab_empty_ring_renders_header_only() {
+        // No snapshot in the ring → render_errors skips the row loop and
+        // still renders the table header.
+        let mut client = fake_client();
+        client.ring.clear();
+        let s = draw_with(&client, 100, 20, Tab::Errors, |_| {});
+        assert!(s.contains("Errors (cumulative)"), "missing title:\n{s}");
+        assert!(s.contains("event"), "missing header:\n{s}");
+    }
+
+    #[test]
+    fn help_overlay_renders_when_toggled() {
+        // show_help draws the centered popup (render_help_overlay +
+        // centered_rect) on top of the active tab.
+        let s = draw_with(&fake_client(), 100, 30, Tab::Overview, |st| {
+            st.show_help = true;
+        });
+        assert!(s.contains("Help"), "missing help title:\n{s}");
+        assert!(s.contains("toggle help"), "missing help body:\n{s}");
+        assert!(s.contains("session reset"), "missing help body:\n{s}");
+    }
+
+    #[test]
+    fn overview_no_targets_shows_dash_upstream() {
+        // A rule without targets has no active target → upstream renders
+        // the em-dash placeholder (render_overview None branch).
+        let mut client = fake_client();
+        client.hello.rules[0].targets.clear();
+        let s = draw_with(&client, 120, 10, Tab::Overview, |_| {});
+        // Em-dash placeholder for "no upstream".
+        assert!(s.contains('\u{2014}'), "missing upstream dash:\n{s}");
+    }
+
+    #[test]
+    fn overview_total_dash_when_rule_absent_from_snapshot() {
+        // The latest snapshot carries no row for this rule id, so the
+        // total column falls back to the em-dash placeholder.
+        let mut client = fake_client();
+        client.hello.rules[0].id = "no-such-id".into();
+        let s = draw_with(&client, 120, 10, Tab::Overview, |_| {});
+        assert!(s.contains('\u{2014}'), "missing total dash:\n{s}");
+    }
+
+    #[test]
+    fn overview_udp_rule_shows_dash_rtt() {
+        // rtt_cell renders the em-dash for UDP rules (TCP probe N/A).
+        let mut client = fake_client();
+        client.hello.rules[0].proto = "udp".into();
+        client.hello.rules[0].udp_max_flows = Some(64);
+        let s = draw_with(&client, 120, 10, Tab::Overview, |_| {});
+        assert!(s.contains('\u{2014}'), "missing UDP rtt dash:\n{s}");
+    }
+
+    #[test]
+    fn detail_no_rules_shows_placeholder() {
+        // render_detail short-circuits to "no rules" when the hello carries
+        // an empty rule set.
+        let mut client = fake_client();
+        client.hello.rules.clear();
+        let s = draw_with(&client, 100, 30, Tab::Detail, |_| {});
+        assert!(s.contains("no rules"), "missing placeholder:\n{s}");
+    }
+
+    #[test]
+    fn detail_panels_dash_when_rule_absent_from_snapshot() {
+        // No snapshot row matches the rule id → snap is None, so the
+        // chart shows "collecting" and the counters/errors panels fall
+        // back to the em-dash placeholder.
+        let mut client = fake_client();
+        client.hello.rules[0].id = "ghost".into();
+        let s = draw_with(&client, 100, 30, Tab::Detail, |_| {});
+        assert!(s.contains("collecting"), "expected collecting state:\n{s}");
+        // Counters/Errors panels still render their borders/titles even when
+        // the rule has no matching snapshot row.
+        assert!(s.contains("Counters"), "missing counters panel:\n{s}");
+        assert!(s.contains("Errors"), "missing errors panel:\n{s}");
+    }
+
+    #[test]
+    fn detail_targets_inactive_row_and_proxy_marker() {
+        // Two targets: the lower-priority one is active (▶ + rtt), the
+        // other renders as a plain row. A proxy-protocol target adds the
+        // "proxy" suffix (render_targets active/inactive + proxy branch).
+        let mut client = fake_client();
+        client.hello.rules[0].targets = vec![
+            TargetMeta {
+                host: "10.0.0.1".into(),
+                port: 80,
+                priority: 0,
+                proxy_protocol: Some("v2".into()),
+            },
+            TargetMeta {
+                host: "10.0.0.2".into(),
+                port: 81,
+                priority: 5,
+                proxy_protocol: None,
+            },
+        ];
+        let s = draw_with(&client, 140, 30, Tab::Detail, |_| {});
+        assert!(s.contains("10.0.0.1:80"), "missing active target:\n{s}");
+        assert!(s.contains("10.0.0.2:81"), "missing inactive target:\n{s}");
+        assert!(s.contains("proxy"), "missing proxy marker:\n{s}");
+    }
+
+    #[test]
+    fn footer_dash_when_fd_unavailable() {
+        // No fd_open/fd_limit on the latest snapshot → footer renders the
+        // "fd —" placeholder via the map_or_else fallback.
+        let mut client = fake_client();
+        if let Some(last) = client.ring.back_mut() {
+            last.process.fd_open = None;
+            last.process.fd_limit = None;
+        }
+        let s = draw_with(&client, 120, 10, Tab::Overview, |_| {});
+        assert!(s.contains("fd \u{2014}"), "missing fd dash:\n{s}");
+    }
+
+    #[test]
+    fn pairwise_rates_zero_dt_yields_zero() {
+        // A zero time delta between consecutive samples must produce a 0
+        // rate rather than dividing by zero.
+        let rates = pairwise_rates(&[0, 1000], &[5000, 5000]);
+        assert_eq!(rates, vec![0]);
+    }
+
+    #[test]
+    fn pairwise_rates_below_two_samples_is_empty() {
+        assert!(pairwise_rates(&[42], &[1000]).is_empty());
+        assert!(pairwise_rates(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn pairwise_rates_computes_bytes_per_second() {
+        // 1000 bytes over 1000 ms → 1000 B/s.
+        let rates = pairwise_rates(&[0, 1000], &[1000, 2000]);
+        assert_eq!(rates, vec![1000]);
+    }
+
+    #[test]
+    fn detail_chart_handles_zero_dt_snapshots() {
+        // Two snapshots sharing the same uptime exercise the zero-dt branch
+        // inside render_detail_chart's pairwise rate pass without panicking.
+        let mut client = fake_client();
+        for snap in &mut client.ring {
+            snap.uptime_ms = 1000;
+        }
+        let s = draw_with(&client, 100, 30, Tab::Detail, |_| {});
+        assert!(s.contains("throughput"), "missing chart title:\n{s}");
+    }
+
     fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
         let mut out = String::new();
         for y in 0..buf.area.height {

@@ -1622,4 +1622,330 @@ mod tests {
         };
         assert_eq!(limiter.active_connections(), 1);
     }
+
+    /// `with_carryover` must construct fresh buckets for every
+    /// dimension the `next` envelope newly enables but the `prior`
+    /// limiter left uncapped — exercising the `None => TokenBucket::new`
+    /// arms for bandwidth-in, bandwidth-out, and new-connections.
+    #[tokio::test(start_paused = true)]
+    async fn with_carryover_builds_fresh_buckets_when_prior_uncapped() {
+        // Prior limiter is fully uncapped — no bandwidth or conn-rate
+        // buckets at all.
+        let prior = RuleRateLimiter::from_envelope(&RateLimit::default());
+        assert!(prior.bandwidth_in.is_none());
+        assert!(prior.bandwidth_out.is_none());
+        assert!(prior.new_connections.is_none());
+
+        // The successor newly enables all three rate dimensions. Since
+        // there is no prior bucket to carry over, each takes the
+        // `TokenBucket::new` branch and starts full.
+        let next = RuleRateLimiter::with_carryover(
+            &prior,
+            &RateLimit {
+                bandwidth_in_bps: Some(2_000),
+                bandwidth_out_bps: Some(3_000),
+                new_connections_per_sec: Some(4),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            next.bandwidth_rate_per_sec(BandwidthDirection::In),
+            Some(2_000)
+        );
+        assert_eq!(
+            next.bandwidth_rate_per_sec(BandwidthDirection::Out),
+            Some(3_000)
+        );
+        // Fresh buckets start at full burst, so the first acquire of a
+        // full burst grants and the new-connections bucket admits.
+        assert_eq!(
+            next.acquire_bandwidth(BandwidthDirection::In, 2_000),
+            BandwidthAcquire::Granted
+        );
+        assert_eq!(
+            next.acquire_bandwidth(BandwidthDirection::Out, 3_000),
+            BandwidthAcquire::Granted
+        );
+        let next = Arc::new(next);
+        match next.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(_) => {}
+            ConnectionAcquire::Rejected(r) => {
+                panic!("fresh conn-rate bucket must admit, got {r:?}")
+            }
+        }
+    }
+
+    /// `is_no_op` is true only when every cap dimension is unset.
+    #[tokio::test(start_paused = true)]
+    async fn is_no_op_distinguishes_empty_from_capped_envelopes() {
+        let empty = RuleRateLimiter::from_envelope(&RateLimit::default());
+        assert!(empty.is_no_op(), "fully unset envelope is a no-op limiter");
+
+        // Any single configured dimension flips it to non-no-op.
+        let bw = RuleRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(1_000),
+            ..Default::default()
+        });
+        assert!(!bw.is_no_op());
+
+        let conc = RuleRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(1),
+            ..Default::default()
+        });
+        assert!(!conc.is_no_op());
+    }
+
+    /// `bandwidth_rate_per_sec` returns the configured fill rate for a
+    /// capped direction and `None` for an uncapped one.
+    #[tokio::test(start_paused = true)]
+    async fn bandwidth_rate_per_sec_reports_per_direction_caps() {
+        let l = RuleRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(7_777),
+            ..Default::default()
+        });
+        assert_eq!(
+            l.bandwidth_rate_per_sec(BandwidthDirection::In),
+            Some(7_777)
+        );
+        assert_eq!(l.bandwidth_rate_per_sec(BandwidthDirection::Out), None);
+        assert!(l.has_bandwidth_cap());
+    }
+
+    /// `try_acquire_layered` treats a handle whose underlying limiter
+    /// is absent (no install in the registry) as uncapped — its
+    /// `try_acquire` returns `None`, so the cascade falls through that
+    /// layer and still grants with a `None` guard for it.
+    #[tokio::test(start_paused = true)]
+    async fn layered_passes_through_handles_with_no_installed_limiter() {
+        // Owner handle pointing at an empty registry → snapshot None.
+        let owner_scope = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner = Arc::new(OwnerRateLimitHandle::new(
+            OwnerId::new("ghost"),
+            owner_scope,
+        ));
+        assert!(
+            owner.try_acquire(false).is_none(),
+            "no owner limiter installed"
+        );
+
+        // Rule handle pointing at an empty registry → snapshot None.
+        let rule_scope = Arc::new(RateLimitScopeManager::new());
+        let rule = Arc::new(RuleRateLimitHandle::new(RuleId(99), rule_scope));
+        assert!(
+            rule.try_acquire(false).is_none(),
+            "no rule limiter installed"
+        );
+
+        match try_acquire_layered(Some(&owner), Some(&rule), false) {
+            LayeredAcquire::Granted {
+                owner_guard,
+                rule_guard,
+            } => {
+                assert!(
+                    owner_guard.is_none(),
+                    "uncapped owner layer yields no guard"
+                );
+                assert!(rule_guard.is_none(), "uncapped rule layer yields no guard");
+            }
+            other => panic!("expected Granted with both None, got {other:?}"),
+        }
+    }
+
+    /// `OwnerId` round-trips through `Display` and `new`.
+    #[test]
+    fn owner_id_display_renders_inner_string() {
+        let id = OwnerId::new("tenant-007");
+        assert_eq!(id.to_string(), "tenant-007");
+        assert_eq!(format!("{id}"), "tenant-007");
+        // `new` and the tuple constructor agree.
+        assert_eq!(id, OwnerId("tenant-007".to_string()));
+    }
+
+    /// `RateLimitScopeManager::update(rule, None)` removes any
+    /// installed limiter — the `(_, None)` removal arm.
+    #[tokio::test(start_paused = true)]
+    async fn scope_manager_update_with_none_removes_limiter() {
+        let mgr = RateLimitScopeManager::new();
+        let r = RuleId(11);
+        mgr.install(r, Some(&rl_full()));
+        assert!(mgr.get(r).is_some());
+
+        // Update with None drops the limiter.
+        mgr.update(r, None);
+        assert!(mgr.get(r).is_none());
+        assert!(mgr.is_empty());
+
+        // Updating a missing rule with None is a no-op (still empty).
+        mgr.update(RuleId(12), None);
+        assert!(mgr.is_empty());
+    }
+
+    /// The owner-stats registry `remove` drops a previously created
+    /// accumulator and is idempotent for absent owners.
+    #[test]
+    fn stats_registry_remove_drops_accumulator_idempotently() {
+        let reg = OwnerRateLimitStatsRegistry::new();
+        let alice = OwnerId::new("alice");
+        let _acc = reg.get_or_create(&alice);
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+
+        reg.remove(&alice);
+        assert!(reg.is_empty(), "remove drops the accumulator");
+
+        // Removing an absent owner is a no-op.
+        reg.remove(&OwnerId::new("never-existed"));
+        assert!(reg.is_empty());
+    }
+
+    /// The per-rule handle forwards bandwidth queries to the snapshot:
+    /// `has_bandwidth_cap`, `acquire_bandwidth`, `bandwidth_rate_per_sec`,
+    /// and `active_connections`.
+    #[tokio::test(start_paused = true)]
+    async fn rule_handle_forwards_bandwidth_and_active_queries() {
+        let handle = rule_handle_with(
+            RuleId(21),
+            RateLimit {
+                bandwidth_in_bps: Some(1_000),
+                concurrent_connections: Some(3),
+                ..Default::default()
+            },
+        );
+        assert!(handle.has_bandwidth_cap());
+        assert_eq!(
+            handle.bandwidth_rate_per_sec(BandwidthDirection::In),
+            Some(1_000)
+        );
+        assert_eq!(handle.bandwidth_rate_per_sec(BandwidthDirection::Out), None);
+        assert_eq!(
+            handle.acquire_bandwidth(BandwidthDirection::In, 1_000),
+            Some(BandwidthAcquire::Granted)
+        );
+        // Draining the bucket then asking for more throttles.
+        match handle.acquire_bandwidth(BandwidthDirection::In, 500) {
+            Some(BandwidthAcquire::Throttled { .. }) => {}
+            other => panic!("expected throttle after drain, got {other:?}"),
+        }
+        // Active-count forwarding: 0 before any acquire, 1 after.
+        assert_eq!(handle.active_connections(), 0);
+        let _g = match handle.try_acquire(false) {
+            Some(ConnectionAcquire::Granted(g)) => g,
+            other => panic!("expected admit, got {other:?}"),
+        };
+        assert_eq!(handle.active_connections(), 1);
+    }
+
+    /// A rule handle pointing at an empty registry reports the
+    /// uncapped defaults: no bandwidth cap, `None` rate/acquire,
+    /// zero active connections.
+    #[tokio::test(start_paused = true)]
+    async fn rule_handle_reports_uncapped_when_no_limiter() {
+        let scope = Arc::new(RateLimitScopeManager::new());
+        let handle = RuleRateLimitHandle::new(RuleId(404), scope);
+        assert!(handle.snapshot().is_none());
+        assert!(!handle.has_bandwidth_cap());
+        assert_eq!(handle.bandwidth_rate_per_sec(BandwidthDirection::In), None);
+        assert_eq!(handle.acquire_bandwidth(BandwidthDirection::Out, 10), None);
+        assert_eq!(handle.active_connections(), 0);
+    }
+
+    /// The per-owner handle forwards bandwidth queries to its snapshot:
+    /// `has_bandwidth_cap`, `acquire_bandwidth`, `bandwidth_rate_per_sec`,
+    /// and `active_connections`.
+    #[tokio::test(start_paused = true)]
+    async fn owner_handle_forwards_bandwidth_and_active_queries() {
+        let handle = owner_handle_with(RateLimit {
+            bandwidth_out_bps: Some(2_000),
+            concurrent_connections: Some(4),
+            ..Default::default()
+        });
+        assert!(handle.has_bandwidth_cap());
+        assert_eq!(
+            handle.bandwidth_rate_per_sec(BandwidthDirection::Out),
+            Some(2_000)
+        );
+        assert_eq!(handle.bandwidth_rate_per_sec(BandwidthDirection::In), None);
+        assert_eq!(
+            handle.acquire_bandwidth(BandwidthDirection::Out, 2_000),
+            Some(BandwidthAcquire::Granted)
+        );
+        match handle.acquire_bandwidth(BandwidthDirection::Out, 500) {
+            Some(BandwidthAcquire::Throttled { .. }) => {}
+            other => panic!("expected throttle after drain, got {other:?}"),
+        }
+        assert_eq!(handle.active_connections(), 0);
+        let _g = match handle.try_acquire(false) {
+            Some(ConnectionAcquire::Granted(g)) => g,
+            other => panic!("expected admit, got {other:?}"),
+        };
+        assert_eq!(handle.active_connections(), 1);
+    }
+
+    /// An owner handle pointing at an empty registry reports uncapped
+    /// defaults.
+    #[tokio::test(start_paused = true)]
+    async fn owner_handle_reports_uncapped_when_no_limiter() {
+        let scope = Arc::new(OwnerRateLimitScopeManager::new());
+        let handle = OwnerRateLimitHandle::new(OwnerId::new("nobody"), scope);
+        assert!(handle.snapshot().is_none());
+        assert!(!handle.has_bandwidth_cap());
+        assert_eq!(handle.bandwidth_rate_per_sec(BandwidthDirection::Out), None);
+        assert_eq!(handle.acquire_bandwidth(BandwidthDirection::In, 10), None);
+        assert_eq!(handle.active_connections(), 0);
+    }
+
+    /// `OwnerRateLimitScopeManager::update(owner, None)` removes the
+    /// installed limiter — the owner-side `(_, None)` removal arm.
+    #[tokio::test(start_paused = true)]
+    async fn owner_scope_manager_update_with_none_removes_limiter() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        let owner = OwnerId::new("carol");
+        mgr.install(&owner, Some(&rl_full()));
+        assert!(mgr.get(&owner).is_some());
+
+        mgr.update(&owner, None);
+        assert!(mgr.get(&owner).is_none());
+        assert!(mgr.is_empty());
+    }
+
+    /// `OwnerRateLimitScopeManager::update` on an empty registry
+    /// inserts a fresh limiter (the `(None, Some)` arm).
+    #[tokio::test(start_paused = true)]
+    async fn owner_scope_manager_update_on_empty_inserts_fresh_limiter() {
+        let mgr = OwnerRateLimitScopeManager::new();
+        let owner = OwnerId::new("dave");
+        mgr.update(
+            &owner,
+            Some(&RateLimit {
+                concurrent_connections: Some(2),
+                ..Default::default()
+            }),
+        );
+        assert!(mgr.get(&owner).is_some());
+    }
+
+    /// `try_acquire` with no concurrent cap still bumps the gauge for
+    /// observability and grants — exercising the uncapped grant tail.
+    #[tokio::test(start_paused = true)]
+    async fn try_acquire_without_concurrent_cap_bumps_gauge() {
+        // Only a generous connection-rate cap, no concurrent ceiling.
+        let l = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            new_connections_per_sec: Some(1_000),
+            ..Default::default()
+        }));
+        let g1 = match l.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(r) => panic!("uncapped concurrent admits, got {r:?}"),
+        };
+        let g2 = match l.try_acquire_connection(false) {
+            ConnectionAcquire::Granted(g) => g,
+            ConnectionAcquire::Rejected(r) => panic!("uncapped concurrent admits, got {r:?}"),
+        };
+        // Gauge tracks live count even without a concurrent ceiling.
+        assert_eq!(l.active_connections(), 2);
+        drop(g1);
+        assert_eq!(l.active_connections(), 1);
+        drop(g2);
+        assert_eq!(l.active_connections(), 0);
+    }
 }

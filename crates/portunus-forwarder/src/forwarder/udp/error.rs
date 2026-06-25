@@ -105,4 +105,32 @@ mod tests {
         let e = err_from_raw(libc::EINTR);
         assert_eq!(classify_udp_error(&e), UdpAction::Transient);
     }
+
+    #[test]
+    fn unknown_errno_is_transient() {
+        // EINVAL has no dedicated UdpAction arm and (on the platforms we
+        // target) no stable ErrorKind, so it falls through the raw_os_error
+        // checks to the final Transient bucket — exercise that tail.
+        let e = err_from_raw(libc::EINVAL);
+        assert_eq!(classify_udp_error(&e), UdpAction::Transient);
+    }
+
+    #[test]
+    fn errno_zero_is_transient() {
+        // A non-OS io::Error has no raw_os_error(), skipping the raw checks
+        // entirely and landing on the Transient fallthrough — guards the
+        // `if let Some(raw)` None branch.
+        let e = io::Error::other("synthetic");
+        assert_eq!(classify_udp_error(&e), UdpAction::Transient);
+    }
+
+    #[test]
+    fn raw_emsgsize_before_evict_checks() {
+        // EMSGSIZE must win over the eviction errno checks that follow it in
+        // the raw_os_error block — pin the precedence so the ordering can't
+        // regress to MessageTooLarge being shadowed.
+        let e = err_from_raw(libc::EMSGSIZE);
+        assert_eq!(classify_udp_error(&e), UdpAction::MessageTooLarge);
+        assert_ne!(classify_udp_error(&e), UdpAction::Evict);
+    }
 }

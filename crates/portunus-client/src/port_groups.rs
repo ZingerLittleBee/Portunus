@@ -552,6 +552,350 @@ mod tests {
         }
     }
 
+    #[test]
+    fn new_manager_has_no_listener_and_default_matches_new() {
+        // `has_any_listener` is false on an empty manager; `is_sni_port`
+        // is false for any port; `snapshot_listener_stats` is empty.
+        let mgr = PortGroupManager::new();
+        assert!(!mgr.has_any_listener());
+        assert!(!mgr.is_sni_port(8443));
+        assert!(mgr.snapshot_listener_stats().is_empty());
+
+        // `Default` delegates to `new`, so it starts in the same state.
+        let def = PortGroupManager::default();
+        assert!(!def.has_any_listener());
+        assert!(def.snapshot_listener_stats().is_empty());
+    }
+
+    #[tokio::test]
+    async fn first_push_reports_listener_and_snapshot() {
+        // Once a member is pushed, the manager reports a live listener
+        // and emits exactly one (quiet) listener-stats row for the port.
+        for port in 50_300..50_400 {
+            let mut mgr = PortGroupManager::new();
+            let r1 = rule(1, port, 9001, Some("api.example.com"));
+            if mgr.apply_push(r1, live_resolver()).is_ok() {
+                assert!(mgr.has_any_listener());
+                let snap = mgr.snapshot_listener_stats();
+                assert_eq!(snap.len(), 1);
+                assert_eq!(snap[0].listen_port, port);
+                // A freshly-bound listener is quiet: no parse failures,
+                // no SNI misses yet.
+                assert_eq!(snap[0].client_hello_parse_failures_total, 0);
+                assert_eq!(snap[0].sni_route_miss_total, 0);
+                mgr.shutdown();
+                // `shutdown` clears every group and the reverse index.
+                assert!(!mgr.has_any_listener());
+                assert!(!mgr.is_sni_port(port));
+                return;
+            }
+        }
+        panic!("could not bind a free port in 50300..50400");
+    }
+
+    #[tokio::test]
+    async fn duplicate_rule_id_push_is_rejected_by_reverse_index() {
+        // Pushing the same rule_id twice trips the `rule_to_port`
+        // pre-check (the first-line duplicate guard), surfacing
+        // `DuplicateRuleId` without touching the bound group.
+        for port in 50_400..50_500 {
+            let mut mgr = PortGroupManager::new();
+            let r1 = rule(1, port, 9001, Some("api.example.com"));
+            if mgr.apply_push(r1, live_resolver()).is_ok() {
+                // Same rule_id, even on a different port, is rejected up
+                // front because the reverse index already knows it.
+                let dup = rule(1, port, 9002, Some("admin.example.com"));
+                let err = mgr
+                    .apply_push(dup, live_resolver())
+                    .expect_err("duplicate rule_id must error");
+                match err {
+                    PortGroupError::DuplicateRuleId(id) => assert_eq!(id, RuleId(1)),
+                    other => panic!("got {other:?}"),
+                }
+                mgr.shutdown();
+                return;
+            }
+        }
+        panic!("could not bind a free port in 50400..50500");
+    }
+
+    #[tokio::test]
+    async fn remove_one_of_two_keeps_listener_and_rebuilds() {
+        // Removing a non-last member keeps the listener bound and runs
+        // the `rebuild_watches` survivor path (the `else` arm of
+        // `apply_remove`).
+        for port in 50_500..50_600 {
+            let mut mgr = PortGroupManager::new();
+            let r1 = rule(1, port, 9001, Some("api.example.com"));
+            if mgr.apply_push(r1, live_resolver()).is_ok() {
+                let r2 = rule(2, port, 9002, Some("admin.example.com"));
+                mgr.apply_push(r2, live_resolver()).expect("second push");
+
+                mgr.apply_remove(RuleId(2)).expect("remove survivor");
+                // Listener stays bound for rule 1.
+                assert!(mgr.is_sni_port(port));
+                assert!(mgr.has_any_listener());
+                assert!(mgr.stats_for(RuleId(1)).is_some());
+                assert!(mgr.stats_for(RuleId(2)).is_none());
+
+                // The surviving member is still reachable via the
+                // test-only accessor with its original SNI pattern.
+                let member = mgr
+                    .group_member_for_test(port, RuleId(1))
+                    .expect("survivor member present");
+                assert_eq!(member.sni_pattern.as_deref(), Some("api.example.com"));
+
+                mgr.shutdown();
+                return;
+            }
+        }
+        panic!("could not bind a free port in 50500..50600");
+    }
+
+    #[tokio::test]
+    async fn duplicate_sni_pattern_push_surfaces_mode_change_unsupported() {
+        // Two distinct rule_ids that share the same exact SNI pattern
+        // make `SniRoutingTable::from_members` fail with
+        // `DuplicateExact`, which `rebuild_watches` maps to the
+        // defensive `ModeChangeUnsupported`.
+        for port in 50_600..50_700 {
+            let mut mgr = PortGroupManager::new();
+            let r1 = rule(1, port, 9001, Some("api.example.com"));
+            if mgr.apply_push(r1, live_resolver()).is_ok() {
+                // Distinct rule_id, identical SNI pattern.
+                let clash = rule(2, port, 9002, Some("api.example.com"));
+                let err = mgr
+                    .apply_push(clash, live_resolver())
+                    .expect_err("duplicate SNI pattern must error");
+                assert!(
+                    matches!(err, PortGroupError::ModeChangeUnsupported),
+                    "expected ModeChangeUnsupported, got {err:?}"
+                );
+                mgr.shutdown();
+                return;
+            }
+        }
+        panic!("could not bind a free port in 50600..50700");
+    }
+
+    #[test]
+    fn port_group_error_debug_is_formattable() {
+        // The `Debug` derive is exercised by the structured warn/err
+        // logging; assert each variant renders its name.
+        assert!(
+            format!("{:?}", PortGroupError::ModeChangeUnsupported)
+                .contains("ModeChangeUnsupported")
+        );
+        assert!(
+            format!("{:?}", PortGroupError::UnknownRuleId(RuleId(7))).contains("UnknownRuleId")
+        );
+        assert!(
+            format!("{:?}", PortGroupError::DuplicateRuleId(RuleId(9))).contains("DuplicateRuleId")
+        );
+        let bind_err = PortGroupError::BindFailed(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "port_in_use",
+        ));
+        assert!(format!("{bind_err:?}").contains("BindFailed"));
+    }
+
+    /// Reliable ephemeral-port helper: bind loopback on port 0, read
+    /// the kernel-assigned port, then drop the listener so the manager
+    /// can rebind it. Mirrors `e2e_tests::ephemeral_port` but without
+    /// the cross-test port-alloc lock (these unit tests run a single
+    /// `apply_push` and tear down immediately, so contention is rare).
+    async fn pick_port() -> u16 {
+        let l = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind ephemeral");
+        let port = l.local_addr().expect("local_addr").port();
+        drop(l);
+        port
+    }
+
+    #[tokio::test]
+    async fn second_member_added_logs_member_count() {
+        // Adding a second distinct rule to an already-bound group runs
+        // the `Some(group)` arm of `apply_push`: it inserts into the
+        // existing `members` map, rebuilds the watches, and emits the
+        // `member_added` info log carrying `members = 2`. The returned
+        // stats Arc is distinct per rule.
+        let port = pick_port().await;
+        let mut mgr = PortGroupManager::new();
+        let s1 = mgr
+            .apply_push(
+                rule(1, port, 9001, Some("api.example.com")),
+                live_resolver(),
+            )
+            .expect("first push");
+        let s2 = mgr
+            .apply_push(
+                rule(2, port, 9002, Some("admin.example.com")),
+                live_resolver(),
+            )
+            .expect("second push shares listener");
+        // Two members now live on the same group.
+        let group = mgr.groups.get(&port).expect("group");
+        assert_eq!(group.members.len(), 2);
+        // The two rules expose distinct stats handles.
+        assert!(!Arc::ptr_eq(&s1, &s2));
+        // Both members are reachable via the test-only accessor.
+        assert!(mgr.group_member_for_test(port, RuleId(1)).is_some());
+        assert!(mgr.group_member_for_test(port, RuleId(2)).is_some());
+        mgr.shutdown();
+    }
+
+    #[tokio::test]
+    async fn apply_remove_survivor_rebuilds_and_keeps_listener() {
+        // Removing one of two members runs the `else` (survivor) arm of
+        // `apply_remove`: the listener stays bound, `rebuild_watches`
+        // repopulates the routing table, and the `member_removed` info
+        // log carries the surviving member count.
+        let port = pick_port().await;
+        let mut mgr = PortGroupManager::new();
+        mgr.apply_push(
+            rule(1, port, 9001, Some("api.example.com")),
+            live_resolver(),
+        )
+        .expect("push 1");
+        mgr.apply_push(
+            rule(2, port, 9002, Some("admin.example.com")),
+            live_resolver(),
+        )
+        .expect("push 2");
+
+        mgr.apply_remove(RuleId(1)).expect("remove non-last member");
+
+        // Listener survives; only rule 2 remains.
+        assert!(mgr.is_sni_port(port));
+        {
+            let group = mgr.groups.get(&port).expect("group still bound");
+            assert_eq!(group.members.len(), 1);
+            assert!(group.members.contains_key(&RuleId(2)));
+            // The rebuilt resolver still routes the survivor's pattern.
+            let routes = group.resolver_tx.borrow();
+            assert!(routes.slots.contains_key(&RuleId(2)));
+            assert!(!routes.slots.contains_key(&RuleId(1)));
+        }
+        // The reverse index dropped rule 1 but kept rule 2.
+        assert!(mgr.stats_for(RuleId(1)).is_none());
+        assert!(mgr.stats_for(RuleId(2)).is_some());
+        mgr.shutdown();
+    }
+
+    #[tokio::test]
+    async fn apply_remove_unknown_after_partial_index_mismatch() {
+        // When a rule_id is absent from the reverse index entirely,
+        // `apply_remove` short-circuits on the first `let-else` guard
+        // (`rule_to_port.remove` returns None) and surfaces
+        // `UnknownRuleId` without touching any group.
+        let port = pick_port().await;
+        let mut mgr = PortGroupManager::new();
+        mgr.apply_push(
+            rule(1, port, 9001, Some("api.example.com")),
+            live_resolver(),
+        )
+        .expect("push");
+
+        let Err(err) = mgr.apply_remove(RuleId(42)) else {
+            panic!("removing an unknown rule must error");
+        };
+        assert!(matches!(err, PortGroupError::UnknownRuleId(RuleId(42))));
+        // The existing listener is untouched.
+        assert!(mgr.is_sni_port(port));
+        mgr.shutdown();
+    }
+
+    #[tokio::test]
+    async fn stats_for_and_group_member_for_unknown_return_none() {
+        // The test-only accessors return None for ids the manager does
+        // not track, exercising the `?`-propagated None arms of
+        // `stats_for` and `group_member_for_test` without binding any
+        // listener.
+        let mut mgr = PortGroupManager::new();
+        assert!(mgr.stats_for(RuleId(123)).is_none());
+        assert!(mgr.group_member_for_test(8443, RuleId(123)).is_none());
+
+        // After a real push, an unknown port still yields None from the
+        // group-member accessor (port miss), and an unknown rule yields
+        // None from `stats_for` (rule miss in the reverse index).
+        let port = pick_port().await;
+        mgr.apply_push(
+            rule(1, port, 9001, Some("api.example.com")),
+            live_resolver(),
+        )
+        .expect("push");
+        assert!(
+            mgr.group_member_for_test(port.wrapping_add(1), RuleId(1))
+                .is_none()
+        );
+        assert!(mgr.stats_for(RuleId(2)).is_none());
+        mgr.shutdown();
+    }
+
+    #[tokio::test]
+    async fn snapshot_reports_one_row_per_bound_port() {
+        // Two distinct ports each bind their own SNI listener; the
+        // snapshot returns exactly one quiet row per port, and the
+        // ports are exactly the two we bound.
+        let port_a = pick_port().await;
+        let mut mgr = PortGroupManager::new();
+        mgr.apply_push(
+            rule(1, port_a, 9001, Some("api.example.com")),
+            live_resolver(),
+        )
+        .expect("push a");
+        let port_b = pick_port().await;
+        // Skip the (rare) case where the kernel hands back the same port.
+        if port_b != port_a {
+            mgr.apply_push(
+                rule(2, port_b, 9002, Some("api.example.com")),
+                live_resolver(),
+            )
+            .expect("push b");
+            let snap = mgr.snapshot_listener_stats();
+            assert_eq!(snap.len(), 2);
+            let mut ports: Vec<u16> = snap.iter().map(|r| r.listen_port).collect();
+            ports.sort_unstable();
+            let mut want = [port_a, port_b];
+            want.sort_unstable();
+            assert_eq!(ports.as_slice(), want.as_slice());
+        }
+        mgr.shutdown();
+        assert!(mgr.snapshot_listener_stats().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_every_group_and_reverse_index() {
+        // `shutdown` cancels and drops every group, then clears the
+        // reverse index. Afterward no port reports a listener and the
+        // reverse index no longer resolves the previously-pushed rule.
+        let port = pick_port().await;
+        let mut mgr = PortGroupManager::new();
+        mgr.apply_push(
+            rule(1, port, 9001, Some("api.example.com")),
+            live_resolver(),
+        )
+        .expect("push");
+        mgr.apply_push(
+            rule(2, port, 9002, Some("admin.example.com")),
+            live_resolver(),
+        )
+        .expect("push 2");
+        assert!(mgr.has_any_listener());
+
+        mgr.shutdown();
+
+        assert!(!mgr.has_any_listener());
+        assert!(!mgr.is_sni_port(port));
+        // Reverse index is empty: previously-known rules no longer resolve.
+        assert!(mgr.stats_for(RuleId(1)).is_none());
+        assert!(mgr.stats_for(RuleId(2)).is_none());
+        // A subsequent shutdown on the now-empty manager is a no-op.
+        mgr.shutdown();
+        assert!(!mgr.has_any_listener());
+    }
+
     /// Owner-cap plumbing fix: confirm that `apply_push` copies the
     /// `owner_rate_limit` handle from the inbound `ClientRule` into
     /// the per-port `GroupMember`. Without this hop, capped SNI rules

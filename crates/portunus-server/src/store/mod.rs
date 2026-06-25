@@ -549,6 +549,255 @@ mod tests {
     }
 
     #[test]
+    fn debug_impl_includes_db_path() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let dbg = format!("{store:?}");
+        assert!(dbg.contains("Store"), "got {dbg}");
+        assert!(dbg.contains("db_path"), "got {dbg}");
+        // The path component of the db file should appear in the debug output.
+        assert!(dbg.contains(DATA_FILE_NAME), "got {dbg}");
+    }
+
+    #[test]
+    fn db_path_points_at_state_db() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let expected = dir.path().join(DATA_FILE_NAME);
+        assert_eq!(store.db_path(), expected.as_path());
+        assert!(store.db_path().ends_with(DATA_FILE_NAME));
+    }
+
+    #[test]
+    fn with_conn_returns_closure_value() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // `with_conn` should hand back whatever the closure returns.
+        let answer: i64 = store
+            .with_conn(|c| {
+                c.query_row("SELECT 41 + 1", [], |r| r.get(0))
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(answer, 42);
+    }
+
+    #[test]
+    fn with_conn_propagates_closure_error() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let err = store
+            .with_conn(|_c| {
+                Err::<(), StoreError>(StoreError::Internal {
+                    message: "boom".into(),
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Internal { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn checkpoint_for_clean_shutdown_succeeds() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // Generate some WAL frames, then verify the truncating checkpoint runs.
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO users (user_id, role, display_name, created_at) \
+                     VALUES ('ckpt','superadmin','Ckpt','2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+        store.checkpoint_for_clean_shutdown().expect("checkpoint");
+    }
+
+    #[test]
+    fn schema_version_matches_target_after_open() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            store.schema_version().unwrap(),
+            Store::target_schema_version()
+        );
+    }
+
+    #[test]
+    fn target_schema_version_is_positive() {
+        // The compiled-in migration set always carries at least V001.
+        assert!(Store::target_schema_version() >= 1);
+    }
+
+    #[test]
+    fn read_head_version_none_on_empty_db() {
+        // A brand-new connection with no schema_migrations table yields None.
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(read_head_version(&conn), None);
+    }
+
+    #[test]
+    fn read_head_version_reads_max_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, \
+             applied_on TEXT, checksum TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations VALUES (3, 'a', 'x', 'y'), (7, 'b', 'x', 'y')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read_head_version(&conn), Some(7));
+    }
+
+    #[test]
+    fn read_head_version_none_when_table_empty() {
+        // Table exists but has no rows -> MAX(version) is NULL -> None.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, \
+             applied_on TEXT, checksum TEXT);",
+        )
+        .unwrap();
+        assert_eq!(read_head_version(&conn), None);
+    }
+
+    #[test]
+    fn configure_connection_applies_pragma_contract() {
+        // Exercise the String-returning wrapper directly on a fresh in-memory conn.
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).expect("pragmas apply");
+
+        let sync: i64 = conn
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .unwrap();
+        assert_eq!(sync, 1, "synchronous=NORMAL");
+        let fk: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys=ON");
+        let temp_store: i64 = conn
+            .pragma_query_value(None, "temp_store", |r| r.get(0))
+            .unwrap();
+        assert_eq!(temp_store, 2, "temp_store=MEMORY");
+        let cache: i64 = conn
+            .pragma_query_value(None, "cache_size", |r| r.get(0))
+            .unwrap();
+        assert_eq!(cache, -8000);
+    }
+
+    #[test]
+    fn classify_open_error_maps_corruption_codes() {
+        let path = Path::new("/tmp/portunus-classify-test.db");
+        for code in [
+            rusqlite::ErrorCode::NotADatabase,
+            rusqlite::ErrorCode::DatabaseCorrupt,
+        ] {
+            let err = rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code,
+                    extended_code: 0,
+                },
+                Some("file is not a database".into()),
+            );
+            match classify_open_error(path, err) {
+                BootError::Corrupt { path: p, .. } => assert_eq!(p, path),
+                other => panic!("expected Corrupt, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn classify_open_error_maps_other_to_io() {
+        let path = Path::new("/tmp/portunus-classify-test.db");
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::CannotOpen,
+                extended_code: 0,
+            },
+            Some("unable to open".into()),
+        );
+        assert!(
+            matches!(classify_open_error(path, err), BootError::Io(_)),
+            "non-corruption codes should map to Io"
+        );
+    }
+
+    #[test]
+    fn corrupt_file_refuses_open() {
+        // A file at the db path that is not a SQLite database must not boot.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(DATA_FILE_NAME);
+        std::fs::write(&path, b"this is definitely not a sqlite database header").unwrap();
+
+        let err = Store::open(dir.path()).unwrap_err();
+        // Garbage bytes trip the first PRAGMA on the migration handle,
+        // which surfaces as a migration failure (or, if open() itself
+        // rejects, a corruption classification).
+        assert!(
+            matches!(
+                err,
+                BootError::MigrationFailed(_) | BootError::Corrupt { .. }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn boot_error_display_formats_variants() {
+        let too_new = BootError::SchemaTooNew {
+            on_disk: 99,
+            target: 12,
+        };
+        assert!(too_new.to_string().contains("schema_version_too_new"));
+        assert!(too_new.to_string().contains("on_disk=99"));
+
+        let in_use = BootError::InUse(PathBuf::from("/tmp/x/state.db"));
+        assert!(in_use.to_string().contains("store_in_use"));
+
+        let migration = BootError::MigrationFailed("nope".into());
+        assert!(migration.to_string().contains("migration_failed"));
+        assert!(migration.to_string().contains("nope"));
+
+        let io = BootError::Io(io::Error::other("disk gone"));
+        assert!(io.to_string().contains("io:"));
+    }
+
+    #[test]
+    fn lock_error_debug_renders() {
+        // LockError is internal; cover its Debug derive for both arms.
+        assert!(format!("{:?}", LockError::WouldBlock).contains("WouldBlock"));
+        let io = LockError::Io(io::Error::other("x"));
+        assert!(format!("{io:?}").contains("Io"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acquire_exclusive_lock_blocks_second_holder() {
+        let dir = tempdir().unwrap();
+        let lock_path = dir.path().join("sentinel.lock");
+        let open = || {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap()
+        };
+        let _held = acquire_exclusive_lock(open()).expect("first lock");
+        let second = acquire_exclusive_lock(open());
+        assert!(
+            matches!(second, Err(LockError::WouldBlock)),
+            "second lock must report WouldBlock"
+        );
+    }
+
+    #[test]
     fn cascade_delete_removes_credentials_and_grants() {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();

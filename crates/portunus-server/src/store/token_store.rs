@@ -698,4 +698,194 @@ mod tests {
         assert_eq!(rows[0].client_name.as_str(), "edge-01");
         assert_eq!(rows[1].client_name.as_str(), "edge-02");
     }
+
+    #[test]
+    fn list_populates_revoked_at_for_revoked_rows() {
+        // Exercises the `revoked.map(parse_ts).transpose()` branch in
+        // `list()` so the revoked-timestamp parse path is covered.
+        let (_d, s) = fresh();
+        s.issue(cn("edge-01")).unwrap();
+        s.revoke(&cn("edge-01")).unwrap();
+        let rows = s.list().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].revoked_at.is_some(),
+            "revoked row must carry a parsed revoked_at timestamp"
+        );
+        assert!(rows[0].revoked_at.unwrap() <= Utc::now());
+    }
+
+    #[test]
+    fn debug_impl_includes_db_path() {
+        // The Debug impl renders the backing db path; assert it surfaces
+        // the standard state.db file name.
+        let (_d, s) = fresh();
+        let rendered = format!("{s:?}");
+        assert!(rendered.starts_with("SqliteTokenStore"));
+        assert!(rendered.contains("state.db"), "got {rendered}");
+    }
+
+    #[test]
+    fn verify_rejects_overlong_token() {
+        // A token longer than the 256-char ceiling is rejected as
+        // malformed before any table scan happens.
+        let (_d, s) = fresh();
+        let long = "a".repeat(257);
+        let err = s.verify(&long).unwrap_err();
+        assert!(matches!(
+            err,
+            AuthError::Failed(AuthFailureReason::Malformed)
+        ));
+    }
+
+    #[test]
+    fn parse_ts_accepts_rfc3339() {
+        let ts = parse_ts("2026-01-02T03:04:05Z").unwrap();
+        assert_eq!(ts, ts.with_timezone(&Utc));
+        // Round-trip preserves the instant.
+        let again = parse_ts(&ts.to_rfc3339()).unwrap();
+        assert_eq!(ts, again);
+    }
+
+    #[test]
+    fn parse_ts_rejects_garbage_as_corruption() {
+        // The error arm maps a non-RFC3339 string to StoreError::Corruption.
+        let err = parse_ts("not-a-timestamp").unwrap_err();
+        assert!(matches!(err, StoreError::Corruption { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn store_err_to_auth_maps_corruption_and_others() {
+        // Corruption maps straight through to StoreCorrupt with the detail.
+        let corrupt = store_err_to_auth(StoreError::Corruption {
+            detail: "boom".into(),
+        });
+        assert!(matches!(&corrupt, AuthError::StoreCorrupt(s) if s == "boom"));
+
+        // Any other variant is stringified into StoreCorrupt.
+        let internal = store_err_to_auth(StoreError::Internal {
+            message: "oops".into(),
+        });
+        assert!(matches!(&internal, AuthError::StoreCorrupt(s) if s.contains("oops")));
+    }
+
+    #[test]
+    fn revoke_by_id_revokes_then_is_idempotent() {
+        // 015-client-stable-id (US3): first revoke flips one row; a second
+        // call on the already-revoked id is a no-op (0 rows).
+        let (_d, s) = fresh();
+        let token = s.issue(cn("edge-01")).unwrap();
+        let id = s.verify(&token).unwrap().client_id;
+
+        assert_eq!(s.revoke_by_id(id).unwrap(), 1);
+        // Verify now reports the client as revoked.
+        let err = s.verify(&token).unwrap_err();
+        assert!(matches!(err, AuthError::Failed(AuthFailureReason::Revoked)));
+        // Second revoke touches no rows.
+        assert_eq!(s.revoke_by_id(id).unwrap(), 0);
+    }
+
+    #[test]
+    fn revoke_by_id_unknown_id_revokes_nothing() {
+        let (_d, s) = fresh();
+        assert_eq!(s.revoke_by_id(portunus_core::ClientId::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn update_client_address_by_id_updates_existing() {
+        let (_d, s) = fresh();
+        let token = s.issue(cn("edge-01")).unwrap();
+        let id = s.verify(&token).unwrap().client_id;
+
+        assert_eq!(
+            s.update_client_address_by_id(id, Some("edge.example.com"))
+                .unwrap(),
+            UpdateClientOutcome::Updated
+        );
+        let view = s.get_by_id(id).unwrap().expect("present");
+        assert_eq!(view.client_address.as_deref(), Some("edge.example.com"));
+
+        // Clearing the address back to NULL is still an Updated outcome.
+        assert_eq!(
+            s.update_client_address_by_id(id, None).unwrap(),
+            UpdateClientOutcome::Updated
+        );
+        assert_eq!(
+            s.get_by_id(id).unwrap().unwrap().client_address.as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn update_client_address_by_id_reports_missing() {
+        let (_d, s) = fresh();
+        assert_eq!(
+            s.update_client_address_by_id(portunus_core::ClientId::new(), Some("x"))
+                .unwrap(),
+            UpdateClientOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn delete_revoked_by_id_removes_revoked_row() {
+        let (_d, s) = fresh();
+        let token = s.issue(cn("edge-01")).unwrap();
+        let id = s.verify(&token).unwrap().client_id;
+        s.revoke_by_id(id).unwrap();
+        assert_eq!(s.delete_revoked_by_id(id).unwrap(), DeleteOutcome::Deleted);
+        assert!(s.get_by_id(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_revoked_by_id_refuses_active_row() {
+        let (_d, s) = fresh();
+        let token = s.issue(cn("edge-01")).unwrap();
+        let id = s.verify(&token).unwrap().client_id;
+        assert_eq!(
+            s.delete_revoked_by_id(id).unwrap(),
+            DeleteOutcome::StillActive
+        );
+        // The active row survives the refused delete.
+        assert!(s.get_by_id(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_revoked_by_id_reports_not_found() {
+        let (_d, s) = fresh();
+        assert_eq!(
+            s.delete_revoked_by_id(portunus_core::ClientId::new())
+                .unwrap(),
+            DeleteOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn get_by_id_returns_full_view_including_revoked_at() {
+        // Exercises get_by_id's revoked_at parse branch and client_address
+        // projection on a populated, then revoked, row.
+        let (_d, s) = fresh();
+        s.issue_with_address(cn("edge-01"), Some("edge.example.com"))
+            .unwrap();
+        let token = s.issue(cn("edge-02")).unwrap();
+        let id = s.verify(&token).unwrap().client_id;
+        s.revoke_by_id(id).unwrap();
+
+        let view = s.get_by_id(id).unwrap().expect("present");
+        assert_eq!(view.client_id, id);
+        assert_eq!(view.client_name.as_str(), "edge-02");
+        assert!(view.revoked_at.is_some(), "revoked_at must be parsed");
+        assert!(view.issued_at <= Utc::now());
+    }
+
+    #[test]
+    fn delete_outcome_and_update_outcome_debug_and_eq() {
+        // Cheap coverage of the derived Debug/PartialEq on the result enums.
+        assert_eq!(DeleteOutcome::Deleted, DeleteOutcome::Deleted);
+        assert_ne!(DeleteOutcome::Deleted, DeleteOutcome::NotFound);
+        assert_ne!(DeleteOutcome::Deleted, DeleteOutcome::StillActive);
+        assert_eq!(format!("{:?}", DeleteOutcome::StillActive), "StillActive");
+        assert_eq!(UpdateClientOutcome::Updated, UpdateClientOutcome::Updated);
+        assert_ne!(UpdateClientOutcome::Updated, UpdateClientOutcome::NotFound);
+        assert_eq!(format!("{:?}", UpdateClientOutcome::NotFound), "NotFound");
+    }
 }

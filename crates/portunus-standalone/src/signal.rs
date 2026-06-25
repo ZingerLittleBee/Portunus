@@ -73,4 +73,12 @@ mod tests {
         let r = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(r.is_ok(), "signal task must exit when shutdown cancelled");
     }
+
+    // NOTE: the SIGINT/SIGTERM/SIGHUP recv arms are intentionally left to the
+    // process-level integration tests. Driving them from a unit test requires
+    // raising a real signal at the test process (`libc::raise`), which both
+    // needs an `unsafe` block — forbidden workspace-wide by `-D unsafe_code` —
+    // and mutates process-global signal disposition shared across the whole
+    // test binary. The externally-cancelled exit path above is the safely
+    // unit-testable branch.
 }

@@ -2310,4 +2310,772 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].id, g1.id); // earliest created_at first
     }
+
+    fn sample_grant(user: &UserId, start: u16, end: u16) -> Grant {
+        Grant {
+            id: GrantId::new(),
+            user_id: user.clone(),
+            client: ClientScope::Any,
+            listen_port_start: start,
+            listen_port_end: end,
+            protocols: ProtocolSet::TCP,
+            note: None,
+            created_at: fixed_ts(),
+        }
+    }
+
+    #[test]
+    fn list_grants_filters_by_user_and_lists_all() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        let bob_id = UserId::from_str("bob").unwrap();
+        s.add_user(alice()).unwrap();
+        s.add_user(bob()).unwrap();
+        let alice_grant = sample_grant(&alice_id, 30000, 30000);
+        let bob_grant = sample_grant(&bob_id, 31000, 31000);
+        s.add_grant(alice_grant.clone()).unwrap();
+        s.add_grant(bob_grant.clone()).unwrap();
+
+        // Filtered listing returns only the target user's grants.
+        let filtered = s.list_grants(Some(&alice_id));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, alice_grant.id);
+
+        // Unfiltered listing returns every grant.
+        assert_eq!(s.list_grants(None).len(), 2);
+    }
+
+    #[test]
+    fn get_grant_returns_some_and_none() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30010);
+        s.add_grant(grant.clone()).unwrap();
+
+        let got = s.get_grant(&grant.id).unwrap();
+        assert_eq!(got.id, grant.id);
+        assert_eq!(got.listen_port_end, 30010);
+
+        assert!(s.get_grant(&GrantId::new()).is_none());
+    }
+
+    #[test]
+    fn add_grant_rejects_invalid_port_range() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+
+        // start == 0 is rejected before any DB access.
+        let err = s.add_grant(sample_grant(&alice_id, 0, 10)).unwrap_err();
+        assert!(matches!(
+            err,
+            IdentityStoreError::InvalidPortRange { start: 0, end: 10 }
+        ));
+
+        // start > end is rejected.
+        let err = s.add_grant(sample_grant(&alice_id, 50, 40)).unwrap_err();
+        assert!(matches!(
+            err,
+            IdentityStoreError::InvalidPortRange { start: 50, end: 40 }
+        ));
+    }
+
+    #[test]
+    fn add_grant_rejects_missing_user() {
+        let (_d, s) = fresh();
+        let missing = UserId::from_str("missing").unwrap();
+        let err = s
+            .add_grant(sample_grant(&missing, 30000, 30001))
+            .unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn revoke_grant_returns_grant_and_then_not_found() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30000);
+        s.add_grant(grant.clone()).unwrap();
+
+        let revoked = s.revoke_grant(&grant.id).unwrap();
+        assert_eq!(revoked.id, grant.id);
+        assert!(s.get_grant(&grant.id).is_none());
+
+        // A second revoke of the same (now absent) grant reports not found.
+        let err = s.revoke_grant(&grant.id).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::GrantNotFound(id) if id == grant.id));
+    }
+
+    #[test]
+    fn has_active_superadmin_reflects_store_state() {
+        let (_d, s) = fresh();
+        assert!(!s.has_active_superadmin().unwrap());
+        s.add_user(superadmin()).unwrap();
+        assert!(s.has_active_superadmin().unwrap());
+    }
+
+    #[test]
+    fn reset_password_state_updates_hash_and_revokes_sessions() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let created_at = fixed_ts();
+        let hash = crate::operator::sessions::hash_session_secret("reset-secret");
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let summary = s
+            .reset_password_state(&alice_id, "$argon2id$reset", false, true)
+            .unwrap();
+        assert_eq!(summary.sessions_revoked, 1);
+        assert!(s.verify_web_session(&hash, created_at).unwrap().is_none());
+
+        let state = s.password_state(&alice_id).unwrap().unwrap();
+        assert_eq!(state.hash, "$argon2id$reset");
+        assert!(!state.password_change_required);
+    }
+
+    #[test]
+    fn reset_password_state_without_session_revoke_keeps_sessions() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let created_at = fixed_ts();
+        let hash = crate::operator::sessions::hash_session_secret("keep-secret");
+        s.create_web_session(
+            &hash,
+            &alice_id,
+            created_at,
+            created_at + chrono::Duration::days(7),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let summary = s
+            .reset_password_state(&alice_id, "$argon2id$keep", true, false)
+            .unwrap();
+        assert_eq!(summary.sessions_revoked, 0);
+        assert!(s.verify_web_session(&hash, created_at).unwrap().is_some());
+    }
+
+    #[test]
+    fn reset_password_state_rejects_missing_user() {
+        let (_d, s) = fresh();
+        let missing = UserId::from_str("missing").unwrap();
+        let err = s
+            .reset_password_state(&missing, "$argon2id$x", false, true)
+            .unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn add_user_with_password_persists_hash_and_rejects_duplicate() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user_with_password(alice(), Some("$argon2id$awp"), true)
+            .unwrap();
+        let state = s.password_state(&alice_id).unwrap().unwrap();
+        assert_eq!(state.hash, "$argon2id$awp");
+        assert!(state.password_change_required);
+
+        let err = s.add_user_with_password(alice(), None, false).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserAlreadyExists(_)));
+    }
+
+    #[test]
+    fn add_user_with_password_none_leaves_hash_unset() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user_with_password(alice(), None, false).unwrap();
+        // No password row was written, so password_state is None (not an error).
+        assert_eq!(s.password_state(&alice_id).unwrap(), None);
+    }
+
+    #[test]
+    fn seed_credential_for_test_authenticates_and_rejects_missing_user() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+
+        let (cred, raw) = s
+            .seed_credential_for_test(&alice_id, Some("seeded".into()))
+            .unwrap();
+        assert_eq!(cred.label.as_deref(), Some("seeded"));
+        let id = s.verify(&raw).unwrap();
+        assert_eq!(id.user_id, alice_id);
+
+        let missing = UserId::from_str("missing").unwrap();
+        let err = s.seed_credential_for_test(&missing, None).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn bootstrap_pair_inserts_user_and_credential() {
+        let (_d, s) = fresh();
+        let admin = superadmin();
+        let raw = "bootstrap-pair-tok";
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: admin.id.clone(),
+            token_hash: hash_token(raw),
+            label: Some("pair".into()),
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        s.bootstrap_pair(admin.clone(), cred).unwrap();
+
+        let id = s.verify(raw).unwrap();
+        assert_eq!(id.role, OperatorRole::Superadmin);
+
+        // A second pair for an existing user id is rejected.
+        let dup_cred = Credential {
+            id: CredentialId::new(),
+            user_id: admin.id.clone(),
+            token_hash: hash_token("other"),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        let err = s.bootstrap_pair(admin, dup_cred).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserAlreadyExists(_)));
+    }
+
+    #[test]
+    fn bootstrap_pair_rejects_mismatched_user_id() {
+        let (_d, s) = fresh();
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: UserId::from_str("bob").unwrap(),
+            token_hash: hash_token("x"),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        let err = s.bootstrap_pair(alice(), cred).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::WriteFailed(_)));
+    }
+
+    #[test]
+    fn bootstrap_legacy_rejects_invalid_token_length() {
+        let (_d, s) = fresh();
+        let err = s.bootstrap_legacy_superadmin("").unwrap_err();
+        assert!(matches!(err, IdentityStoreError::WriteFailed(_)));
+
+        let too_long = "x".repeat(257);
+        let err = s.bootstrap_legacy_superadmin(&too_long).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::WriteFailed(_)));
+    }
+
+    #[test]
+    fn onboard_first_superadmin_happy_path() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+        let setup_token = s.rotate_onboarding_setup_token(now).unwrap();
+
+        s.onboard_first_superadmin(superadmin(), "$argon2id$onboard", &setup_token, now)
+            .unwrap();
+
+        // The onboarded superadmin exists and the setup token was consumed.
+        assert!(s.has_active_superadmin().unwrap());
+        assert!(!s.verify_onboarding_setup_token(&setup_token, now).unwrap());
+        let state = s.password_state(&UserId::superadmin()).unwrap().unwrap();
+        assert_eq!(state.hash, "$argon2id$onboard");
+        assert!(!state.password_change_required);
+    }
+
+    #[test]
+    fn onboard_first_superadmin_rejects_non_superadmin_role() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+        let err = s
+            .onboard_first_superadmin(alice(), "$argon2id$x", "tok", now)
+            .unwrap_err();
+        assert!(matches!(err, OnboardingError::Store(_)));
+    }
+
+    #[test]
+    fn onboard_first_superadmin_rejects_when_already_bootstrapped() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+        let setup_token = s.rotate_onboarding_setup_token(now).unwrap();
+        s.add_user(superadmin()).unwrap();
+
+        let err = s
+            .onboard_first_superadmin(superadmin(), "$argon2id$x", &setup_token, now)
+            .unwrap_err();
+        assert_eq!(err, OnboardingError::AlreadyBootstrapped);
+    }
+
+    #[test]
+    fn onboard_first_superadmin_rejects_invalid_setup_token() {
+        let (_d, s) = fresh();
+        let now = fixed_ts();
+        // No setup token row at all -> verification fails.
+        let err = s
+            .onboard_first_superadmin(superadmin(), "$argon2id$x", "wrong", now)
+            .unwrap_err();
+        assert_eq!(err, OnboardingError::InvalidSetupToken);
+
+        // A rotated token that does not match the candidate also fails.
+        s.rotate_onboarding_setup_token(now).unwrap();
+        let err = s
+            .onboard_first_superadmin(superadmin(), "$argon2id$x", "still-wrong", now)
+            .unwrap_err();
+        assert_eq!(err, OnboardingError::InvalidSetupToken);
+    }
+
+    #[test]
+    fn insert_audit_entry_merges_details_and_persists() {
+        let (_d, s) = fresh();
+        let entry = AuditEntry {
+            timestamp: fixed_ts(),
+            actor: "alice".into(),
+            role: Some(OperatorRole::Superadmin),
+            method: "POST".into(),
+            path: "/v1/users".into(),
+            outcome: crate::operator::audit::AuditOutcome::Allow,
+            reason: None,
+            action: Some("user.create".into()),
+            resource_kind: Some("user".into()),
+            resource_value: Some("alice".into()),
+            details: Some(serde_json::json!({ "extra_key": "extra_val" })),
+        };
+        s.insert_audit_entry(&entry).unwrap();
+
+        let (action, details): (String, String) = s
+            .store
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT action, details_json FROM audit WHERE user_id = 'alice'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(action, "user.create");
+        let parsed: serde_json::Value = serde_json::from_str(&details).unwrap();
+        assert_eq!(parsed["extra_key"], "extra_val");
+        assert!(parsed.get("role").is_some());
+    }
+
+    #[test]
+    fn insert_audit_entry_empty_actor_stores_null_and_derives_action() {
+        let (_d, s) = fresh();
+        let entry = AuditEntry {
+            timestamp: fixed_ts(),
+            actor: String::new(),
+            role: None,
+            method: "GET".into(),
+            path: "/v1/health".into(),
+            outcome: crate::operator::audit::AuditOutcome::Deny,
+            reason: Some("unauthenticated".into()),
+            action: None,
+            resource_kind: None,
+            resource_value: None,
+            details: None,
+        };
+        s.insert_audit_entry(&entry).unwrap();
+
+        let (user_id, action): (Option<String>, String) = s
+            .store
+            .with_conn(|c| {
+                c.query_row("SELECT user_id, action FROM audit LIMIT 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(user_id, None); // empty actor maps to NULL
+        assert_eq!(action, "GET /v1/health"); // derived from method + path
+    }
+
+    #[test]
+    fn verify_rejects_empty_and_oversize_tokens() {
+        let (_d, s) = fresh();
+        assert_eq!(s.verify("").unwrap_err(), RbacError::Unauthenticated);
+        let too_long = "x".repeat(257);
+        assert_eq!(
+            s.verify(&too_long).unwrap_err(),
+            RbacError::CredentialInvalid
+        );
+    }
+
+    #[test]
+    fn verify_unknown_token_is_credential_invalid() {
+        let (_d, s) = fresh();
+        s.add_user(alice()).unwrap();
+        assert_eq!(
+            s.verify("never-issued").unwrap_err(),
+            RbacError::CredentialInvalid
+        );
+    }
+
+    #[test]
+    fn verify_rejects_disabled_user() {
+        let (_d, s) = fresh();
+        let disabled_user = User {
+            id: UserId::from_str("alice").unwrap(),
+            display_name: "Alice".into(),
+            role: OperatorRole::User,
+            created_at: fixed_ts(),
+            disabled: true,
+        };
+        // Insert the disabled user directly (add_user accepts disabled flag).
+        s.store
+            .with_write_tx(|tx| insert_user(tx, &disabled_user))
+            .unwrap();
+        let raw = "disabled-tok";
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: disabled_user.id.clone(),
+            token_hash: hash_token(raw),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &cred))
+            .unwrap();
+
+        assert_eq!(s.verify(raw).unwrap_err(), RbacError::UserDisabled);
+    }
+
+    #[test]
+    fn verify_credential_with_orphan_user_is_credential_invalid() {
+        let (_d, s) = fresh();
+        // Bootstrap creates the reserved _legacy user + active credential.
+        s.bootstrap_legacy_superadmin("orphan-tok").unwrap();
+        // Delete only the user row with FK enforcement disabled for this
+        // single pooled connection, leaving an orphan active credential. This
+        // forces verify()'s user-lookup to miss (the "user not found" arm).
+        s.store
+            .with_conn(|c| {
+                c.pragma_update(None, "foreign_keys", "OFF")
+                    .map_err(map_rusqlite)?;
+                c.execute(
+                    "DELETE FROM users WHERE user_id = ?",
+                    params![UserId::reserved("_legacy").as_str()],
+                )
+                .map_err(map_rusqlite)?;
+                c.pragma_update(None, "foreign_keys", "ON")
+                    .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            s.verify("orphan-tok").unwrap_err(),
+            RbacError::CredentialInvalid
+        );
+    }
+
+    #[test]
+    fn list_users_skips_corrupt_timestamp_row() {
+        let (_d, s) = fresh();
+        s.add_user(alice()).unwrap();
+        // A non-RFC3339 created_at makes row_to_user fail (parse_ts_rusqlite);
+        // the read accessors degrade to an empty Vec / None via unwrap_or_default.
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "UPDATE users SET created_at = 'not-a-timestamp' WHERE user_id = 'alice'",
+                    [],
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert!(s.list_users().is_empty());
+        assert!(s.get_user(&UserId::from_str("alice").unwrap()).is_none());
+    }
+
+    #[test]
+    fn list_grants_skips_corrupt_timestamp_row() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30000);
+        s.add_grant(grant.clone()).unwrap();
+        // A non-RFC3339 created_at makes row_to_grant fail (parse_ts_rusqlite);
+        // the read accessors degrade to empty / None via unwrap_or_default.
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "UPDATE grants SET created_at = 'not-a-timestamp' WHERE user_id = 'alice'",
+                    [],
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert!(s.list_grants(None).is_empty());
+        assert!(s.grants_for(&alice_id).is_empty());
+        assert!(s.get_grant(&grant.id).is_none());
+    }
+
+    #[test]
+    fn revoke_grant_propagates_corrupt_row_as_write_failure() {
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30000);
+        s.add_grant(grant.clone()).unwrap();
+        // Corrupt the grant_id so row_to_grant's ULID parse fails inside the
+        // revoke transaction; the error surfaces as WriteFailed (not GrantNotFound).
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "UPDATE grants SET created_at = 'bad-ts' WHERE grant_id = ?",
+                    params![grant.id.to_string()],
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        let err = s.revoke_grant(&grant.id).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::WriteFailed(_)));
+    }
+
+    #[test]
+    fn list_users_empty_on_fresh_store() {
+        // The unfiltered read accessor returns an empty Vec when no users
+        // exist yet (exercises the empty-loop path before any push).
+        let (_d, s) = fresh();
+        assert!(s.list_users().is_empty());
+    }
+
+    #[test]
+    fn get_user_returns_none_for_missing_user() {
+        // The single-row query_row optional() path returns None for an
+        // absent user without erroring.
+        let (_d, s) = fresh();
+        s.add_user(alice()).unwrap();
+        assert!(s.get_user(&UserId::from_str("ghost").unwrap()).is_none());
+    }
+
+    #[test]
+    fn list_grants_returns_empty_when_no_grants() {
+        // Both the filtered and unfiltered branches return an empty Vec when
+        // the user has no grants / the store has no grants at all.
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        assert!(s.list_grants(Some(&alice_id)).is_empty());
+        assert!(s.list_grants(None).is_empty());
+        assert!(s.grants_for(&alice_id).is_empty());
+    }
+
+    #[test]
+    fn count_superadmins_excludes_disabled_superadmin() {
+        // The COUNT query filters on disabled = 0, so a disabled superadmin
+        // is not counted and has_active_superadmin / has_any_superadmin agree.
+        let (_d, s) = fresh();
+        let disabled_admin = User {
+            id: UserId::superadmin(),
+            display_name: "Built-in".into(),
+            role: OperatorRole::Superadmin,
+            created_at: fixed_ts(),
+            disabled: true,
+        };
+        s.store
+            .with_write_tx(|tx| insert_user(tx, &disabled_admin))
+            .unwrap();
+        assert_eq!(s.count_superadmins(), 0);
+        assert!(!s.has_active_superadmin().unwrap());
+        assert!(!s.has_any_superadmin());
+    }
+
+    #[test]
+    fn grants_for_reads_back_reserved_user_grant() {
+        // A grant owned by the reserved `_legacy` user round-trips through
+        // row_to_grant -> parse_user_id's reserved (`_`-prefixed) branch.
+        let (_d, s) = fresh();
+        s.bootstrap_legacy_superadmin("legacy-tok").unwrap();
+        let legacy_id = UserId::reserved("_legacy");
+        let grant = sample_grant(&legacy_id, 40000, 40000);
+        s.add_grant(grant.clone()).unwrap();
+
+        let got = s.grants_for(&legacy_id);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].user_id.is_reserved());
+        // The unfiltered listing and single-row lookup also resolve the
+        // reserved owner without error.
+        assert_eq!(s.list_grants(None).len(), 1);
+        let one = s.get_grant(&grant.id).unwrap();
+        assert_eq!(one.user_id, legacy_id);
+    }
+
+    #[test]
+    fn list_grants_skips_row_with_empty_client_name() {
+        // An empty `client` string is neither "*" (Any) nor a valid
+        // ClientName, so row_to_grant's Named branch errors (ClientName::new
+        // rejects empty); the read accessors degrade to empty via
+        // unwrap_or_default.
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30000);
+        s.add_grant(grant).unwrap();
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute("UPDATE grants SET client = '' WHERE user_id = 'alice'", [])
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert!(s.list_grants(None).is_empty());
+        assert!(s.grants_for(&alice_id).is_empty());
+    }
+
+    #[test]
+    fn list_grants_skips_row_with_corrupt_grant_id() {
+        // A non-ULID grant_id makes row_to_grant's ULID parse fail; the read
+        // accessors degrade to empty rather than surfacing the error.
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30000);
+        s.add_grant(grant.clone()).unwrap();
+        s.store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "UPDATE grants SET grant_id = 'not-a-ulid' WHERE user_id = 'alice'",
+                    [],
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert!(s.list_grants(Some(&alice_id)).is_empty());
+        assert!(s.list_grants(None).is_empty());
+    }
+
+    #[test]
+    fn list_grants_skips_row_with_corrupt_user_id() {
+        // A non-reserved, non-parseable user_id makes parse_user_id's error
+        // branch fire inside row_to_grant; the read accessors degrade to empty.
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let grant = sample_grant(&alice_id, 30000, 30000);
+        s.add_grant(grant).unwrap();
+        // FK enforcement would block pointing user_id at a non-existent row,
+        // so disable it on this pooled connection for the single UPDATE.
+        s.store
+            .with_conn(|c| {
+                c.pragma_update(None, "foreign_keys", "OFF")
+                    .map_err(map_rusqlite)?;
+                c.execute(
+                    "UPDATE grants SET user_id = 'BAD ID' WHERE client = '*'",
+                    [],
+                )
+                .map_err(map_rusqlite)?;
+                c.pragma_update(None, "foreign_keys", "ON")
+                    .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(s.list_grants(None).is_empty());
+    }
+
+    #[test]
+    fn remove_user_rejects_missing_user() {
+        // remove_user maps the internal user_not_found conflict to the typed
+        // UserNotFound error.
+        let (_d, s) = fresh();
+        let missing = UserId::from_str("missing").unwrap();
+        let err = s.remove_user(&missing).unwrap_err();
+        assert!(matches!(err, IdentityStoreError::UserNotFound(id) if id == missing));
+    }
+
+    #[test]
+    fn remove_user_with_no_credentials_or_grants_returns_empty_summary() {
+        // The cascade-id collectors return empty Vecs when the user owns
+        // nothing, and the summary reflects that.
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let summary = s.remove_user(&alice_id).unwrap();
+        assert!(summary.removed_credential_ids.is_empty());
+        assert!(summary.revoked_grant_ids.is_empty());
+        assert!(s.list_users().is_empty());
+    }
+
+    #[test]
+    fn add_user_with_password_reserved_owner_round_trips() {
+        // Seeding a reserved-id user with a password hash exercises the
+        // Some(hash) UPDATE branch and parse_user_id's reserved read-back.
+        let (_d, s) = fresh();
+        let reserved = UserId::reserved("_seed");
+        let user = User {
+            id: reserved.clone(),
+            display_name: "Seed".into(),
+            role: OperatorRole::Superadmin,
+            created_at: fixed_ts(),
+            disabled: false,
+        };
+        s.add_user_with_password(user, Some("$argon2id$seed"), false)
+            .unwrap();
+        let got = s.get_user(&reserved).unwrap();
+        assert!(got.id.is_reserved());
+        let state = s.password_state(&reserved).unwrap().unwrap();
+        assert_eq!(state.hash, "$argon2id$seed");
+        assert!(!state.password_change_required);
+    }
+
+    #[test]
+    fn verify_updates_last_used_at_on_success() {
+        // A successful verify() performs the best-effort last_used_at write;
+        // read the column back to confirm it transitioned from NULL.
+        let (_d, s) = fresh();
+        let alice_id = UserId::from_str("alice").unwrap();
+        s.add_user(alice()).unwrap();
+        let raw = "last-used-tok";
+        let cred = Credential {
+            id: CredentialId::new(),
+            user_id: alice_id.clone(),
+            token_hash: hash_token(raw),
+            label: None,
+            created_at: fixed_ts(),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        };
+        let cred_id = cred.id.to_string();
+        s.store
+            .with_write_tx(|tx| insert_credential(tx, &cred))
+            .unwrap();
+
+        s.verify(raw).unwrap();
+
+        let last_used: Option<String> = s
+            .store
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT last_used_at FROM credentials WHERE credential_id = ?",
+                    params![cred_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert!(last_used.is_some());
+    }
+
+    #[test]
+    fn debug_impl_includes_db_path() {
+        // The custom Debug impl renders the struct name and the db path field.
+        let (_d, s) = fresh();
+        let rendered = format!("{s:?}");
+        assert!(rendered.contains("SqliteOperatorStore"));
+        assert!(rendered.contains("db"));
+    }
 }

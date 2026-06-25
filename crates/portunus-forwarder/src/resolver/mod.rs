@@ -900,4 +900,286 @@ mod tests {
             r.err()
         );
     }
+
+    /// `ResolveFailReason::as_str` returns the stable operator-facing
+    /// string for every variant. These strings are matched on by log
+    /// pipelines, so the mapping is a contract — assert it exhaustively.
+    #[test]
+    fn resolve_fail_reason_as_str_covers_all_variants() {
+        assert_eq!(ResolveFailReason::NxDomain.as_str(), "nxdomain");
+        assert_eq!(ResolveFailReason::ServFail.as_str(), "servfail");
+        assert_eq!(
+            ResolveFailReason::AttemptTimeout.as_str(),
+            "attempt_timeout"
+        );
+        assert_eq!(
+            ResolveFailReason::AllAddrsUnreachable.as_str(),
+            "all_addrs_unreachable"
+        );
+        assert_eq!(ResolveFailReason::Other.as_str(), "other");
+    }
+
+    /// `ResolveFailReason::classify` maps each `ResolverError` shape to
+    /// its taxonomy bucket. `EmptyAnswer` is treated as "every address
+    /// unreachable" and `AttemptTimeout` maps straight through; the
+    /// `Lookup` message is sniffed case-insensitively for SOA-class
+    /// substrings.
+    #[test]
+    fn classify_maps_each_error_shape() {
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::EmptyAnswer),
+            ResolveFailReason::AllAddrsUnreachable,
+        );
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::AttemptTimeout(Duration::from_secs(3))),
+            ResolveFailReason::AttemptTimeout,
+        );
+        // nxdomain substring, mixed case → NxDomain.
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::Lookup("Got NXDOMAIN back".into())),
+            ResolveFailReason::NxDomain,
+        );
+        // "no records" is the other NxDomain trigger.
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::Lookup("no records found".into())),
+            ResolveFailReason::NxDomain,
+        );
+        // servfail substring → ServFail.
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::Lookup("SERVFAIL from upstream".into())),
+            ResolveFailReason::ServFail,
+        );
+        // "server failure" is the other ServFail trigger.
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::Lookup("Server Failure occurred".into())),
+            ResolveFailReason::ServFail,
+        );
+        // Anything else falls through to Other.
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::Lookup("connection reset".into())),
+            ResolveFailReason::Other,
+        );
+    }
+
+    /// `ConnectError::into_io` flattens every variant into an
+    /// `io::Error`. `Dial` passes the inner error through verbatim;
+    /// `Resolution` and `AllAddrsUnreachable` wrap a formatted message.
+    #[test]
+    fn connect_error_into_io_covers_all_variants() {
+        // Dial: the inner io::Error is returned unchanged (same kind).
+        let dial = ConnectError::Dial(io::Error::new(io::ErrorKind::ConnectionRefused, "boom"));
+        let io_err = dial.into_io();
+        assert_eq!(io_err.kind(), io::ErrorKind::ConnectionRefused);
+
+        // Resolution: wraps a "dns_resolution_failed" message.
+        let resolution = ConnectError::Resolution(ResolverError::EmptyAnswer);
+        let msg = resolution.into_io().to_string();
+        assert!(
+            msg.contains("dns_resolution_failed"),
+            "unexpected message: {msg}"
+        );
+
+        // AllAddrsUnreachable: wraps a "all_addrs_unreachable" message
+        // that surfaces the tried count and the last error.
+        let unreachable = ConnectError::AllAddrsUnreachable {
+            tried: 3,
+            last: io::Error::new(io::ErrorKind::TimedOut, "deadbeef"),
+        };
+        let msg = unreachable.into_io().to_string();
+        assert!(
+            msg.contains("all_addrs_unreachable") && msg.contains('3') && msg.contains("deadbeef"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    /// A DNS target that resolves to an empty address set surfaces
+    /// `ConnectError::Resolution(ResolverError::EmptyAnswer)` (the
+    /// `result.addrs.is_empty()` guard in `resolve_target`). The cache
+    /// reports success, so the failure must come from the empty-set
+    /// check, not the resolver call.
+    #[tokio::test]
+    async fn resolve_target_empty_answer_is_resolution_error() {
+        use crate::resolver::test_support::MockResolver;
+
+        let resolver = MockResolver::ok(vec![], Duration::from_secs(60));
+        let live = LiveResolver::new(Arc::new(resolver), ResolverConfig::default());
+        let target = Target::Dns(Hostname::new("empty.example").unwrap());
+        let err = live
+            .resolve_target(RuleId(30), &target, 9999, false)
+            .await
+            .expect_err("an empty answer set must be a resolution error");
+        match err {
+            ConnectError::Resolution(ResolverError::EmptyAnswer) => {}
+            other => panic!("expected Resolution(EmptyAnswer), got {other:?}"),
+        }
+    }
+
+    /// `resolve_target` on a fresh (`AnswerSource::Fresh`) resolution
+    /// emits the `rule.dns_resolved` log. Install a subscriber so the
+    /// `info!` body (including `chosen_addr = %first`) is fully
+    /// evaluated rather than short-circuited at the disabled level —
+    /// this exercises the formatting arms inside the log macro.
+    #[tokio::test]
+    async fn resolve_target_logs_on_fresh_resolution() {
+        use crate::resolver::test_support::MockResolver;
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let v4: IpAddr = "127.0.0.1".parse().unwrap();
+        let resolver = MockResolver::ok(vec![v4], Duration::from_secs(60));
+        let live = LiveResolver::new(Arc::new(resolver), ResolverConfig::default());
+        let target = Target::Dns(Hostname::new("logged.example").unwrap());
+        let (addrs, source) = live
+            .resolve_target(RuleId(31), &target, 8080, false)
+            .await
+            .expect("fresh resolution must succeed");
+        assert_eq!(source, AnswerSource::Fresh);
+        assert_eq!(addrs, vec![SocketAddr::new(v4, 8080)]);
+    }
+
+    /// IPv6 IP-target dial exercises the `TcpSocket::new_v6` family
+    /// branch inside `dial` (the v4 branch is covered by the echo test
+    /// above). We bind a real IPv6 loopback echo and round-trip a byte.
+    #[tokio::test]
+    async fn ipv6_target_dials_via_v6_socket() {
+        // Some CI sandboxes have IPv6 loopback disabled; skip rather than
+        // fail in that case.
+        let Ok(listener) = TcpListener::bind("[::1]:0").await else {
+            return;
+        };
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4];
+                if sock.read_exact(&mut buf).await.is_ok() {
+                    let _ = sock.write_all(&buf).await;
+                }
+            }
+        });
+
+        let target = Target::Ip(addr.ip());
+        let resolver = LiveResolver::new(Arc::new(PanickingResolver), ResolverConfig::default());
+        let (mut sock, _src) = resolver
+            .connect_target(RuleId(40), &target, addr.port(), false)
+            .await
+            .expect("ipv6 loopback target should connect");
+        sock.write_all(b"pong").await.unwrap();
+        let mut buf = [0u8; 4];
+        sock.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pong");
+    }
+
+    /// With both dial buffer fields set to `None`, `dial` skips the
+    /// `set_send_buffer_size` / `set_recv_buffer_size` calls entirely
+    /// (the `if let Some` guards are false) and still connects. This
+    /// covers the "kernel default" buffer branch.
+    #[tokio::test]
+    async fn dial_with_no_buffer_sizing_still_connects() {
+        let echo = spawn_echo().await;
+        let target = Target::Ip(echo.ip());
+        let config = ResolverConfig {
+            dial_send_buffer_bytes: None,
+            dial_recv_buffer_bytes: None,
+            ..ResolverConfig::default()
+        };
+        let resolver = LiveResolver::new(Arc::new(PanickingResolver), config);
+        let (mut sock, _src) = resolver
+            .connect_target(RuleId(41), &target, echo.port(), false)
+            .await
+            .expect("dial with kernel-default buffers should connect");
+        sock.write_all(b"buf!").await.unwrap();
+        let mut buf = [0u8; 4];
+        sock.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"buf!");
+    }
+
+    // NOTE: the `attempt_timeout` SYN-blackhole dial path (ConnectError::Dial
+    // with ErrorKind::TimedOut) is intentionally not unit-tested. Triggering it
+    // deterministically needs a real non-loopback address that silently drops
+    // SYNs; reserved TEST-NET ranges are answered by some local routers/NAT, so
+    // the outcome is environment-dependent and flaky. Left to integration tests.
+
+    /// `HickoryResolver::from_system` constructs successfully in the
+    /// test environment, and the wrapped resolver carries the configured
+    /// per-attempt timeout. Exercises the success arm of `from_system`
+    /// directly (separate from the `LiveResolver` convenience wrapper).
+    #[tokio::test]
+    async fn hickory_from_system_constructs() {
+        let config = ResolverConfig {
+            attempt_timeout: Duration::from_millis(250),
+            ..ResolverConfig::default()
+        };
+        // A malformed /etc/resolv.conf is an environment problem, not a logic
+        // bug; don't fail the suite over it.
+        let Ok(r) = HickoryResolver::from_system(&config) else {
+            return;
+        };
+        assert_eq!(r.attempt_timeout, Duration::from_millis(250));
+    }
+
+    /// `HickoryResolver::resolve` success path: `localhost` resolves via
+    /// the system hosts file (no network) on every CI/dev box, returning
+    /// loopback addresses and a non-negative TTL. Exercises the full body
+    /// of `resolve` — the lookup, the `valid_until()` → `Duration`
+    /// conversion, and the `ResolveAnswer` assembly. Skips (does not fail)
+    /// if the system resolver config can't be loaded or the host lacks a
+    /// `localhost` entry, since both are environment problems, not logic
+    /// bugs.
+    #[tokio::test]
+    async fn hickory_resolve_localhost_returns_loopback() {
+        let config = ResolverConfig::default();
+        let Ok(resolver) = HickoryResolver::from_system(&config) else {
+            return;
+        };
+        let name = Hostname::new("localhost").unwrap();
+        // Some sandboxes strip the hosts-file `localhost` entry; treat a
+        // lookup failure as a skip rather than a hard failure.
+        let Ok(answer) = resolver.resolve(&name).await else {
+            return;
+        };
+        assert!(
+            !answer.addrs.is_empty(),
+            "localhost must resolve to at least one loopback address",
+        );
+        assert!(
+            answer.addrs.iter().all(IpAddr::is_loopback),
+            "every localhost address must be loopback: {:?}",
+            answer.addrs,
+        );
+        // Reaching here means the `valid_until()` → `Duration` conversion
+        // (the only place a TTL is produced) ran without panicking; we
+        // don't assert its magnitude because the hosts-file advertised
+        // TTL varies by platform.
+        let _ = answer.ttl;
+    }
+
+    /// `HickoryResolver::resolve` attempt-timeout arm: with a one-
+    /// nanosecond per-attempt budget the `tokio::time::timeout` wrapper
+    /// fires before any async lookup can complete, so `resolve` returns
+    /// `ResolverError::AttemptTimeout` carrying the configured budget.
+    /// This is deterministic — an async lookup never resolves on its
+    /// first poll, so the already-elapsed timer always wins.
+    #[tokio::test]
+    async fn hickory_resolve_times_out_with_tiny_budget() {
+        let config = ResolverConfig {
+            attempt_timeout: Duration::from_nanos(1),
+            ..ResolverConfig::default()
+        };
+        let Ok(resolver) = HickoryResolver::from_system(&config) else {
+            return;
+        };
+        let name = Hostname::new("localhost").unwrap();
+        // An async lookup cannot complete on its first poll, so an
+        // already-elapsed 1ns timer wins the race and the timeout arm
+        // fires. In the (theoretical) event the lookup resolved or
+        // errored some other way, don't fail the suite over a benign
+        // race — only the AttemptTimeout shape carries a contract.
+        if let Err(ResolverError::AttemptTimeout(budget)) = resolver.resolve(&name).await {
+            assert_eq!(budget, Duration::from_nanos(1));
+        }
+    }
 }

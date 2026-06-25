@@ -700,4 +700,294 @@ mod tests {
         assert_eq!(flow.datagrams_in.load(Ordering::Relaxed), 1);
         assert!(flow.last_seen_at() > before);
     }
+
+    // ---- multi-target constructor + per-target byte crediting --------
+
+    use crate::forwarder::failover::HealthState;
+    use crate::forwarder::quota::{ConsumeOutcome, QuotaHandle, QuotaState};
+
+    /// Build a `health_states` slice of `n` fresh Healthy targets.
+    fn fresh_health_states(n: usize) -> Arc<Vec<Mutex<HealthState>>> {
+        Arc::new((0..n).map(|_| Mutex::new(HealthState::new())).collect())
+    }
+
+    /// Build a `QuotaHandle` with `remaining` bytes left in the budget.
+    fn quota_with_remaining(remaining: i64) -> Arc<QuotaHandle> {
+        Arc::new(QuotaHandle::new(
+            "user".into(),
+            "client".into(),
+            QuotaState {
+                monthly_bytes: remaining.max(0),
+                budget_remaining_bytes: remaining,
+                exhausted: remaining <= 0,
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn new_multi_target_sets_target_idx_and_health_states() {
+        let sock = make_socket().await;
+        let states = fresh_health_states(2);
+        let flow = UdpFlow::new_multi_target(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec![
+                "127.0.0.1:9999".parse().unwrap(),
+                "127.0.0.1:9998".parse().unwrap(),
+            ],
+            1,
+            Arc::clone(&states),
+        );
+        assert_eq!(flow.target_idx, Some(1));
+        assert!(flow.health_states.is_some());
+        // The flow shares the same slice the rule owns.
+        assert_eq!(flow.health_states.as_ref().unwrap().len(), 2);
+        // Legacy-only fields default the same way as `new`.
+        assert!(flow.quota.is_none());
+        assert_eq!(flow.current_addr_idx.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn bump_inbound_credits_the_stuck_target_on_multi_target_flow() {
+        let sock = make_socket().await;
+        let states = fresh_health_states(2);
+        let flow = UdpFlow::new_multi_target(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+            1,
+            Arc::clone(&states),
+        );
+        flow.bump_inbound(256).await;
+        flow.bump_outbound(64).await;
+        // Per-flow aggregates updated.
+        assert_eq!(flow.bytes_in.load(Ordering::Relaxed), 256);
+        assert_eq!(flow.bytes_out.load(Ordering::Relaxed), 64);
+        // Only the stuck target (idx 1) is credited; idx 0 stays at zero.
+        let (in0, out0) = states[0].lock().await.snapshot_bytes();
+        assert_eq!((in0, out0), (0, 0));
+        let (in1, out1) = states[1].lock().await.snapshot_bytes();
+        assert_eq!(in1, 256);
+        assert_eq!(out1, 64);
+    }
+
+    #[tokio::test]
+    async fn bump_skips_target_crediting_when_idx_out_of_range() {
+        // A `target_idx` past the end of `health_states` must not panic;
+        // the `states.get(idx)` guard simply skips the per-target credit.
+        let sock = make_socket().await;
+        let states = fresh_health_states(1);
+        let flow = UdpFlow::new_multi_target(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+            5,
+            Arc::clone(&states),
+        );
+        flow.bump_inbound(10).await;
+        flow.bump_outbound(20).await;
+        // Aggregates still move…
+        assert_eq!(flow.bytes_in.load(Ordering::Relaxed), 10);
+        assert_eq!(flow.bytes_out.load(Ordering::Relaxed), 20);
+        // …but no per-target slot was touched.
+        let (in0, out0) = states[0].lock().await.snapshot_bytes();
+        assert_eq!((in0, out0), (0, 0));
+    }
+
+    // ---- quota attachment + budget helpers ---------------------------
+
+    #[tokio::test]
+    async fn attach_quota_installs_handle_on_unique_arc() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        assert!(flow.quota.is_none());
+        let flow = flow.attach_quota(quota_with_remaining(1_000));
+        assert!(flow.quota.is_some());
+        // A freshly-attached, non-exhausted budget admits traffic.
+        assert!(flow.quota_allows());
+    }
+
+    #[tokio::test]
+    async fn quota_allows_reflects_exhaustion() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        // An exhausted budget (zero remaining) denies traffic.
+        let flow = flow.attach_quota(quota_with_remaining(0));
+        assert!(!flow.quota_allows());
+    }
+
+    #[tokio::test]
+    async fn quota_consume_after_send_grants_then_exhausts() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        let flow = flow.attach_quota(quota_with_remaining(100));
+        // First consume fits under budget → Granted (true).
+        assert!(flow.quota_consume_after_send(40));
+        // Straddling the boundary returns false (Exhausted) even though
+        // the datagram already landed.
+        assert!(!flow.quota_consume_after_send(80));
+        // Once exhausted, `quota_allows` short-circuits to false.
+        assert!(!flow.quota_allows());
+    }
+
+    #[tokio::test]
+    async fn quota_consume_after_send_is_noop_on_unmetered_flow() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        // No quota installed → always true, no atomic load.
+        assert!(flow.quota_consume_after_send(9_999));
+        assert!(flow.quota_try_consume(9_999));
+    }
+
+    #[tokio::test]
+    async fn quota_try_consume_pre_debits_and_then_denies() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        let quota = quota_with_remaining(50);
+        let flow = flow.attach_quota(Arc::clone(&quota));
+        // Pre-debit fits → true and the budget shrinks.
+        assert!(flow.quota_try_consume(30));
+        assert_eq!(quota.remaining(), 20);
+        // Next pre-debit straddles the boundary → false.
+        assert!(!flow.quota_try_consume(40));
+    }
+
+    #[tokio::test]
+    async fn quota_restore_refunds_pre_debited_bytes() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        let quota = quota_with_remaining(100);
+        let flow = flow.attach_quota(Arc::clone(&quota));
+        assert!(flow.quota_try_consume(100));
+        assert_eq!(quota.remaining(), 0);
+        assert!(quota.is_exhausted());
+        // Refund the unsent tail — budget recovers and exhaustion clears.
+        flow.quota_restore(60);
+        assert_eq!(quota.remaining(), 60);
+        assert!(flow.quota_allows());
+        // Restore on an unmetered flow is a harmless no-op.
+        let bare = UdpFlow::new(
+            "127.0.0.1:50001".parse().unwrap(),
+            make_socket().await,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        bare.quota_restore(10);
+        assert!(bare.quota_allows());
+    }
+
+    #[tokio::test]
+    async fn quota_consume_after_send_drives_exhausted_branch_directly() {
+        // Exercises `quota_consume_after_send`'s `Some(q)` arm landing on
+        // a non-Granted outcome from `consume`.
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        let quota = quota_with_remaining(0);
+        let flow = flow.attach_quota(Arc::clone(&quota));
+        // Already exhausted → consume returns Exhausted → false.
+        assert_eq!(quota.consume(1), ConsumeOutcome::Exhausted);
+        assert!(!flow.quota_consume_after_send(1));
+    }
+
+    // ---- force_last_seen forward branch ------------------------------
+
+    #[tokio::test]
+    async fn force_last_seen_accepts_instant_after_baseline() {
+        let sock = make_socket().await;
+        let flow = UdpFlow::new(
+            "127.0.0.1:50000".parse().unwrap(),
+            sock,
+            vec!["127.0.0.1:9999".parse().unwrap()],
+        );
+        // An instant comfortably after the process baseline encodes
+        // cleanly and round-trips through `last_seen_at`.
+        let target = Instant::now() + Duration::from_secs(1);
+        flow.force_last_seen(target);
+        let read_back = flow.last_seen_at();
+        // Round-trip is exact to the nanosecond by construction.
+        assert_eq!(read_back, target);
+        assert!(read_back > Instant::now());
+    }
+
+    // ---- build_flow_dns empty-answer path ----------------------------
+
+    /// An empty resolver answer (the resolver succeeded but returned no
+    /// addresses) bumps `dns_failures` once and surfaces
+    /// `ConnectError::Resolution(EmptyAnswer)` without binding a socket.
+    #[tokio::test]
+    async fn build_flow_dns_empty_answer_bumps_failures_and_errors() {
+        let resolver = LiveResolver::new(
+            Arc::new(MockResolver::ok(vec![], StdDuration::from_secs(60))),
+            ResolverConfig::default(),
+        );
+        let stats = RuleStats::new();
+        let target = Target::Dns(Hostname::new("empty.example").unwrap());
+        let source: SocketAddr = "127.0.0.1:50103".parse().unwrap();
+
+        let err = build_flow_dns(&resolver, RuleId(4), &target, 9999, false, source, &stats)
+            .await
+            .expect_err("empty answer must surface as an error");
+        assert!(
+            matches!(err, ConnectError::Resolution(ResolverError::EmptyAnswer)),
+            "expected Resolution(EmptyAnswer), got {err:?}",
+        );
+        assert_eq!(
+            stats.snapshot_dns_failures(),
+            1,
+            "empty answer counts as exactly one dns_failure",
+        );
+    }
+
+    /// IP targets skip the resolver and bind an upstream socket directly,
+    /// returning a single-candidate flow.
+    #[tokio::test]
+    async fn build_flow_dns_ip_target_binds_single_candidate() {
+        let resolver = LiveResolver::new(
+            Arc::new(MockResolver::ok(
+                vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+                StdDuration::from_secs(60),
+            )),
+            ResolverConfig::default(),
+        );
+        let stats = RuleStats::new();
+        let target = Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let source: SocketAddr = "127.0.0.1:50104".parse().unwrap();
+
+        let flow = build_flow_dns(&resolver, RuleId(5), &target, 7000, false, source, &stats)
+            .await
+            .expect("ip target resolves without invoking the resolver");
+        assert_eq!(flow.upstream_addrs.len(), 1);
+        assert_eq!(
+            flow.current_upstream(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7000)
+        );
+        assert_eq!(stats.snapshot_dns_failures(), 0);
+    }
 }

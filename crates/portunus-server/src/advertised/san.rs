@@ -162,4 +162,96 @@ mod tests {
         assert!(s.covers("public.example"));
         assert!(s.covers("PUBLIC.EXAMPLE"));
     }
+
+    #[test]
+    fn from_pem_no_pem_block_errors() {
+        // Input has no PEM armor at all -> parse_x509_pem fails.
+        let err = CertSanSet::from_pem("not a pem document").expect_err("must fail");
+        assert!(err.starts_with("pem parse:"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn from_pem_wrong_label_errors() {
+        // Valid PEM, but the block label is not CERTIFICATE.
+        const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n";
+        let err = CertSanSet::from_pem(KEY_PEM).expect_err("must fail");
+        assert!(
+            err.contains("expected CERTIFICATE PEM block"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("PRIVATE KEY"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn from_pem_invalid_der_errors() {
+        // Valid CERTIFICATE PEM armor, but the contents are not valid DER.
+        const BAD_DER_PEM: &str = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        let err = CertSanSet::from_pem(BAD_DER_PEM).expect_err("must fail");
+        assert!(err.starts_with("der parse:"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn non_dns_non_ip_san_entries_ignored() {
+        // Self-signed leaf whose only SAN entries are URI + email, exercising
+        // the `_ => {}` arm; it covers no DNS host and no IP.
+        const URI_EMAIL_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIDMDCCAhigAwIBAgIUbx4wBLOhz6399aZRd4zKjzGgqSYwDQYJKoZIhvcNAQEL\n\
+BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA2MjUwNTE5MjBaFw0zNjA2MjIwNTE5\n\
+MjBaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK\n\
+AoIBAQDVzjnI81KAqxK6ReyZhj7EPW4+I35AwNZZ86R7/JhwV+N62teJQFqyD3Sd\n\
++sJREJ+wUDdy55F5IYg8t4fDzMRrCE4EYx/sm4Y5RTU9cmZHVYAzqKiKiuFng4+a\n\
+1DPLV/WJPQzhAxH/+MDyc86AW5O5xjvTgW/+MBh6O8KAujbO8Tv8wsM3HWxcZhtC\n\
+wupmelI8ekIw9xiNZ3dGAmZwi47AQK6UZ/kmwTqL3Hzkzzaf25ItaK7vka3EUEqJ\n\
+kkOZWHVCpNhpS/IL1dHtbbehQjoNIAMQKhBV3p0YF6rR82QEzNCHmXjjKdLm/qgz\n\
+9xGTRBiAUG2+90eguEP3IxjskOahAgMBAAGjgYMwgYAwHQYDVR0OBBYEFK0c+LVE\n\
+Hbd2HkazauwyoAugBYANMB8GA1UdIwQYMBaAFK0c+LVEHbd2HkazauwyoAugBYAN\n\
+MA8GA1UdEwEB/wQFMAMBAf8wLQYDVR0RBCYwJIYTaHR0cHM6Ly9leGFtcGxlLmNv\n\
+bYENYUBleGFtcGxlLmNvbTANBgkqhkiG9w0BAQsFAAOCAQEAGFPwmhgKgf5sFI5r\n\
+mmv44As96gO3Qa4ALtViu8tnabW5PUd01AnangPGUfoZMbeggMcMQngTtPxwy7vm\n\
+a5UjmXipJJXU58cmPCUrqisebaK+zeooGPrNs8ZgWVSQ/35R9mpZe6oMZyi6HhJc\n\
+QT4cfAa6YBwttvxPtKEGQxvM3UG7pCRHwgsmQmCvGLLoZ27DpbN2b6neGLex/sdO\n\
+XjwU4bXwpYaFyNBSQpY1/0DRdmVxibxvegjoEBtdOQnuGwMu3SnoXvNtK+arlPVm\n\
+eLDAUqzTmTKl5lvMJRUVzE22NSL2LuYWJC5bNaVmGoNKxSX4fFFjSu7U0qcRkwLL\n\
+dsdg3w==\n\
+-----END CERTIFICATE-----\n";
+        let s = CertSanSet::from_pem(URI_EMAIL_PEM).expect("parse uri/email fixture");
+        assert!(!s.covers("example.com"));
+        assert!(!s.covers("a@example.com"));
+    }
+
+    #[test]
+    fn ipv6_ip_san_is_collected() {
+        // Self-signed leaf with a single IP SAN: IP:::1 (16-byte address).
+        const IPV6_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBoTCCAUagAwIBAgIUX76EUIaVgPRAJ0qb71Sk/NzqTvQwCgYIKoZIzj0EAwIw\n\
+FzEVMBMGA1UEAwwMaXB2Ni5leGFtcGxlMB4XDTI2MDYyNTA1MTkzNFoXDTM2MDYy\n\
+MjA1MTkzNFowFzEVMBMGA1UEAwwMaXB2Ni5leGFtcGxlMFkwEwYHKoZIzj0CAQYI\n\
+KoZIzj0DAQcDQgAEekRTUkxJUXGXYtuoawLXAKK+BgO4Vuj3o+7gBbym5pZk/rsN\n\
+z4uSuVFNLXMMzmmcFg6nPyTngV8qxnDhDWFc46NwMG4wHQYDVR0OBBYEFG4N6bAU\n\
+4baDITWTaEnBeJj2fsUwMB8GA1UdIwQYMBaAFG4N6bAU4baDITWTaEnBeJj2fsUw\n\
+MA8GA1UdEwEB/wQFMAMBAf8wGwYDVR0RBBQwEocQAAAAAAAAAAAAAAAAAAAAATAK\n\
+BggqhkjOPQQDAgNJADBGAiEAxtUoAIRx4Ure5R31EIfACMHnzoofXCUKB8E4e3va\n\
+9ysCIQClX636Nq4/zM1FNNZiAkBC37+O5n/7ra0GEEZZu67o2A==\n\
+-----END CERTIFICATE-----\n";
+        let s = CertSanSet::from_pem(IPV6_PEM).expect("parse ipv6 fixture");
+        assert!(s.covers("::1"));
+        assert!(!s.covers("::2"));
+        // IPv6 lives in the IP SAN set only, never the DNS set.
+        assert!(!s.covers("ipv6.example"));
+    }
+
+    #[test]
+    fn bytes_to_ip_length_branches() {
+        // 4 bytes -> IPv4.
+        assert_eq!(
+            bytes_to_ip(&[127, 0, 0, 1]),
+            Some(IpAddr::from([127, 0, 0, 1]))
+        );
+        // 16 bytes -> IPv6.
+        let v6 = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(bytes_to_ip(&v6), Some(IpAddr::from(v6)));
+        // Any other length -> None.
+        assert_eq!(bytes_to_ip(&[1, 2, 3]), None);
+        assert_eq!(bytes_to_ip(&[]), None);
+    }
 }

@@ -215,4 +215,137 @@ mod tests {
         let r = req(Method::POST, &[("x-portunus-csrf", "1")]);
         assert_eq!(verify(&r, None), Err(CsrfError::MissingOrigin));
     }
+
+    #[test]
+    fn error_codes_are_stable() {
+        assert_eq!(CsrfError::MissingOrigin.code(), "csrf_origin_required");
+        assert_eq!(CsrfError::OriginMismatch.code(), "csrf_origin_mismatch");
+        assert_eq!(CsrfError::MissingHeader.code(), "csrf_header_required");
+        assert_eq!(
+            CsrfError::UnsupportedContentType.code(),
+            "csrf_content_type_required"
+        );
+    }
+
+    #[test]
+    fn missing_csrf_header_rejected() {
+        // Origin passes the same-origin check, but the `x-portunus-csrf`
+        // header is absent.
+        let r = req(
+            Method::POST,
+            &[
+                ("origin", "http://127.0.0.1:7080"),
+                ("host", "127.0.0.1:7080"),
+            ],
+        );
+        assert_eq!(verify(&r, None), Err(CsrfError::MissingHeader));
+    }
+
+    #[test]
+    fn wrong_csrf_header_value_rejected() {
+        // The header is present but does not carry the sentinel value "1".
+        let r = req(
+            Method::POST,
+            &[
+                ("origin", "http://127.0.0.1:7080"),
+                ("host", "127.0.0.1:7080"),
+                ("x-portunus-csrf", "0"),
+            ],
+        );
+        assert_eq!(verify(&r, None), Err(CsrfError::MissingHeader));
+    }
+
+    #[test]
+    fn body_with_json_content_type_accepted() {
+        // A request with a body must declare an application/json content type;
+        // the parameterized form (with charset) is accepted.
+        let r = Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("origin", "http://127.0.0.1:7080")
+            .header("host", "127.0.0.1:7080")
+            .header("x-portunus-csrf", "1")
+            .header("content-type", "application/json; charset=utf-8")
+            .header("content-length", "2")
+            .body(Body::from("{}"))
+            .expect("request");
+        assert!(verify(&r, None).is_ok());
+    }
+
+    #[test]
+    fn body_without_content_type_rejected() {
+        // A body is present (via Content-Length) but no Content-Type header.
+        let r = Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("origin", "http://127.0.0.1:7080")
+            .header("host", "127.0.0.1:7080")
+            .header("x-portunus-csrf", "1")
+            .header("content-length", "2")
+            .body(Body::from("{}"))
+            .expect("request");
+        assert_eq!(verify(&r, None), Err(CsrfError::UnsupportedContentType));
+    }
+
+    #[test]
+    fn body_with_non_json_content_type_rejected() {
+        // A body is present and declares a non-JSON media type.
+        let r = Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("origin", "http://127.0.0.1:7080")
+            .header("host", "127.0.0.1:7080")
+            .header("x-portunus-csrf", "1")
+            .header("content-type", "text/plain")
+            .header("content-length", "2")
+            .body(Body::from("hi"))
+            .expect("request");
+        assert_eq!(verify(&r, None), Err(CsrfError::UnsupportedContentType));
+    }
+
+    #[test]
+    fn transfer_encoding_body_requires_json_content_type() {
+        // A streamed body is signalled via Transfer-Encoding rather than
+        // Content-Length; it must still carry a JSON content type.
+        let r = req(
+            Method::POST,
+            &[
+                ("origin", "http://127.0.0.1:7080"),
+                ("host", "127.0.0.1:7080"),
+                ("x-portunus-csrf", "1"),
+                ("transfer-encoding", "chunked"),
+                ("content-type", "text/plain"),
+            ],
+        );
+        assert_eq!(verify(&r, None), Err(CsrfError::UnsupportedContentType));
+    }
+
+    #[test]
+    fn origin_without_scheme_fails_same_origin() {
+        // `strip_scheme` returns None for an origin that lacks an http(s)
+        // scheme, so the same-origin check rejects it.
+        let r = req(
+            Method::POST,
+            &[
+                ("origin", "127.0.0.1:7080"),
+                ("host", "127.0.0.1:7080"),
+                ("x-portunus-csrf", "1"),
+            ],
+        );
+        assert_eq!(verify(&r, None), Err(CsrfError::OriginMismatch));
+    }
+
+    #[test]
+    fn same_origin_strips_https_scheme() {
+        // The https:// prefix branch of `strip_scheme` is exercised here.
+        let r = req(
+            Method::POST,
+            &[
+                ("origin", "https://ops.example.com"),
+                ("host", "ops.example.com"),
+                ("x-portunus-csrf", "1"),
+            ],
+        );
+        assert!(verify(&r, None).is_ok());
+    }
 }

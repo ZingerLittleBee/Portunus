@@ -233,4 +233,140 @@ mod tests {
             EnrollmentUriError::MalformedQueryPair
         ));
     }
+
+    #[test]
+    fn enrollment_uri_rejects_wrong_scheme() {
+        // Anything not prefixed with `portunus://` is rejected up front.
+        let uri = "https://control.example.com:7443/enroll?pin=sha256:&code=join-code";
+
+        assert!(matches!(
+            EnrollmentUri::parse(uri).unwrap_err(),
+            EnrollmentUriError::BadScheme
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_missing_query() {
+        // Correct scheme and path but no `?query` part at all.
+        let uri = "portunus://control.example.com:7443/enroll";
+
+        assert!(matches!(
+            EnrollmentUri::parse(uri).unwrap_err(),
+            EnrollmentUriError::MissingQuery
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_path_without_enroll_suffix() {
+        // The authority/path must end in `/enroll`; otherwise it is a bad path.
+        let uri = format!(
+            "portunus://control.example.com:7443/join?pin=sha256:{}&code=join-code",
+            "a".repeat(64)
+        );
+
+        assert!(matches!(
+            EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUriError::BadPath
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_empty_endpoint() {
+        // `/enroll` with no preceding authority leaves an empty endpoint.
+        let uri = format!(
+            "portunus:///enroll?pin=sha256:{}&code=join-code",
+            "a".repeat(64)
+        );
+
+        assert!(matches!(
+            EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUriError::MissingField("endpoint")
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_pin_without_sha256_prefix() {
+        // The `pin` value must carry the `sha256:` algorithm prefix.
+        let uri = format!(
+            "portunus://control.example.com:7443/enroll?pin={}&code=join-code",
+            "a".repeat(64)
+        );
+
+        assert!(matches!(
+            EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUriError::BadPin
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_pin_with_invalid_hex() {
+        // Correct prefix but the digest is not 64 hex chars.
+        let uri = "portunus://control.example.com:7443/enroll?pin=sha256:nothex&code=join-code";
+
+        assert!(matches!(
+            EnrollmentUri::parse(uri).unwrap_err(),
+            EnrollmentUriError::BadPin
+        ));
+    }
+
+    #[test]
+    fn enrollment_uri_lowercases_uppercase_pin() {
+        // An uppercase digest is accepted and normalised to lowercase hex.
+        let uri = format!(
+            "portunus://control.example.com:7443/enroll?pin=sha256:{}&code=join-code",
+            "A".repeat(64)
+        );
+
+        let parsed = EnrollmentUri::parse(&uri).expect("parse");
+        assert_eq!(parsed.pin_sha256, "a".repeat(64));
+    }
+
+    #[test]
+    fn enrollment_uri_rejects_empty_code_value() {
+        // `code=` with an empty value is rejected as a missing field rather
+        // than yielding an empty join code.
+        let uri = format!(
+            "portunus://control.example.com:7443/enroll?pin=sha256:{}&code=",
+            "a".repeat(64)
+        );
+
+        assert!(matches!(
+            EnrollmentUri::parse(&uri).unwrap_err(),
+            EnrollmentUriError::MissingField("code")
+        ));
+    }
+
+    #[test]
+    fn enroll_error_display_wraps_uri_error() {
+        // The `#[from]` conversion threads a parse error through `EnrollError`
+        // and the outer `Display` prefixes it with `enrollment URI:`.
+        let err: EnrollError = EnrollmentUriError::BadScheme.into();
+        assert_eq!(err.to_string(), "enrollment URI: bad enrollment URI scheme");
+    }
+
+    #[tokio::test]
+    async fn enroll_returns_uri_error_for_bad_scheme() {
+        // The async entry point short-circuits on a parse failure before any
+        // network dial, so it stays fully deterministic and offline.
+        let err = enroll("not-a-portunus-uri", None)
+            .await
+            .expect_err("must reject bad scheme");
+        assert!(matches!(
+            err,
+            EnrollError::Uri(EnrollmentUriError::BadScheme)
+        ));
+    }
+
+    #[test]
+    fn default_bundle_write_path_ends_with_bundle_file() {
+        // Whatever ambient env branch is taken (XDG, HOME, or the cwd
+        // fallback), the resolved write path always ends in the canonical
+        // bundle filename.
+        let path = default_bundle_write_path();
+        assert!(
+            path.ends_with("client.bundle.json"),
+            "path should end in the bundle filename: {}",
+            path.display()
+        );
+    }
 }

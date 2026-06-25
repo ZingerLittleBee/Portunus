@@ -1409,4 +1409,649 @@ mod tests {
             .unwrap();
         assert_ne!(a.id, b.id);
     }
+
+    // --- Direct Rule accessor coverage ---
+
+    /// Build a single-target TCP `Rule` directly for the pure accessor
+    /// helpers that never round-trip through the store push path.
+    fn fixture_rule() -> Rule {
+        let now = Utc::now();
+        Rule {
+            id: RuleId(1),
+            client_id: cid("edge-01"),
+            client_name: name("edge-01"),
+            listen_port: 18080,
+            listen_port_end: Some(18090),
+            target_host: "10.0.0.5".into(),
+            target_port: 8080,
+            target_port_end: Some(8090),
+            prefer_ipv6: None,
+            protocol: Protocol::Tcp,
+            state: RuleState::Pending,
+            created_at: now,
+            last_state_change_at: now,
+            owner_user_id: portunus_auth::UserId::superadmin(),
+            targets: Vec::new(),
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: None,
+        }
+    }
+
+    #[test]
+    fn has_owner_returns_stamped_owner() {
+        use crate::operator::rbac::HasOwner;
+        let rule = fixture_rule();
+        assert_eq!(rule.owner(), &portunus_auth::UserId::superadmin());
+    }
+
+    #[test]
+    fn listen_range_spans_explicit_end() {
+        let rule = fixture_rule();
+        let lr = rule.listen_range();
+        assert_eq!(lr.start(), 18080);
+        assert_eq!(lr.end(), 18090);
+        assert_eq!(lr.len(), 11);
+    }
+
+    #[test]
+    fn target_range_spans_explicit_end() {
+        let rule = fixture_rule();
+        let tr = rule.target_range();
+        assert_eq!(tr.start(), 8080);
+        assert_eq!(tr.end(), 8090);
+        assert_eq!(tr.len(), 11);
+    }
+
+    #[test]
+    fn target_range_single_port_when_end_absent() {
+        let mut rule = fixture_rule();
+        rule.target_port_end = None;
+        let tr = rule.target_range();
+        assert_eq!(tr.start(), 8080);
+        assert_eq!(tr.end(), 8080);
+        assert_eq!(tr.len(), 1);
+    }
+
+    #[test]
+    fn is_multi_target_tracks_targets_list() {
+        let mut rule = fixture_rule();
+        assert!(!rule.is_multi_target());
+        rule.targets = vec![portunus_core::RuleTarget {
+            host: "10.0.0.6".into(),
+            port: 8080,
+            priority: 0,
+            proxy_protocol: None,
+        }];
+        assert!(rule.is_multi_target());
+        // targets_view reflects the explicit list when populated.
+        let view = rule.targets_view();
+        assert_eq!(view.len(), 1);
+        assert_eq!(view[0].host, "10.0.0.6");
+    }
+
+    // --- State-transition error arms ---
+
+    #[tokio::test]
+    async fn mark_active_unknown_returns_not_found() {
+        let store = ServerRuleStore::new();
+        assert!(matches!(
+            store.mark_active(RuleId(999)).await,
+            Err(RuleStoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mark_failed_unknown_returns_not_found() {
+        let store = ServerRuleStore::new();
+        assert!(matches!(
+            store.mark_failed(RuleId(999), "x".into()).await,
+            Err(RuleStoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mark_pending_unknown_returns_not_found() {
+        let store = ServerRuleStore::new();
+        assert!(matches!(
+            store.mark_pending(RuleId(999)).await,
+            Err(RuleStoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mark_pending_resets_active_rule() {
+        let store = ServerRuleStore::new();
+        let r = push_one(&store).await;
+        store.mark_active(r.id).await.unwrap();
+        store.mark_pending(r.id).await.unwrap();
+        let after = store.get(r.id).await.unwrap();
+        assert!(matches!(after.state, RuleState::Pending));
+    }
+
+    /// Once a rule is in the `Removed` terminal state, every transition
+    /// helper refuses with `InvalidTransition`. We force the state by
+    /// hydrating a pre-built `Removed` rule (the public push path never
+    /// yields `Removed`).
+    async fn store_with_removed_rule() -> (ServerRuleStore, RuleId) {
+        let store = ServerRuleStore::new();
+        let mut rule = fixture_rule();
+        rule.id = RuleId(7);
+        rule.listen_port_end = None;
+        rule.target_port_end = None;
+        rule.state = RuleState::Removed;
+        let id = rule.id;
+        store.hydrate(vec![rule]).await;
+        (store, id)
+    }
+
+    #[tokio::test]
+    async fn mark_active_on_removed_is_invalid_transition() {
+        let (store, id) = store_with_removed_rule().await;
+        assert!(matches!(
+            store.mark_active(id).await,
+            Err(RuleStoreError::InvalidTransition)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mark_failed_on_removed_is_invalid_transition() {
+        let (store, id) = store_with_removed_rule().await;
+        assert!(matches!(
+            store.mark_failed(id, "x".into()).await,
+            Err(RuleStoreError::InvalidTransition)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mark_pending_on_removed_is_invalid_transition() {
+        let (store, id) = store_with_removed_rule().await;
+        assert!(matches!(
+            store.mark_pending(id).await,
+            Err(RuleStoreError::InvalidTransition)
+        ));
+    }
+
+    // --- update_rate_limit ---
+
+    #[tokio::test]
+    async fn update_rate_limit_unknown_returns_not_found() {
+        let store = ServerRuleStore::new();
+        assert!(matches!(
+            store
+                .update_rate_limit(RuleId(999), Some(portunus_core::RateLimit::default()))
+                .await,
+            Err(RuleStoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_rate_limit_replaces_envelope_in_place() {
+        let store = ServerRuleStore::new();
+        let r = push_one(&store).await;
+        assert!(r.rate_limit.is_none());
+        let envelope = portunus_core::RateLimit {
+            bandwidth_in_bps: Some(1_000),
+            ..portunus_core::RateLimit::default()
+        };
+        let updated = store
+            .update_rate_limit(r.id, Some(envelope.clone()))
+            .await
+            .unwrap();
+        assert_eq!(updated.id, r.id);
+        assert_eq!(updated.rate_limit, Some(envelope));
+        // Clearing back to None is also supported.
+        let cleared = store.update_rate_limit(r.id, None).await.unwrap();
+        assert!(cleared.rate_limit.is_none());
+    }
+
+    // --- remove() index cleanup paths ---
+
+    #[tokio::test]
+    async fn remove_one_of_two_sni_siblings_keeps_slot() {
+        // Two distinct-SNI siblings share (client, port). Removing one
+        // retains the slot (vec non-empty); removing the second drops
+        // the slot and the per-client index entry.
+        let store = ServerRuleStore::new();
+        let a = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("a.example.com".into()),
+            )
+            .await
+            .unwrap();
+        store.mark_active(a.id).await.unwrap();
+        let b = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("b.example.com".into()),
+            )
+            .await
+            .unwrap();
+        store.mark_active(b.id).await.unwrap();
+
+        // Remove the first sibling: slot survives because b still holds it.
+        store.remove(a.id).await.unwrap();
+        assert_eq!(store.list(None).await.len(), 1);
+        // Removing the second empties the slot AND the per-client index.
+        store.remove(b.id).await.unwrap();
+        assert!(store.list(None).await.is_empty());
+        // Re-pushing the freed port now succeeds (index entry was dropped).
+        let c = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(c.id, a.id);
+    }
+
+    // --- remove_owned_by cascade ---
+
+    #[tokio::test]
+    async fn remove_owned_by_drops_only_matching_owner() {
+        let store = ServerRuleStore::new();
+        let alice = portunus_auth::UserId::superadmin();
+        let bob = portunus_auth::UserId::from_str("bob").unwrap();
+
+        // Two rules owned by superadmin (alice) and one by bob.
+        let r1 = store
+            .push_range(
+                cid("edge-01"),
+                name("edge-01"),
+                PortRange::single(7001),
+                "10.0.0.5".into(),
+                PortRange::single(8001),
+                Protocol::Tcp,
+                None,
+                u32::MAX,
+                alice.clone(),
+            )
+            .await
+            .unwrap();
+        let r2 = store
+            .push_range(
+                cid("edge-01"),
+                name("edge-01"),
+                PortRange::single(7002),
+                "10.0.0.5".into(),
+                PortRange::single(8002),
+                Protocol::Tcp,
+                None,
+                u32::MAX,
+                alice.clone(),
+            )
+            .await
+            .unwrap();
+        let r3 = store
+            .push_range(
+                cid("edge-02"),
+                name("edge-02"),
+                PortRange::single(7003),
+                "10.0.0.5".into(),
+                PortRange::single(8003),
+                Protocol::Tcp,
+                None,
+                u32::MAX,
+                bob.clone(),
+            )
+            .await
+            .unwrap();
+
+        // list_owned_by sees exactly alice's two rules.
+        let owned = store.list_owned_by(&alice).await;
+        assert_eq!(owned.len(), 2);
+
+        let mut freed = store.remove_owned_by(&alice).await;
+        assert_eq!(freed.len(), 2);
+        freed.sort_unstable();
+        let mut expected = vec![r1.id.0, r2.id.0];
+        expected.sort_unstable();
+        assert_eq!(freed, expected);
+
+        // Bob's rule survives; alice's are gone.
+        let remaining = store.list(None).await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, r3.id);
+        assert!(store.list_owned_by(&alice).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_owned_by_unknown_owner_is_noop() {
+        let store = ServerRuleStore::new();
+        push_one(&store).await;
+        let ghost = portunus_auth::UserId::from_str("ghost").unwrap();
+        assert!(store.remove_owned_by(&ghost).await.is_empty());
+        assert_eq!(store.list(None).await.len(), 1);
+    }
+
+    // --- rename_client denormalization ---
+
+    #[tokio::test]
+    async fn rename_client_updates_all_matching_rules() {
+        let store = ServerRuleStore::new();
+        // Two rules under one client id, one under another.
+        store
+            .push(
+                cid("edge-01"),
+                name("edge-01"),
+                7100,
+                "10.0.0.5".into(),
+                8100,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .push(
+                cid("edge-01"),
+                name("edge-01"),
+                7101,
+                "10.0.0.5".into(),
+                8101,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .push(
+                cid("edge-02"),
+                name("edge-02"),
+                7102,
+                "10.0.0.5".into(),
+                8102,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let renamed = store.rename_client(&cid("edge-01"), &name("renamed")).await;
+        assert_eq!(renamed, 2);
+
+        for rule in store.list(Some(&cid("edge-01"))).await {
+            assert_eq!(rule.client_name, name("renamed"));
+        }
+        // The other client is untouched.
+        for rule in store.list(Some(&cid("edge-02"))).await {
+            assert_eq!(rule.client_name, name("edge-02"));
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_client_unknown_returns_zero() {
+        let store = ServerRuleStore::new();
+        push_one(&store).await;
+        let n = store.rename_client(&cid("nobody"), &name("x")).await;
+        assert_eq!(n, 0);
+    }
+
+    // --- count_with_sni gauge source ---
+
+    #[tokio::test]
+    async fn count_with_sni_counts_only_sni_rules() {
+        let store = ServerRuleStore::new();
+        assert_eq!(store.count_with_sni().await, 0);
+        // Plain rule does not count.
+        push_one(&store).await;
+        assert_eq!(store.count_with_sni().await, 0);
+        // SNI rule bumps the count.
+        store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("a.example.com".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.count_with_sni().await, 1);
+    }
+
+    // --- 009-tls-sni-routing overlap matrix ---
+
+    #[tokio::test]
+    async fn sni_distinct_siblings_accepted_duplicate_pattern_rejected() {
+        let store = ServerRuleStore::new();
+        let a = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("a.example.com".into()),
+            )
+            .await
+            .unwrap();
+        store.mark_active(a.id).await.unwrap();
+        // Distinct pattern on the same listen port is accepted.
+        let b = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("b.example.com".into()),
+            )
+            .await
+            .unwrap();
+        store.mark_active(b.id).await.unwrap();
+        assert_ne!(a.id, b.id);
+
+        // Re-using an existing pattern is a SniRouteDuplicate.
+        let err = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("a.example.com".into()),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            RuleStoreError::SniRouteDuplicate {
+                listen_port,
+                sni_pattern,
+                ..
+            } => {
+                assert_eq!(listen_port, 8443);
+                assert_eq!(sni_pattern, "a.example.com");
+            }
+            other => panic!("expected SniRouteDuplicate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sni_fallback_then_second_fallback_is_duplicate() {
+        // Existing port carries an SNI rule plus a fallback (None)
+        // sibling. Pushing a second fallback hits the
+        // SniFallbackDuplicate arm (existing has_fallback == true).
+        let store = ServerRuleStore::new();
+        let sni = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("a.example.com".into()),
+            )
+            .await
+            .unwrap();
+        store.mark_active(sni.id).await.unwrap();
+        // First fallback accepted (existing port is SNI mode, no
+        // fallback yet) — exercises the Some/None accept fall-through.
+        let fb = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        store.mark_active(fb.id).await.unwrap();
+        // Second fallback now collides with the existing fallback sibling.
+        let err = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap_err();
+        match err {
+            RuleStoreError::SniFallbackDuplicate { listen_port, .. } => {
+                assert_eq!(listen_port, 8443);
+            }
+            other => panic!("expected SniFallbackDuplicate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_plain_then_sni_is_unsupported_mode_flip() {
+        // Existing legacy plain-TCP rule (None) on a port; pushing an
+        // SNI rule (Some) onto the same active listener flips the mode
+        // and is rejected with LegacyToSniUnsupported.
+        let store = ServerRuleStore::new();
+        let legacy = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        store.mark_active(legacy.id).await.unwrap();
+        let err = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                Some("a.example.com".into()),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            RuleStoreError::LegacyToSniUnsupported {
+                listen_port,
+                existing_mode,
+                candidate_mode,
+                ..
+            } => {
+                assert_eq!(listen_port, 8443);
+                assert_eq!(existing_mode, "legacy");
+                assert_eq!(candidate_mode, "sni");
+            }
+            other => panic!("expected LegacyToSniUnsupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn two_legacy_fallbacks_same_port_is_port_in_use() {
+        // Both candidate and existing are None on the same TCP single
+        // port → the (None, None) arm surfaces PortInUse (v0.7 compat).
+        let store = ServerRuleStore::new();
+        let first = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        store.mark_active(first.id).await.unwrap();
+        let err = store
+            .push_with_sni(
+                cid("edge-01"),
+                name("edge-01"),
+                8443,
+                "10.0.0.5".into(),
+                8080,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap_err();
+        match err {
+            RuleStoreError::PortInUse { offending_port } => assert_eq!(offending_port, 8443),
+            other => panic!("expected PortInUse, got {other:?}"),
+        }
+    }
+
+    // --- hydrate replay keeps next_id monotonic ---
+
+    #[tokio::test]
+    async fn hydrate_advances_next_id_past_replayed_rules() {
+        let store = ServerRuleStore::new();
+        let mut rule = fixture_rule();
+        rule.id = RuleId(42);
+        rule.listen_port_end = None;
+        rule.target_port_end = None;
+        rule.state = RuleState::Active;
+        store.hydrate(vec![rule]).await;
+        // A subsequent push must take an id strictly greater than 42.
+        let next = store
+            .push(
+                cid("edge-99"),
+                name("edge-99"),
+                19000,
+                "10.0.0.5".into(),
+                9000,
+                Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(next.id.0 > 42, "next_id must exceed the hydrated max");
+        // The hydrated rule is still retrievable.
+        assert!(store.get(RuleId(42)).await.is_some());
+    }
 }

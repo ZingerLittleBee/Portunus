@@ -283,7 +283,7 @@ pub fn build_client_hello(sni: Option<&str>) -> Vec<u8> {
         // server_name extension.
         let mut sn_list = Vec::with_capacity(host.len() + 5);
         sn_list.push(0x00); // name_type = host_name
-        sn_list.extend_from_slice(&(host.len() as u16).to_be_bytes());
+        sn_list.extend_from_slice(&u16::try_from(host.len()).unwrap().to_be_bytes());
         sn_list.extend_from_slice(host.as_bytes());
         let mut sn_ext_data = Vec::with_capacity(sn_list.len() + 2);
         sn_ext_data.extend_from_slice(&(sn_list.len() as u16).to_be_bytes());
@@ -292,7 +292,7 @@ pub fn build_client_hello(sni: Option<&str>) -> Vec<u8> {
         exts.extend_from_slice(&(sn_ext_data.len() as u16).to_be_bytes());
         exts.extend_from_slice(&sn_ext_data);
     }
-    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&u16::try_from(exts.len()).unwrap().to_be_bytes());
     body.extend_from_slice(&exts);
 
     let hs_len = body.len();
@@ -456,5 +456,336 @@ mod tests {
         // a spurious Ok.
         let err = parse(FRAGMENTED_FIXTURE).expect_err("fragmented must be malformed");
         assert_eq!(err, ParseError::Malformed);
+    }
+
+    /// Wrap a raw ClientHello `body` (everything after the 4-byte
+    /// handshake header) into a full TLS handshake record. Lets tests
+    /// craft bodies the public `build_client_hello` helper cannot —
+    /// e.g. a body that ends before the extensions field, or one whose
+    /// length prefixes overrun the buffer.
+    #[allow(clippy::cast_possible_truncation)]
+    fn wrap_record(body: &[u8]) -> Vec<u8> {
+        let hs_len = body.len();
+        let mut hs = Vec::with_capacity(hs_len + 4);
+        hs.push(HS_MSG_CLIENT_HELLO);
+        hs.push(((hs_len >> 16) & 0xff) as u8);
+        hs.push(((hs_len >> 8) & 0xff) as u8);
+        hs.push((hs_len & 0xff) as u8);
+        hs.extend_from_slice(body);
+
+        let mut record = Vec::with_capacity(hs.len() + 5);
+        record.push(RECORD_TYPE_HANDSHAKE);
+        record.extend_from_slice(&[0x03, 0x01]); // legacy version 1.0
+        record.extend_from_slice(&(hs.len() as u16).to_be_bytes());
+        record.extend_from_slice(&hs);
+        record
+    }
+
+    /// Fixed ClientHello prefix: legacy_version (2) + random (32).
+    fn body_prefix() -> Vec<u8> {
+        let mut body = Vec::with_capacity(34);
+        body.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
+        body.extend_from_slice(&[0xab; 32]); // random
+        body
+    }
+
+    #[test]
+    fn wrong_major_version_is_not_tls() {
+        // Record content type is handshake but the major version byte
+        // is not 0x03 — definitely not TLS we care about (line 108).
+        let mut bytes = build_client_hello(Some("example.com"));
+        bytes[1] = 0x02;
+        let err = parse(&bytes).expect_err("bad version");
+        assert_eq!(err, ParseError::NotTls);
+    }
+
+    #[test]
+    fn zero_length_record_is_malformed() {
+        // record_len == 0 is rejected before any fragment slicing.
+        let bytes = vec![RECORD_TYPE_HANDSHAKE, 0x03, 0x03, 0x00, 0x00];
+        let err = parse(&bytes).expect_err("zero len");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn fragment_shorter_than_handshake_header_is_malformed() {
+        // A whole record carrying fewer than 4 fragment bytes cannot
+        // hold a handshake header (line 121).
+        let bytes = vec![
+            RECORD_TYPE_HANDSHAKE,
+            0x03,
+            0x03,
+            0x00,
+            0x03,
+            0x01,
+            0x00,
+            0x00,
+        ];
+        let err = parse(&bytes).expect_err("short fragment");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn handshake_len_overruns_fragment_is_malformed() {
+        // hs_len advertised larger than the fragment carries — R-015
+        // rejects cross-record reassembly (line 131..137).
+        let mut bytes = build_client_hello(Some("example.com"));
+        // Bump the 24-bit handshake length far past the record.
+        bytes[6] = 0xff;
+        bytes[7] = 0xff;
+        let err = parse(&bytes).expect_err("overlong hs_len");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn body_shorter_than_fixed_prefix_is_malformed() {
+        // Handshake body under 34 bytes can't hold legacy_version +
+        // random (line 142).
+        let body = vec![0x03, 0x03, 0xab, 0xab]; // only 4 bytes
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("short body");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn session_id_length_overruns_is_malformed() {
+        // session_id length byte claims more bytes than remain
+        // (Cursor::skip overrun, lines 147-148 / 243).
+        let mut body = body_prefix();
+        body.push(0x05); // session_id length 5, but no bytes follow
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("sid overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn cipher_suites_length_read_past_end_is_malformed() {
+        // Buffer ends right after session_id, so reading the 2-byte
+        // cipher_suites length overruns (lines 151 / 234).
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0; nothing after
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("cipher len missing");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn cipher_suites_skip_overruns_is_malformed() {
+        // cipher_suites length claims 4 bytes but only 0 remain
+        // (lines 151-152 skip overrun).
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x04]); // cipher_suites len 4, none follow
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("cipher skip overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn compression_methods_overrun_is_malformed() {
+        // compression_methods length claims bytes that are not present
+        // (lines 155-156).
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x00]); // cipher_suites len 0
+        body.push(0x03); // compression len 3, none follow
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("compression overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn body_without_extensions_field_is_ok_none() {
+        // TLS 1.0 permits omitting the extensions block entirely. The
+        // cursor reaches EOF right after compression_methods, so parse
+        // returns Ok(None) without reading an extensions length
+        // (line 160-161).
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // cipher_suites
+        body.extend_from_slice(&[0x01, 0x00]); // compression_methods
+        let bytes = wrap_record(&body);
+        let outcome = parse(&bytes).expect("parse");
+        assert_eq!(outcome, ParseOutcome::Ok(None));
+    }
+
+    #[test]
+    fn extensions_total_length_overruns_is_malformed() {
+        // extensions length byte present but claims more bytes than
+        // the body carries (lines 163-164 / take overrun).
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x00]); // cipher_suites len 0
+        body.push(0x00); // compression len 0
+        body.extend_from_slice(&[0xff, 0xff]); // extensions total 65535, none follow
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("ext total overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn extension_header_overruns_is_malformed() {
+        // extensions block declared, but a single extension's
+        // type/length header overruns the declared block (lines
+        // 169-171).
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x00]); // cipher_suites len 0
+        body.push(0x00); // compression len 0
+        // extensions total = 3, but an extension needs >=4 bytes for
+        // type(2)+len(2) — the take overruns.
+        body.extend_from_slice(&[0x00, 0x03]); // ext total 3
+        body.extend_from_slice(&[0x00, 0x00, 0x05]); // partial ext
+        let bytes = wrap_record(&body);
+        let err = parse(&bytes).expect_err("ext header overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn non_sni_extension_is_skipped() {
+        // A single non-server_name extension is walked and skipped via
+        // the `continue` branch (line 172-173); parse falls through to
+        // Ok(None) at line 200.
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x00]); // cipher_suites len 0
+        body.push(0x00); // compression len 0
+        // One extension: type 0x0017 (extended_master_secret), data len 0.
+        let exts: &[u8] = &[0x00, 0x17, 0x00, 0x00];
+        body.extend_from_slice(&u16::try_from(exts.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(exts);
+        let bytes = wrap_record(&body);
+        let outcome = parse(&bytes).expect("parse");
+        assert_eq!(outcome, ParseOutcome::Ok(None));
+    }
+
+    /// Build a ClientHello whose only extension is `server_name` with
+    /// the exact extension-data bytes supplied — lets tests craft a
+    /// malformed or unusual server_name_list the public builder won't.
+    fn build_with_sni_ext_data(ext_data: &[u8]) -> Vec<u8> {
+        let mut body = body_prefix();
+        body.push(0x00); // session_id length 0
+        body.extend_from_slice(&[0x00, 0x00]); // cipher_suites len 0
+        body.push(0x00); // compression len 0
+
+        let mut exts = Vec::new();
+        exts.extend_from_slice(&[0x00, 0x00]); // ext_type = server_name
+        exts.extend_from_slice(&u16::try_from(ext_data.len()).unwrap().to_be_bytes());
+        exts.extend_from_slice(ext_data);
+
+        body.extend_from_slice(&u16::try_from(exts.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(&exts);
+        wrap_record(&body)
+    }
+
+    #[test]
+    fn server_name_list_length_overruns_is_malformed() {
+        // server_name extension present but the inner server_name_list
+        // length claims more bytes than the extension carries (lines
+        // 177-178 take overrun).
+        let ext_data: &[u8] = &[0x00, 0xff]; // list_len 255, no entries
+        let bytes = build_with_sni_ext_data(ext_data);
+        let err = parse(&bytes).expect_err("list len overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn server_name_entry_overruns_is_malformed() {
+        // Inside the list, a host_name entry declares a name length
+        // longer than the list carries (lines 181-183 take overrun).
+        // server_name_list: len=4, then name_type=0x00, name_len=0x00ff
+        // but only 1 byte follows.
+        let ext_data: &[u8] = &[0x00, 0x04, 0x00, 0x00, 0xff, 0x41];
+        let bytes = build_with_sni_ext_data(ext_data);
+        let err = parse(&bytes).expect_err("entry overrun");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn invalid_utf8_hostname_is_malformed() {
+        // host_name bytes are not valid UTF-8 (line 186 map_err).
+        // list_len = 1(type)+2(len)+2(bytes) = 5.
+        let ext_data: &[u8] = &[
+            0x00, 0x05, // server_name_list length
+            0x00, // name_type = host_name
+            0x00, 0x02, // name length 2
+            0xff, 0xfe, // invalid UTF-8
+        ];
+        let bytes = build_with_sni_ext_data(ext_data);
+        let err = parse(&bytes).expect_err("bad utf8");
+        assert_eq!(err, ParseError::Malformed);
+    }
+
+    #[test]
+    fn whitespace_and_dot_only_hostname_is_ok_none() {
+        // A host_name of "  ." trims to empty after stripping the
+        // trailing dot — the `continue` at line 190 skips it, then the
+        // list ends and parse returns Ok(None) (line 197).
+        let host = b"  .";
+        let mut list = Vec::new();
+        list.push(0x00u8); // name_type = host_name
+        list.extend_from_slice(&u16::try_from(host.len()).unwrap().to_be_bytes());
+        list.extend_from_slice(host);
+        let mut ext_data = Vec::new();
+        ext_data.extend_from_slice(&u16::try_from(list.len()).unwrap().to_be_bytes());
+        ext_data.extend_from_slice(&list);
+        let bytes = build_with_sni_ext_data(&ext_data);
+        let outcome = parse(&bytes).expect("parse");
+        assert_eq!(outcome, ParseOutcome::Ok(None));
+    }
+
+    #[test]
+    fn unknown_name_type_in_list_is_ok_none() {
+        // A server_name_list entry with a non-host_name NameType is
+        // skipped silently per RFC 6066 (line 193-194); the extension
+        // yields no host so parse returns Ok(None) (line 197).
+        // name_type = 0x01 (not host_name), name_len = 3, bytes "abc".
+        let host = b"abc";
+        let mut list = Vec::new();
+        list.push(0x01u8); // name_type != host_name
+        list.extend_from_slice(&u16::try_from(host.len()).unwrap().to_be_bytes());
+        list.extend_from_slice(host);
+        let mut ext_data = Vec::new();
+        ext_data.extend_from_slice(&u16::try_from(list.len()).unwrap().to_be_bytes());
+        ext_data.extend_from_slice(&list);
+        let bytes = build_with_sni_ext_data(&ext_data);
+        let outcome = parse(&bytes).expect("parse");
+        assert_eq!(outcome, ParseOutcome::Ok(None));
+    }
+
+    #[test]
+    fn empty_server_name_list_is_ok_none() {
+        // server_name extension whose server_name_list is empty (the
+        // inner while loop never runs) returns Ok(None) per the module
+        // doc — covers the post-loop Ok(None) at line 197.
+        let ext_data: &[u8] = &[0x00, 0x00]; // server_name_list length 0
+        let bytes = build_with_sni_ext_data(ext_data);
+        let outcome = parse(&bytes).expect("parse");
+        assert_eq!(outcome, ParseOutcome::Ok(None));
+    }
+
+    #[test]
+    fn cursor_read_u8_eof_is_malformed() {
+        // Direct Cursor exercise: read_u8 at EOF returns Malformed
+        // (line 225).
+        let mut c = Cursor::new(&[]);
+        assert_eq!(c.read_u8(), Err(ParseError::Malformed));
+    }
+
+    #[test]
+    fn cursor_read_u16_short_is_malformed() {
+        // read_u16 with only one byte left overruns (line 234).
+        let mut c = Cursor::new(&[0x01]);
+        assert_eq!(c.read_u16(), Err(ParseError::Malformed));
+    }
+
+    #[test]
+    fn cursor_take_overrun_is_malformed() {
+        // take past the end returns Malformed (line 251); a successful
+        // take returns the exact slice.
+        let buf = [0x01u8, 0x02, 0x03];
+        let mut c = Cursor::new(&buf);
+        assert_eq!(c.take(2).expect("take 2"), &[0x01, 0x02]);
+        assert_eq!(c.take(5), Err(ParseError::Malformed));
     }
 }

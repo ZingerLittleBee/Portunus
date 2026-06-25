@@ -134,4 +134,52 @@ mod tests {
         assert_eq!(stats.deleted_overflow, 0);
         assert_eq!(count(&store), 10);
     }
+
+    #[test]
+    fn run_once_on_empty_table_is_a_noop() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // No rows at all: both passes run but delete nothing, and the
+        // resulting stats are the all-zero default.
+        let stats = run_once(&store, Utc::now()).unwrap();
+        assert_eq!(stats, RetentionStats::default());
+        assert_eq!(count(&store), 0);
+    }
+
+    #[test]
+    fn run_once_propagates_store_error() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // Drop the audit table out from under the reaper so the first
+        // prune pass (`audit_prune_apply`) fails. `run_once` must
+        // surface that error via `?` rather than swallowing it.
+        store
+            .with_write_tx(|tx| {
+                tx.execute("DROP TABLE audit", []).map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+
+        let err = run_once(&store, Utc::now()).unwrap_err();
+        // "no such table" maps through the catch-all to Internal.
+        assert!(matches!(err, StoreError::Internal { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn retention_stats_default_debug_and_eq() {
+        // Exercise the derived Default / Debug / PartialEq / Eq impls.
+        let zero = RetentionStats::default();
+        assert_eq!(zero.deleted_age, 0);
+        assert_eq!(zero.deleted_overflow, 0);
+        assert_eq!(zero, RetentionStats::default());
+
+        let some = RetentionStats {
+            deleted_age: 3,
+            deleted_overflow: 7,
+        };
+        assert_ne!(some, zero);
+        let dbg = format!("{some:?}");
+        assert!(dbg.contains("deleted_age"));
+        assert!(dbg.contains("deleted_overflow"));
+    }
 }

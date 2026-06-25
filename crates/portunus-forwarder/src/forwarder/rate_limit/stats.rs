@@ -279,4 +279,84 @@ mod tests {
             assert_eq!(reason, back, "round trip failed for {reason:?}");
         }
     }
+
+    #[test]
+    #[should_panic(expected = "slot index 6 out of range")]
+    fn reason_from_index_panics_on_out_of_range() {
+        // The drain path only ever feeds valid slot indices; an out-of-range
+        // index is a programming error and must trip the `unreachable!`.
+        let _ = reason_from_index(REJECT_REASON_COUNT);
+    }
+
+    #[test]
+    fn reason_to_snapshot_maps_every_reason() {
+        // Exercise the exhaustive `match` for all six variants so the
+        // wire-neutral mirror enum stays in lock-step with `RejectReason`.
+        assert_eq!(
+            reason_to_snapshot(RejectReason::ConnConcurrent),
+            RateLimitRejectReason::ConnConcurrent
+        );
+        assert_eq!(
+            reason_to_snapshot(RejectReason::ConnRate),
+            RateLimitRejectReason::ConnRate
+        );
+        assert_eq!(
+            reason_to_snapshot(RejectReason::UdpFlowRate),
+            RateLimitRejectReason::UdpFlowRate
+        );
+        assert_eq!(
+            reason_to_snapshot(RejectReason::OwnerConcurrent),
+            RateLimitRejectReason::OwnerConcurrent
+        );
+        assert_eq!(
+            reason_to_snapshot(RejectReason::OwnerConnRate),
+            RateLimitRejectReason::OwnerConnRate
+        );
+        assert_eq!(
+            reason_to_snapshot(RejectReason::OwnerUdpFlowRate),
+            RateLimitRejectReason::OwnerUdpFlowRate
+        );
+    }
+
+    #[test]
+    fn drain_labels_all_reasons_via_snapshot_mapping() {
+        // Fire every reject reason so the drain path runs `reason_to_snapshot`
+        // for each slot, covering the snapshot-mapping arms not hit by the
+        // sparse-drain test above.
+        let acc = RateLimitStatsAccumulator::new();
+        for reason in [
+            RejectReason::ConnConcurrent,
+            RejectReason::ConnRate,
+            RejectReason::UdpFlowRate,
+            RejectReason::OwnerConcurrent,
+            RejectReason::OwnerConnRate,
+            RejectReason::OwnerUdpFlowRate,
+        ] {
+            acc.record_reject(reason);
+        }
+        let stats = acc.drain().expect("non-empty drain");
+        assert_eq!(stats.reject_total.len(), REJECT_REASON_COUNT);
+        let reasons: Vec<RateLimitRejectReason> =
+            stats.reject_total.iter().map(|(r, _)| *r).collect();
+        for mirror in [
+            RateLimitRejectReason::ConnConcurrent,
+            RateLimitRejectReason::ConnRate,
+            RateLimitRejectReason::UdpFlowRate,
+            RateLimitRejectReason::OwnerConcurrent,
+            RateLimitRejectReason::OwnerConnRate,
+            RateLimitRejectReason::OwnerUdpFlowRate,
+        ] {
+            assert!(reasons.contains(&mirror), "missing {mirror:?} in drain");
+        }
+    }
+
+    #[test]
+    fn active_connections_getter_reflects_set_value() {
+        // The `active_connections` accessor is diagnostics-only; assert it
+        // mirrors the value stored via `set_active_connections`.
+        let acc = RateLimitStatsAccumulator::new();
+        assert_eq!(acc.active_connections(), 0);
+        acc.set_active_connections(42);
+        assert_eq!(acc.active_connections(), 42);
+    }
 }

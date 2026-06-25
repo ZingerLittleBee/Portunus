@@ -23,3 +23,31 @@ pub fn bucket_index(elapsed: Duration) -> Option<usize> {
         .iter()
         .position(|upper| secs <= *upper)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_count_matches_boundary_table() {
+        assert_eq!(bucket_count(), PEEK_HISTOGRAM_BUCKETS_SECS.len());
+        assert_eq!(bucket_count(), 15);
+    }
+
+    #[test]
+    fn bucket_index_classifies_durations() {
+        // Below the smallest boundary -> first bucket (0).
+        assert_eq!(bucket_index(Duration::from_micros(50)), Some(0));
+        // Exactly on a boundary falls into that bucket (<= comparison).
+        assert_eq!(bucket_index(Duration::from_micros(100)), Some(0));
+        // 1 ms maps to the 0.001 boundary (index 3).
+        assert_eq!(bucket_index(Duration::from_millis(1)), Some(3));
+        // The final finite bucket is the 3 s deadline.
+        assert_eq!(
+            bucket_index(Duration::from_secs(3)),
+            Some(bucket_count() - 1)
+        );
+        // Above the deadline -> no finite bucket (+Inf only).
+        assert_eq!(bucket_index(Duration::from_secs(4)), None);
+    }
+}

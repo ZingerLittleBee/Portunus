@@ -259,6 +259,85 @@ fn sockaddr_to_socketaddr(
     }
 }
 
+// Portable tests that compile and run on every platform. They exercise
+// the target-agnostic `BatchBufs::slot` accessor and the non-Linux
+// `recv_batch` / `send_batch_connected` fallbacks, which the Linux-only
+// `tests` module below cannot reach.
+#[cfg(test)]
+mod tests_portable {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    // Manually populate one slot the way `recv_batch` would on Linux,
+    // then assert `slot()` lifts the payload and source back out. This
+    // covers the target-agnostic accessor without a real `recvmmsg`.
+    #[test]
+    fn slot_returns_payload_and_source() {
+        let mut bufs = BatchBufs::new();
+        let src: SocketAddr = (Ipv4Addr::new(10, 0, 0, 7), 4321).into();
+        let payload = [1u8, 2, 3, 4, 5];
+
+        // Write into the second slot to prove the offset math is used.
+        let i = 1usize;
+        let off = i * UDP_BUFFER_BYTES;
+        bufs.slots[off..off + payload.len()].copy_from_slice(&payload);
+        bufs.lens[i] = payload.len();
+        bufs.addrs[i] = Some(src);
+
+        let (got_payload, got_src) = bufs.slot(i);
+        assert_eq!(got_payload, &payload);
+        assert_eq!(got_src, src);
+    }
+
+    // A freshly populated slot of length zero yields an empty payload
+    // slice (the `off..off + 0` branch), still returning the source.
+    #[test]
+    fn slot_with_zero_length_payload_is_empty() {
+        let mut bufs = BatchBufs::new();
+        let src: SocketAddr = (Ipv4Addr::LOCALHOST, 9).into();
+        bufs.lens[0] = 0;
+        bufs.addrs[0] = Some(src);
+
+        let (payload, got_src) = bufs.slot(0);
+        assert!(payload.is_empty());
+        assert_eq!(got_src, src);
+    }
+
+    // The fresh arena is fully zeroed and sized BATCH_SIZE * slot bytes.
+    #[test]
+    fn new_allocates_zeroed_arena() {
+        let bufs = BatchBufs::new();
+        assert_eq!(bufs.slots.len(), BATCH_SIZE * UDP_BUFFER_BYTES);
+        assert!(bufs.slots.iter().all(|&b| b == 0));
+        assert_eq!(bufs.lens, [0usize; BATCH_SIZE]);
+        assert!(bufs.addrs.iter().all(Option::is_none));
+    }
+
+    // `slot()` panics when the source address was never populated.
+    #[test]
+    #[should_panic(expected = "slot populated by recv_batch")]
+    fn slot_panics_when_source_missing() {
+        let bufs = BatchBufs::new();
+        let _ = bufs.slot(0);
+    }
+
+    // On non-Linux platforms both batch helpers are stubs that always
+    // report WouldBlock so the caller falls back to single-packet I/O.
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn fallbacks_return_would_block_on_non_linux() {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+
+        let mut bufs = BatchBufs::new();
+        let recv_err = recv_batch(&socket, &mut bufs).expect_err("non-Linux recv stub");
+        assert_eq!(recv_err.kind(), io::ErrorKind::WouldBlock);
+
+        let payloads: [&[u8]; 1] = [b"x"];
+        let send_err = send_batch_connected(&socket, &payloads).expect_err("non-Linux send stub");
+        assert_eq!(send_err.kind(), io::ErrorKind::WouldBlock);
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;

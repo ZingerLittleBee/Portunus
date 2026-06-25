@@ -891,4 +891,386 @@ mod tests {
         assert_eq!(port_map(7001, &listen, &short_target), Some(8001));
         assert_eq!(port_map(7002, &listen, &short_target), None);
     }
+
+    /// `port_map` returns `None` on the two arithmetic-failure arms:
+    /// (a) `port < listen.start()` makes `checked_sub` underflow, and
+    /// (b) `target.start() + offset` overflows `u16`.
+    #[test]
+    fn port_map_returns_none_on_underflow_and_overflow() {
+        // (a) underflow: port below the listen range start.
+        let listen = 7000u16..=7002u16;
+        let target = 8000u16..=8002u16;
+        assert_eq!(port_map(6999, &listen, &target), None);
+
+        // (b) checked_add overflow: offset 7001 added to u16::MAX start.
+        let wide_listen = 0u16..=u16::MAX;
+        let high_target = u16::MAX..=u16::MAX;
+        assert_eq!(port_map(7001, &wide_listen, &high_target), None);
+    }
+
+    /// `Role::label` renders the Demux and StatsPump variants. The
+    /// Listener / Reaper variants are exercised by the drain tests; this
+    /// pins the remaining two.
+    #[test]
+    fn role_label_renders_demux_and_stats_pump() {
+        assert_eq!(Role::Demux.label(), "Demux");
+        assert_eq!(Role::StatsPump.label(), "StatsPump");
+        assert_eq!(Role::Reaper.label(), "Reaper");
+        assert_eq!(Role::Listener(7001).label(), "Listener(7001)");
+    }
+
+    /// Build a minimal `UdpRuntimeConfig` over a single-element IP-target
+    /// rule. The target is an IP literal so the resolver is never
+    /// invoked; `MockResolver::ok` is supplied purely to satisfy the
+    /// generic bound.
+    fn build_runtime_config(
+        listen_ports: std::ops::RangeInclusive<u16>,
+        target_ports: std::ops::RangeInclusive<u16>,
+        failed_calls: Arc<AtomicUsize>,
+    ) -> UdpRuntimeConfig<crate::resolver::test_support::MockResolver> {
+        use crate::resolver::ResolverConfig;
+        use crate::resolver::test_support::MockResolver;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let resolver = Arc::new(LiveResolver::new(
+            Arc::new(MockResolver::ok(Vec::new(), Duration::from_secs(60))),
+            ResolverConfig::default(),
+        ));
+        UdpRuntimeConfig {
+            rule_id: RuleId(1),
+            listen_ports,
+            target: Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            target_ports,
+            prefer_ipv6: false,
+            rule_cap: 16,
+            idle_window: Duration::from_secs(60),
+            stats: RuleStats::new(),
+            resolver,
+            rate_limit: None,
+            rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
+            quota: None,
+            failed_callback: Box::new(move |_reason| {
+                failed_calls.fetch_add(1, Ordering::SeqCst);
+            }),
+        }
+    }
+
+    /// Pick a single free ephemeral UDP port by binding then dropping.
+    async fn free_udp_port() -> u16 {
+        let probe = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        port
+    }
+
+    /// Probe-bind `n` consecutive free UDP ports on `0.0.0.0` and return
+    /// the start port. Retries a bounded number of times so a flaky
+    /// allocation never wedges the test.
+    async fn free_consecutive_udp_ports(n: u16) -> u16 {
+        'outer: for _ in 0..50 {
+            let Ok(probe) = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await else {
+                continue;
+            };
+            let start = probe.local_addr().unwrap().port();
+            if u32::from(start) + u32::from(n) > 65_536 {
+                continue;
+            }
+            let mut probes = vec![probe];
+            for offset in 1..n {
+                if let Ok(s) = tokio::net::UdpSocket::bind(("0.0.0.0", start + offset)).await {
+                    probes.push(s);
+                } else {
+                    continue 'outer;
+                }
+            }
+            drop(probes);
+            return start;
+        }
+        panic!("could not find {n} consecutive free UDP ports");
+    }
+
+    /// `start()` over a single port drives the full happy-path: probe-bind,
+    /// `rule.udp_runtime_started` emission, child-task spawn, and a clean
+    /// `shutdown()` that returns `Ok`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn start_then_shutdown_is_ok() {
+        let failed = Arc::new(AtomicUsize::new(0));
+        let port = free_udp_port().await;
+        let cfg = build_runtime_config(port..=port, port..=port, Arc::clone(&failed));
+        let cancel = CancellationToken::new();
+
+        let mut runtime = UdpRuleRuntime::start(cfg, cancel)
+            .await
+            .expect("runtime must start on a free port");
+        // The registry is reachable and empty before any traffic.
+        assert_eq!(runtime.registry().len(), 0);
+
+        let outcome = runtime.shutdown().await;
+        assert_eq!(outcome, ShutdownOutcome::Ok);
+        assert_eq!(
+            failed.load(Ordering::SeqCst),
+            0,
+            "clean shutdown must not invoke failed_callback"
+        );
+    }
+
+    /// `start()` skips listen ports whose linear offset lands outside the
+    /// target range (the `port_map` → `None` → `continue` arm). A 3-port
+    /// listen range paired with a 2-port target range drops the third
+    /// listener; the runtime still starts and shuts down cleanly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn start_skips_listen_ports_mapping_outside_target() {
+        let failed = Arc::new(AtomicUsize::new(0));
+        // Three consecutive free ports for the listen range.
+        let base = free_consecutive_udp_ports(3).await;
+        let listen = base..=base + 2;
+        // Target range is only two wide, so listen base+2 maps to None.
+        let target = base..=base + 1;
+        let cfg = build_runtime_config(listen, target, Arc::clone(&failed));
+        let cancel = CancellationToken::new();
+
+        let mut runtime = UdpRuleRuntime::start(cfg, cancel)
+            .await
+            .expect("runtime must start even with a clipped target range");
+        let outcome = runtime.shutdown().await;
+        assert_eq!(outcome, ShutdownOutcome::Ok);
+        assert_eq!(failed.load(Ordering::SeqCst), 0);
+    }
+
+    /// `start()` surfaces `BindFailed` when a listen port is already
+    /// occupied. We hold a socket on `0.0.0.0:port` so the runtime's
+    /// probe-bind fails on that exact port.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn start_fails_with_bind_failed_on_occupied_port() {
+        let failed = Arc::new(AtomicUsize::new(0));
+        let port = free_udp_port().await;
+        // Occupy the port for the duration of the start() attempt.
+        let _hold = tokio::net::UdpSocket::bind(("0.0.0.0", port))
+            .await
+            .expect("hold the port");
+        let cfg = build_runtime_config(port..=port, port..=port, Arc::clone(&failed));
+        let cancel = CancellationToken::new();
+
+        let err = UdpRuleRuntime::start(cfg, cancel).await;
+        let Err(UdpRuntimeStartError::BindFailed {
+            port: failed_port, ..
+        }) = err
+        else {
+            panic!("expected BindFailed on the occupied port");
+        };
+        assert_eq!(failed_port, port);
+    }
+
+    /// `shutdown()` returns `Ok` when the supervisor dropped its
+    /// completion sender without ever publishing an outcome (the
+    /// `rx.changed()` → `Err` branch). We construct a runtime handle by
+    /// hand with a closed watch channel.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shutdown_returns_ok_when_completion_sender_dropped() {
+        let port = free_udp_port().await;
+        let sock = Arc::new(UdpSocket::bind(("0.0.0.0", port)).await.unwrap());
+        let mut sockets: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
+        sockets.insert(port, sock);
+
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel::<()>(1);
+        // Drop the sender immediately so the receiver observes closed.
+        let (completion_tx, completion_rx) =
+            tokio::sync::watch::channel::<Option<ShutdownOutcome>>(None);
+        drop(completion_tx);
+
+        let mut runtime = UdpRuleRuntime {
+            registry: UdpFlowRegistry::new(16),
+            listener_sockets: Arc::new(sockets),
+            rule_cancel: CancellationToken::new(),
+            shutdown_tx,
+            supervisor_handle: None,
+            completion_rx,
+        };
+
+        // No outcome was ever published; the watch is closed → Ok.
+        assert_eq!(runtime.shutdown().await, ShutdownOutcome::Ok);
+    }
+
+    /// Intentional shutdown with NO child tasks: Phase A takes the
+    /// `shutdown_rx` arm (sets `ShuttingDownIntentional`) and every drain
+    /// loop hits its `join_next() == None → break` guard because the
+    /// pending counters are non-zero but the JoinSet is empty. Outcome is
+    /// still `Ok`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn intentional_shutdown_with_empty_joinset_breaks_each_drain() {
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let TestHarness {
+            sup,
+            shutdown_tx,
+            completion_rx,
+            demux_tx: _demux_tx,
+            demux_rx: _demux_rx,
+            rule_cancel: _,
+            listener_token: _,
+            reaper_token: _,
+            stats_pump_token: _,
+        } = build_test_supervisor(2, Arc::clone(&failed_calls));
+
+        // No tasks spawned, but listener_pending=2 / demux / reaper /
+        // stats_pump all still pending → each drain loop breaks on the
+        // empty JoinSet.
+        let sup_handle = tokio::spawn(sup.run());
+        shutdown_tx.send(()).await.unwrap();
+        sup_handle.await.unwrap();
+
+        assert_eq!(completion_rx.borrow().clone(), Some(ShutdownOutcome::Ok));
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            0,
+            "intentional shutdown must not fire failed_callback"
+        );
+    }
+
+    /// A child task that PANICS during `Running` surfaces as an outer
+    /// `Err(JoinError)` from `join_next` — the supervisor formats a
+    /// `JoinError:` label, transitions to `ShuttingDownAfterFailure`,
+    /// fires `rule_cancel`, and invokes `failed_callback` exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn panicking_task_during_running_emits_failed_once() {
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let TestHarness {
+            mut sup,
+            shutdown_tx: _shutdown_tx,
+            completion_rx,
+            demux_tx: _demux_tx,
+            demux_rx,
+            rule_cancel: rule,
+            listener_token: lis,
+            reaper_token: reap,
+            stats_pump_token: pump,
+        } = build_test_supervisor(0, Arc::clone(&failed_calls));
+
+        // A task that panics after a yield → JoinError in Phase A. It is
+        // untracked (a panic erases the role tag), so `listener_pending`
+        // stays 0 and `drain_listeners` is a no-op.
+        sup.joinset.spawn(async move {
+            tokio::task::yield_now().await;
+            panic!("task panic during running");
+        });
+        // Remaining roles are well-behaved and unwind on rule_cancel's
+        // child tokens once the supervisor cancels them in Phase B.
+        spawn_well_behaved(&mut sup, Role::Reaper, reap);
+        spawn_well_behaved(&mut sup, Role::StatsPump, pump);
+        spawn_well_behaved_demux(&mut sup, demux_rx);
+        drop(lis);
+
+        let sup_handle = tokio::spawn(sup.run());
+        sup_handle.await.unwrap();
+
+        assert!(
+            completion_rx.borrow().is_some(),
+            "supervisor must publish an outcome"
+        );
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            1,
+            "panic during running fires failed_callback exactly once"
+        );
+        assert!(rule.is_cancelled(), "rule_cancel must fire on panic exit");
+    }
+
+    /// A leftover task that panics during the ordered drain is consumed by
+    /// the defensive trailing `join_next` loop and classified as an
+    /// unexpected exit (the `Err(JoinError)` arm of `classify_drain_result`
+    /// + the `join_error` branch of `record_unexpected`). The published
+    /// outcome is `UnexpectedExitsDuringDrain`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn panic_during_drain_records_unexpected_exit() {
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let TestHarness {
+            mut sup,
+            shutdown_tx,
+            completion_rx,
+            demux_tx: _demux_tx,
+            demux_rx,
+            rule_cancel: _,
+            listener_token: lis,
+            reaper_token: reap,
+            stats_pump_token: pump,
+        } = build_test_supervisor(0, Arc::clone(&failed_calls));
+
+        // No tracked listeners (listener_pending = 0). The reaper / pump /
+        // demux are well-behaved. An EXTRA, untracked task waits on the
+        // listener token and panics once it is cancelled in drain step (a)
+        // — it survives the targeted drains and is swept by the defensive
+        // trailing loop, where its JoinError is recorded as unexpected.
+        let lis_for_panic = lis.clone();
+        sup.joinset.spawn(async move {
+            lis_for_panic.cancelled().await;
+            panic!("extra task panic during drain");
+        });
+        spawn_well_behaved(&mut sup, Role::Reaper, reap);
+        spawn_well_behaved(&mut sup, Role::StatsPump, pump);
+        spawn_well_behaved_demux(&mut sup, demux_rx);
+        drop(lis);
+
+        let sup_handle = tokio::spawn(sup.run());
+        // Intentional shutdown → Phase A takes the shutdown_rx arm; all
+        // exits then happen in Phase B.
+        shutdown_tx.send(()).await.unwrap();
+        sup_handle.await.unwrap();
+
+        let outcome = completion_rx.borrow().clone();
+        match outcome {
+            Some(ShutdownOutcome::UnexpectedExitsDuringDrain { count, roles }) => {
+                assert_eq!(count, 1, "exactly one unexpected drain exit");
+                assert_eq!(roles, vec!["Unknown".to_string()]);
+            }
+            other => panic!("expected UnexpectedExitsDuringDrain, got {other:?}"),
+        }
+        // The panic is a drain-phase exit, not a Running-phase one, so the
+        // failed_callback is never invoked.
+        assert_eq!(failed_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Intentional shutdown with a full, well-behaved role set drives the
+    /// targeted per-role drains: `drain_stats_pump`, `drain_listeners`,
+    /// `drain_reaper`, and `drain_demux` each consume their tracked entry
+    /// and `decrement_pending` flips the matching counter (including the
+    /// `Role::StatsPump` arm). The final gauge is reset to 0.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn intentional_shutdown_drains_every_role_and_resets_gauge() {
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let TestHarness {
+            mut sup,
+            shutdown_tx,
+            completion_rx,
+            demux_tx: _demux_tx,
+            demux_rx,
+            rule_cancel: _,
+            listener_token: lis,
+            reaper_token: reap,
+            stats_pump_token: pump,
+        } = build_test_supervisor(1, Arc::clone(&failed_calls));
+
+        // Seed a non-zero gauge so the post-drain reset to 0 is observable.
+        let stats = Arc::clone(&sup.stats);
+        stats.set_active_flows(7);
+        assert_eq!(stats.snapshot_active_flows(), 7);
+
+        spawn_well_behaved(&mut sup, Role::Listener(7001), lis);
+        spawn_well_behaved(&mut sup, Role::Reaper, reap);
+        spawn_well_behaved(&mut sup, Role::StatsPump, pump);
+        spawn_well_behaved_demux(&mut sup, demux_rx);
+
+        let sup_handle = tokio::spawn(sup.run());
+        shutdown_tx.send(()).await.unwrap();
+        sup_handle.await.unwrap();
+
+        assert_eq!(completion_rx.borrow().clone(), Some(ShutdownOutcome::Ok));
+        assert_eq!(failed_calls.load(Ordering::SeqCst), 0);
+        // Step (c): the supervisor writes active_flows = 0 after draining.
+        assert_eq!(
+            stats.snapshot_active_flows(),
+            0,
+            "supervisor must reset the active_flows gauge to 0"
+        );
+    }
 }

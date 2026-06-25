@@ -391,3 +391,634 @@ fn envelope_to_view(row: &OwnerRateLimitRow, client_name: &str) -> OwnerRateLimi
         updated_at_unix_ms: row.updated_at_unix_ms,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clients::ConnectedClients;
+    use crate::store::Store;
+    use crate::store::error::StoreError;
+    use crate::store::operator_store::SqliteOperatorStore;
+    use crate::store::token_store::SqliteTokenStore;
+    use axum::response::IntoResponse;
+    use portunus_core::{ClientName, RateLimit};
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    // ----------------------------------------------------------------
+    // Fixtures — mirror the AppState builder used by the gRPC enrollment
+    // tests so the handlers can run in-process against a temp SQLite db.
+    // ----------------------------------------------------------------
+
+    /// Build a fully-wired `AppState` over a fresh temp SQLite store. The
+    /// `TempDir` is leaked so the db survives for the test's lifetime
+    /// (matches the owner-cap service tests' `mem::forget` idiom).
+    fn test_state() -> Arc<AppState> {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+        operator_store
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        std::mem::forget(dir);
+        Arc::new(
+            AppState::new(
+                tokens,
+                operator_store,
+                ConnectedClients::default(),
+                None,
+                7443,
+                "deadbeef",
+                include_str!("../advertised/testdata/san_fixture.pem"),
+                16,
+                store,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Issue a client into `client_tokens` and return its stable id so
+    /// `resolve_client_name` (via `tokens.get_by_id`) resolves.
+    fn issue_client(state: &AppState, name: &str) -> ClientId {
+        let cn = ClientName::new(name).unwrap();
+        state.tokens.issue_with_address(cn, None).unwrap();
+        // The id is minted internally; recover it from the roster.
+        state
+            .tokens
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.client_name.as_str() == name)
+            .unwrap()
+            .client_id
+    }
+
+    fn superadmin() -> OperatorIdentity {
+        OperatorIdentity {
+            user_id: portunus_auth::UserId::superadmin(),
+            role: OperatorRole::Superadmin,
+        }
+    }
+
+    fn tenant() -> OperatorIdentity {
+        OperatorIdentity {
+            user_id: portunus_auth::UserId::from_str("alice").unwrap(),
+            role: OperatorRole::User,
+        }
+    }
+
+    fn full_envelope() -> RateLimit {
+        RateLimit {
+            bandwidth_in_bps: Some(1_048_576),
+            bandwidth_out_bps: Some(2_097_152),
+            new_connections_per_sec: Some(50),
+            concurrent_connections: Some(10),
+            bandwidth_in_burst: None,
+            bandwidth_out_burst: None,
+            new_connections_burst: None,
+        }
+    }
+
+    fn put_body() -> OwnerRateLimitPutBody {
+        OwnerRateLimitPutBody {
+            bandwidth_in_bps: Some(1_048_576),
+            bandwidth_out_bps: None,
+            new_connections_per_sec: None,
+            concurrent_connections: None,
+            bandwidth_in_burst: None,
+            bandwidth_out_burst: None,
+            new_connections_burst: None,
+            concurrent_connections_burst: None,
+        }
+    }
+
+    /// Register a connected client carrying `version`, returning the
+    /// receiver so the test controls the push channel's liveness.
+    async fn register_connected(
+        state: &AppState,
+        cid: ClientId,
+        name: &str,
+        version: &str,
+    ) -> mpsc::Receiver<Result<proto::ServerMessage, tonic::Status>> {
+        let (tx, rx) = mpsc::channel(4);
+        let session = state
+            .clients
+            .register(
+                cid,
+                ClientName::new(name).unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                std::sync::Arc::default(),
+            )
+            .await;
+        state
+            .clients
+            .set_client_version(&cid, session, version.to_string())
+            .await;
+        rx
+    }
+
+    // ----------------------------------------------------------------
+    // GET handler
+    // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_owner_rate_limit_returns_envelope_for_existing_cap() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        state
+            .owner_caps
+            .upsert(&cid, "alice", full_envelope())
+            .await
+            .unwrap();
+        let resp = get_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+        )
+        .await
+        .expect("ok");
+        let view = resp.0;
+        assert_eq!(view.client_name, "edge-01");
+        assert_eq!(view.owner_id, "alice");
+        assert_eq!(view.rate_limit.bandwidth_in_bps, Some(1_048_576));
+    }
+
+    #[tokio::test]
+    async fn get_owner_rate_limit_404_when_no_envelope() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let err = get_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "ghost".to_string())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_owner_rate_limit_rejects_tenant_403() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let err = get_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(tenant()),
+            Path((cid.to_string(), "alice".to_string())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_owner_rate_limit_404_for_unknown_client() {
+        let state = test_state();
+        let unknown = ClientId::new();
+        let err = get_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((unknown.to_string(), "alice".to_string())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    // ----------------------------------------------------------------
+    // PUT handler
+    // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn put_owner_rate_limit_persists_and_pushes_to_connected_client() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        // Keep the rx alive so the best-effort push succeeds (covers the
+        // wire-push branch through `Ok(Json(..))`).
+        let mut rx = register_connected(&state, cid, "edge-01", "0.11.0").await;
+        let resp = put_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+            Json(put_body()),
+        )
+        .await
+        .expect("ok");
+        let view = resp.0;
+        assert_eq!(view.client_name, "edge-01");
+        assert_eq!(view.rate_limit.bandwidth_in_bps, Some(1_048_576));
+        // The envelope is durable.
+        assert!(state.owner_caps.get(&cid, "alice").await.is_some());
+        // A SET push was delivered to the connected client.
+        let msg = rx.try_recv().expect("push delivered");
+        let pushed = msg.expect("ok server message");
+        match pushed.payload {
+            Some(proto::server_message::Payload::OwnerRateLimitUpdate(u)) => {
+                assert_eq!(u.owner_id, "alice");
+                assert_eq!(u.client_id, cid.to_string());
+                assert_eq!(u.action, proto::OwnerRateLimitAction::Set as i32);
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn put_owner_rate_limit_rejects_reserved_concurrent_burst_400() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let _rx = register_connected(&state, cid, "edge-01", "0.11.0").await;
+        let mut body = put_body();
+        body.concurrent_connections_burst = Some(5);
+        let err = put_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+            Json(body),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_owner_rate_limit_gates_disconnected_client_422() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        // No connected session -> client_version_of is None -> 422.
+        let err = put_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+            Json(put_body()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[tokio::test]
+    async fn put_owner_rate_limit_gates_legacy_version_422() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let _rx = register_connected(&state, cid, "edge-01", "0.10.0").await;
+        let err = put_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+            Json(put_body()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[tokio::test]
+    async fn put_owner_rate_limit_invalid_envelope_400() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let _rx = register_connected(&state, cid, "edge-01", "0.11.0").await;
+        // bandwidth_in_bps == 0 fails `validate` -> map_cap_error -> 400.
+        let mut body = put_body();
+        body.bandwidth_in_bps = Some(0);
+        let err = put_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+            Json(body),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_owner_rate_limit_rejects_tenant_403() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let err = put_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(tenant()),
+            Path((cid.to_string(), "alice".to_string())),
+            Json(put_body()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----------------------------------------------------------------
+    // DELETE handler
+    // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn delete_owner_rate_limit_removes_and_pushes_remove() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        state
+            .owner_caps
+            .upsert(&cid, "alice", full_envelope())
+            .await
+            .unwrap();
+        let mut rx = register_connected(&state, cid, "edge-01", "0.11.0").await;
+        let status = delete_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+        )
+        .await
+        .expect("ok");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(state.owner_caps.get(&cid, "alice").await.is_none());
+        let msg = rx.try_recv().expect("push delivered");
+        let pushed = msg.expect("ok server message");
+        match pushed.payload {
+            Some(proto::server_message::Payload::OwnerRateLimitUpdate(u)) => {
+                assert_eq!(u.action, proto::OwnerRateLimitAction::Remove as i32);
+                assert!(u.rate_limit.is_none());
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_owner_rate_limit_idempotent_no_content_when_absent() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        // No connected session and no cap row: still 204 (idempotent),
+        // and `resolve_client_name` resolves the live client.
+        let status = delete_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "ghost".to_string())),
+        )
+        .await
+        .expect("ok");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn delete_owner_rate_limit_falls_back_to_id_when_client_gone() {
+        let state = test_state();
+        // A client that was never issued: `resolve_client_name` fails and
+        // the handler falls back to the id string for the wire push.
+        let unknown = ClientId::new();
+        let status = delete_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((unknown.to_string(), "alice".to_string())),
+        )
+        .await
+        .expect("ok");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn delete_owner_rate_limit_warns_on_failed_push_but_succeeds() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        state
+            .owner_caps
+            .upsert(&cid, "alice", full_envelope())
+            .await
+            .unwrap();
+        // Register then drop the receiver so the best-effort push errors,
+        // exercising the warn-on-send-failure branch.
+        let rx = register_connected(&state, cid, "edge-01", "0.11.0").await;
+        drop(rx);
+        let status = delete_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path((cid.to_string(), "alice".to_string())),
+        )
+        .await
+        .expect("ok");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(state.owner_caps.get(&cid, "alice").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_owner_rate_limit_rejects_tenant_403() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let err = delete_owner_rate_limit(
+            State(Arc::clone(&state)),
+            Extension(tenant()),
+            Path((cid.to_string(), "alice".to_string())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----------------------------------------------------------------
+    // owners listing
+    // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_owners_under_client_folds_rules_and_caps_sorted() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let cn = ClientName::new("edge-01").unwrap();
+        // Superadmin owns the rule (push helper stamps superadmin).
+        state
+            .rules
+            .push(
+                cid,
+                cn,
+                18080,
+                "127.0.0.1".to_string(),
+                9090,
+                portunus_core::Protocol::Tcp,
+                None,
+            )
+            .await
+            .unwrap();
+        // A cap row for an owner with no rules surfaces too.
+        state
+            .owner_caps
+            .upsert(&cid, "zeta", full_envelope())
+            .await
+            .unwrap();
+        let resp = get_owners_under_client(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path(cid.to_string()),
+        )
+        .await
+        .expect("ok");
+        let entries = resp.0;
+        assert_eq!(entries.len(), 2);
+        // Alphabetical by owner_id: superadmin id sorts before "zeta".
+        assert!(entries[0].owner_id < entries[1].owner_id);
+        // The rule-bearing owner has rule_count == 1 and no cap.
+        let rule_owner = entries.iter().find(|e| e.rule_count == 1).unwrap();
+        assert!(!rule_owner.has_rate_limit);
+        // The cap-only owner has a cap and zero rules.
+        let cap_owner = entries.iter().find(|e| e.owner_id == "zeta").unwrap();
+        assert!(cap_owner.has_rate_limit);
+        assert_eq!(cap_owner.rule_count, 0);
+    }
+
+    #[tokio::test]
+    async fn get_owners_under_client_404_for_unknown_id() {
+        let state = test_state();
+        let unknown = ClientId::new();
+        let err = get_owners_under_client(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path(unknown.to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_owners_under_client_404_for_malformed_id() {
+        let state = test_state();
+        let err = get_owners_under_client(
+            State(Arc::clone(&state)),
+            Extension(superadmin()),
+            Path("not-a-ulid".to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_owners_under_client_rejects_tenant_403() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let err = get_owners_under_client(
+            State(Arc::clone(&state)),
+            Extension(tenant()),
+            Path(cid.to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----------------------------------------------------------------
+    // pure helpers
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn parse_client_id_rejects_malformed_with_404() {
+        let err = parse_client_id("not-a-ulid").unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn parse_client_id_accepts_valid_ulid() {
+        let id = ClientId::new();
+        let parsed = parse_client_id(&id.to_string()).unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn resolve_client_name_404_for_unknown_id() {
+        let state = test_state();
+        let err = resolve_client_name(&state, ClientId::new()).unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn resolve_client_name_returns_display_name() {
+        let state = test_state();
+        let cid = issue_client(&state, "edge-01");
+        let name = resolve_client_name(&state, cid).unwrap();
+        assert_eq!(name, "edge-01");
+    }
+
+    #[test]
+    fn map_cap_error_cap_zero_is_400() {
+        let inner = portunus_core::rate_limit::RateLimitError::CapZero {
+            field: "bandwidth_in_bps",
+        };
+        let err = map_cap_error(OwnerCapError::InvalidEnvelope(inner));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn map_cap_error_burst_without_rate_is_400() {
+        let inner = portunus_core::rate_limit::RateLimitError::BurstWithoutRate {
+            field: "bandwidth_in_burst",
+        };
+        let err = map_cap_error(OwnerCapError::InvalidEnvelope(inner));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn map_cap_error_burst_range_is_400() {
+        let inner = portunus_core::rate_limit::RateLimitError::BurstRange {
+            field: "bandwidth_in_burst",
+            rate: 1_000,
+            burst: 999_999,
+            lo: 10,
+            hi: 60_000,
+        };
+        let err = map_cap_error(OwnerCapError::InvalidEnvelope(inner));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn map_cap_error_unsupported_by_client_is_422() {
+        let err = map_cap_error(OwnerCapError::UnsupportedByClient);
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[test]
+    fn map_cap_error_store_is_500() {
+        let err = map_cap_error(OwnerCapError::Store(StoreError::Internal {
+            message: "boom".into(),
+        }));
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn rate_limit_to_proto_round_trips_fields() {
+        let rl = full_envelope();
+        let p = rate_limit_to_proto(&rl);
+        assert_eq!(p.bandwidth_in_bps, rl.bandwidth_in_bps);
+        assert_eq!(p.bandwidth_out_bps, rl.bandwidth_out_bps);
+        assert_eq!(p.new_connections_per_sec, rl.new_connections_per_sec);
+        assert_eq!(p.concurrent_connections, rl.concurrent_connections);
+        assert_eq!(p.bandwidth_in_burst, rl.bandwidth_in_burst);
+        assert_eq!(p.bandwidth_out_burst, rl.bandwidth_out_burst);
+        assert_eq!(p.new_connections_burst, rl.new_connections_burst);
+    }
+
+    #[test]
+    fn envelope_to_view_copies_all_fields() {
+        let row = OwnerRateLimitRow {
+            client_id: ClientId::new(),
+            owner_id: "alice".to_string(),
+            rate_limit: full_envelope(),
+            updated_at_unix_ms: 42,
+        };
+        let view = envelope_to_view(&row, "display");
+        assert_eq!(view.client_name, "display");
+        assert_eq!(view.owner_id, "alice");
+        assert_eq!(view.updated_at_unix_ms, 42);
+        assert_eq!(view.rate_limit.bandwidth_in_bps, Some(1_048_576));
+        assert_eq!(view.rate_limit.concurrent_connections, Some(10));
+    }
+}

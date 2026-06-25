@@ -235,4 +235,151 @@ mod tests {
         .unwrap();
         assert_eq!(fresh.len(), 1);
     }
+
+    /// Run a raw DDL/DML statement against the live connection. Used by the
+    /// error-path tests below to break specific tables so the `?` operators
+    /// in `run_once` propagate a `StoreError`.
+    fn exec_sql(store: &Store, sql: &str) {
+        store
+            .with_conn(|c| {
+                c.execute_batch(sql).map_err(crate::store::map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn run_once_errors_when_rollup_state_table_missing() {
+        let (_d, store) = make_store();
+        // Drop the watermark table so `get_last_rolled_up_hour` fails.
+        exec_sql(&store, "DROP TABLE traffic_rollup_state");
+        let Err(e) = run_once(&store, 1_781_325_000) else {
+            panic!("expected error when traffic_rollup_state is missing");
+        };
+        // SQLite reports a missing table; the exact variant is an Internal
+        // mapping — assert only that it surfaces as an error display.
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn run_once_errors_when_rollup_source_table_missing() {
+        let (_d, store) = make_store();
+        let now: i64 = 1_781_325_000;
+        let now_hour = now - now.rem_euclid(HOUR);
+        // Watermark one hour back so the loop runs exactly once and reaches
+        // `rollup_hour` (which SELECTs from traffic_samples_1m).
+        samples::set_last_rolled_up_hour(&store, now_hour - 2 * HOUR).unwrap();
+        exec_sql(&store, "DROP TABLE traffic_samples_1m");
+        let Err(e) = run_once(&store, now) else {
+            panic!("expected error when traffic_samples_1m is missing");
+        };
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn run_once_errors_when_setting_watermark_fails() {
+        let (_d, store) = make_store();
+        let now: i64 = 1_781_325_000;
+        let now_hour = now - now.rem_euclid(HOUR);
+        // Loop runs once: `rollup_hour` succeeds, then `set_last_rolled_up_hour`
+        // UPDATE is blocked by a trigger so the `?` on that call fires.
+        samples::set_last_rolled_up_hour(&store, now_hour - 2 * HOUR).unwrap();
+        exec_sql(
+            &store,
+            "CREATE TRIGGER block_rollup_update BEFORE UPDATE ON traffic_rollup_state \
+             BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+        );
+        let Err(e) = run_once(&store, now) else {
+            panic!("expected error when set_last_rolled_up_hour is blocked");
+        };
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn run_once_errors_when_delete_1m_table_missing() {
+        let (_d, store) = make_store();
+        let now: i64 = 1_781_325_000;
+        let now_hour = now - now.rem_euclid(HOUR);
+        // Watermark at current hour so the rollup loop is skipped; the failure
+        // surfaces at the `delete_1m_older_than` prune step.
+        samples::set_last_rolled_up_hour(&store, now_hour).unwrap();
+        exec_sql(&store, "DROP TABLE traffic_samples_1m");
+        let Err(e) = run_once(&store, now) else {
+            panic!("expected error when traffic_samples_1m prune target is missing");
+        };
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn run_once_errors_when_delete_1h_table_missing() {
+        let (_d, store) = make_store();
+        let now: i64 = 1_781_325_000;
+        let now_hour = now - now.rem_euclid(HOUR);
+        // Skip the loop; keep traffic_samples_1m so the 1m prune succeeds, then
+        // drop traffic_samples_1h so the 1h prune `?` propagates.
+        samples::set_last_rolled_up_hour(&store, now_hour).unwrap();
+        exec_sql(&store, "DROP TABLE traffic_samples_1h");
+        let Err(e) = run_once(&store, now) else {
+            panic!("expected error when traffic_samples_1h prune target is missing");
+        };
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn run_once_caps_rollup_at_sanity_bound() {
+        let (_d, store) = make_store();
+        let now: i64 = 1_781_325_000;
+        let now_hour = now - now.rem_euclid(HOUR);
+        // Watermark far enough back that the loop would roll more than the
+        // 24*90 = 2160 hour sanity bound, forcing the `break`.
+        samples::set_last_rolled_up_hour(&store, now_hour - 2_200 * HOUR).unwrap();
+        let stats = run_once(&store, now).unwrap();
+        // The loop increments `rolled`, then breaks once it exceeds 2160, so
+        // exactly 2161 hours are rolled before bailing out.
+        assert_eq!(stats.rolled_up_hours, 2161);
+        // Watermark advanced to the last hour rolled before the break.
+        assert_eq!(
+            samples::get_last_rolled_up_hour(&store).unwrap(),
+            now_hour - 2_200 * HOUR + 2_161 * HOUR
+        );
+    }
+
+    #[test]
+    fn now_unix_sec_returns_positive_recent_timestamp() {
+        let now = now_unix_sec();
+        // Sanity: well after 2020-01-01 (1_577_836_800) and a real i64.
+        assert!(now > 1_577_836_800);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_forever_ticks_then_aborts_on_success() {
+        let (_d, store) = make_store();
+        // Seed an H-1 row so the first tick actually rolls something up; the
+        // store stays valid so the `Ok(stats)` arm logs the tick.
+        let now = now_unix_sec();
+        let now_hour = now - now.rem_euclid(HOUR);
+        insert_minute(&store, "alice", "edge-01", now_hour - HOUR, 5, 7);
+
+        let handle = tokio::spawn(run_forever(store));
+        // Virtual time auto-advances while the task sleeps; this drives at
+        // least one full sleep -> run_once -> log cycle before we abort.
+        sleep(Duration::from_secs(7_200)).await;
+        handle.abort();
+        let joined = handle.await;
+        assert!(joined.is_err(), "aborted task resolves to a JoinError");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_forever_logs_error_arm_when_run_once_fails() {
+        let (_d, store) = make_store();
+        // Break the store so every `run_once` call returns an error, exercising
+        // the `Err(e)` logging arm of the loop.
+        exec_sql(&store, "DROP TABLE traffic_rollup_state");
+
+        let handle = tokio::spawn(run_forever(store));
+        sleep(Duration::from_secs(7_200)).await;
+        handle.abort();
+        let joined = handle.await;
+        assert!(joined.is_err(), "aborted task resolves to a JoinError");
+    }
 }

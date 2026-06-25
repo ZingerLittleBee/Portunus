@@ -279,4 +279,127 @@ mod tests {
         let cache = TrafficQuotaCache::load(store).expect("reload");
         assert_eq!(cache.list_all().len(), 1);
     }
+
+    #[test]
+    fn list_for_client_filters_by_client_id() {
+        let (_d, cache) = make_cache();
+        // Two users share edge-01; a third row uses a different client_id.
+        let mut a = sample_row();
+        a.user_id = "alice".into();
+        a.client_id = "edge-01".into();
+        let mut b = sample_row();
+        b.user_id = "bob".into();
+        b.client_id = "edge-01".into();
+        let mut c = sample_row();
+        c.user_id = "alice".into();
+        c.client_id = "edge-02".into();
+        cache.upsert(a).unwrap();
+        cache.upsert(b).unwrap();
+        cache.upsert(c).unwrap();
+
+        let edge01 = cache.list_for_client("edge-01");
+        assert_eq!(edge01.len(), 2);
+        assert!(edge01.iter().all(|r| r.client_id == "edge-01"));
+
+        assert_eq!(cache.list_for_client("edge-02").len(), 1);
+        assert!(cache.list_for_client("missing").is_empty());
+    }
+
+    #[test]
+    fn list_for_user_filters_by_user_id() {
+        let (_d, cache) = make_cache();
+        let mut a = sample_row();
+        a.user_id = "alice".into();
+        a.client_id = "edge-01".into();
+        let mut b = sample_row();
+        b.user_id = "alice".into();
+        b.client_id = "edge-02".into();
+        let mut c = sample_row();
+        c.user_id = "bob".into();
+        c.client_id = "edge-01".into();
+        cache.upsert(a).unwrap();
+        cache.upsert(b).unwrap();
+        cache.upsert(c).unwrap();
+
+        let alice = cache.list_for_user("alice");
+        assert_eq!(alice.len(), 2);
+        assert!(alice.iter().all(|r| r.user_id == "alice"));
+
+        assert_eq!(cache.list_for_user("bob").len(), 1);
+        assert!(cache.list_for_user("nobody").is_empty());
+    }
+
+    #[test]
+    fn clear_period_usage_zeroes_usage_in_cache_and_store() {
+        let (_d, cache) = make_cache();
+        let mut r = sample_row();
+        r.monthly_bytes = 100;
+        cache.upsert(r).unwrap();
+        // Drive the row to exhaustion so there is non-zero usage to clear.
+        let (_row, just) = cache
+            .accumulate("alice", "edge-01", 200, 5)
+            .unwrap()
+            .unwrap();
+        assert!(just);
+
+        let cleared = cache
+            .clear_period_usage("alice", "edge-01", 3_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.current_period_bytes_used, 0);
+        assert!(cleared.exhausted_at.is_none());
+        assert_eq!(cleared.updated_at, 3_000);
+
+        // The write-through must be reflected in the cached snapshot.
+        let got = cache.get("alice", "edge-01").unwrap();
+        assert_eq!(got.current_period_bytes_used, 0);
+        assert!(got.exhausted_at.is_none());
+    }
+
+    #[test]
+    fn clear_period_usage_missing_row_returns_none() {
+        let (_d, cache) = make_cache();
+        assert!(
+            cache
+                .clear_period_usage("ghost", "edge-01", 1)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reset_period_advances_start_and_clears_usage() {
+        let (_d, cache) = make_cache();
+        let mut r = sample_row();
+        r.monthly_bytes = 100;
+        cache.upsert(r).unwrap();
+        // Exhaust the row first so reset has something to clear.
+        cache.accumulate("alice", "edge-01", 200, 5).unwrap();
+
+        let reset = cache
+            .reset_period("alice", "edge-01", 2_000_000, 2_000_010)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reset.current_period_started_at, 2_000_000);
+        assert_eq!(reset.current_period_bytes_used, 0);
+        assert!(reset.exhausted_at.is_none());
+        assert_eq!(reset.updated_at, 2_000_010);
+
+        // Cache snapshot reflects the reset.
+        let got = cache.get("alice", "edge-01").unwrap();
+        assert_eq!(got.current_period_started_at, 2_000_000);
+        assert_eq!(got.current_period_bytes_used, 0);
+        assert!(got.exhausted_at.is_none());
+    }
+
+    #[test]
+    fn reset_period_missing_row_returns_none() {
+        let (_d, cache) = make_cache();
+        assert!(
+            cache
+                .reset_period("ghost", "edge-01", 1, 2)
+                .unwrap()
+                .is_none()
+        );
+    }
 }
