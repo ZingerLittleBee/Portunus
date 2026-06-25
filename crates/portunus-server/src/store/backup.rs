@@ -349,4 +349,180 @@ mod tests {
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("db"))
         );
     }
+
+    /// Build a standalone SQLite artefact whose `schema_migrations` head
+    /// is `delta` versions away from this binary's target. A positive
+    /// `delta` produces a "too new" artefact; `delta == 0` with a bogus
+    /// checksum produces a migration-validation failure. Mirrors the
+    /// phantom-row trick used by `store::mod`'s own SchemaTooNew test.
+    fn write_migrations_artifact(path: &Path, delta: i64) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, applied_on TEXT, checksum TEXT);",
+        )
+        .unwrap();
+        let version = i64::from(Store::target_schema_version()) + delta;
+        conn.execute(
+            "INSERT INTO schema_migrations VALUES (?, 'phantom', '2026-05-08T00:00:00Z', 'x')",
+            rusqlite::params![version],
+        )
+        .unwrap();
+        drop(conn);
+    }
+
+    #[test]
+    fn exit_code_maps_every_variant() {
+        assert_eq!(
+            BackupError::SourceMissing(PathBuf::from("/x")).exit_code(),
+            5
+        );
+        assert_eq!(
+            BackupError::DestinationExists(PathBuf::from("/x")).exit_code(),
+            6
+        );
+        assert_eq!(
+            BackupError::DestinationNonEmpty(PathBuf::from("/x")).exit_code(),
+            6
+        );
+        assert_eq!(BackupError::NotSqlite(PathBuf::from("/x")).exit_code(), 7);
+        assert_eq!(
+            BackupError::SchemaTooNew {
+                found: 99,
+                target: 12
+            }
+            .exit_code(),
+            78
+        );
+        assert_eq!(BackupError::MigrationFailed("boom".into()).exit_code(), 70);
+        assert_eq!(BackupError::Io("disk".into()).exit_code(), 1);
+        assert_eq!(BackupError::Sqlite("db".into()).exit_code(), 1);
+    }
+
+    #[test]
+    fn map_io_and_map_sqlite_wrap_messages() {
+        let io_err = map_io(std::io::Error::other("disk gone"));
+        assert!(matches!(&io_err, BackupError::Io(m) if m.contains("disk gone")));
+
+        let sqlite_err = map_sqlite(rusqlite::Error::QueryReturnedNoRows);
+        assert!(matches!(sqlite_err, BackupError::Sqlite(_)));
+    }
+
+    #[test]
+    fn backup_missing_source_reports_source_missing() {
+        let empty = tempdir().unwrap(); // no state.db inside.
+        let dst = tempdir().unwrap();
+        let dst_file = dst.path().join("snap.db");
+        let err = run_backup(empty.path(), &dst_file).unwrap_err();
+        assert!(matches!(err, BackupError::SourceMissing(_)));
+    }
+
+    #[test]
+    fn backup_creates_missing_destination_parent_dirs() {
+        let src_dir = tempdir().unwrap();
+        seed_store(src_dir.path());
+        let dst = tempdir().unwrap();
+        // Destination parent directory does not exist yet.
+        let dst_file = dst.path().join("nested/deeper/snap.db");
+        let written = run_backup(src_dir.path(), &dst_file).unwrap();
+        assert_eq!(written, dst_file);
+        assert!(dst_file.exists());
+    }
+
+    #[test]
+    fn restore_missing_source_reports_source_missing() {
+        let target = tempdir().unwrap();
+        let missing = target.path().join("does-not-exist.db");
+        let err = run_restore(&missing, target.path(), false).unwrap_err();
+        assert!(matches!(err, BackupError::SourceMissing(_)));
+    }
+
+    #[test]
+    fn restore_force_clears_existing_target_and_sidecars() {
+        let src_dir = tempdir().unwrap();
+        seed_store(src_dir.path());
+        let dst = tempdir().unwrap();
+        let snap = dst.path().join("snap.db");
+        run_backup(src_dir.path(), &snap).unwrap();
+
+        let target = tempdir().unwrap();
+        seed_store(target.path()); // existing populated state.db.
+        // Plant stale sidecars so the force cleanup branch runs.
+        fs::write(target.path().join("state.db-wal"), b"x").unwrap();
+        fs::write(target.path().join("state.db-shm"), b"x").unwrap();
+        fs::write(target.path().join("state.db.lock"), b"x").unwrap();
+
+        run_restore(&snap, target.path(), true).unwrap();
+
+        // Sidecars planted before restore are gone (state.db.lock is
+        // re-created by Store::open during the handshake, so assert on
+        // the WAL/SHM that were explicitly removed and not re-created).
+        assert!(!target.path().join("state.db-wal").exists());
+        assert!(!target.path().join("state.db-shm").exists());
+        // The restored DB still has the seeded row.
+        let restored = Store::open(target.path()).unwrap();
+        let n: i64 = restored
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+                    .map_err(crate::store::map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn restore_rejects_schema_too_new_and_rolls_back() {
+        let dst = tempdir().unwrap();
+        let snap = dst.path().join("too-new.db");
+        write_migrations_artifact(&snap, 1); // head = target + 1.
+
+        let target = tempdir().unwrap();
+        let err = run_restore(&snap, target.path(), false).unwrap_err();
+        match err {
+            BackupError::SchemaTooNew { found, target: t } => {
+                assert_eq!(found, Store::target_schema_version() + 1);
+                assert_eq!(t, Store::target_schema_version());
+            }
+            other => panic!("expected SchemaTooNew, got {other:?}"),
+        }
+        // The half-written destination is rolled back.
+        assert!(!target.path().join(DATA_FILE_NAME).exists());
+    }
+
+    // NOTE: the `BackupError::MigrationFailed` mapping (restore reaching a
+    // refinery migration error) is not unit-tested. The natural way to force
+    // it — corrupting the embedded `refinery_schema_history` checksum — makes
+    // refinery's rusqlite driver `panic!` ("checksum must be a valid u64")
+    // rather than return an `Err`, so the graceful map-and-rollback arm cannot
+    // be reached deterministically from a unit test. Left to integration tests.
+
+    #[test]
+    fn restore_rejects_empty_artifact_as_non_sqlite() {
+        // A zero-length file fails the read_exact short-read guard.
+        let dst = tempdir().unwrap();
+        let empty = dst.path().join("empty.db");
+        fs::write(&empty, b"").unwrap();
+        let target = tempdir().unwrap();
+        let err = run_restore(&empty, target.path(), false).unwrap_err();
+        assert!(matches!(err, BackupError::NotSqlite(_)));
+    }
+
+    #[test]
+    fn reset_rejects_empty_target_as_non_sqlite() {
+        // A short (< 16 byte) state.db trips the signature short-read guard.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("state.db"), b"tiny").unwrap();
+        let err = run_reset(dir.path()).unwrap_err();
+        assert!(matches!(err, BackupError::NotSqlite(_)));
+    }
+
+    #[test]
+    fn reset_removes_valid_db_and_lock_sidecar() {
+        let dir = tempdir().unwrap();
+        seed_store(dir.path());
+        // Plant the .lock sidecar variant exercised by the reset loop.
+        fs::write(dir.path().join("state.db.lock"), b"x").unwrap();
+        run_reset(dir.path()).unwrap();
+        assert!(!dir.path().join("state.db").exists());
+        assert!(!dir.path().join("state.db.lock").exists());
+    }
 }

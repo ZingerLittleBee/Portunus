@@ -381,4 +381,82 @@ mod tests {
         .unwrap();
         assert!(rows.is_empty());
     }
+
+    #[tokio::test]
+    async fn record_with_metrics_runs_gauge_block_on_exhaust() {
+        use crate::metrics::Metrics;
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        quota_store::insert_or_replace(&store, &sample_quota(1_000)).unwrap();
+        let cache = TrafficQuotaCache::load(store.clone()).unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let metrics = Arc::new(Metrics::new().unwrap());
+        let agg = TrafficAggregator::with_metrics(store.clone(), cache, tx, Arc::clone(&metrics));
+
+        // One tick of 1_600 total bytes crosses the 1_000 quota, so the
+        // `with_metrics` gauge block AND the `just_exhausted` counter arm
+        // both run, and a single exhausted event is emitted.
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 800, 800, 60)
+            .await;
+        let evt = rx.recv().await.unwrap();
+        assert_eq!(evt.user_id, "alice");
+        assert_eq!(evt.client_id, "edge-01");
+        // The exhausted gauge for this (user, client) pair is set to 1.
+        let exhausted = metrics
+            .traffic_quota_exhausted
+            .with_label_values(&["alice", "edge-01"])
+            .get();
+        assert_eq!(exhausted, 1);
+    }
+
+    #[tokio::test]
+    async fn record_survives_closed_exhaust_channel() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        quota_store::insert_or_replace(&store, &sample_quota(500)).unwrap();
+        let cache = TrafficQuotaCache::load(store.clone()).unwrap();
+        let (tx, rx) = mpsc::channel(16);
+        drop(rx); // receiver gone → send() fails → the warn arm runs.
+        let agg = TrafficAggregator::new(store.clone(), cache, tx);
+
+        // Crossing the quota tries to emit an event; the closed channel takes
+        // the `exhaust_channel_closed` warn arm without panicking.
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 400, 400, 60)
+            .await;
+        // The 1m sample row still landed despite the dead channel.
+        let rows = samples::query_samples(
+            &agg.inner.store,
+            samples::SampleBucket::M1,
+            Some("alice"),
+            Some("edge-01"),
+            0,
+            120,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn drop_rule_clears_prev_baseline() {
+        let (_d, _store, agg, _rx) = build_agg();
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 500, 500, 60)
+            .await;
+        // Dropping the prev entry resets the baseline, so the next cumulative
+        // reading is treated as a fresh full delta rather than a small step.
+        agg.drop_rule(RuleId(1)).await;
+        agg.record("edge-01", "edge-01", RuleId(1), "alice", 700, 700, 60)
+            .await;
+        let rows = samples::query_samples(
+            &agg.inner.store,
+            samples::SampleBucket::M1,
+            Some("alice"),
+            Some("edge-01"),
+            0,
+            120,
+        )
+        .unwrap();
+        // Minute row aggregates the two full deltas: 500 + 700 = 1_200 each way.
+        assert_eq!(rows[0].bytes_in, 1_200);
+        assert_eq!(rows[0].bytes_out, 1_200);
+    }
 }

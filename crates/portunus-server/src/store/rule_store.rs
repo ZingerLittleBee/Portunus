@@ -570,6 +570,279 @@ mod tests {
         assert!(rl.new_connections_per_sec.is_none());
     }
 
+    /// Shared bootstrap: open a temp store and mint the `_legacy`
+    /// superadmin so FK-constrained `owner_user_id` inserts succeed.
+    fn bootstrapped_store(dir: &tempfile::TempDir) -> Arc<Store> {
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        crate::store::operator_store::SqliteOperatorStore::new(Arc::clone(&store))
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        store
+    }
+
+    /// Build a minimal single-target rule for the supplied owner. Callers
+    /// override the fields they exercise (state, protocol, proxy mode).
+    fn sample_rule(id: u64, owner: UserId) -> Rule {
+        Rule {
+            id: RuleId(id),
+            client_id: ClientId::new(),
+            client_name: ClientName::new(format!("edge-{id}")).unwrap(),
+            listen_port: 443,
+            listen_port_end: None,
+            target_host: "10.0.0.1".into(),
+            target_port: 8443,
+            target_port_end: None,
+            prefer_ipv6: None,
+            protocol: Protocol::Tcp,
+            state: RuleState::Active,
+            created_at: Utc::now(),
+            last_state_change_at: Utc::now(),
+            owner_user_id: owner,
+            targets: vec![RuleTarget {
+                host: "10.0.0.1".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: None,
+            }],
+            health_check_interval_secs: None,
+            sni_pattern: None,
+            rate_limit: None,
+        }
+    }
+
+    #[test]
+    fn delete_rule_removes_only_the_targeted_row() {
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        let rule_store = SqliteRuleStore::new(store);
+
+        rule_store
+            .upsert_rule(&sample_rule(1, UserId::reserved("_legacy")))
+            .unwrap();
+        rule_store
+            .upsert_rule(&sample_rule(2, UserId::reserved("_legacy")))
+            .unwrap();
+        assert_eq!(rule_store.list_rules().unwrap().len(), 2);
+
+        rule_store.delete_rule(RuleId(1)).unwrap();
+
+        let remaining = rule_store.list_rules().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, RuleId(2));
+        // Deleting a non-existent rule is a no-op, not an error.
+        rule_store.delete_rule(RuleId(999)).unwrap();
+        assert!(rule_store.get_rule(RuleId(1)).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_rules_owned_by_removes_every_rule_for_owner() {
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        // A second, non-reserved owner whose rules must survive.
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO users (user_id, role, display_name, created_at) \
+                     VALUES (?, 'user', ?, datetime('now'))",
+                    params!["alice", "Alice"],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+        let rule_store = SqliteRuleStore::new(store);
+
+        rule_store
+            .upsert_rule(&sample_rule(10, UserId::reserved("_legacy")))
+            .unwrap();
+        rule_store
+            .upsert_rule(&sample_rule(11, UserId::reserved("_legacy")))
+            .unwrap();
+        rule_store
+            .upsert_rule(&sample_rule(12, UserId::from_str("alice").unwrap()))
+            .unwrap();
+
+        rule_store
+            .delete_rules_owned_by(&UserId::reserved("_legacy"))
+            .unwrap();
+
+        let remaining = rule_store.list_rules().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, RuleId(12));
+        // The surviving rule's owner round-trips through `UserId::from_str`.
+        assert_eq!(remaining[0].owner_user_id.as_str(), "alice");
+    }
+
+    #[test]
+    fn roundtrip_removed_state_and_v1_proxy_target() {
+        // Exercises the `RuleState::Removed` write arm plus the
+        // PROXY-protocol v1 write/read mapping that the existing
+        // round-trip test (v2 only) never reaches.
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        let rule_store = SqliteRuleStore::new(store);
+
+        let mut rule = sample_rule(20, UserId::reserved("_legacy"));
+        rule.state = RuleState::Removed;
+        rule.targets = vec![RuleTarget {
+            host: "10.0.0.1".into(),
+            port: 8443,
+            priority: 0,
+            proxy_protocol: Some(portunus_core::ProxyProtocolVersion::V1),
+        }];
+        rule_store.upsert_rule(&rule).unwrap();
+
+        let loaded = rule_store
+            .get_rule(RuleId(20))
+            .unwrap()
+            .expect("rule exists");
+        assert_eq!(loaded.state, RuleState::Removed);
+        assert_eq!(
+            loaded.targets[0].proxy_protocol,
+            Some(portunus_core::ProxyProtocolVersion::V1)
+        );
+    }
+
+    #[test]
+    fn roundtrip_failed_state_preserves_reason() {
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        let rule_store = SqliteRuleStore::new(store);
+
+        let mut rule = sample_rule(21, UserId::reserved("_legacy"));
+        rule.state = RuleState::Failed {
+            reason: "port in use".into(),
+        };
+        rule_store.upsert_rule(&rule).unwrap();
+
+        let loaded = rule_store
+            .get_rule(RuleId(21))
+            .unwrap()
+            .expect("rule exists");
+        assert_eq!(
+            loaded.state,
+            RuleState::Failed {
+                reason: "port in use".into()
+            }
+        );
+    }
+
+    #[test]
+    fn roundtrip_pending_state_and_udp_protocol() {
+        // Drives both the `Pending` state default arm and the `udp`
+        // protocol decode branch in `list_rules`.
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        let rule_store = SqliteRuleStore::new(store);
+
+        let mut rule = sample_rule(22, UserId::reserved("_legacy"));
+        rule.state = RuleState::Pending;
+        rule.protocol = Protocol::Udp;
+        rule_store.upsert_rule(&rule).unwrap();
+
+        let loaded = rule_store
+            .get_rule(RuleId(22))
+            .unwrap()
+            .expect("rule exists");
+        assert_eq!(loaded.state, RuleState::Pending);
+        assert_eq!(loaded.protocol, Protocol::Udp);
+    }
+
+    #[test]
+    fn upsert_overwrites_existing_rule_and_replaces_targets() {
+        // The ON CONFLICT update path plus the DELETE-then-reinsert of
+        // `rule_targets`: a second upsert must shrink a two-target rule
+        // back to one target.
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        let rule_store = SqliteRuleStore::new(store);
+
+        let mut rule = sample_rule(23, UserId::reserved("_legacy"));
+        rule.targets = vec![
+            RuleTarget {
+                host: "10.0.0.1".into(),
+                port: 8443,
+                priority: 0,
+                proxy_protocol: None,
+            },
+            RuleTarget {
+                host: "10.0.0.2".into(),
+                port: 9443,
+                priority: 1,
+                proxy_protocol: None,
+            },
+        ];
+        rule_store.upsert_rule(&rule).unwrap();
+        assert_eq!(
+            rule_store
+                .get_rule(RuleId(23))
+                .unwrap()
+                .unwrap()
+                .targets
+                .len(),
+            2
+        );
+
+        rule.listen_port = 8080;
+        rule.targets = vec![RuleTarget {
+            host: "10.0.0.9".into(),
+            port: 9090,
+            priority: 0,
+            proxy_protocol: None,
+        }];
+        rule_store.upsert_rule(&rule).unwrap();
+
+        let loaded = rule_store.get_rule(RuleId(23)).unwrap().unwrap();
+        assert_eq!(loaded.listen_port, 8080);
+        assert_eq!(loaded.targets.len(), 1);
+        assert_eq!(loaded.targets[0].host, "10.0.0.9");
+    }
+
+    #[test]
+    fn list_rules_errors_on_malformed_timestamp() {
+        // A row that passes the client_name/client_id NOT-NULL filter but
+        // carries a non-RFC3339 `created_at` must surface through the
+        // `parse_ts` error branch as a store error (not a silent skip).
+        let dir = tempdir().unwrap();
+        let store = bootstrapped_store(&dir);
+        let client_id = ClientId::new().to_string();
+        store
+            .with_write_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO rules (
+                        id, client_id, client_name, listen_port, target_host, target_port,
+                        protocol, owner_user_id, created_at, updated_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        88,
+                        client_id,
+                        "edge-bad-ts",
+                        443,
+                        "127.0.0.1",
+                        8443,
+                        "tcp",
+                        "_legacy",
+                        "not-a-timestamp",
+                        "2026-06-25T00:00:00Z",
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+
+        let rule_store = SqliteRuleStore::new(store);
+        assert!(rule_store.list_rules().is_err());
+    }
+
+    #[test]
+    fn shared_buf_flush_is_a_noop() {
+        // Covers the `io::Write::flush` impl on the test writer helper.
+        let mut buf = SharedBuf::default();
+        io::Write::flush(&mut buf).unwrap();
+        assert!(buf.snapshot().is_empty());
+    }
+
     #[test]
     fn list_rules_warns_when_missing_client_name_rows_are_skipped() {
         let buf = SharedBuf::default();

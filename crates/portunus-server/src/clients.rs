@@ -453,4 +453,387 @@ mod tests {
         assert_eq!(registry.len().await, 2, "same name, distinct ids coexist");
         assert!(registry.handles_by_name(&name).await.is_some());
     }
+
+    #[tokio::test]
+    async fn re_register_same_id_fires_previous_cancel_token() {
+        // Registering a second session for an already-tracked id must fire
+        // the previous session's cancel token so the old stream tears down.
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let prev_token = CancellationToken::new();
+        let (tx_a, _ra) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                prev_token.clone(),
+                tx_a,
+                Arc::default(),
+            )
+            .await;
+        assert!(!prev_token.is_cancelled());
+
+        let (tx_b, _rb) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx_b,
+                Arc::default(),
+            )
+            .await;
+
+        assert!(
+            prev_token.is_cancelled(),
+            "old session's cancel token must fire on re-register"
+        );
+        assert_eq!(registry.len().await, 1, "only one live session per id");
+    }
+
+    #[tokio::test]
+    async fn set_client_version_applies_then_rejects_stale_session() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let session_id = registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        // No Hello observed yet -> version is None.
+        assert_eq!(registry.client_version_of(&id).await, None);
+
+        // Matching session id applies the version.
+        assert!(
+            registry
+                .set_client_version(&id, session_id, "0.7.0".to_string())
+                .await
+        );
+        assert_eq!(
+            registry.client_version_of(&id).await,
+            Some("0.7.0".to_string())
+        );
+
+        // A mismatched (stale) session id must be rejected, leaving the
+        // previously-applied version untouched.
+        assert!(
+            !registry
+                .set_client_version(&id, session_id + 1, "9.9.9".to_string())
+                .await
+        );
+        assert_eq!(
+            registry.client_version_of(&id).await,
+            Some("0.7.0".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn set_client_version_unknown_id_returns_false() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        assert!(
+            !registry
+                .set_client_version(&id, 0, "0.7.0".to_string())
+                .await
+        );
+        assert_eq!(registry.client_version_of(&id).await, None);
+    }
+
+    #[tokio::test]
+    async fn client_version_of_unknown_id_returns_none() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        assert_eq!(registry.client_version_of(&id).await, None);
+    }
+
+    #[tokio::test]
+    async fn handles_returns_some_for_connected_none_for_unknown() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let unknown = ClientId::new();
+        let (tx, _rx) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        assert!(registry.handles(&id).await.is_some());
+        assert!(registry.handles(&unknown).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn supports_unknown_id_returns_none() {
+        let registry = ConnectedClients::new();
+        let unknown = ClientId::new();
+        assert_eq!(registry.supports(&unknown, Protocol::Tcp).await, None);
+    }
+
+    #[tokio::test]
+    async fn unregister_removes_on_matching_session_only() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let session_id = registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        // A non-matching session id must not remove the live entry.
+        registry.unregister(&id, session_id + 1).await;
+        assert_eq!(registry.len().await, 1);
+
+        // The matching session id removes it.
+        registry.unregister(&id, session_id).await;
+        assert_eq!(registry.len().await, 0);
+        assert!(registry.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn unregister_unknown_id_is_noop() {
+        let registry = ConnectedClients::new();
+        let unknown = ClientId::new();
+        // No entry to match — must not panic and must leave the map empty.
+        registry.unregister(&unknown, 0).await;
+        assert!(registry.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn disconnect_fires_cancel_token_for_connected_client() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let token = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                token.clone(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        assert!(!token.is_cancelled());
+        assert!(registry.disconnect(&id).await);
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn disconnect_unknown_id_returns_false() {
+        let registry = ConnectedClients::new();
+        let unknown = ClientId::new();
+        assert!(!registry.disconnect(&unknown).await);
+    }
+
+    #[tokio::test]
+    async fn client_id_by_name_finds_registered_client() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let name: ClientName = "Acme Prod".parse().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                name.clone(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        assert_eq!(registry.client_id_by_name(&name).await, Some(id));
+        let missing: ClientName = "nobody".parse().unwrap();
+        assert_eq!(registry.client_id_by_name(&missing).await, None);
+    }
+
+    #[tokio::test]
+    async fn client_version_by_name_mirrors_client_version_of() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let name: ClientName = "edge-01".parse().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let session_id = registry
+            .register(
+                id,
+                name.clone(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        // Before a Hello: no version even though the name resolves.
+        assert_eq!(registry.client_version_by_name(&name).await, None);
+
+        registry
+            .set_client_version(&id, session_id, "0.7.0".to_string())
+            .await;
+        assert_eq!(
+            registry.client_version_by_name(&name).await,
+            Some("0.7.0".to_string())
+        );
+
+        let missing: ClientName = "nobody".parse().unwrap();
+        assert_eq!(registry.client_version_by_name(&missing).await, None);
+    }
+
+    #[tokio::test]
+    async fn supports_by_name_mirrors_supports() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let name: ClientName = "edge-01".parse().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                name.clone(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        assert_eq!(
+            registry.supports_by_name(&name, Protocol::Tcp).await,
+            Some(true)
+        );
+        assert_eq!(
+            registry.supports_by_name(&name, Protocol::Udp).await,
+            Some(false)
+        );
+
+        let missing: ClientName = "nobody".parse().unwrap();
+        assert_eq!(
+            registry.supports_by_name(&missing, Protocol::Tcp).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_by_name_fires_every_matching_session() {
+        // FR-013: duplicate display names are permitted, so disconnect_by_name
+        // must fire the cancel token of every matching live session.
+        let registry = ConnectedClients::new();
+        let name: ClientName = "Acme Prod".parse().unwrap();
+        let token_a = CancellationToken::new();
+        let token_b = CancellationToken::new();
+        let (tx_a, _ra) = mpsc::channel(1);
+        let (tx_b, _rb) = mpsc::channel(1);
+        registry
+            .register(
+                ClientId::new(),
+                name.clone(),
+                None,
+                token_a.clone(),
+                tx_a,
+                Arc::default(),
+            )
+            .await;
+        registry
+            .register(
+                ClientId::new(),
+                name.clone(),
+                None,
+                token_b.clone(),
+                tx_b,
+                Arc::default(),
+            )
+            .await;
+
+        assert!(registry.disconnect_by_name(&name).await);
+        assert!(token_a.is_cancelled());
+        assert!(token_b.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn disconnect_by_name_unknown_returns_false() {
+        let registry = ConnectedClients::new();
+        let missing: ClientName = "nobody".parse().unwrap();
+        assert!(!registry.disconnect_by_name(&missing).await);
+    }
+
+    #[tokio::test]
+    async fn snapshot_clones_current_entries() {
+        let registry = ConnectedClients::new();
+        let id = ClientId::new();
+        let (tx, _rx) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+
+        let snap = registry.snapshot().await;
+        assert_eq!(snap.len(), 1);
+        assert!(snap.contains_key(&id));
+        assert_eq!(
+            snap.get(&id).unwrap().client_name,
+            "edge-01".parse::<ClientName>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn is_empty_reflects_registry_state() {
+        let registry = ConnectedClients::new();
+        assert!(registry.is_empty().await);
+
+        let id = ClientId::new();
+        let (tx, _rx) = mpsc::channel(1);
+        registry
+            .register(
+                id,
+                "edge-01".parse().unwrap(),
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+        assert!(!registry.is_empty().await);
+    }
+
+    #[test]
+    fn session_root_token_child_is_cancelled_by_shutdown() {
+        // session_root_token() hands out the root whose children drive each
+        // session; shutdown() cancels the root and therefore the children.
+        let registry = ConnectedClients::new();
+        let root = registry.session_root_token();
+        assert!(!root.is_cancelled());
+        let child = root.child_token();
+        assert!(!child.is_cancelled());
+
+        registry.shutdown();
+        assert!(registry.session_root_token().is_cancelled());
+        assert!(child.is_cancelled());
+    }
 }

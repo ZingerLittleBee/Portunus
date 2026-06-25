@@ -751,4 +751,49 @@ mod tests {
         assert_eq!(s.errors.port_in_use.load(Ordering::Relaxed), 1);
         assert_eq!(s.errors.upstream_connect_failed.load(Ordering::Relaxed), 2);
     }
+
+    #[test]
+    fn error_counters_udp_event_bumps_and_snapshot() {
+        // Cover the remaining four UDP-event increment helpers plus the
+        // bulk snapshot. Each helper bumps exactly one counter.
+        let s = RuleStats::new();
+        s.errors.inc_icmp_evict();
+        s.errors.inc_icmp_evict();
+        s.errors.inc_emsgsize();
+        s.errors.inc_wouldblock();
+        s.errors.inc_wouldblock();
+        s.errors.inc_wouldblock();
+        s.errors.inc_addflow_dropped();
+
+        assert_eq!(s.errors.icmp_evict.load(Ordering::Relaxed), 2);
+        assert_eq!(s.errors.emsgsize.load(Ordering::Relaxed), 1);
+        assert_eq!(s.errors.wouldblock.load(Ordering::Relaxed), 3);
+        assert_eq!(s.errors.addflow_dropped.load(Ordering::Relaxed), 1);
+
+        let snap = s.errors.snapshot();
+        assert_eq!(
+            snap,
+            ErrorSnapshot {
+                port_in_use: 0,
+                upstream_connect_failed: 0,
+                icmp_evict: 2,
+                emsgsize: 1,
+                wouldblock: 3,
+                addflow_dropped: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn rate_limit_reject_reason_as_index_is_stable() {
+        // Indices must match the proto enum order so the data plane can key
+        // a fixed-size counter array. Assert each variant's numeric code.
+        assert_eq!(RateLimitRejectReason::Unspecified.as_index(), 0);
+        assert_eq!(RateLimitRejectReason::ConnConcurrent.as_index(), 1);
+        assert_eq!(RateLimitRejectReason::ConnRate.as_index(), 2);
+        assert_eq!(RateLimitRejectReason::UdpFlowRate.as_index(), 3);
+        assert_eq!(RateLimitRejectReason::OwnerConcurrent.as_index(), 4);
+        assert_eq!(RateLimitRejectReason::OwnerConnRate.as_index(), 5);
+        assert_eq!(RateLimitRejectReason::OwnerUdpFlowRate.as_index(), 6);
+    }
 }

@@ -186,4 +186,68 @@ mod tests {
             self.0.on_event(event, ctx);
         }
     }
+
+    /// Handle that forwards BOTH `on_event` and `on_new_span` so the span
+    /// path and the bool/short-circuit visitor branches are exercised.
+    struct FullLayerHandle(Arc<RedactionLayer>);
+
+    impl<S> Layer<S> for FullLayerHandle
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+            self.0.on_event(event, ctx);
+        }
+        fn on_new_span(&self, attrs: &Attributes<'_>, id: &tracing::span::Id, ctx: Context<'_, S>) {
+            self.0.on_new_span(attrs, id, ctx);
+        }
+    }
+
+    #[test]
+    fn layer_flags_banned_field_on_span_creation() {
+        let layer = Arc::new(RedactionLayer::new());
+        let subscriber = tracing_subscriber::registry().with(FullLayerHandle(Arc::clone(&layer)));
+        let _guard = subscriber.set_default();
+
+        // A span carrying a banned field name flags via `on_new_span`.
+        let bad = tracing::info_span!("worker", token = "leaked");
+        drop(bad);
+        assert_eq!(layer.violation_count(), 1, "span with token must flag");
+
+        // A clean span does not bump the counter.
+        let clean = tracing::info_span!("worker", client_name = "edge-a");
+        drop(clean);
+        assert_eq!(layer.violation_count(), 1);
+    }
+
+    #[test]
+    fn layer_records_bool_and_short_circuits_multiple_banned() {
+        let layer = Arc::new(RedactionLayer::new());
+        let subscriber = tracing_subscriber::registry().with(FullLayerHandle(Arc::clone(&layer)));
+        let _guard = subscriber.set_default();
+
+        // Bool-valued banned field exercises `record_bool`.
+        info!(event = "audit.bad", secret_enabled = true);
+        assert_eq!(layer.violation_count(), 1);
+
+        // Two banned fields in one event: the visitor records only the
+        // first and short-circuits on the rest (still a single violation).
+        info!(token = "a", secret = "b");
+        assert_eq!(layer.violation_count(), 2);
+    }
+
+    #[test]
+    fn layer_records_u64_and_debug_banned_fields() {
+        let layer = Arc::new(RedactionLayer::new());
+        let subscriber = tracing_subscriber::registry().with(FullLayerHandle(Arc::clone(&layer)));
+        let _guard = subscriber.set_default();
+
+        // u64-valued banned field exercises `record_u64`.
+        info!(secret_count = 7_u64);
+        assert_eq!(layer.violation_count(), 1);
+
+        // Debug-formatted (`?`) banned field exercises `record_debug`.
+        info!(token = ?vec![1, 2, 3]);
+        assert_eq!(layer.violation_count(), 2);
+    }
 }

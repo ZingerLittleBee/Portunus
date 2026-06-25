@@ -1573,6 +1573,7 @@ struct ApiErrorInner {
     message: String,
 }
 
+#[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
     code: String,

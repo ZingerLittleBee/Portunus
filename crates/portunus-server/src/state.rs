@@ -248,3 +248,186 @@ impl AppState {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clients::ConnectedClients;
+    use crate::store::error::map_rusqlite;
+    use tempfile::tempdir;
+
+    /// Valid leaf-cert PEM whose SAN set covers `public.example` and
+    /// `localhost` — same fixture the `advertised` tests use.
+    const FIXTURE_PEM: &str = include_str!("advertised/testdata/san_fixture.pem");
+
+    /// Build an `AppState` from a freshly-opened temp store, mirroring the
+    /// helper used by the gRPC service / enrollment tests. The returned
+    /// `tempdir` guard must be kept alive for the store's lifetime.
+    fn build_state(cert_pem: &str) -> (AppState, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+        operator_store
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        let state = AppState::new(
+            tokens,
+            operator_store,
+            ConnectedClients::default(),
+            None,
+            7443,
+            "deadbeef",
+            cert_pem.to_string(),
+            16,
+            store,
+        )
+        .expect("AppState::new should succeed for a fresh store");
+        (state, dir)
+    }
+
+    #[test]
+    fn new_with_valid_cert_pem_parses_san_set() {
+        // Happy path: a valid PEM yields a SAN set that covers the
+        // fixture's declared names, proving `from_pem` took the `Ok`
+        // branch rather than falling back to the empty default.
+        let (state, _dir) = build_state(FIXTURE_PEM);
+        assert!(state.cert_san.covers("public.example"));
+        assert!(state.cert_san.covers("localhost"));
+        // Defaults wired through `default_for_data_dir(".")`: no explicit
+        // public origin, so CSRF falls back to same-origin and cookies
+        // stay non-Secure.
+        assert_eq!(state.operator_http_public_origin, None);
+        assert!(!state.operator_http_cookie_secure);
+        assert_eq!(state.control_port, 7443);
+        assert_eq!(state.range_rule_max_ports, 16);
+        assert_eq!(state.server_cert_sha256, "deadbeef");
+        assert!(state.server_config.is_none());
+    }
+
+    #[test]
+    fn new_with_invalid_cert_pem_falls_back_to_empty_san_set() {
+        // An unparseable PEM must NOT abort construction — `from_pem`
+        // errors are logged and swallowed in favour of the empty default
+        // SAN set (covers nothing). This exercises the `Err(e)` arm.
+        let (state, _dir) = build_state("not a pem at all");
+        assert!(!state.cert_san.covers("public.example"));
+        assert!(!state.cert_san.covers("localhost"));
+        // The rest of the state is still fully constructed.
+        assert_eq!(state.control_port, 7443);
+    }
+
+    #[test]
+    fn with_server_config_overrides_csrf_and_cookie_and_caps() {
+        let (state, _dir) = build_state(FIXTURE_PEM);
+        let mut cfg = ServerConfig::default_for_data_dir(Path::new("."));
+        cfg.range_rule_max_ports = 4096;
+        cfg.operator_http_public_origin = Some("https://ops.example.com".to_string());
+        let state = state.with_server_config(Arc::new(cfg));
+
+        // Range cap is taken from the attached config.
+        assert_eq!(state.range_rule_max_ports, 4096);
+        // An https public origin flips both the CSRF origin and the
+        // Secure-cookie flag.
+        assert_eq!(
+            state.operator_http_public_origin.as_deref(),
+            Some("https://ops.example.com")
+        );
+        assert!(state.operator_http_cookie_secure);
+        // The config is now attached.
+        assert!(state.server_config.is_some());
+    }
+
+    #[test]
+    fn with_server_config_http_origin_keeps_cookie_insecure() {
+        // A plain-http public origin sets the CSRF origin but leaves the
+        // Secure-cookie flag off (browsers would drop a Secure cookie on
+        // plain HTTP).
+        let (state, _dir) = build_state(FIXTURE_PEM);
+        let mut cfg = ServerConfig::default_for_data_dir(Path::new("."));
+        cfg.operator_http_public_origin = Some("http://ops.example.com".to_string());
+        let state = state.with_server_config(Arc::new(cfg));
+
+        assert_eq!(
+            state.operator_http_public_origin.as_deref(),
+            Some("http://ops.example.com")
+        );
+        assert!(!state.operator_http_cookie_secure);
+    }
+
+    #[test]
+    fn new_propagates_traffic_quota_cache_load_failure() {
+        // Drop the `traffic_quotas` table so the boot-time cache hydrate
+        // (`TrafficQuotaCache::load`) fails. `new()` must surface this as
+        // a `prometheus::Error::Msg` rather than panic — the `Err(e)` arm
+        // at line 157.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        store
+            .with_write_tx(|tx| {
+                tx.execute_batch("DROP TABLE traffic_quotas")
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+
+        // `AppState` holds `Arc<dyn ...>` collaborators and does not derive
+        // Debug, so destructure the Result rather than calling `expect_err`.
+        let Err(err) = AppState::new(
+            tokens,
+            operator_store,
+            ConnectedClients::default(),
+            None,
+            0,
+            "deadbeef",
+            FIXTURE_PEM.to_string(),
+            16,
+            store,
+        ) else {
+            panic!("missing traffic_quotas table must fail construction");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("traffic_quota_cache_load"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn new_propagates_owner_cap_open_failure() {
+        // Drop only the `rate_limit_owner` table. The traffic-quota cache
+        // still hydrates, so construction reaches `OwnerCapService::open`,
+        // whose `list_all` then fails — exercising the `Err(e)` arm at
+        // line 180.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        store
+            .with_write_tx(|tx| {
+                tx.execute_batch("DROP TABLE rate_limit_owner")
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+
+        let Err(err) = AppState::new(
+            tokens,
+            operator_store,
+            ConnectedClients::default(),
+            None,
+            0,
+            "deadbeef",
+            FIXTURE_PEM.to_string(),
+            16,
+            store,
+        ) else {
+            panic!("missing rate_limit_owner table must fail construction");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("owner_cap_service_open"),
+            "unexpected error message: {msg}"
+        );
+    }
+}

@@ -286,4 +286,190 @@ mod tests {
         assert_eq!(r.budget_remaining(), -100);
         assert!(r.is_exhausted());
     }
+
+    #[test]
+    fn budget_remaining_positive_and_not_exhausted() {
+        let r = TrafficQuotaRow {
+            user_id: "u".into(),
+            client_id: "01TESTCLIENTID00000000000C".into(),
+            client_name: "c".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: 0,
+            current_period_started_at: 0,
+            current_period_bytes_used: 250,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert_eq!(r.budget_remaining(), 750);
+        assert!(!r.is_exhausted());
+    }
+
+    /// Build a representative row for the message-builder tests. The
+    /// anchor and started are both 0 (1970-01-01T00:00:00Z), so the
+    /// computed period end is the start of the next monthly period.
+    fn sample_row() -> TrafficQuotaRow {
+        TrafficQuotaRow {
+            user_id: "user-1".into(),
+            client_id: "01TESTCLIENTID00000000000C".into(),
+            client_name: "display name".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: 0,
+            current_period_started_at: 0,
+            current_period_bytes_used: 300,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn make_set_msg_populates_state_and_ids() {
+        let row = sample_row();
+        let msg = make_traffic_quota_set_msg(&row, "req-42".into());
+
+        let proto::server_message::Payload::TrafficQuotaUpdate(update) =
+            msg.payload.expect("payload present")
+        else {
+            panic!("expected TrafficQuotaUpdate payload");
+        };
+
+        assert_eq!(update.request_id, "req-42");
+        assert_eq!(update.user_id, "user-1");
+        assert_eq!(update.client_name, "display name");
+        assert_eq!(update.client_id, "01TESTCLIENTID00000000000C");
+        assert_eq!(update.action, proto::TrafficQuotaAction::Set as i32);
+
+        let state = update.state.expect("SET carries state");
+        assert_eq!(state.monthly_bytes, 1_000);
+        assert_eq!(state.budget_remaining_bytes, 700);
+        assert_eq!(state.period_started_at_unix_sec, 0);
+        // started == anchor == 1970-01-01; next period start is the
+        // anchor advanced by one calendar month (1970-02-01T00:00:00Z).
+        let expected_end = anchor(1970, 2, 1).timestamp();
+        assert_eq!(state.period_ends_at_unix_sec, expected_end);
+        assert!(!state.exhausted);
+    }
+
+    #[test]
+    fn make_set_msg_reports_exhausted_state() {
+        let mut row = sample_row();
+        row.current_period_bytes_used = 1_500;
+        row.exhausted_at = Some(123);
+        let msg = make_traffic_quota_set_msg(&row, "req".into());
+
+        let proto::server_message::Payload::TrafficQuotaUpdate(update) =
+            msg.payload.expect("payload present")
+        else {
+            panic!("expected TrafficQuotaUpdate payload");
+        };
+        let state = update.state.expect("SET carries state");
+        assert_eq!(state.budget_remaining_bytes, -500);
+        assert!(state.exhausted);
+    }
+
+    #[test]
+    fn make_remove_msg_has_no_state() {
+        let msg = make_traffic_quota_remove_msg(
+            "user-7".into(),
+            "01TESTCLIENTID00000000000C".into(),
+            "old label".into(),
+            "req-remove".into(),
+        );
+
+        let proto::server_message::Payload::TrafficQuotaUpdate(update) =
+            msg.payload.expect("payload present")
+        else {
+            panic!("expected TrafficQuotaUpdate payload");
+        };
+
+        assert_eq!(update.request_id, "req-remove");
+        assert_eq!(update.user_id, "user-7");
+        assert_eq!(update.client_name, "old label");
+        assert_eq!(update.client_id, "01TESTCLIENTID00000000000C");
+        assert_eq!(update.action, proto::TrafficQuotaAction::Remove as i32);
+        assert!(update.state.is_none());
+    }
+
+    #[test]
+    fn compute_period_end_chains_one_month() {
+        // Anchor and started both at 1970-01-15; end is the next start.
+        let started = anchor(1970, 1, 15).timestamp();
+        let billing_anchor = started;
+        let end = compute_period_end(billing_anchor, started);
+        assert_eq!(end, anchor(1970, 2, 15).timestamp());
+    }
+
+    #[test]
+    fn compute_period_end_invalid_anchor_returns_max() {
+        // i64::MAX seconds is far outside chrono's representable range,
+        // so timestamp_opt yields None and we fall back to i64::MAX.
+        assert_eq!(compute_period_end(i64::MAX, 0), i64::MAX);
+    }
+
+    #[test]
+    fn compute_period_end_invalid_started_returns_max() {
+        // Valid anchor (0) but an out-of-range `started` timestamp.
+        assert_eq!(compute_period_end(0, i64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn compute_period_end_unmatched_started_returns_max() {
+        // A `started` value that never coincides with a period start
+        // exhausts the 12_000-period scan and falls through to i64::MAX.
+        let billing_anchor = anchor(2026, 1, 15).timestamp();
+        // One second after the anchor — never equal to any period start.
+        let started = billing_anchor + 1;
+        assert_eq!(compute_period_end(billing_anchor, started), i64::MAX);
+    }
+
+    #[test]
+    fn advance_period_rebases_when_started_before_anchor() {
+        // current_period_started_at sits before the anchor (period 0),
+        // so the first scan immediately sees p > started and rebases
+        // n via saturating_sub(0) -> 0. With `now` past the first
+        // boundary, it then advances forward from the anchor.
+        let a = anchor(2026, 3, 10);
+        let started = anchor(2026, 2, 1); // earlier than the anchor
+        let now = anchor(2026, 4, 20);
+        let new_start = advance_period_if_due(a, started, now).unwrap();
+        // From anchor (Mar 10), the latest start <= Apr 20 is Apr 10.
+        assert_eq!(new_start, anchor(2026, 4, 10));
+    }
+
+    #[test]
+    fn advance_period_rebase_without_advancing_returns_none() {
+        // started before anchor but `now` is before the first boundary,
+        // so after rebasing to n=0 nothing advances and None is returned.
+        let a = anchor(2026, 3, 10);
+        let started = anchor(2026, 2, 1);
+        let now = anchor(2026, 3, 20); // before the next boundary (Apr 10)
+        assert!(advance_period_if_due(a, started, now).is_none());
+    }
+
+    #[test]
+    fn advance_period_first_loop_sanity_breaks_far_future_start() {
+        // `started` more than 12_000 months (1000 years) after the
+        // anchor never matches a scanned period start, so the first
+        // loop hits the n > 12_000 sanity break. `now` is near the
+        // anchor, so the second loop does not advance -> None.
+        let a = anchor(2026, 1, 15);
+        let started = anchor(5000, 1, 15); // ~2974 years later
+        let now = anchor(2026, 1, 20);
+        assert!(advance_period_if_due(a, started, now).is_none());
+    }
+
+    #[test]
+    fn advance_period_second_loop_sanity_breaks_far_future_now() {
+        // `now` more than 12_000 months after the anchor drives the
+        // forward-advance loop past its n > 12_000 sanity break while
+        // still reporting an advance.
+        let a = anchor(2026, 1, 15);
+        let started = period_start_at(a, 0);
+        let now = anchor(5000, 6, 1); // ~2974 years later
+        let new_start = advance_period_if_due(a, started, now).unwrap();
+        // After the sanity break, n is pinned at 12_001 periods past
+        // the anchor (Jan 2026 + 12_001 months).
+        assert_eq!(new_start, period_start_at(a, 12_001));
+    }
 }

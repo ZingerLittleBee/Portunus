@@ -265,3 +265,355 @@ pub async fn delete_user(
         removed_rule_ids,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clients::ConnectedClients;
+    use crate::store::Store;
+    use crate::store::operator_store::SqliteOperatorStore;
+    use crate::store::token_store::SqliteTokenStore;
+    use axum::response::IntoResponse;
+    use tempfile::tempdir;
+
+    /// Build a full `AppState` backed by a temp SQLite store. Mirrors the
+    /// helper in `grpc/enrollment.rs` / `traffic_quotas/rollover.rs`. The
+    /// store starts empty (no bootstrap) so each test controls the exact
+    /// superadmin population it needs.
+    fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+        let state = AppState::new(
+            tokens,
+            operator_store,
+            ConnectedClients::default(),
+            None,
+            7443,
+            "deadbeef",
+            include_str!("../advertised/testdata/san_fixture.pem"),
+            16,
+            store,
+        )
+        .unwrap();
+        (dir, Arc::new(state))
+    }
+
+    fn superadmin_identity(uid: &str) -> OperatorIdentity {
+        OperatorIdentity {
+            user_id: UserId::from_str(uid).unwrap(),
+            role: OperatorRole::Superadmin,
+        }
+    }
+
+    fn user_identity(uid: &str) -> OperatorIdentity {
+        OperatorIdentity {
+            user_id: UserId::from_str(uid).unwrap(),
+            role: OperatorRole::User,
+        }
+    }
+
+    /// Seed a user directly into the operator store, bypassing the handler.
+    fn seed_user(state: &AppState, uid: &str, role: OperatorRole) {
+        let user = User {
+            id: UserId::from_str(uid).unwrap(),
+            display_name: uid.to_string(),
+            role,
+            created_at: Utc::now(),
+            disabled: false,
+        };
+        state.operator_store.add_user(user).unwrap();
+    }
+
+    fn create_body(uid: &str, role: &str, password: Option<&str>) -> CreateUserBody {
+        CreateUserBody {
+            user_id: uid.to_string(),
+            display_name: format!("{uid} display"),
+            role: role.to_string(),
+            initial_password: password.map(str::to_string),
+            password_change_required: false,
+        }
+    }
+
+    fn status_of(err: ApiError) -> StatusCode {
+        err.into_response().status()
+    }
+
+    // --- api_store ---------------------------------------------------------
+
+    #[test]
+    fn api_store_short_circuits_to_rbac_for_user_not_found() {
+        // `UserNotFound` maps through `as_rbac()` to RbacError::UserNotFound
+        // -> 404 NOT_FOUND.
+        let err = api_store(IdentityStoreError::UserNotFound(
+            UserId::from_str("ghost").unwrap(),
+        ));
+        assert_eq!(status_of(err), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn api_store_invalid_port_range_is_422() {
+        let err = api_store(IdentityStoreError::InvalidPortRange { start: 9, end: 1 });
+        assert_eq!(status_of(err), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn api_store_hash_collision_is_409() {
+        let err = api_store(IdentityStoreError::HashCollision);
+        assert_eq!(status_of(err), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn api_store_unmapped_variant_is_500() {
+        let err = api_store(IdentityStoreError::WriteFailed("boom".into()));
+        assert_eq!(status_of(err), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // --- password_error ----------------------------------------------------
+
+    #[test]
+    fn password_error_validation_failures_are_422() {
+        for e in [
+            PasswordError::TooShort,
+            PasswordError::TooLong,
+            PasswordError::Invalid,
+        ] {
+            assert_eq!(
+                status_of(password_error(e)),
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    #[test]
+    fn password_error_hash_failed_is_500() {
+        assert_eq!(
+            status_of(password_error(PasswordError::HashFailed)),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    // --- post_users --------------------------------------------------------
+
+    #[tokio::test]
+    async fn post_users_creates_superadmin_role() {
+        let (_dir, state) = test_state();
+        let identity = superadmin_identity("boss");
+        let body = create_body("alice", "superadmin", Some("correct horse staple"));
+        let (status, resp) = post_users(State(state.clone()), Extension(identity), Json(body))
+            .await
+            .expect("create ok");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(resp.0.role, "superadmin");
+        let stored = state
+            .operator_store
+            .get_user(&UserId::from_str("alice").unwrap())
+            .unwrap();
+        assert_eq!(stored.role, OperatorRole::Superadmin);
+    }
+
+    #[tokio::test]
+    async fn post_users_rejects_empty_display_name() {
+        let (_dir, state) = test_state();
+        let mut body = create_body("alice", "user", Some("correct horse staple"));
+        body.display_name = "   ".to_string();
+        let err = post_users(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Json(body),
+        )
+        .await
+        .expect_err("blank display name rejected");
+        assert_eq!(status_of(err), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn post_users_rejects_overlong_display_name() {
+        let (_dir, state) = test_state();
+        let mut body = create_body("alice", "user", Some("correct horse staple"));
+        body.display_name = "x".repeat(65);
+        let err = post_users(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Json(body),
+        )
+        .await
+        .expect_err("overlong display name rejected");
+        assert_eq!(status_of(err), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn post_users_rejects_unknown_role() {
+        let (_dir, state) = test_state();
+        let body = create_body("alice", "wizard", Some("correct horse staple"));
+        let err = post_users(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Json(body),
+        )
+        .await
+        .expect_err("unknown role rejected");
+        // RbacError::RoleRequired -> 403 FORBIDDEN.
+        assert_eq!(status_of(err), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn post_users_requires_initial_password() {
+        let (_dir, state) = test_state();
+        let body = create_body("alice", "user", None);
+        let err = post_users(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Json(body),
+        )
+        .await
+        .expect_err("missing password rejected");
+        assert_eq!(status_of(err), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn post_users_rejects_non_superadmin_caller() {
+        let (_dir, state) = test_state();
+        let body = create_body("alice", "user", Some("correct horse staple"));
+        let err = post_users(State(state), Extension(user_identity("bob")), Json(body))
+            .await
+            .expect_err("non-superadmin rejected");
+        assert_eq!(status_of(err), StatusCode::FORBIDDEN);
+    }
+
+    // --- get_users / get_user ----------------------------------------------
+
+    #[tokio::test]
+    async fn get_users_lists_with_grant_counts() {
+        let (_dir, state) = test_state();
+        seed_user(&state, "alice", OperatorRole::User);
+        seed_user(&state, "bob", OperatorRole::Superadmin);
+        let resp = get_users(State(state), Extension(superadmin_identity("boss")))
+            .await
+            .expect("list ok");
+        let names: Vec<&str> = resp.0.iter().map(|u| u.user_id.as_str()).collect();
+        assert!(names.contains(&"alice"));
+        assert!(names.contains(&"bob"));
+        for v in &resp.0 {
+            assert_eq!(v.grant_count, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn get_user_returns_view_for_existing_user() {
+        let (_dir, state) = test_state();
+        seed_user(&state, "alice", OperatorRole::User);
+        let resp = get_user(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Path("alice".to_string()),
+        )
+        .await
+        .expect("get ok");
+        assert_eq!(resp.0.user_id, "alice");
+        assert_eq!(resp.0.role, "user");
+        assert_eq!(resp.0.grant_count, 0);
+    }
+
+    #[tokio::test]
+    async fn get_user_missing_is_404() {
+        let (_dir, state) = test_state();
+        let err = get_user(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Path("ghost".to_string()),
+        )
+        .await
+        .expect_err("missing user 404");
+        assert_eq!(status_of(err), StatusCode::NOT_FOUND);
+    }
+
+    // --- delete_user -------------------------------------------------------
+
+    #[tokio::test]
+    async fn delete_user_removes_regular_user_and_cascades() {
+        let (_dir, state) = test_state();
+        seed_user(&state, "alice", OperatorRole::User);
+        let resp = delete_user(
+            State(state.clone()),
+            Extension(superadmin_identity("boss")),
+            Path("alice".to_string()),
+        )
+        .await
+        .expect("delete ok");
+        assert_eq!(resp.0.user_id, "alice");
+        assert!(resp.0.removed_rule_ids.is_empty());
+        assert!(
+            state
+                .operator_store
+                .get_user(&UserId::from_str("alice").unwrap())
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_user_rejects_self_removal() {
+        let (_dir, state) = test_state();
+        seed_user(&state, "boss", OperatorRole::Superadmin);
+        let err = delete_user(
+            State(state),
+            Extension(superadmin_identity("boss")),
+            Path("boss".to_string()),
+        )
+        .await
+        .expect_err("self removal rejected");
+        // RbacError::CannotRemoveSelf -> 409 CONFLICT.
+        assert_eq!(status_of(err), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_user_protects_last_superadmin() {
+        let (_dir, state) = test_state();
+        // Exactly one superadmin in the store; the acting identity is a
+        // distinct (non-persisted) superadmin so the self-removal guard is
+        // not what trips.
+        seed_user(&state, "onlyboss", OperatorRole::Superadmin);
+        let err = delete_user(
+            State(state),
+            Extension(superadmin_identity("other")),
+            Path("onlyboss".to_string()),
+        )
+        .await
+        .expect_err("last superadmin protected");
+        // RbacError::LastSuperadmin -> 409 CONFLICT.
+        assert_eq!(status_of(err), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_user_allows_superadmin_when_not_last() {
+        let (_dir, state) = test_state();
+        // Two superadmins -> removing one leaves a survivor, so the
+        // last-superadmin guard is skipped and the delete proceeds.
+        seed_user(&state, "boss-a", OperatorRole::Superadmin);
+        seed_user(&state, "boss-b", OperatorRole::Superadmin);
+        let resp = delete_user(
+            State(state.clone()),
+            Extension(superadmin_identity("other")),
+            Path("boss-a".to_string()),
+        )
+        .await
+        .expect("delete ok");
+        assert_eq!(resp.0.user_id, "boss-a");
+        assert_eq!(state.operator_store.count_superadmins(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_user_rejects_non_superadmin_caller() {
+        let (_dir, state) = test_state();
+        seed_user(&state, "alice", OperatorRole::User);
+        let err = delete_user(
+            State(state),
+            Extension(user_identity("bob")),
+            Path("alice".to_string()),
+        )
+        .await
+        .expect_err("non-superadmin rejected");
+        assert_eq!(status_of(err), StatusCode::FORBIDDEN);
+    }
+}

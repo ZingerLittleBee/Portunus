@@ -381,4 +381,181 @@ mod tests {
         let m = ServerTlsMaterial::load_or_generate(&cert, &key, Some("203.0.113.7")).unwrap();
         assert!(m.cert_pem.contains("BEGIN CERTIFICATE"));
     }
+
+    #[test]
+    fn ipv6_extra_san_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("server.crt");
+        let key = dir.path().join("server.key");
+        let m = ServerTlsMaterial::load_or_generate(&cert, &key, Some("2001:db8::1")).unwrap();
+        assert!(m.cert_pem.contains("BEGIN CERTIFICATE"));
+    }
+
+    #[test]
+    fn push_host_san_ip_branch_appends_ip_address() {
+        // An IP literal is pushed as a SanType::IpAddress, not a DnsName.
+        let mut sans: Vec<SanType> = Vec::new();
+        push_host_san(&mut sans, "198.51.100.5").unwrap();
+        assert_eq!(sans.len(), 1);
+        match &sans[0] {
+            SanType::IpAddress(ip) => {
+                assert_eq!(ip, &"198.51.100.5".parse::<std::net::IpAddr>().unwrap());
+            }
+            other => panic!("expected IpAddress SAN, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn push_host_san_dns_branch_appends_dns_name() {
+        // A non-IP host is pushed as a SanType::DnsName.
+        let mut sans: Vec<SanType> = Vec::new();
+        push_host_san(&mut sans, "host.example.com").unwrap();
+        assert_eq!(sans.len(), 1);
+        assert!(matches!(sans[0], SanType::DnsName(_)));
+    }
+
+    #[test]
+    fn push_host_san_rejects_non_ascii_host() {
+        // A non-IP, non-ASCII host cannot become an IA5 DnsName SAN.
+        let mut sans: Vec<SanType> = Vec::new();
+        let err = push_host_san(&mut sans, "héllo.example.com").unwrap_err();
+        match err {
+            PortunusError::Tls(msg) => assert!(msg.contains("not valid for SAN")),
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+        assert!(sans.is_empty());
+    }
+
+    #[test]
+    fn load_or_generate_rejects_non_ascii_desired_san() {
+        // The invalid-SAN error surfaces all the way through load_or_generate.
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("server.crt");
+        let key = dir.path().join("server.key");
+        let err = ServerTlsMaterial::load_or_generate(&cert, &key, Some("bücher.example.com"))
+            .unwrap_err();
+        match err {
+            PortunusError::Tls(msg) => assert!(msg.contains("not valid for SAN")),
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fingerprint_paths_matches_generated_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("server.crt");
+        let key = dir.path().join("server.key");
+        let m = ServerTlsMaterial::load_or_generate(&cert, &key, None).unwrap();
+        let (path, hex) = fingerprint_paths(&cert).unwrap();
+        assert_eq!(path, cert);
+        assert_eq!(hex, m.leaf_fingerprint_hex);
+    }
+
+    #[test]
+    fn fingerprint_paths_errors_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope.crt");
+        let err = fingerprint_paths(&missing).unwrap_err();
+        // A missing file surfaces as an Io error via the `?` conversion.
+        assert!(matches!(err, PortunusError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn fingerprint_paths_errors_on_bad_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.crt");
+        std::fs::write(&bad, "not a certificate at all\n").unwrap();
+        let err = fingerprint_paths(&bad).unwrap_err();
+        match err {
+            PortunusError::Tls(msg) => assert!(msg.contains("no CERTIFICATE block")),
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leaf_der_from_pem_round_trips_real_cert() {
+        // Parsing a freshly generated PEM yields DER whose fingerprint
+        // matches the material's reported leaf fingerprint.
+        let material = generate_self_signed(None).unwrap();
+        let der = leaf_der_from_pem(&material.cert_pem).unwrap();
+        assert!(!der.is_empty());
+        assert_eq!(fingerprint::sha256_hex(&der), material.leaf_fingerprint_hex);
+    }
+
+    #[test]
+    fn leaf_der_from_pem_errors_without_certificate_block() {
+        let err = leaf_der_from_pem("-----BEGIN PRIVATE KEY-----\nabc\n").unwrap_err();
+        match err {
+            PortunusError::Tls(msg) => assert!(msg.contains("no CERTIFICATE block")),
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leaf_der_from_pem_errors_on_invalid_base64() {
+        // A well-formed block whose body is not valid base64 yields a decode error.
+        let pem = "-----BEGIN CERTIFICATE-----\n!!!!not-base64!!!!\n-----END CERTIFICATE-----\n";
+        let err = leaf_der_from_pem(pem).unwrap_err();
+        match err {
+            PortunusError::Tls(msg) => assert!(msg.contains("base64 decode")),
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generate_self_signed_extra_host_changes_fingerprint() {
+        // Adding an extra SAN host produces a distinct leaf cert.
+        let plain = generate_self_signed(None).unwrap();
+        let with_host = generate_self_signed(Some("extra.example.com")).unwrap();
+        assert_ne!(plain.leaf_fingerprint_hex, with_host.leaf_fingerprint_hex);
+        assert_eq!(with_host.leaf_fingerprint_hex.len(), 64);
+    }
+
+    #[test]
+    fn marker_path_is_sibling_of_cert() {
+        let p = Path::new("/tmp/dir/server.crt");
+        assert_eq!(marker_path(p), Path::new("/tmp/dir/.portunus-autocert"));
+    }
+
+    #[test]
+    fn ensure_parent_creates_missing_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("file.crt");
+        ensure_parent(&nested).unwrap();
+        assert!(nested.parent().unwrap().is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enforce_key_perms_accepts_0600_and_rejects_loose() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("k.key");
+        std::fs::write(&key, b"secret").unwrap();
+        let mut perms = std::fs::metadata(&key).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&key, perms).unwrap();
+        enforce_key_perms(&key).unwrap();
+
+        let mut loose = std::fs::metadata(&key).unwrap().permissions();
+        loose.set_mode(0o644);
+        std::fs::set_permissions(&key, loose).unwrap();
+        let err = enforce_key_perms(&key).unwrap_err();
+        match err {
+            PortunusError::Tls(msg) => assert!(msg.contains("mode")),
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_writes_with_0600_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        write_secret(&path, b"top secret bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"top secret bytes");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "got mode {mode:o}");
+    }
 }

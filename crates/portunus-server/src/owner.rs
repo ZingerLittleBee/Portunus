@@ -374,4 +374,80 @@ mod tests {
         assert!(svc2.get(&client, "alice").await.is_some());
         std::mem::forget(dir);
     }
+
+    #[tokio::test]
+    async fn t027_service_hydrates_multiple_clients_and_owners() {
+        // Drives the hydration loop body and the `info!` summary
+        // computation (owners/clients counts) across more than one
+        // client and owner so the snapshot grouping is exercised.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let edge = ClientId::new();
+        let core = ClientId::new();
+        {
+            let svc = OwnerCapService::open(Arc::clone(&store)).unwrap();
+            svc.upsert(&edge, "alice", full_envelope()).await.unwrap();
+            svc.upsert(&edge, "bob", full_envelope()).await.unwrap();
+            svc.upsert(&core, "carol", full_envelope()).await.unwrap();
+        }
+        // Re-open: cache must hydrate every persisted row, grouped by
+        // client.
+        let svc2 = OwnerCapService::open(Arc::clone(&store)).unwrap();
+        assert_eq!(svc2.list_for_client(&edge).await.len(), 2);
+        assert_eq!(svc2.list_for_client(&core).await.len(), 1);
+        assert!(svc2.get(&edge, "alice").await.is_some());
+        assert!(svc2.get(&edge, "bob").await.is_some());
+        assert!(svc2.get(&core, "carol").await.is_some());
+        std::mem::forget(dir);
+    }
+
+    #[tokio::test]
+    async fn t027_service_delete_one_owner_keeps_other_under_client() {
+        // Deleting one owner when the client still has another leaves
+        // the per-client map non-empty, so the client key is retained
+        // (the `is_empty()` == false branch).
+        let svc = open_service();
+        let client = ClientId::new();
+        svc.upsert(&client, "alice", full_envelope()).await.unwrap();
+        svc.upsert(&client, "bob", full_envelope()).await.unwrap();
+        let removed = svc.delete(&client, "alice").await.unwrap();
+        assert!(removed);
+        // alice is gone, bob survives, and the client key is retained.
+        assert!(svc.get(&client, "alice").await.is_none());
+        assert!(svc.get(&client, "bob").await.is_some());
+        assert_eq!(svc.list_for_client(&client).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn t027_service_delete_last_owner_drops_client_key() {
+        // Deleting the last owner empties the per-client map, so the
+        // client key is removed (the `is_empty()` == true branch).
+        let svc = open_service();
+        let client = ClientId::new();
+        svc.upsert(&client, "alice", full_envelope()).await.unwrap();
+        assert!(svc.delete(&client, "alice").await.unwrap());
+        // No owners remain, and the client key is gone — listing is empty.
+        assert!(svc.list_for_client(&client).await.is_empty());
+        // known_owners no longer reports this owner.
+        assert!(!svc.known_owners().await.contains("alice"));
+    }
+
+    #[tokio::test]
+    async fn t027_service_known_owners_collects_across_clients() {
+        let svc = open_service();
+        // Empty service reports no owners.
+        assert!(svc.known_owners().await.is_empty());
+
+        let edge = ClientId::new();
+        let core = ClientId::new();
+        svc.upsert(&edge, "alice", full_envelope()).await.unwrap();
+        svc.upsert(&edge, "bob", full_envelope()).await.unwrap();
+        // Same owner id under a second client must dedupe in the set.
+        svc.upsert(&core, "alice", full_envelope()).await.unwrap();
+
+        let owners = svc.known_owners().await;
+        assert_eq!(owners.len(), 2, "alice is deduped across clients");
+        assert!(owners.contains("alice"));
+        assert!(owners.contains("bob"));
+    }
 }

@@ -367,4 +367,163 @@ mod tests {
         tx.send(DemuxCommand::Shutdown).await.unwrap();
         h.await.unwrap();
     }
+
+    /// `drain_one_flow` bails out via the missing-listener guard when the
+    /// flow's `listen_port` has no entry in `listener_sockets`. The drain
+    /// must `warn!` + return without touching the socket or counters.
+    #[tokio::test]
+    async fn drain_one_flow_returns_when_listener_missing() {
+        // Empty listener map → the `.get(&key.listen_port)` lookup misses.
+        let listener_map: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
+
+        let (target_sock, target_addr) = bind_loopback_udp().await;
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+        let upstream_local = upstream.local_addr().unwrap();
+
+        let client_addr: SocketAddr = "127.0.0.1:50010".parse().unwrap();
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        // Use a listen_port that is deliberately absent from the map.
+        let key = FlowKey::new(40000, client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(40000);
+        let cfg = DemuxConfig {
+            rule_id: RuleId(1),
+            registry,
+            listener_sockets: Arc::new(listener_map),
+            stats: Arc::clone(&stats),
+        };
+
+        // Queue a reply so a *present* listener would have forwarded it;
+        // the missing-listener guard must short-circuit before any recv.
+        target_sock.send_to(b"x", upstream_local).await.unwrap();
+
+        let mut buf = vec![0u8; RECV_BUFFER_BYTES];
+        drain_one_flow(&cfg, key, &flow, &mut buf).await;
+
+        // No outbound datagram was forwarded; the flow stays live.
+        assert_eq!(stats.snapshot_datagrams_out(), 0);
+        assert!(!flow.cancel.is_cancelled());
+    }
+
+    /// A reply that reads cleanly from the upstream but whose listener-side
+    /// `try_send_to` fails with a non-`WouldBlock` error (IPv6 destination
+    /// on an IPv4-only listener socket → `EAFNOSUPPORT`/`EINVAL`) lands on
+    /// the `warn!` "reply_send_failed" arm. The drain logs + continues; no
+    /// outbound stat is booked and the flow is not evicted.
+    #[tokio::test]
+    async fn drain_one_flow_logs_when_listener_send_fails() {
+        let (listener_sock, listener_addr) = bind_loopback_udp().await;
+        let mut listener_map = HashMap::new();
+        listener_map.insert(listener_addr.port(), Arc::clone(&listener_sock));
+
+        let (target_sock, target_addr) = bind_loopback_udp().await;
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+        let upstream_local = upstream.local_addr().unwrap();
+
+        // IPv6 client source — an IPv4-bound listener cannot send_to it,
+        // so `try_send_to` returns a non-WouldBlock error synchronously.
+        let client_addr: SocketAddr = "[::1]:50011".parse().unwrap();
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        let key = FlowKey::new(listener_addr.port(), client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(listener_addr.port());
+        let cfg = DemuxConfig {
+            rule_id: RuleId(1),
+            registry,
+            listener_sockets: Arc::new(listener_map),
+            stats: Arc::clone(&stats),
+        };
+
+        // Queue exactly one reply so the recv succeeds and the failing
+        // send is attempted once.
+        target_sock.send_to(b"reply", upstream_local).await.unwrap();
+        // Wait until the datagram is readable so the first `try_recv`
+        // inside the drain returns it deterministically.
+        tokio::time::timeout(Duration::from_secs(2), upstream.readable())
+            .await
+            .expect("upstream should become readable")
+            .unwrap();
+
+        let mut buf = vec![0u8; RECV_BUFFER_BYTES];
+        drain_one_flow(&cfg, key, &flow, &mut buf).await;
+
+        // The send failed, so no outbound bytes/datagrams were booked and
+        // the flow was NOT evicted (listener-side error is rule-level).
+        assert_eq!(stats.snapshot_datagrams_out(), 0);
+        assert_eq!(flow.bytes_out.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(!flow.cancel.is_cancelled());
+        assert_eq!(stats.errors.snapshot().wouldblock, 0);
+    }
+
+    // NOTE: the upstream-ICMP eviction path — a `ConnectionRefused`-class
+    // `try_recv` error driving `drain_one_flow` down the `Evict` arm — is not
+    // unit-tested here. Provoking a real ICMP port-unreachable depends on
+    // kernel/loopback behaviour that is not reliable in hermetic CI sandboxes
+    // (it works on macOS but not consistently on Linux runners), which makes
+    // such a test flaky. The error classification itself
+    // (`ConnectionRefused`/`ConnectionReset`/... -> `UdpAction::Evict`) is
+    // covered deterministically by the `classify_udp_error` tests in
+    // `udp/error.rs`.
+
+    /// `run_demux` re-arms a live flow after a Ready drain so a second
+    /// reply on the same flow is also forwarded. This exercises the
+    /// `readables.push(read_wait(..))` re-arm in the `Ready` arm.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_demux_rearms_flow_for_a_second_reply() {
+        let (listener_sock, listener_addr) = bind_loopback_udp().await;
+        let mut listener_map = HashMap::new();
+        listener_map.insert(listener_addr.port(), Arc::clone(&listener_sock));
+
+        let (client_sock, client_addr) = bind_loopback_udp().await;
+        let (target_sock, target_addr) = bind_loopback_udp().await;
+
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+        let upstream_local = upstream.local_addr().unwrap();
+
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        let key = FlowKey::new(listener_addr.port(), client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(listener_addr.port());
+        let (tx, rx) = mpsc::channel(8);
+        let h = tokio::spawn(run_demux(
+            DemuxConfig {
+                rule_id: RuleId(1),
+                registry,
+                listener_sockets: Arc::new(listener_map),
+                stats,
+            },
+            rx,
+        ));
+        tx.send(DemuxCommand::AddFlow { key, flow }).await.unwrap();
+
+        let mut buf = [0u8; 64];
+        // First reply.
+        target_sock.send_to(b"a", upstream_local).await.unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
+            .await
+            .expect("first reply forwarded")
+            .unwrap();
+        assert_eq!(&buf[..n], b"a");
+
+        // Second reply on the SAME flow — only reaches the client if the
+        // demux re-armed the flow's read-wait after the first drain.
+        target_sock.send_to(b"bb", upstream_local).await.unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
+            .await
+            .expect("second reply requires re-arm")
+            .unwrap();
+        assert_eq!(&buf[..n], b"bb");
+
+        tx.send(DemuxCommand::Shutdown).await.unwrap();
+        h.await.unwrap();
+    }
 }

@@ -377,4 +377,234 @@ mod tests {
             drops.get()
         );
     }
+
+    /// Build a store with the `audit` table present and a seeded user so
+    /// flush INSERTs land cleanly. Returns the temp dir guard alongside
+    /// the store so the directory outlives the connection.
+    fn store_with_audit() -> (tempfile::TempDir, Arc<Store>) {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        (dir, store)
+    }
+
+    #[test]
+    fn flush_empty_batch_resets_lag_and_returns() {
+        // The empty-batch short circuit must reset lag to zero and not
+        // touch the store (no transaction is opened).
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        lag.set(7.0);
+        let mut batch: Vec<AuditEntry> = Vec::new();
+        flush(&store, &mut batch, &lag);
+        assert!(lag.get().abs() < f64::EPSILON, "empty flush must reset lag");
+        assert!(batch.is_empty());
+        assert_eq!(count_rows(&store), 0);
+    }
+
+    #[test]
+    fn flush_persists_batch_and_sets_lag() {
+        // A non-empty batch is written, cleared, and lag is set from the
+        // oldest entry's timestamp (non-negative).
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        // Oldest entry timestamped in the past so lag is strictly positive.
+        let old_ts = Utc::now() - chrono::Duration::seconds(3);
+        let mut batch = vec![entry_at(old_ts, "alice"), entry_at(Utc::now(), "bob")];
+        flush(&store, &mut batch, &lag);
+        assert!(batch.is_empty(), "flush must clear the batch on success");
+        assert_eq!(count_rows(&store), 2);
+        assert!(lag.get() >= 0.0, "lag must be non-negative");
+    }
+
+    #[test]
+    fn flush_maps_empty_actor_to_null_user_id() {
+        // An empty `actor` is persisted as NULL `user_id` (the deny /
+        // anonymous path); a non-empty actor round-trips verbatim.
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        let mut batch = vec![entry_at(Utc::now(), ""), entry_at(Utc::now(), "carol")];
+        flush(&store, &mut batch, &lag);
+        assert_eq!(count_rows(&store), 2);
+
+        let nulls: i64 = store
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM audit WHERE user_id IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(nulls, 1, "empty actor must persist as NULL user_id");
+
+        let named: i64 = store
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM audit WHERE user_id = 'carol'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(named, 1, "non-empty actor must persist verbatim");
+    }
+
+    #[test]
+    fn flush_merges_details_object_into_payload() {
+        // When an entry carries a `details` object it is merged on top of
+        // the base {role, reason} envelope in the stored details_json.
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        let mut e = entry_at(Utc::now(), "dave");
+        e.details = Some(serde_json::json!({ "extra_key": "extra_val" }));
+        let mut batch = vec![e];
+        flush(&store, &mut batch, &lag);
+
+        let details: String = store
+            .with_conn(|c| {
+                c.query_row("SELECT details_json FROM audit LIMIT 1", [], |r| r.get(0))
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&details).unwrap();
+        assert_eq!(parsed["extra_key"], "extra_val");
+        // Base envelope keys survive the merge.
+        assert!(parsed.get("role").is_some());
+        assert!(parsed.get("reason").is_some());
+    }
+
+    #[test]
+    fn flush_uses_explicit_action_when_present() {
+        // An entry with an explicit `action` stores that string rather
+        // than the derived `"{method} {path}"`.
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        let mut e = entry_at(Utc::now(), "erin");
+        e.action = Some("user.delete".into());
+        let mut batch = vec![e];
+        flush(&store, &mut batch, &lag);
+
+        let action: String = store
+            .with_conn(|c| {
+                c.query_row("SELECT action FROM audit LIMIT 1", [], |r| r.get(0))
+                    .map_err(map_rusqlite)
+            })
+            .unwrap();
+        assert_eq!(action, "user.delete");
+    }
+
+    #[test]
+    fn flush_error_branch_discards_batch_without_panic() {
+        // Drop the `audit` table out from under the writer so the INSERT
+        // prepare fails. flush must log, clear the batch, and not panic.
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        store
+            .with_write_tx(|tx| {
+                tx.execute("DROP TABLE audit", []).map_err(map_rusqlite)?;
+                Ok(())
+            })
+            .unwrap();
+
+        let mut batch = vec![entry_at(Utc::now(), "frank")];
+        // Must not panic even though the transaction errors.
+        flush(&store, &mut batch, &lag);
+        assert!(batch.is_empty(), "failed flush must still clear the batch");
+    }
+
+    #[test]
+    fn drain_remaining_caps_at_four_batches() {
+        // drain_remaining stops once it has pulled BATCH_MAX_ENTRIES * 4
+        // entries, leaving the rest in the channel for the next pass.
+        let total = BATCH_MAX_ENTRIES * 4 + 10;
+        let (tx, mut rx) = mpsc::channel::<AuditEntry>(total + 1);
+        for i in 0..total {
+            tx.try_send(entry_at(Utc::now(), &format!("d-{i}")))
+                .unwrap();
+        }
+        let mut batch: Vec<AuditEntry> = Vec::new();
+        drain_remaining(&mut rx, &mut batch);
+        assert_eq!(batch.len(), BATCH_MAX_ENTRIES * 4);
+        // Remaining entries are still queued.
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn drain_remaining_drains_all_when_under_cap() {
+        // Below the 4x cap, drain_remaining pulls every queued entry and
+        // stops when the channel is empty.
+        let (tx, mut rx) = mpsc::channel::<AuditEntry>(8);
+        for i in 0..3 {
+            tx.try_send(entry_at(Utc::now(), &format!("u-{i}")))
+                .unwrap();
+        }
+        drop(tx);
+        let mut batch: Vec<AuditEntry> = Vec::new();
+        drain_remaining(&mut rx, &mut batch);
+        assert_eq!(batch.len(), 3);
+    }
+
+    #[test]
+    fn record_on_closed_channel_increments_drops() {
+        // When the writer task (receiver) is gone, `record` must treat
+        // the send as a drop and bump the counter rather than block.
+        let (tx, rx) = mpsc::channel::<AuditEntry>(HANDOFF_CAPACITY);
+        drop(rx);
+        let (drops, _lag) = metric_pair();
+        let handle = Handle {
+            tx,
+            drops: drops.clone(),
+        };
+        handle.record(entry_at(Utc::now(), "ghost"));
+        assert_eq!(drops.get(), 1, "closed-channel send must count as a drop");
+    }
+
+    #[test]
+    fn record_on_full_channel_increments_drops() {
+        // Saturate the queue without a draining receiver: every send past
+        // capacity is dropped (drop-newest under sustained Full).
+        let (tx, _rx) = mpsc::channel::<AuditEntry>(2);
+        let (drops, _lag) = metric_pair();
+        let handle = Handle {
+            tx,
+            drops: drops.clone(),
+        };
+        // First two fill the queue, the rest overflow.
+        for i in 0..5 {
+            handle.record(entry_at(Utc::now(), &format!("f-{i}")));
+        }
+        assert_eq!(drops.get(), 3, "three overflow sends should be dropped");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_writer_returns_when_channel_closes_immediately() {
+        // Closing the sender before any entry arrives drives the outer
+        // select's `None` branch (channel closed without cancel).
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        let (tx, rx) = mpsc::channel::<AuditEntry>(HANDOFF_CAPACITY);
+        drop(tx);
+        let cancel = CancellationToken::new();
+        // Should return promptly without hanging.
+        run_writer(Arc::clone(&store), rx, lag, cancel).await;
+        assert_eq!(count_rows(&store), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_writer_flushes_then_returns_on_mid_batch_close() {
+        // One entry is enqueued, then the sender is dropped. The outer
+        // select consumes the entry, the inner fill loop sees the closed
+        // channel (`None => break`), and the batch is flushed before the
+        // next outer iteration returns on the closed channel.
+        let (_dir, store) = store_with_audit();
+        let (_drops, lag) = metric_pair();
+        let (tx, rx) = mpsc::channel::<AuditEntry>(HANDOFF_CAPACITY);
+        tx.try_send(entry_at(Utc::now(), "solo")).unwrap();
+        drop(tx);
+        let cancel = CancellationToken::new();
+        run_writer(Arc::clone(&store), rx, lag, cancel).await;
+        assert_eq!(count_rows(&store), 1, "the single entry must be persisted");
+    }
 }

@@ -117,15 +117,295 @@ mod tests {
     //! performs. Push delivery is exercised by `quota_http`'s push
     //! helpers; metric increments are covered by C3's smoke test.
     use super::*;
+    use crate::clients::ConnectedClients;
     use crate::store::Store;
+    use crate::store::operator_store::SqliteOperatorStore;
+    use crate::store::token_store::SqliteTokenStore;
     use crate::traffic_quotas::TrafficQuotaRow;
     use crate::traffic_quotas::cache::TrafficQuotaCache;
+    use portunus_core::ClientName;
     use tempfile::tempdir;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     fn make_cache() -> (tempfile::TempDir, TrafficQuotaCache) {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path()).expect("open");
         (dir, TrafficQuotaCache::load(store).expect("cache"))
+    }
+
+    /// Build a full `AppState` backed by a temp SQLite store, mirroring
+    /// the helper in `grpc/enrollment.rs`. `run_once` needs the real
+    /// `AppState` (quota cache + connected-client registry + metrics).
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let tokens = Arc::new(SqliteTokenStore::new(Arc::clone(&store)));
+        let operator_store = Arc::new(SqliteOperatorStore::new(Arc::clone(&store)));
+        operator_store
+            .bootstrap_legacy_superadmin("test-token")
+            .unwrap();
+        let state = AppState::new(
+            tokens,
+            operator_store,
+            ConnectedClients::default(),
+            None,
+            7443,
+            "deadbeef",
+            include_str!("../advertised/testdata/san_fixture.pem"),
+            16,
+            store,
+        )
+        .unwrap();
+        (dir, state)
+    }
+
+    /// Anchor at 2026-01-15 with `current_period_started_at == anchor` and
+    /// `now` 32 days later: the row is due to advance one period.
+    fn due_row(client_id: &str) -> (TrafficQuotaRow, DateTime<Utc>) {
+        let anchor = Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap();
+        let now = anchor + chrono::Duration::days(32);
+        let row = TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_id: client_id.into(),
+            client_name: "edge-display".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: anchor.timestamp(),
+            current_period_started_at: anchor.timestamp(),
+            current_period_bytes_used: 750,
+            exhausted_at: Some(anchor.timestamp()),
+            created_at: anchor.timestamp(),
+            updated_at: anchor.timestamp(),
+        };
+        (row, now)
+    }
+
+    /// Register a live client session and return its receiver so the test
+    /// can observe (or drop) the pushed `TrafficQuotaUpdate`.
+    async fn register_client(
+        state: &AppState,
+        client_id: ClientId,
+    ) -> mpsc::Receiver<Result<portunus_proto::v1::ServerMessage, tonic::Status>> {
+        let (tx, rx) = mpsc::channel(4);
+        let name: ClientName = "edge-display".parse().unwrap();
+        state
+            .clients
+            .register(
+                client_id,
+                name,
+                None,
+                CancellationToken::new(),
+                tx,
+                Arc::default(),
+            )
+            .await;
+        rx
+    }
+
+    /// A due row whose live client is connected: `run_once` advances the
+    /// period, zeroes usage, clears `exhausted_at`, and pushes a SET frame.
+    #[tokio::test]
+    async fn run_once_advances_due_row_and_pushes_to_live_client() {
+        let (_d, state) = test_state();
+        let client_id = ClientId::new();
+        let (row, now) = due_row(&client_id.to_string());
+        state.traffic_quotas.upsert(row).unwrap();
+        let mut rx = register_client(&state, client_id).await;
+
+        let advanced = run_once(&state, now).await.unwrap();
+        assert_eq!(advanced, 1);
+
+        // Cache row reflects the reset: usage zeroed, exhausted cleared,
+        // period advanced to 2026-02-15.
+        let after = state
+            .traffic_quotas
+            .get("alice", &client_id.to_string())
+            .unwrap();
+        assert_eq!(after.current_period_bytes_used, 0);
+        assert!(after.exhausted_at.is_none());
+        assert_eq!(
+            after.current_period_started_at,
+            Utc.with_ymd_and_hms(2026, 2, 15, 0, 0, 0)
+                .unwrap()
+                .timestamp()
+        );
+
+        // The live session received a TrafficQuotaUpdate SET frame.
+        let pushed = rx.try_recv().expect("a quota frame was pushed");
+        let msg = pushed.expect("frame is Ok");
+        match msg.payload {
+            Some(portunus_proto::v1::server_message::Payload::TrafficQuotaUpdate(u)) => {
+                assert_eq!(u.action, portunus_proto::v1::TrafficQuotaAction::Set as i32);
+                assert_eq!(u.user_id, "alice");
+                assert_eq!(u.client_id, client_id.to_string());
+            }
+            other => panic!("expected TrafficQuotaUpdate, got {other:?}"),
+        }
+    }
+
+    /// A due row with no live session still advances (push is a no-op when
+    /// `handles` returns `None`).
+    #[tokio::test]
+    async fn run_once_advances_due_row_without_live_client() {
+        let (_d, state) = test_state();
+        let client_id = ClientId::new();
+        let (row, now) = due_row(&client_id.to_string());
+        state.traffic_quotas.upsert(row).unwrap();
+
+        let advanced = run_once(&state, now).await.unwrap();
+        assert_eq!(advanced, 1);
+        let after = state
+            .traffic_quotas
+            .get("alice", &client_id.to_string())
+            .unwrap();
+        assert_eq!(after.current_period_bytes_used, 0);
+    }
+
+    /// A within-period row is skipped (no advance, no push).
+    #[tokio::test]
+    async fn run_once_skips_within_period_row() {
+        let (_d, state) = test_state();
+        let anchor = Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap();
+        let now = anchor + chrono::Duration::days(10);
+        let row = TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_id: "edge-01".into(),
+            client_name: "edge-01".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: anchor.timestamp(),
+            current_period_started_at: anchor.timestamp(),
+            current_period_bytes_used: 100,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        state.traffic_quotas.upsert(row).unwrap();
+
+        let advanced = run_once(&state, now).await.unwrap();
+        assert_eq!(advanced, 0);
+        // Untouched.
+        let after = state.traffic_quotas.get("alice", "edge-01").unwrap();
+        assert_eq!(after.current_period_bytes_used, 100);
+    }
+
+    /// An out-of-range `billing_anchor` cannot be mapped to a `DateTime`, so
+    /// the row is skipped at the anchor guard.
+    #[tokio::test]
+    async fn run_once_skips_row_with_bad_billing_anchor() {
+        let (_d, state) = test_state();
+        let row = TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_id: "edge-01".into(),
+            client_name: "edge-01".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: i64::MAX, // un-representable as a UTC instant
+            current_period_started_at: 0,
+            current_period_bytes_used: 10,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        state.traffic_quotas.upsert(row).unwrap();
+        let advanced = run_once(&state, Utc::now()).await.unwrap();
+        assert_eq!(advanced, 0);
+    }
+
+    /// An out-of-range `current_period_started_at` is skipped at the start
+    /// guard (the anchor parses, the start does not).
+    #[tokio::test]
+    async fn run_once_skips_row_with_bad_period_start() {
+        let (_d, state) = test_state();
+        let row = TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_id: "edge-01".into(),
+            client_name: "edge-01".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: 0,
+            current_period_started_at: i64::MAX,
+            current_period_bytes_used: 10,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        state.traffic_quotas.upsert(row).unwrap();
+        let advanced = run_once(&state, Utc::now()).await.unwrap();
+        assert_eq!(advanced, 0);
+    }
+
+    /// A due row present only in the in-memory cache (DB row deleted out
+    /// from under it) hits the `reset_period -> None` branch: nothing is
+    /// advanced.
+    #[tokio::test]
+    async fn run_once_skips_when_reset_period_returns_none() {
+        let (_d, state) = test_state();
+        let client_id = ClientId::new();
+        let (row, now) = due_row(&client_id.to_string());
+        state.traffic_quotas.upsert(row).unwrap();
+        // Delete the persisted row directly, leaving the cache map stale.
+        // The shared connection pool means this targets the same DB the
+        // cache wrote through.
+        crate::traffic_quotas::store::delete(&state.store, "alice", &client_id.to_string())
+            .unwrap();
+
+        let advanced = run_once(&state, now).await.unwrap();
+        assert_eq!(advanced, 0);
+    }
+
+    /// `push_reset` early-returns when the row's `client_id` is not a valid
+    /// ULID — no panic, no push.
+    #[tokio::test]
+    async fn push_reset_ignores_unparseable_client_id() {
+        let (_d, state) = test_state();
+        let row = TrafficQuotaRow {
+            user_id: "alice".into(),
+            client_id: "not-a-ulid".into(),
+            client_name: "edge".into(),
+            monthly_bytes: 1_000,
+            billing_anchor: 0,
+            current_period_started_at: 0,
+            current_period_bytes_used: 0,
+            exhausted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        // Must not panic even though the id is unparseable.
+        push_reset(&state, &row).await;
+    }
+
+    /// `push_reset` early-returns when the (valid) id has no live session.
+    #[tokio::test]
+    async fn push_reset_ignores_disconnected_client() {
+        let (_d, state) = test_state();
+        let client_id = ClientId::new();
+        let (row, _now) = due_row(&client_id.to_string());
+        // No `register` call: `handles` returns None, so nothing is sent.
+        push_reset(&state, &row).await;
+    }
+
+    /// `push_reset` to a session whose receiver was dropped exercises the
+    /// `send` error branch (the warn log) without panicking.
+    #[tokio::test]
+    async fn push_reset_handles_closed_receiver() {
+        let (_d, state) = test_state();
+        let client_id = ClientId::new();
+        let (row, _now) = due_row(&client_id.to_string());
+        let rx = register_client(&state, client_id).await;
+        // Drop the receiver so the outbound channel is closed; the push
+        // `send` then fails and takes the warn branch.
+        drop(rx);
+        push_reset(&state, &row).await;
+    }
+
+    /// A live client whose receiver is open receives the SET frame.
+    #[tokio::test]
+    async fn push_reset_delivers_to_live_client() {
+        let (_d, state) = test_state();
+        let client_id = ClientId::new();
+        let (row, _now) = due_row(&client_id.to_string());
+        let mut rx = register_client(&state, client_id).await;
+        push_reset(&state, &row).await;
+        let pushed = rx.try_recv().expect("frame delivered");
+        assert!(pushed.is_ok());
     }
 
     /// 32-day-old anchor with `current_period_started_at == anchor`
@@ -177,5 +457,27 @@ mod tests {
         // Read-back through cache.get mirrors the post-reset row.
         let mirror = cache.get("alice", "edge-01").unwrap();
         assert_eq!(mirror.current_period_bytes_used, 0);
+    }
+
+    /// Exercise `run_forever`'s entry: spawn the long-lived task, let it
+    /// be polled up to its first `sleep(TICK)`, then abort. We do not wait
+    /// for `TICK` to elapse (that would be a 60s wall-clock dependence),
+    /// so this only asserts the task starts cleanly and tears down on
+    /// abort without panicking. A multi-thread runtime guarantees the
+    /// spawned task is polled concurrently with the test body.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_forever_starts_and_aborts_cleanly() {
+        let (_d, state) = test_state();
+        let handle = tokio::spawn(run_forever(Arc::new(state)));
+        // Yield so the spawned task is scheduled and reaches its first
+        // `.await` point (registering the TICK timer).
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        handle.abort();
+        let joined = handle.await;
+        // Aborting a task surfaces as a cancelled `JoinError`, never a panic.
+        assert!(joined.is_err());
+        assert!(joined.unwrap_err().is_cancelled());
     }
 }

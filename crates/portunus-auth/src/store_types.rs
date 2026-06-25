@@ -88,3 +88,69 @@ pub struct ProvisionedClient {
     pub revoked_at: Option<DateTime<Utc>>,
     pub client_address: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CredentialId, GrantId, UserId};
+    use std::str::FromStr;
+
+    fn uid() -> UserId {
+        UserId::from_str("alice").unwrap()
+    }
+
+    #[test]
+    fn as_rbac_maps_known_variants() {
+        assert_eq!(
+            IdentityStoreError::UserNotFound(uid()).as_rbac(),
+            Some(RbacError::UserNotFound)
+        );
+        assert_eq!(
+            IdentityStoreError::CredentialNotFound(CredentialId::new()).as_rbac(),
+            Some(RbacError::CredentialNotFound)
+        );
+        assert_eq!(
+            IdentityStoreError::GrantNotFound(GrantId::new()).as_rbac(),
+            Some(RbacError::GrantNotFound)
+        );
+        assert_eq!(
+            IdentityStoreError::UserAlreadyExists(uid()).as_rbac(),
+            Some(RbacError::UserAlreadyExists)
+        );
+    }
+
+    #[test]
+    fn as_rbac_returns_none_for_unmapped_variants() {
+        // A storage-internal error has no operator-facing RBAC code.
+        assert!(IdentityStoreError::HashCollision.as_rbac().is_none());
+        assert!(
+            IdentityStoreError::InvalidPortRange { start: 10, end: 1 }
+                .as_rbac()
+                .is_none()
+        );
+        assert!(
+            IdentityStoreError::WriteFailed("disk full".to_owned())
+                .as_rbac()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn identity_store_error_display_includes_context() {
+        let e = IdentityStoreError::UnsupportedSchemaVersion {
+            found: 9,
+            expected: 2,
+        };
+        let s = e.to_string();
+        assert!(s.contains('9') && s.contains('2'), "got {s}");
+        let e = IdentityStoreError::DuplicateUserId(uid());
+        assert!(e.to_string().contains("alice"));
+    }
+
+    #[test]
+    fn user_remove_summary_default_is_empty() {
+        let s = UserRemoveSummary::default();
+        assert!(s.removed_credential_ids.is_empty());
+        assert!(s.revoked_grant_ids.is_empty());
+    }
+}

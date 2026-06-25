@@ -256,6 +256,134 @@ mod bundle_tests {
         assert_eq!(read.server_cert_sha256, pin);
         assert_eq!(read.token, "tok");
     }
+
+    #[test]
+    fn read_from_defaults_version_when_field_absent() {
+        // A bundle without a `version` field exercises `default_version`,
+        // which yields 1 and therefore passes the version gate.
+        let pin = "c".repeat(64);
+        let json = format!(
+            r#"{{"client_name":"edge-01","server_endpoint":"127.0.0.1:7443","server_cert_sha256":"{pin}","token":"tok"}}"#
+        );
+        let (_dir, path) = write_file(&json);
+        let bundle = CredentialBundle::read_from(&path).expect("default version is accepted");
+        assert_eq!(bundle.version, 1);
+        assert_eq!(bundle.server_cert_sha256, pin);
+    }
+
+    #[test]
+    fn read_from_rejects_unsupported_version() {
+        let pin = "d".repeat(64);
+        let json = format!(
+            r#"{{"version":2,"client_name":"edge-01","server_endpoint":"127.0.0.1:7443","server_cert_sha256":"{pin}","token":"tok"}}"#
+        );
+        let (_dir, path) = write_file(&json);
+        let err = CredentialBundle::read_from(&path).expect_err("version 2 is unsupported");
+        assert!(
+            err.to_string().contains("unsupported bundle version: 2"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn read_from_rejects_invalid_json() {
+        let (_dir, path) = write_file("not json at all");
+        assert!(CredentialBundle::read_from(&path).is_err());
+    }
+
+    #[test]
+    fn read_from_propagates_missing_file_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent.bundle.json");
+        assert!(CredentialBundle::read_from(&missing).is_err());
+    }
+
+    #[test]
+    fn from_enrollment_rejects_unsupported_version() {
+        let pin = "e".repeat(64);
+        let err = CredentialBundle::from_enrollment(
+            2,
+            ClientName::new("edge-01").unwrap(),
+            None,
+            "127.0.0.1:7443".into(),
+            pin,
+            "tok".into(),
+        )
+        .expect_err("version 2 is unsupported");
+        assert!(
+            err.to_string().contains("unsupported bundle version: 2"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn from_enrollment_rejects_malformed_pin() {
+        let err = CredentialBundle::from_enrollment(
+            1,
+            ClientName::new("edge-01").unwrap(),
+            None,
+            "127.0.0.1:7443".into(),
+            "nothex".into(),
+            "tok".into(),
+        )
+        .expect_err("malformed pin must be rejected");
+        assert!(
+            err.to_string().contains("malformed server_cert_sha256"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn write_to_creates_parent_directories() {
+        // The target sits under a not-yet-existing nested directory so
+        // `write_to` must create the parent chain before writing.
+        let pin = "f".repeat(64);
+        let bundle = CredentialBundle::from_enrollment(
+            1,
+            ClientName::new("edge-01").unwrap(),
+            Some(ClientId::new()),
+            "127.0.0.1:7443".into(),
+            pin.clone(),
+            "tok".into(),
+        )
+        .expect("from_enrollment");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("nested")
+            .join("deep")
+            .join("client.bundle.json");
+        bundle.write_to(&path).expect("write creates parents");
+        let read = CredentialBundle::read_from(&path).expect("read back");
+        assert_eq!(read.client_id, bundle.client_id);
+        assert_eq!(read.server_cert_sha256, pin);
+    }
+
+    #[test]
+    fn client_id_survives_write_read_round_trip() {
+        // `client_id` is serialized only when present; confirm a Some value
+        // round-trips and an absent one stays None.
+        let pin = "0".repeat(64);
+        let id = ClientId::new();
+        let bundle = CredentialBundle::from_enrollment(
+            1,
+            ClientName::new("edge-01").unwrap(),
+            Some(id),
+            "127.0.0.1:7443".into(),
+            pin,
+            "tok".into(),
+        )
+        .expect("from_enrollment");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.bundle.json");
+        bundle.write_to(&path).unwrap();
+        let read = CredentialBundle::read_from(&path).unwrap();
+        assert_eq!(read.client_id, Some(id));
+        // The serialized form omits the field when None (sanity on default JSON).
+        let (_dir2, path2) = write_file(&sample_json(&"1".repeat(64)));
+        let no_id = CredentialBundle::read_from(&path2).unwrap();
+        assert_eq!(no_id.client_id, None);
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +484,40 @@ mod search_tests {
         env.insert("HOME", home_dir.path().to_string_lossy().into_owned());
         let resolved = resolve_bundle_path_with(None, env_from(&env)).unwrap();
         assert_eq!(resolved, env_target);
+    }
+
+    #[test]
+    fn public_resolver_honours_explicit_override() {
+        // `resolve_bundle_path` reads the real process environment, so to keep
+        // the assertion deterministic we drive it through the override path,
+        // which short-circuits before any env lookup.
+        let nonexistent = PathBuf::from("/tmp/portunus-client-override-only.json");
+        let resolved =
+            resolve_bundle_path(Some(&nonexistent)).expect("override short-circuits env lookup");
+        assert_eq!(resolved, nonexistent);
+    }
+
+    #[test]
+    fn cwd_fallback_recorded_when_env_getter_empty() {
+        // With an env getter that returns nothing, the resolver skips the
+        // env/XDG/HOME candidates and falls through to the cwd candidate,
+        // which is the only attempted path recorded on failure (assuming the
+        // working directory has no client.bundle.json).
+        let resolved = resolve_bundle_path_with(None, |_| None);
+        match resolved {
+            Ok(p) => assert!(
+                p.ends_with("client.bundle.json"),
+                "only the cwd candidate could resolve: {p:?}"
+            ),
+            Err(err) => {
+                assert_eq!(err.attempted.len(), 1, "attempted: {:?}", err.attempted);
+                assert_eq!(
+                    err.attempted[0],
+                    PathBuf::from("./client.bundle.json"),
+                    "the lone candidate is the cwd path",
+                );
+            }
+        }
     }
 
     #[test]

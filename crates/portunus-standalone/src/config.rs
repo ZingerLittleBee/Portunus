@@ -941,4 +941,707 @@ target = "1.1.1.1:1"
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // load_from / load_default (file I/O)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_from_reads_and_parses_file() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("portunus.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(
+            br#"
+[[rule]]
+name = "ssh"
+protocol = "tcp"
+listen_port = 2222
+target = "10.0.0.5:22"
+"#,
+        )
+        .unwrap();
+        drop(f);
+
+        let cfg = Config::load_from(&path).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.rules.len(), 1);
+        assert_eq!(cfg.rules[0].name, "ssh");
+    }
+
+    #[test]
+    fn load_from_missing_file_is_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.toml");
+        let err = Config::load_from(&path).unwrap_err();
+        assert!(matches!(err, ConfigError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn load_default_uses_cwd_path() {
+        // `portunus.toml` almost certainly does not exist in the test's
+        // working directory, so this exercises the default-path plumbing
+        // and surfaces an I/O error rather than a parse error.
+        // Missing file → I/O error; a stray `portunus.toml` → parse error.
+        // Both are acceptable here; any OTHER variant would be a logic bug.
+        if let Err(e) = Config::load_default() {
+            assert!(
+                matches!(e, ConfigError::Io(_) | ConfigError::TomlParse(_)),
+                "unexpected error kind: {e:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // validate() remaining branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn listen_exclusivity_neither_rejected() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            target = "1.1.1.1:1"
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::ListenExclusivity), "got {err:?}");
+    }
+
+    #[test]
+    fn listen_exclusivity_both_rejected() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_port = 1
+            listen_ports = "1-2"
+            target = "1.1.1.1:1"
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::ListenExclusivity), "got {err:?}");
+    }
+
+    #[test]
+    fn target_exclusivity_neither_rejected() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_port = 1
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::TargetExclusivity), "got {err:?}");
+    }
+
+    #[test]
+    fn invalid_listen_ports_range_rejected_by_validate() {
+        // Non-numeric range bound -> PortRangeParse error path.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_ports = "abc-2"
+            target = "1.1.1.1:1-2"
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ConfigError::PortRangeParse { ref rule, .. } if rule == "a"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_target_string_rejected_by_validate() {
+        // `target` has no colon -> TargetParse error path during validate.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_port = 1
+            target = "1.1.1.1"
+        "#,
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "a"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn stats_disabled_skips_refresh_validation() {
+        // With stats disabled, an out-of-range refresh_ms is not validated.
+        let cfg = parse(
+            r#"
+            [stats]
+            enabled = false
+            refresh_ms = 100
+            [[rule]]
+            name = "a"
+            protocol = "tcp"
+            listen_port = 1
+            target = "1.1.1.1:1"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().expect("disabled stats bypass refresh check");
+    }
+
+    // -----------------------------------------------------------------------
+    // into_iter_rules: single-target shape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn into_iter_rules_single_tcp_target() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "ssh"
+            protocol = "tcp"
+            listen_port = 2222
+            target = "10.0.0.5:22"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules.len(), 1);
+        let r = &rules[0];
+        assert_eq!(r.name, "ssh");
+        assert_eq!(r.protocol, Protocol::Tcp);
+        assert_eq!(r.listen_range, PortRange::single(2222));
+        assert_eq!(r.target_host, "10.0.0.5");
+        assert_eq!(r.target_range, PortRange::single(22));
+        assert_eq!(r.rule_id, derive_rule_id("ssh"));
+        assert!(r.targets.is_empty(), "single-target carries no multi list");
+        assert!(!r.prefer_ipv6);
+        assert_eq!(r.udp_max_flows, default_udp_max_flows());
+        assert_eq!(r.udp_flow_idle_secs, default_udp_flow_idle_secs());
+    }
+
+    #[test]
+    fn into_iter_rules_defaults_protocol_applied() {
+        // No per-rule protocol; pulls from `defaults.protocol`.
+        let cfg = parse(
+            r#"
+            [defaults]
+            protocol = "udp"
+            [[rule]]
+            name = "dns"
+            listen_port = 53
+            target = "8.8.8.8:53"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].protocol, Protocol::Udp);
+    }
+
+    #[test]
+    fn into_iter_rules_protocol_falls_back_to_tcp() {
+        // No per-rule and no defaults protocol -> "tcp".
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "web"
+            listen_port = 80
+            target = "1.1.1.1:80"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].protocol, Protocol::Tcp);
+    }
+
+    #[test]
+    fn into_iter_rules_listen_ports_range() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "range"
+            protocol = "tcp"
+            listen_ports = "8000-8009"
+            target = "1.1.1.1:9000-9009"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].listen_range, PortRange::new(8000, 8009).unwrap());
+        assert_eq!(rules[0].target_range, PortRange::new(9000, 9009).unwrap());
+    }
+
+    #[test]
+    fn into_iter_rules_per_rule_overrides_applied() {
+        // Per-rule overrides take precedence over `[defaults]`.
+        let cfg = parse(
+            r#"
+            [defaults]
+            udp_max_flows = 10
+            udp_flow_idle_secs = 5
+            prefer_ipv6 = false
+            [[rule]]
+            name = "u"
+            protocol = "udp"
+            listen_port = 5000
+            target = "1.1.1.1:5000"
+            udp_max_flows = 99
+            udp_flow_idle_secs = 7
+            prefer_ipv6 = true
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].udp_max_flows, 99);
+        assert_eq!(rules[0].udp_flow_idle_secs, 7);
+        assert!(rules[0].prefer_ipv6);
+    }
+
+    #[test]
+    fn into_iter_rules_inherits_defaults_when_unset() {
+        // No per-rule overrides -> values inherited from `[defaults]`.
+        let cfg = parse(
+            r#"
+            [defaults]
+            udp_max_flows = 42
+            udp_flow_idle_secs = 11
+            prefer_ipv6 = true
+            [[rule]]
+            name = "u"
+            protocol = "udp"
+            listen_port = 5000
+            target = "1.1.1.1:5000"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].udp_max_flows, 42);
+        assert_eq!(rules[0].udp_flow_idle_secs, 11);
+        assert!(rules[0].prefer_ipv6);
+    }
+
+    #[test]
+    fn into_iter_rules_dns_target_classified() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "web"
+            protocol = "tcp"
+            listen_port = 80
+            target = "example.com:80"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].target_host, "example.com");
+        assert!(matches!(rules[0].target, Target::Dns(_)));
+    }
+
+    #[test]
+    fn into_iter_rules_bracketed_ipv6_target() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "v6"
+            protocol = "tcp"
+            listen_port = 8080
+            target = "[::1]:8080"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        assert_eq!(rules[0].target_host, "[::1]");
+        assert_eq!(rules[0].target_range, PortRange::single(8080));
+        assert!(matches!(rules[0].target, Target::Ip(_)));
+    }
+
+    #[test]
+    fn into_iter_rules_bad_host_is_target_parse_error() {
+        // Bare unbracketed IPv6 host -> classify_target error.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "bad"
+            protocol = "tcp"
+            listen_port = 1
+            target = "::1:8080"
+        "#,
+        )
+        .unwrap();
+        // validate() splits on the LAST colon, leaving a parseable host/port
+        // shape, so it passes; the host then fails to classify in
+        // into_iter_rules.
+        let res = cfg.into_iter_rules();
+        let err = res.err().expect("bad host must fail to classify");
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "bad"),
+            "got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // into_iter_rules: multi-target shape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn into_iter_rules_multi_target_build() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "ha"
+            protocol = "tcp"
+            listen_port = 443
+            targets = [
+                { host = "1.1.1.1", port = 443, priority = 0, proxy_protocol = "v1" },
+                { host = "2.2.2.2", port = 8443, priority = 1, proxy_protocol = "v2" },
+                { host = "example.com", port = 443, priority = 2 },
+            ]
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let rules: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        let r = &rules[0];
+        // Back-compat fields are taken from the first target.
+        assert_eq!(r.target_host, "1.1.1.1");
+        assert_eq!(r.target_range, PortRange::single(443));
+        assert!(matches!(r.target, Target::Ip(_)));
+        // Multi-target list preserves order, ports, priorities, and proxy ver.
+        assert_eq!(r.targets.len(), 3);
+        assert_eq!(r.targets[0].spec.host, "1.1.1.1");
+        assert_eq!(r.targets[0].spec.port, 443);
+        assert_eq!(r.targets[0].spec.priority, 0);
+        assert_eq!(
+            r.targets[0].spec.proxy_protocol,
+            Some(portunus_core::ProxyProtocolVersion::V1)
+        );
+        assert_eq!(
+            r.targets[1].spec.proxy_protocol,
+            Some(portunus_core::ProxyProtocolVersion::V2)
+        );
+        assert_eq!(r.targets[1].spec.port, 8443);
+        assert_eq!(r.targets[2].spec.proxy_protocol, None);
+        assert!(matches!(r.targets[2].target, Target::Dns(_)));
+    }
+
+    #[test]
+    fn into_iter_rules_multi_target_bad_proxy_protocol() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "ha"
+            protocol = "tcp"
+            listen_port = 443
+            targets = [
+                { host = "1.1.1.1", port = 443, priority = 0, proxy_protocol = "v9" },
+            ]
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let err = cfg.into_iter_rules().err().expect("v9 is invalid");
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "ha"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn into_iter_rules_multi_target_bad_host() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "ha"
+            protocol = "tcp"
+            listen_port = 443
+            targets = [
+                { host = "not a host!", port = 443, priority = 0 },
+            ]
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let err = cfg.into_iter_rules().err().expect("invalid host");
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "ha"),
+            "got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // into_client_rule
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parsed_rule_into_client_rule_maps_fields() {
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "ssh"
+            protocol = "tcp"
+            listen_port = 2222
+            target = "10.0.0.5:22"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let parsed: Vec<ParsedRule> = cfg.into_iter_rules().unwrap().collect();
+        let id = parsed[0].rule_id;
+        let client_rule = parsed.into_iter().next().unwrap().into_client_rule();
+        assert_eq!(client_rule.rule_id, id);
+        assert_eq!(client_rule.listen_range, PortRange::single(2222));
+        assert_eq!(client_rule.target_host, "10.0.0.5");
+        assert_eq!(client_rule.protocol, Protocol::Tcp);
+        // Standalone never sets the advanced server-only fields.
+        assert!(client_rule.sni_pattern.is_none());
+        assert!(client_rule.rate_limit.is_none());
+        assert!(client_rule.quota.is_none());
+        assert!(client_rule.health_check_interval_secs.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RuleId collision and protocol parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn invalid_protocol_is_target_parse_error() {
+        // Distinct rule names so validate() reaches into_iter_rules cleanly,
+        // then the unknown protocol string fails to parse.
+        let cfg = parse(
+            r#"
+            [[rule]]
+            name = "a"
+            protocol = "sctp"
+            listen_port = 1
+            target = "1.1.1.1:1"
+        "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let err = cfg.into_iter_rules().err().expect("unknown protocol");
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "a"),
+            "got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helper functions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_port_range_single_and_range() {
+        assert_eq!(parse_port_range("8080").unwrap(), PortRange::single(8080));
+        assert_eq!(
+            parse_port_range("8000-8009").unwrap(),
+            PortRange::new(8000, 8009).unwrap()
+        );
+        // Whitespace is trimmed.
+        assert_eq!(
+            parse_port_range(" 8000 - 8009 ").unwrap(),
+            PortRange::new(8000, 8009).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_port_range_invalid_inputs() {
+        assert!(parse_port_range("abc").is_err());
+        assert!(parse_port_range("xx-10").is_err());
+        assert!(parse_port_range("10-yy").is_err());
+        // Inverted range surfaces the PortRange validator's error.
+        assert!(parse_port_range("20-10").is_err());
+    }
+
+    #[test]
+    fn last_colon_pos_plain_and_ipv6() {
+        // Plain host:port -> last colon.
+        assert_eq!(last_colon_pos("host:8080"), Some(4));
+        // No colon at all.
+        assert_eq!(last_colon_pos("host"), None);
+        // Bracketed IPv6 -> colon right after ']'.
+        assert_eq!(last_colon_pos("[::1]:8080"), Some(5));
+        // Bracketed IPv6 with no trailing port colon.
+        assert_eq!(last_colon_pos("[::1]"), None);
+        // Open bracket but no close bracket.
+        assert_eq!(last_colon_pos("[::1"), None);
+    }
+
+    #[test]
+    fn extract_port_part_works() {
+        assert_eq!(extract_port_part("host:8080").unwrap(), "8080");
+        assert_eq!(extract_port_part("[::1]:9000").unwrap(), "9000");
+        assert!(extract_port_part("nocolon").is_err());
+    }
+
+    #[test]
+    fn parse_target_string_plain_dns() {
+        let (host, range) = parse_target_string("example.com:80", "r").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(range, PortRange::single(80));
+    }
+
+    #[test]
+    fn parse_target_string_ipv6_with_range() {
+        let (host, range) = parse_target_string("[::1]:9000-9001", "r").unwrap();
+        assert_eq!(host, "[::1]");
+        assert_eq!(range, PortRange::new(9000, 9001).unwrap());
+    }
+
+    #[test]
+    fn parse_target_string_missing_colon_errors() {
+        let err = parse_target_string("nohostport", "r").unwrap_err();
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "r"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_target_string_bad_port_errors() {
+        let err = parse_target_string("host:notaport", "r").unwrap_err();
+        assert!(
+            matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "r"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_target_range_part_returns_range() {
+        assert_eq!(
+            parse_target_range_part("host:8000-8009").unwrap(),
+            PortRange::new(8000, 8009).unwrap()
+        );
+        assert!(parse_target_range_part("nocolon").is_err());
+    }
+
+    #[test]
+    fn classify_target_variants() {
+        assert!(matches!(
+            classify_target("1.1.1.1", "r").unwrap(),
+            Target::Ip(_)
+        ));
+        assert!(matches!(
+            classify_target("[::1]", "r").unwrap(),
+            Target::Ip(_)
+        ));
+        assert!(matches!(
+            classify_target("example.com", "r").unwrap(),
+            Target::Dns(_)
+        ));
+        let err = classify_target("bad host!", "r").unwrap_err();
+        assert!(matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "r"));
+    }
+
+    #[test]
+    fn parse_protocol_ok_and_err() {
+        assert_eq!(parse_protocol("tcp", "r").unwrap(), Protocol::Tcp);
+        assert_eq!(parse_protocol("udp", "r").unwrap(), Protocol::Udp);
+        let err = parse_protocol("nope", "r").unwrap_err();
+        assert!(matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "r"));
+    }
+
+    #[test]
+    fn parse_proxy_protocol_all_branches() {
+        assert_eq!(parse_proxy_protocol(None, "r").unwrap(), None);
+        assert_eq!(
+            parse_proxy_protocol(Some("v1"), "r").unwrap(),
+            Some(portunus_core::ProxyProtocolVersion::V1)
+        );
+        assert_eq!(
+            parse_proxy_protocol(Some("v2"), "r").unwrap(),
+            Some(portunus_core::ProxyProtocolVersion::V2)
+        );
+        let err = parse_proxy_protocol(Some("v3"), "r").unwrap_err();
+        assert!(matches!(err, ConfigError::TargetParse { ref rule, .. } if rule == "r"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Display / Default impls
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_error_display_messages() {
+        assert_eq!(
+            ConfigError::NoRules.to_string(),
+            "config must contain at least one [[rule]]"
+        );
+        assert_eq!(
+            ConfigError::ListenExclusivity.to_string(),
+            "each rule must have exactly one of `listen_port` or `listen_ports`"
+        );
+        assert_eq!(
+            ConfigError::TargetExclusivity.to_string(),
+            "each rule must have exactly one of `target` or `targets`"
+        );
+        assert!(
+            ConfigError::DuplicateName("dup".into())
+                .to_string()
+                .contains("dup")
+        );
+        assert!(
+            ConfigError::EmptyTargets("e".into())
+                .to_string()
+                .contains('e')
+        );
+        let collision = ConfigError::RuleIdCollision {
+            a: "x".into(),
+            b: "y".into(),
+        };
+        assert!(collision.to_string().contains("collision"));
+        let mismatch = ConfigError::RangeSizeMismatch {
+            listen_len: 2,
+            target_len: 3,
+        };
+        assert!(mismatch.to_string().contains('2') && mismatch.to_string().contains('3'));
+        let validation = ConfigError::Validation { msg: "boom".into() };
+        assert!(validation.to_string().contains("boom"));
+        assert!(
+            ConfigError::RangeMultiTargetUnsupported("m".into())
+                .to_string()
+                .contains("multi-target")
+        );
+    }
+
+    #[test]
+    fn defaults_impls_match_default_fns() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.label, None);
+        assert_eq!(g.log_level, default_log_level());
+        assert_eq!(g.log_format, default_log_format());
+        assert_eq!(g.shutdown_drain_secs, default_shutdown_drain_secs());
+
+        let d = DefaultsConfig::default();
+        assert_eq!(d.protocol, None);
+        assert_eq!(d.udp_max_flows, default_udp_max_flows());
+        assert_eq!(d.udp_flow_idle_secs, default_udp_flow_idle_secs());
+        assert!(!d.prefer_ipv6);
+
+        let s = StatsConfig::default();
+        assert_eq!(s.enabled, default_stats_enabled());
+        assert_eq!(s.refresh_ms, default_stats_refresh_ms());
+        assert_eq!(s.socket_path, default_stats_socket_path());
+    }
 }

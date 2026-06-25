@@ -903,6 +903,209 @@ mod tests {
         );
     }
 
+    /// US2 (FR-006): a DNS target whose every resolved address fails
+    /// to dial surfaces `ConnectError::AllAddrsUnreachable`. The proxy
+    /// boundary classifies that as a DNS-side failure (FR-006/FR-008):
+    /// it bumps `dns_failures` and returns an `io::Error` whose message
+    /// carries the `all_addrs_unreachable` marker.
+    #[tokio::test]
+    async fn proxy_all_addrs_unreachable_increments_dns_failure() {
+        use crate::resolver::test_support::MockResolver;
+        use std::time::Duration;
+
+        // 127.0.0.1:1 refuses on macOS/Linux dev hosts, so the single
+        // resolved address fails every dial → AllAddrsUnreachable.
+        let mock = MockResolver::ok(
+            vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            Duration::from_secs(60),
+        );
+        let resolver = Arc::new(LiveResolver::new(Arc::new(mock), ResolverConfig::default()));
+        let stats = RuleStats::new();
+        let target = Target::Dns(Hostname::new("unreachable.example").unwrap());
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let r = Arc::clone(&resolver);
+        let s = Arc::clone(&stats);
+        let proxy_task = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            proxy(
+                sock,
+                r.as_ref(),
+                RuleId(0),
+                &target,
+                // Port 1 is reserved/refused — every resolved addr fails.
+                1,
+                false,
+                CancellationToken::new(),
+                Some(s),
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+        });
+        let _client = TcpStream::connect(proxy_addr).await.unwrap();
+        let err = proxy_task.await.unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("all_addrs_unreachable"),
+            "expected all_addrs_unreachable marker, got {err}"
+        );
+        assert_eq!(
+            stats.snapshot_dns_failures(),
+            1,
+            "AllAddrsUnreachable MUST bump dns_failures once (FR-006/FR-008)"
+        );
+    }
+
+    /// 011-rate-limiting-qos T030: when ONLY the per-owner limiter has a
+    /// bandwidth cap (the per-rule limiter is `None`), the throttling
+    /// copy branch must still run. The proxy synthesises a fresh no-cap
+    /// `RuleRateLimitHandle` so the inner loop's per-chunk
+    /// `acquire_bandwidth` short-circuits while the owner cap governs.
+    /// Set the owner cap very high so it never throttles this small
+    /// transfer; we only assert bytes round-trip through that branch.
+    #[tokio::test]
+    async fn proxy_owner_only_bandwidth_cap_forwards_bytes() {
+        use crate::forwarder::rate_limit::scope::{
+            OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager,
+        };
+        use portunus_core::RateLimit;
+
+        let echo = spawn_echo().await;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        // Owner limiter with a generous bandwidth cap → `owner_has_bw`
+        // is true and `rate_limit` stays None, forcing the synthesised
+        // rule limiter fallback path.
+        let owner_id = OwnerId::new("alice");
+        let scope = Arc::new(OwnerRateLimitScopeManager::new());
+        scope.install(
+            &owner_id,
+            Some(&RateLimit {
+                bandwidth_in_bps: Some(1024 * 1024 * 1024),
+                bandwidth_out_bps: Some(1024 * 1024 * 1024),
+                ..Default::default()
+            }),
+        );
+        let owner_limiter = Arc::new(OwnerRateLimitHandle::new(owner_id, scope));
+        assert!(
+            owner_limiter.has_bandwidth_cap(),
+            "owner limiter must report a bandwidth cap so the throttling branch runs"
+        );
+
+        let resolver = Arc::new(ip_resolver());
+        let owner = Arc::clone(&owner_limiter);
+        let proxy_task = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            proxy(
+                sock,
+                resolver.as_ref(),
+                RuleId(0),
+                &Target::Ip(echo.ip()),
+                echo.port(),
+                false,
+                CancellationToken::new(),
+                None,
+                0,
+                // rate_limit = None: only the owner carries a cap.
+                None,
+                None,
+                Some(owner),
+                None,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        client.write_all(b"owner-capped").await.unwrap();
+        let mut buf = [0u8; 12];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"owner-capped");
+        drop(client);
+        let (bin, bout) = proxy_task.await.unwrap().expect("proxy returns counts");
+        assert_eq!(bin, 12, "12 bytes inbound→outbound via owner-cap branch");
+        assert_eq!(bout, 12, "12 bytes echoed outbound→inbound");
+    }
+
+    /// 009-tls-sni-routing T041: the preread (captured ClientHello)
+    /// branch replays the buffer to the upstream BEFORE switching to
+    /// bidirectional copy, with NO PROXY prelude. The replayed bytes are
+    /// folded into the inbound tally so legacy and SNI paths report the
+    /// same totals (SC-002). Exercises the `write_all(preread)` seam.
+    #[tokio::test]
+    async fn proxy_with_preread_replays_buffer_and_counts_it() {
+        let backend = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = backend.accept().await.unwrap();
+            let mut captured = Vec::new();
+            let mut buf = [0u8; 256];
+            // Read until we've seen the full preread marker, then echo
+            // it back so the client read unblocks deterministically.
+            while !captured.ends_with(b"hello-preread") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                captured.extend_from_slice(&buf[..n]);
+            }
+            sock.write_all(b"ack").await.unwrap();
+            captured_tx.send(captured).unwrap();
+        });
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let resolver = Arc::new(ip_resolver());
+        let proxy_task = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            proxy_with_preread(
+                sock,
+                Some(b"hello-preread".to_vec()),
+                resolver.as_ref(),
+                RuleId(7),
+                &Target::Ip(backend_addr.ip()),
+                backend_addr.port(),
+                false,
+                CancellationToken::new(),
+                None,
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        // Read the backend's "ack" so the copy loop has run, then close.
+        let mut ack = [0u8; 3];
+        client.read_exact(&mut ack).await.unwrap();
+        assert_eq!(&ack, b"ack");
+        drop(client);
+
+        let captured = captured_rx.await.unwrap();
+        assert_eq!(
+            captured, b"hello-preread",
+            "upstream must see the replayed preread bytes verbatim"
+        );
+
+        let (bin, bout) = proxy_task.await.unwrap().expect("proxy returns counts");
+        assert_eq!(
+            bin, 13,
+            "13 preread bytes must be folded into the inbound tally (SC-002)"
+        );
+        assert_eq!(bout, 3, "3 bytes (\"ack\") flowed outbound→inbound");
+    }
+
     #[tokio::test]
     async fn proxy_returns_io_error_on_unreachable_target() {
         // 127.0.0.1:1 should refuse on macOS/Linux dev environments.

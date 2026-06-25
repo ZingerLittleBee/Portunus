@@ -259,4 +259,135 @@ mod tests {
             "dual-stack listener must accept IPv6 clients"
         );
     }
+
+    #[test]
+    fn classify_bind_error_maps_known_kinds() {
+        // The three stable reason strings the operator surface keys off.
+        assert_eq!(
+            classify_bind_error(&io::Error::from(io::ErrorKind::AddrInUse)),
+            "port_in_use"
+        );
+        assert_eq!(
+            classify_bind_error(&io::Error::from(io::ErrorKind::PermissionDenied)),
+            "permission_denied"
+        );
+    }
+
+    #[test]
+    fn classify_bind_error_falls_back_to_bind_failed() {
+        // Any other kind collapses to the generic "bind_failed" reason.
+        assert_eq!(
+            classify_bind_error(&io::Error::from(io::ErrorKind::ConnectionRefused)),
+            "bind_failed"
+        );
+        assert_eq!(
+            classify_bind_error(&io::Error::from(io::ErrorKind::NotFound)),
+            "bind_failed"
+        );
+        // Custom OS-style error with no recognised kind also hits the default.
+        assert_eq!(
+            classify_bind_error(&io::Error::other("boom")),
+            "bind_failed"
+        );
+    }
+
+    #[test]
+    fn should_fallback_to_ipv4_only_for_address_unavailability() {
+        // These two kinds signal a host without usable IPv6, so the binder
+        // should retry on IPv4 alone.
+        assert!(should_fallback_to_ipv4(&io::Error::from(
+            io::ErrorKind::AddrNotAvailable
+        )));
+        assert!(should_fallback_to_ipv4(&io::Error::from(
+            io::ErrorKind::Unsupported
+        )));
+        // Anything else is a real failure that must surface, not fall back.
+        assert!(!should_fallback_to_ipv4(&io::Error::from(
+            io::ErrorKind::AddrInUse
+        )));
+        assert!(!should_fallback_to_ipv4(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!should_fallback_to_ipv4(&io::Error::other("other")));
+    }
+
+    #[tokio::test]
+    async fn bind_ipv6_binds_dual_stack_unspecified() {
+        let _guard = port_pool_lock().lock().await;
+        // Let the OS hand us a free port via the production probe path, then
+        // exercise bind_ipv6 directly on it.
+        let range = pick_consecutive_free(1).await;
+        let port = range.start();
+        let listener = bind_ipv6(port).expect("bind_ipv6 on free port");
+        let local = listener.local_addr().unwrap();
+        assert_eq!(local.port(), port);
+        assert!(local.is_ipv6(), "bind_ipv6 must yield an IPv6 listener");
+    }
+
+    #[tokio::test]
+    async fn bind_ipv4_binds_unspecified() {
+        let _guard = port_pool_lock().lock().await;
+        let range = pick_consecutive_free(1).await;
+        let port = range.start();
+        let listener = bind_ipv4(port).expect("bind_ipv4 on free port");
+        let local = listener.local_addr().unwrap();
+        assert_eq!(local.port(), port);
+        assert!(local.is_ipv4(), "bind_ipv4 must yield an IPv4 listener");
+    }
+
+    #[tokio::test]
+    async fn bind_port_returns_both_address_families() {
+        let _guard = port_pool_lock().lock().await;
+        // On a dual-stack loopback host, bind_port hands back one IPv6 and
+        // one IPv4 listener for the same port (the IPV6_V6ONLY split).
+        let range = pick_consecutive_free(1).await;
+        let port = range.start();
+        let listeners = bind_port(port).expect("bind_port on free port");
+        assert_eq!(listeners.len(), 2);
+        for listener in &listeners {
+            assert_eq!(listener.local_addr().unwrap().port(), port);
+        }
+        let families: std::collections::HashSet<bool> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().is_ipv6())
+            .collect();
+        assert_eq!(families.len(), 2, "bind_port must cover both IPv4 and IPv6");
+    }
+
+    #[tokio::test]
+    async fn bind_port_surfaces_addr_in_use() {
+        let _guard = port_pool_lock().lock().await;
+        // Occupy a port, then confirm bind_port reports the real error rather
+        // than swallowing it as a fallback (the non-fallback Err arm).
+        let range = pick_consecutive_free(1).await;
+        let port = range.start();
+        let squatter = bind_ipv6(port).expect("occupy ipv6");
+        let err = bind_port(port).expect_err("bind_port must fail on a busy port");
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        assert!(!should_fallback_to_ipv4(&err));
+        drop(squatter);
+    }
+
+    #[test]
+    fn bind_failure_is_copy_debug_eq() {
+        // Exercise the derived traits on the public error type.
+        let a = BindFailure {
+            offending_port: 8080,
+            reason: "port_in_use",
+        };
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(
+            a,
+            BindFailure {
+                offending_port: 8081,
+                reason: "port_in_use",
+            }
+        );
+        // Debug output names the struct and its fields.
+        let dbg = format!("{a:?}");
+        assert!(dbg.contains("BindFailure"));
+        assert!(dbg.contains("8080"));
+        assert!(dbg.contains("port_in_use"));
+    }
 }

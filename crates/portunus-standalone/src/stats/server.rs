@@ -383,3 +383,293 @@ fn read_proc_status_rss() -> Option<u64> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    /// Build a single-rule registry with one TCP target, mirroring the
+    /// integration-test fixture so the helper exercises `build_hello`'s
+    /// target-mapping branch.
+    fn registry_with_one_rule() -> (Registry, Arc<RuleStats>) {
+        let stats = Arc::new(RuleStats::default());
+        let registry: Registry = Arc::new(RwLock::new(HashMap::from([(
+            RuleId(1),
+            RuleEntry {
+                stats: Arc::clone(&stats),
+                meta: RuleMetaStatic {
+                    name: "test-rule".into(),
+                    proto: "tcp".into(),
+                    listen: "2222".into(),
+                    targets: vec![TargetMetaStatic {
+                        host: "1.1.1.1".into(),
+                        port: 22,
+                        priority: 0,
+                        proxy_protocol: Some("v2".into()),
+                    }],
+                    splice_capable: true,
+                    udp_max_flows: Some(64),
+                },
+            },
+        )])));
+        (registry, stats)
+    }
+
+    /// `build_hello` projects the static rule metadata (including targets)
+    /// into the wire `Hello`.
+    #[test]
+    fn build_hello_projects_rule_metadata() {
+        let (registry, _stats) = registry_with_one_rule();
+        let hello = build_hello(&registry, 12345, Duration::from_millis(250));
+        assert_eq!(hello.v, PROTOCOL_VERSION);
+        assert_eq!(hello.daemon_started_at_ms, 12345);
+        assert_eq!(hello.refresh_ms, 250);
+        assert_eq!(hello.rules.len(), 1);
+        let rule = &hello.rules[0];
+        assert_eq!(rule.id, "1");
+        assert_eq!(rule.name, "test-rule");
+        assert_eq!(rule.proto, "tcp");
+        assert_eq!(rule.listen, "2222");
+        assert!(rule.splice_capable);
+        assert_eq!(rule.udp_max_flows, Some(64));
+        assert_eq!(rule.targets.len(), 1);
+        assert_eq!(rule.targets[0].host, "1.1.1.1");
+        assert_eq!(rule.targets[0].port, 22);
+        assert_eq!(rule.targets[0].proxy_protocol.as_deref(), Some("v2"));
+    }
+
+    /// `build_snapshot` reflects the live atomic counters for each rule.
+    #[test]
+    fn build_snapshot_reflects_live_counters() {
+        let (registry, stats) = registry_with_one_rule();
+        stats.bytes_in.store(100, Ordering::Relaxed);
+        stats.bytes_out.store(200, Ordering::Relaxed);
+        stats.errors.port_in_use.store(3, Ordering::Relaxed);
+        let snap = build_snapshot(&registry, Instant::now(), 7, ProcessSnap::default());
+        assert_eq!(snap.seq, 7);
+        assert_eq!(snap.r.len(), 1);
+        assert_eq!(snap.r[0].id, "1");
+        assert_eq!(snap.r[0].bytes_in, 100);
+        assert_eq!(snap.r[0].out, 200);
+        assert_eq!(snap.r[0].err.port_in_use, 3);
+    }
+
+    /// `write_line` serialises a value as a single newline-terminated JSON
+    /// frame and flushes it within the write deadline.
+    #[tokio::test]
+    async fn write_line_emits_newline_framed_json() {
+        let (mut server_side, client_side) = UnixStream::pair().unwrap();
+        let hello = Hello {
+            v: PROTOCOL_VERSION,
+            daemon_version: "test".into(),
+            daemon_started_at_ms: 0,
+            refresh_ms: 250,
+            rules: vec![],
+        };
+        write_line(&mut server_side, &hello).await.unwrap();
+        drop(server_side);
+
+        let mut reader = BufReader::new(client_side);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        assert!(n > 0);
+        assert!(line.ends_with('\n'));
+        let back: Hello = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(back.v, PROTOCOL_VERSION);
+    }
+
+    /// `handle_client` returns early when the very first (Hello) write fails
+    /// because the peer is already gone, hitting the hello write-error branch.
+    #[tokio::test]
+    async fn handle_client_returns_when_hello_write_fails() {
+        let (server_side, client_side) = UnixStream::pair().unwrap();
+        // Drop the peer before handing the stream to the server so the
+        // immediate Hello write fails with a broken pipe.
+        drop(client_side);
+
+        let (registry, _stats) = registry_with_one_rule();
+        let permit = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let cancel = CancellationToken::new();
+
+        // Must return promptly rather than entering the tick loop.
+        timeout(
+            Duration::from_secs(5),
+            handle_client(
+                server_side,
+                registry,
+                Duration::from_millis(10),
+                0,
+                Instant::now(),
+                cancel,
+                permit,
+            ),
+        )
+        .await
+        .expect("handle_client should return after the failed hello write");
+    }
+
+    /// `handle_client` breaks out of the tick loop once a snapshot write
+    /// fails after the peer disconnects, exercising the disconnect branch.
+    #[tokio::test]
+    async fn handle_client_breaks_when_snapshot_write_fails() {
+        let (server_side, client_side) = UnixStream::pair().unwrap();
+        let (registry, _stats) = registry_with_one_rule();
+        let permit = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let cancel = CancellationToken::new();
+
+        let server = tokio::spawn(handle_client(
+            server_side,
+            registry,
+            Duration::from_millis(5),
+            0,
+            Instant::now(),
+            cancel,
+            permit,
+        ));
+
+        // Read the Hello frame (proves the first write succeeded), then drop
+        // the peer so subsequent snapshot ticks fail and the loop breaks.
+        let mut reader = BufReader::new(client_side);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        assert!(n > 0);
+        drop(reader);
+
+        timeout(Duration::from_secs(5), server)
+            .await
+            .expect("handle_client should break after the peer disconnects")
+            .expect("handle_client task should not panic");
+    }
+
+    /// `handle_client` stops when the daemon cancels, even with a live peer.
+    #[tokio::test]
+    async fn handle_client_stops_on_cancel() {
+        let (server_side, client_side) = UnixStream::pair().unwrap();
+        let (registry, _stats) = registry_with_one_rule();
+        let permit = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let cancel = CancellationToken::new();
+
+        let server = tokio::spawn(handle_client(
+            server_side,
+            registry,
+            // Long refresh so the loop is parked on `select!` when cancelled.
+            Duration::from_secs(3600),
+            0,
+            Instant::now(),
+            cancel.clone(),
+            permit,
+        ));
+
+        // Drain the Hello so the server is sitting in the tick `select!`.
+        let mut reader = BufReader::new(client_side);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await.unwrap();
+        assert!(n > 0);
+
+        cancel.cancel();
+        timeout(Duration::from_secs(5), server)
+            .await
+            .expect("handle_client should return after cancel")
+            .expect("handle_client task should not panic");
+    }
+
+    /// End-to-end through `spawn`: the server binds the socket, sends a Hello
+    /// then a Snapshot, and tears the socket down on cancel.
+    #[tokio::test]
+    async fn spawn_serves_hello_then_snapshot_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("stats.sock");
+
+        let (registry, stats) = registry_with_one_rule();
+        stats.bytes_in.store(42, Ordering::Relaxed);
+
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            sock.clone(),
+            Arc::clone(&registry),
+            Duration::from_millis(20),
+            12345,
+            cancel.clone(),
+        )
+        .unwrap();
+
+        let stream = UnixStream::connect(&sock).await.unwrap();
+        let mut reader = BufReader::new(stream).lines();
+
+        let hello_line = timeout(Duration::from_secs(5), reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("hello line");
+        let hello: Hello = serde_json::from_str(&hello_line).unwrap();
+        assert_eq!(hello.v, PROTOCOL_VERSION);
+        assert_eq!(hello.rules.len(), 1);
+
+        let snap_line = timeout(Duration::from_secs(5), reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("snapshot line");
+        let snap: Snapshot = serde_json::from_str(&snap_line).unwrap();
+        assert_eq!(snap.r.len(), 1);
+        assert_eq!(snap.r[0].bytes_in, 42);
+
+        cancel.cancel();
+        let _ = timeout(Duration::from_secs(5), handle).await;
+        // The socket file is removed on cancel.
+        assert!(!sock.exists());
+    }
+
+    /// Opening more than `MAX_STATS_CLIENTS` live connections trips the
+    /// connection-limit branch: the extra connection is accepted then
+    /// immediately dropped, so its peer observes EOF without a Hello.
+    #[tokio::test]
+    async fn spawn_rejects_connections_past_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("stats.sock");
+
+        let (registry, _stats) = registry_with_one_rule();
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            sock.clone(),
+            Arc::clone(&registry),
+            // Long refresh so accepted clients stay parked and keep their permit.
+            Duration::from_secs(3600),
+            0,
+            cancel.clone(),
+        )
+        .unwrap();
+
+        // Saturate the permit pool and confirm each connection got a Hello,
+        // which proves its `handle_client` task is live and holding a permit.
+        let mut held = Vec::new();
+        for _ in 0..MAX_STATS_CLIENTS {
+            let stream = UnixStream::connect(&sock).await.unwrap();
+            let mut reader = BufReader::new(stream).lines();
+            let line = timeout(Duration::from_secs(5), reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .expect("hello line for a permitted client");
+            let _: Hello = serde_json::from_str(&line).unwrap();
+            held.push(reader);
+        }
+
+        // The next connection exceeds the cap: the server drops it without a
+        // Hello, so the read returns EOF (empty line / no bytes).
+        let over = UnixStream::connect(&sock).await.unwrap();
+        let mut over_reader = BufReader::new(over);
+        let mut buf = Vec::new();
+        let n = timeout(Duration::from_secs(5), over_reader.read_to_end(&mut buf))
+            .await
+            .expect("over-limit connection should close promptly")
+            .unwrap();
+        assert_eq!(n, 0, "over-limit connection must receive no Hello bytes");
+
+        cancel.cancel();
+        let _ = timeout(Duration::from_secs(5), handle).await;
+        drop(held);
+    }
+}

@@ -66,6 +66,7 @@ make ui           # Vite dev server only, proxies /v1 → 127.0.0.1:7080
 make serve        # release server with embedded UI on http://127.0.0.1:7080
 make test         # server lib tests + auth/password contract tests
 make test-csrf    # focused CSRF unit tests (fast)
+make coverage     # Rust line coverage (cargo-llvm-cov, excludes e2e)
 make standalone        # build portunus-standalone binary
 make standalone-check  # validate every tests/fixtures/valid_*.toml
 make clean        # nuke /tmp/portunus-dev (forces re-bootstrap)
@@ -112,6 +113,19 @@ pnpm build        # tsc -b && vite build && size-limit (≤ 500 KB gz)
   on `-D warnings`. See `[workspace.lints.clippy]` in `Cargo.toml` for
   the intentional `allow` list and the reason each is allowed — do not
   remove an `allow` without re-reading that comment.
+- **Test coverage** is measured with `cargo-llvm-cov` via `make coverage`
+  (`cargo llvm-cov --workspace --exclude portunus-e2e`). The agreed target
+  is **≥95% line coverage on unit-testable logic files**, counting each
+  crate's own `tests/` integration tests but excluding the process-level
+  `portunus-e2e` crate. Entry / wiring code is carved out and left to
+  integration + e2e: `main.rs`, `serve.rs`, CLI dispatchers, the gRPC
+  service / interceptor, axum HTTP handlers, `client/control.rs`, and
+  socket-runtime / TUI loops. A few logic files sit below 95% at a
+  practical ceiling (signal handling, the enrollment RPC body, resolver
+  network paths, DB-corruption defensive arms, the audit-retention sleep
+  loop) — don't chase those under `-D unsafe_code` / the no-flaky-test
+  rule. There is **no CI coverage gate** today; `make coverage` is a local
+  check.
 - **Data-plane perf gate**: `.github/workflows/bench.yml` runs
   `cargo bench -p portunus-forwarder --bench data_plane` and hard-fails
   PRs whose median regresses by >50% vs

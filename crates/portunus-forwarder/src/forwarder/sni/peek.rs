@@ -195,10 +195,9 @@ mod tests {
         let err = read_client_hello_with(&mut reader, Duration::from_millis(50), PEEK_BYTE_CAP)
             .await
             .expect_err("must time out");
-        match err {
-            PeekError::Timeout { bytes_read: 0 } => {}
-            other => panic!("got {other:?}"),
-        }
+        let PeekError::Timeout { bytes_read: 0 } = err else {
+            panic!("got {err:?}");
+        };
         assert_eq!(err.tracing_event(), "tls.client_hello_timeout");
     }
 
@@ -206,10 +205,9 @@ mod tests {
     async fn not_tls_payload_rejected() {
         let mut reader = pipe_with(b"GET / HTTP/1.1\r\n\r\n".to_vec(), 64, Duration::ZERO);
         let err = read_client_hello(&mut reader).await.expect_err("not TLS");
-        match err {
-            PeekError::NotTls => {}
-            other => panic!("got {other:?}"),
-        }
+        let PeekError::NotTls = err else {
+            panic!("got {err:?}");
+        };
         assert_eq!(err.tracing_event(), "tls.parse_failed");
     }
 
@@ -219,6 +217,58 @@ mod tests {
         let mut reader = pipe_with(bytes.clone(), bytes.len(), Duration::ZERO);
         let (_captured, sni) = read_client_hello(&mut reader).await.expect("peek");
         assert_eq!(sni, None);
+    }
+
+    #[tokio::test]
+    async fn malformed_tls_record_rejected() {
+        // Record type/version look like TLS, but the advertised body
+        // length (0x8000 = 32 KiB) exceeds the parser's per-record cap
+        // so `parse` returns `ParseError::Malformed` on the first
+        // iteration — mapped here to `PeekError::Malformed`.
+        let payload = vec![0x16, 0x03, 0x03, 0x80, 0x00];
+        let mut reader = pipe_with(payload, 64, Duration::ZERO);
+        let err = read_client_hello(&mut reader)
+            .await
+            .expect_err("malformed TLS");
+        let PeekError::Malformed = err else {
+            panic!("got {err:?}");
+        };
+        assert_eq!(err.tracing_event(), "tls.parse_failed");
+    }
+
+    #[tokio::test]
+    async fn zero_timeout_returns_timeout_before_first_read() {
+        // A zero timeout makes the deadline equal the start instant, so
+        // the in-loop `now >= deadline` guard fires before we ever issue
+        // a read. Buffer is still empty, so `bytes_read` is 0.
+        let (_writer, mut reader) = tokio::io::duplex(64 * 1024);
+        let err = read_client_hello_with(&mut reader, Duration::ZERO, PEEK_BYTE_CAP)
+            .await
+            .expect_err("must time out");
+        let PeekError::Timeout { bytes_read: 0 } = err else {
+            panic!("got {err:?}");
+        };
+        assert_eq!(err.tracing_event(), "tls.client_hello_timeout");
+    }
+
+    #[tokio::test]
+    async fn read_io_error_surfaces_as_io() {
+        // A reader whose first poll_read yields an I/O error (other than
+        // EOF) must surface as `PeekError::Io`, not Timeout or SizeCap.
+        let mut reader = tokio_test::io::Builder::new()
+            .read_error(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "boom",
+            ))
+            .build();
+        let err = read_client_hello_with(&mut reader, Duration::from_secs(1), PEEK_BYTE_CAP)
+            .await
+            .expect_err("io error");
+        let PeekError::Io(ref e) = err else {
+            panic!("got {err:?}");
+        };
+        assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset);
+        assert_eq!(err.tracing_event(), "tls.parse_failed");
     }
 
     #[tokio::test]
@@ -234,9 +284,25 @@ mod tests {
         let err = read_client_hello_with(&mut reader, Duration::from_secs(1), 256)
             .await
             .expect_err("must size-cap");
-        match err {
-            PeekError::SizeCap => {}
-            other => panic!("got {other:?}"),
-        }
+        let PeekError::SizeCap = err else {
+            panic!("got {err:?}");
+        };
+    }
+
+    #[tokio::test]
+    async fn peer_closes_before_hello_surfaces_io_eof() {
+        // Writer half dropped immediately with no bytes written: the
+        // first read returns Ok(0), which maps to `PeekError::Io` with
+        // an `UnexpectedEof` kind (the "peer closed" branch).
+        let (writer, mut reader) = tokio::io::duplex(64 * 1024);
+        drop(writer);
+        let err = read_client_hello_with(&mut reader, Duration::from_secs(1), PEEK_BYTE_CAP)
+            .await
+            .expect_err("peer closed");
+        let PeekError::Io(ref e) = err else {
+            panic!("got {err:?}");
+        };
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.tracing_event(), "tls.parse_failed");
     }
 }

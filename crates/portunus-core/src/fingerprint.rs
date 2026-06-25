@@ -124,4 +124,20 @@ mod tests {
         // Non-hex character (correct length) rejected.
         assert!(!is_valid_sha256_hex(&"g".repeat(64)));
     }
+
+    #[test]
+    fn sha256_bytes_matches_hex_form() {
+        // `sha256_bytes` is the raw-byte form of `sha256_hex`; hex of the
+        // raw bytes must equal the string helper for the same input.
+        let raw = sha256_bytes(b"abc");
+        assert_eq!(raw.len(), 32);
+        assert_eq!(hex(&raw), sha256_hex(b"abc"));
+        // Known NIST vector for SHA-256("abc"), first byte 0xba.
+        assert_eq!(raw[0], 0xba);
+    }
+
+    #[test]
+    fn blake3_distinct_inputs_distinct_hashes() {
+        assert_ne!(blake3_32(b"hello"), blake3_32(b"world"));
+    }
 }

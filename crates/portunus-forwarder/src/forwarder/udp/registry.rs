@@ -413,4 +413,153 @@ mod tests {
         assert_eq!(reg.len(), 0);
         assert!(f.cancel.is_cancelled());
     }
+
+    #[test]
+    fn cap_returns_configured_capacity() {
+        // `cap()` is a pure accessor over the rule-wide cap.
+        let reg = UdpFlowRegistry::new(7);
+        assert_eq!(reg.cap(), 7);
+    }
+
+    #[tokio::test]
+    async fn get_on_pending_slot_returns_none() {
+        // A reserved-but-not-committed slot is Pending; the O(1) Live
+        // fast-path `get` must report it as absent (no Live flow yet).
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(_res) = reg.try_get_or_reserve(k) else {
+            panic!("expected reservation")
+        };
+        assert!(
+            reg.get(k).is_none(),
+            "Pending slot must not surface via get"
+        );
+        // Occupancy still reflects the held Pending reservation.
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn try_get_or_reserve_returns_existing_for_live_slot() {
+        // Once a key is Live, the fast-path arm returns Existing with a
+        // clone of the same flow rather than minting a new reservation.
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k) else {
+            panic!("expected reservation")
+        };
+        let f = flow_for(k.src).await;
+        reg.commit(reservation, Arc::clone(&f));
+        match reg.try_get_or_reserve(k) {
+            TryGetOrReserve::Existing(existing) => {
+                assert!(Arc::ptr_eq(&existing, &f), "must hand back the live flow");
+            }
+            _ => panic!("expected Existing for an already-live key"),
+        }
+        // No new slot was added and no overflow was recorded.
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.dropped_overflow(), 0);
+    }
+
+    #[tokio::test]
+    async fn remove_pending_slot_decrements_len_and_returns_none() {
+        // Removing a Pending (reserved, uncommitted) slot decrements
+        // occupancy but yields no flow.
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        // Reserve, then mark the guard committed so its RAII Drop is a
+        // no-op and `remove` is the sole mutator of the Pending slot.
+        let TryGetOrReserve::Reserved(mut reservation) = reg.try_get_or_reserve(k) else {
+            panic!("expected reservation")
+        };
+        // A child test module may flip the parent type's private flag.
+        reservation.committed = true;
+        assert_eq!(reg.len(), 1);
+        assert!(
+            reg.remove(k).is_none(),
+            "removing a Pending slot yields no flow"
+        );
+        assert_eq!(reg.len(), 0, "Pending removal decrements occupancy");
+        drop(reservation);
+    }
+
+    #[tokio::test]
+    async fn remove_missing_key_returns_none_without_touching_occupancy() {
+        // Removing an absent key is a no-op: None, occupancy untouched.
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 9, 1234);
+        assert!(reg.remove(k).is_none());
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn commit_overwriting_live_slot_warns_and_replaces_flow() {
+        // Driving `commit` when the slot is already Live exercises the
+        // overwrite-warning branch. A second Reservation for the same key
+        // is built directly (a child test module may touch the parent
+        // module's private fields) since the public API never hands out
+        // two reservations for one key.
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(k) else {
+            panic!("expected reservation")
+        };
+        let first = flow_for(k.src).await;
+        reg.commit(reservation, Arc::clone(&first));
+        assert!(Arc::ptr_eq(&reg.get(k).unwrap(), &first));
+
+        // Build a second reservation for the same (now Live) key.
+        let second_res = Reservation {
+            key: k,
+            registry: Arc::clone(&reg),
+            committed: false,
+        };
+        let second = flow_for(k.src).await;
+        reg.commit(second_res, Arc::clone(&second));
+
+        // The Live slot was overwritten with the second flow; occupancy
+        // is unchanged because the overwrite did not add a slot.
+        let live = reg.get(k).expect("still live after overwrite");
+        assert!(
+            Arc::ptr_eq(&live, &second),
+            "overwrite installs second flow"
+        );
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn reservation_key_returns_the_keyed_flow_key() {
+        // `Reservation::key()` is a plain accessor. Build one directly so
+        // the test does not depend on the reserve/commit lifecycle. With
+        // `committed: true` the RAII Drop is a no-op.
+        let reg = UdpFlowRegistry::new(4);
+        let k = key(8123, 4, 4321);
+        let reservation = Reservation {
+            key: k,
+            registry: Arc::clone(&reg),
+            committed: true,
+        };
+        assert_eq!(reservation.key(), k);
+    }
+
+    #[tokio::test]
+    async fn drain_decrements_occupancy_for_pending_only_slot() {
+        // A registry holding only a Pending slot is drained: the Live
+        // branch is skipped, but occupancy is still decremented to zero.
+        let reg = UdpFlowRegistry::new(4);
+        let TryGetOrReserve::Reserved(reservation) = reg.try_get_or_reserve(key(8000, 1, 1)) else {
+            panic!("expected reservation")
+        };
+        // Keep the reservation alive past the drain so its Drop sees the
+        // slot already gone (remove_if returns None) and is a no-op.
+        assert_eq!(reg.len(), 1);
+        reg.drain();
+        assert_eq!(
+            reg.len(),
+            0,
+            "draining a Pending-only slot zeroes occupancy"
+        );
+        // Dropping the now-stale reservation must not underflow occupancy.
+        drop(reservation);
+        assert_eq!(reg.len(), 0);
+    }
 }

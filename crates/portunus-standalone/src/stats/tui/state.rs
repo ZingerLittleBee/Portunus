@@ -185,4 +185,113 @@ mod tests {
         assert_eq!(Tab::Errors.next(), Tab::Overview);
         assert_eq!(Tab::Overview.prev(), Tab::Errors);
     }
+
+    #[test]
+    fn tab_next_covers_all_arms() {
+        assert_eq!(Tab::Overview.next(), Tab::Detail);
+        assert_eq!(Tab::Detail.next(), Tab::Errors);
+        assert_eq!(Tab::Errors.next(), Tab::Overview);
+    }
+
+    #[test]
+    fn tab_prev_covers_all_arms() {
+        assert_eq!(Tab::Overview.prev(), Tab::Errors);
+        assert_eq!(Tab::Detail.prev(), Tab::Overview);
+        assert_eq!(Tab::Errors.prev(), Tab::Detail);
+    }
+
+    #[test]
+    fn tab_index_covers_all_arms() {
+        assert_eq!(Tab::Overview.index(), 0);
+        assert_eq!(Tab::Detail.index(), 1);
+        assert_eq!(Tab::Errors.index(), 2);
+    }
+
+    #[test]
+    fn sort_key_cycle_covers_all_arms() {
+        assert_eq!(SortKey::RateIn.cycle(), SortKey::TotalIn);
+        assert_eq!(SortKey::TotalIn.cycle(), SortKey::Name);
+        assert_eq!(SortKey::Name.cycle(), SortKey::Conns);
+        assert_eq!(SortKey::Conns.cycle(), SortKey::RateIn);
+    }
+
+    #[test]
+    fn sort_key_label_covers_all_arms() {
+        assert_eq!(SortKey::RateIn.label(), "rate");
+        assert_eq!(SortKey::TotalIn.label(), "total");
+        assert_eq!(SortKey::Name.label(), "name");
+        assert_eq!(SortKey::Conns.label(), "conns");
+    }
+
+    #[test]
+    fn app_state_default_matches_new() {
+        let d = AppState::default();
+        let n = AppState::new();
+        assert_eq!(d.tab, n.tab);
+        assert_eq!(d.selected, n.selected);
+        assert_eq!(d.sort, n.sort);
+        assert_eq!(d.sort_desc, n.sort_desc);
+        assert_eq!(d.paused, n.paused);
+        assert_eq!(d.show_help, n.show_help);
+        assert!(d.baseline.is_empty());
+        assert!(d.probes.is_empty());
+        assert!(d.last_probe_at.is_none());
+    }
+
+    #[test]
+    fn displayed_out_subtracts_baseline() {
+        let mut s = AppState::new();
+        let snap = Snapshot {
+            t_ms: 0,
+            uptime_ms: 0,
+            seq: 0,
+            process: ProcessSnap::default(),
+            r: vec![{
+                let mut r = rule("y", 0);
+                r.out = 200;
+                r
+            }],
+        };
+        s.reset_baseline(&snap);
+        let mut later = rule("y", 0);
+        later.out = 350;
+        assert_eq!(s.displayed_out(&later), 150);
+    }
+
+    #[test]
+    fn displayed_out_without_baseline_returns_cumulative() {
+        let s = AppState::new();
+        let mut r = rule("z", 0);
+        r.out = 42;
+        assert_eq!(s.displayed_out(&r), 42);
+    }
+
+    #[test]
+    fn displayed_in_without_baseline_returns_cumulative() {
+        let s = AppState::new();
+        let r = rule("z", 77);
+        assert_eq!(s.displayed_in(&r), 77);
+    }
+
+    #[test]
+    fn displayed_values_saturate_when_cumulative_drops() {
+        let mut s = AppState::new();
+        let snap = Snapshot {
+            t_ms: 0,
+            uptime_ms: 0,
+            seq: 0,
+            process: ProcessSnap::default(),
+            r: vec![{
+                let mut r = rule("w", 1000);
+                r.out = 1000;
+                r
+            }],
+        };
+        s.reset_baseline(&snap);
+        // A lower cumulative (e.g. process restart) saturates to zero.
+        let mut later = rule("w", 500);
+        later.out = 400;
+        assert_eq!(s.displayed_in(&later), 0);
+        assert_eq!(s.displayed_out(&later), 0);
+    }
 }

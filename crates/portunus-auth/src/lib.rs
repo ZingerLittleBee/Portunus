@@ -679,4 +679,168 @@ mod rbac_types_tests {
         );
         assert_eq!(RbacError::EmptyProtocolSet.code(), "empty_protocol_set");
     }
+
+    #[test]
+    fn rbac_error_code_matches_display_for_every_variant() {
+        // `code()` is the machine-readable contract; for these variants it is
+        // byte-identical to the `Display` impl, so iterate every variant and
+        // assert the two never drift apart.
+        let all = [
+            RbacError::Unauthenticated,
+            RbacError::CredentialInvalid,
+            RbacError::UserDisabled,
+            RbacError::ClientNotGranted,
+            RbacError::PortOutsideGrant,
+            RbacError::ProtocolNotGranted,
+            RbacError::NotOwner,
+            RbacError::RoleRequired,
+            RbacError::BootstrapRequired,
+            RbacError::AlreadyBootstrapped,
+            RbacError::InvalidUserId,
+            RbacError::InvalidDisplayName,
+            RbacError::ReservedUserId,
+            RbacError::InvalidPortRange,
+            RbacError::EmptyProtocolSet,
+            RbacError::InvalidClient,
+            RbacError::UserAlreadyExists,
+            RbacError::UserNotFound,
+            RbacError::CredentialNotFound,
+            RbacError::GrantNotFound,
+            RbacError::CannotRemoveSelf,
+            RbacError::LastSuperadmin,
+        ];
+        for e in all {
+            assert_eq!(e.code(), e.to_string(), "code/Display drift for {e:?}");
+        }
+    }
+
+    #[test]
+    fn auth_failure_reason_display_strings() {
+        assert_eq!(AuthFailureReason::Missing.to_string(), "missing_token");
+        assert_eq!(AuthFailureReason::Malformed.to_string(), "malformed_token");
+        assert_eq!(AuthFailureReason::NotFound.to_string(), "token_not_found");
+        assert_eq!(AuthFailureReason::Revoked.to_string(), "token_revoked");
+    }
+
+    #[test]
+    fn auth_error_display_wraps_reason() {
+        let e = AuthError::Failed(AuthFailureReason::Revoked);
+        assert_eq!(e.to_string(), "auth_failed: token_revoked");
+        let name = ClientName::new("edge-a").unwrap();
+        let e = AuthError::ClientAlreadyExists(name);
+        assert_eq!(e.to_string(), "client_already_exists: edge-a");
+        let e = AuthError::StoreCorrupt("bad".to_owned());
+        assert_eq!(e.to_string(), "store_corrupt: bad");
+    }
+
+    #[test]
+    fn credential_id_default_display_and_serde() {
+        // Default mints a fresh ULID per call.
+        assert_ne!(CredentialId::default(), CredentialId::default());
+        let id = CredentialId::new();
+        // Display delegates to the inner ULID (26-char canonical form).
+        assert_eq!(id.to_string().len(), 26);
+        let json = serde_json::to_string(&id).unwrap();
+        let back: CredentialId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn grant_id_default_display_and_serde() {
+        assert_ne!(GrantId::default(), GrantId::default());
+        let id = GrantId::new();
+        assert_eq!(id.to_string().len(), 26);
+        let json = serde_json::to_string(&id).unwrap();
+        let back: GrantId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn credential_status_is_active_predicate() {
+        assert!(CredentialStatus::active().is_active());
+        let now = chrono::Utc::now();
+        assert!(!CredentialStatus::revoked(now).is_active());
+    }
+
+    #[test]
+    fn client_scope_named_rejects_invalid_name() {
+        // A control character makes the inner ClientName invalid, so the
+        // ClientScope deserializer surfaces a custom error (not `*`).
+        let bad = "\"bad\\u0007name\"";
+        assert!(serde_json::from_str::<ClientScope>(bad).is_err());
+    }
+
+    #[test]
+    fn protocol_set_tcp_only_serializes() {
+        assert_eq!(
+            serde_json::to_string(&ProtocolSet::TCP).unwrap(),
+            r#"["tcp"]"#
+        );
+        // Duplicate entries collapse to the set; still valid.
+        let set: ProtocolSet = serde_json::from_str(r#"["tcp","tcp"]"#).unwrap();
+        assert_eq!(set, ProtocolSet::TCP);
+    }
+
+    #[test]
+    fn operator_role_serde_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&OperatorRole::Superadmin).unwrap(),
+            r#""superadmin""#
+        );
+        assert_eq!(
+            serde_json::to_string(&OperatorRole::User).unwrap(),
+            r#""user""#
+        );
+    }
+
+    fn sample_credential() -> Credential {
+        Credential {
+            id: CredentialId::new(),
+            user_id: UserId::from_str("alice").unwrap(),
+            token_hash: [0xab; 32],
+            label: Some("laptop".to_owned()),
+            created_at: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            last_used_at: None,
+            status: CredentialStatus::active(),
+        }
+    }
+
+    #[test]
+    fn credential_token_hash_hex_roundtrip() {
+        let cred = sample_credential();
+        let json = serde_json::to_string(&cred).unwrap();
+        // token_hash serialises as 64 lowercase hex chars (0xab -> "ab").
+        assert!(json.contains(&"ab".repeat(32)));
+        let back: Credential = serde_json::from_str(&json).unwrap();
+        assert_eq!(cred, back);
+    }
+
+    #[test]
+    fn credential_token_hash_accepts_uppercase_hex() {
+        let id = CredentialId::new();
+        let json = format!(
+            r#"{{"id":"{id}","user_id":"alice","token_hash":"{}","created_at":"2026-01-01T00:00:00Z","status":"active"}}"#,
+            "AB".repeat(32)
+        );
+        let cred: Credential = serde_json::from_str(&json).unwrap();
+        assert_eq!(cred.token_hash, [0xab; 32]);
+    }
+
+    #[test]
+    fn credential_token_hash_rejects_bad_input() {
+        let id = CredentialId::new();
+        // Wrong length (4 hex chars instead of 64).
+        let short = format!(
+            r#"{{"id":"{id}","user_id":"alice","token_hash":"abcd","created_at":"2026-01-01T00:00:00Z","status":"active"}}"#
+        );
+        assert!(serde_json::from_str::<Credential>(&short).is_err());
+        // Correct length but a non-hex character ('z').
+        let bad = format!(
+            r#"{{"id":"{id}","user_id":"alice","token_hash":"{}","created_at":"2026-01-01T00:00:00Z","status":"active"}}"#,
+            "z".repeat(64)
+        );
+        assert!(serde_json::from_str::<Credential>(&bad).is_err());
+    }
 }

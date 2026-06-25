@@ -410,6 +410,109 @@ mod tests {
         cancel.cancel();
     }
 
+    /// `get` returns a live `Arc` for a present source and `None` for an
+    /// absent one. Covers the read-only fast-path lookup the listener uses.
+    #[tokio::test]
+    async fn get_returns_arc_for_present_and_none_for_absent() {
+        let table = UdpFlowTable::new(4);
+        let s = make_socket().await;
+        let inserted = table
+            .lookup_or_insert(source(50000), || {
+                UdpFlow::new(source(50000), Arc::clone(&s), vec![upstream(9000)])
+            })
+            .await
+            .expect("insert");
+        // Present source resolves to the same Arc the table stores.
+        let got = table.get(source(50000)).await.expect("present source");
+        assert!(Arc::ptr_eq(&inserted, &got));
+        // Absent source yields None.
+        assert!(table.get(source(50001)).await.is_none());
+    }
+
+    /// `spawn_reaper` with a zero `idle_window` is a documented no-op: it
+    /// returns early without spawning a background task, so flows survive
+    /// indefinitely even after the cancel token is left untouched.
+    #[tokio::test]
+    async fn spawn_reaper_with_zero_window_is_noop() {
+        let table = Arc::new(UdpFlowTable::new(8));
+        let s = make_socket().await;
+        table
+            .lookup_or_insert(source(50000), || {
+                UdpFlow::new(source(50000), Arc::clone(&s), vec![upstream(9000)])
+            })
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        // Zero window must hit the early `return` and spawn nothing.
+        table.spawn_reaper(Duration::ZERO, RuleId(1), cancel.clone());
+        // Give any (erroneously) spawned task a chance to run, then assert
+        // the flow is still present — proving no reaper is ticking.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(table.len().await, 1);
+        cancel.cancel();
+    }
+
+    /// Drive `sweep` with a DEBUG-level subscriber installed so the
+    /// `debug!` macro body — including `source` and `flow_age_ms` — is
+    /// fully evaluated rather than short-circuited at a disabled level.
+    /// This exercises the formatting arms inside the eviction log.
+    #[tokio::test]
+    async fn sweep_evaluates_eviction_log_fields_at_debug_level() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer()
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let table = Arc::new(UdpFlowTable::new(8));
+        let s = make_socket().await;
+        table
+            .lookup_or_insert(source(50000), || {
+                UdpFlow::new(source(50000), Arc::clone(&s), vec![upstream(9000)])
+            })
+            .await
+            .unwrap();
+
+        // Age the single flow past the idle window so it is reaped and the
+        // per-flow log is emitted (forcing the format args to evaluate).
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let evicted = table
+            .sweep(std::time::Duration::from_millis(20), RuleId(42))
+            .await;
+        assert_eq!(evicted, 1);
+        assert!(table.is_empty().await);
+    }
+
+    /// `sweep` over an empty (and fresh-only) table short-circuits at the
+    /// `stale.is_empty()` guard and evicts nothing.
+    #[tokio::test]
+    async fn sweep_on_no_stale_flows_returns_zero() {
+        let table = Arc::new(UdpFlowTable::new(8));
+        // Empty table: nothing to snapshot, nothing stale.
+        assert_eq!(
+            table
+                .sweep(std::time::Duration::from_millis(10), RuleId(1))
+                .await,
+            0
+        );
+
+        // A single fresh flow stays put when the idle window is large.
+        let s = make_socket().await;
+        table
+            .lookup_or_insert(source(50000), || {
+                UdpFlow::new(source(50000), Arc::clone(&s), vec![upstream(9000)])
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .sweep(std::time::Duration::from_secs(3600), RuleId(1))
+                .await,
+            0
+        );
+        assert_eq!(table.len().await, 1);
+    }
+
     #[tokio::test]
     async fn drain_cancels_everything() {
         let table = UdpFlowTable::new(4);
