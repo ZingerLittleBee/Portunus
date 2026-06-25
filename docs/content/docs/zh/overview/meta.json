@@ -3,5 +3,5 @@
   "title": "概览",
   "description": "两种部署模式共享的原理",
   "icon": "Compass",
-  "pages": ["index", "architecture", "performance", "performance-history", "concepts"]
+  "pages": ["index", "architecture", "performance", "performance-history", "testing", "concepts"]
 }

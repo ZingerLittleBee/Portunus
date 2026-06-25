@@ -1,0 +1,92 @@
+---
+title: 测试与质量
+description: Portunus 怎么测试、行覆盖率怎么测、目标是多少。
+icon: ShieldCheck
+---
+
+Portunus 运行在你的流量路径上，所以它既要快，也要对。本页讲清这个项目怎么测试、
+以及它的覆盖率目标。下面每个数字都附了复现命令。
+
+## Portunus 怎么测试
+
+测试一共五层，每层抓的问题不一样：
+
+| 层 | 跑什么 | 抓什么 |
+| --- | --- | --- |
+| **单元** | 每个 crate 里的 inline `#[cfg(test)]` 模块（`cargo test`） | 逻辑分支：解析器、ID 和 newtype 规则、限速计算、日志脱敏、错误映射、状态机 |
+| **集成** | 各 crate 自带的 `tests/`（仅 server 就有 50 多个契约测试文件） | 跨模块行为：operator HTTP、CSRF 和鉴权契约、SQLite 迁移、proto 往返、配置解析 |
+| **端到端** | `portunus-e2e` crate，二十多个进程级场景 | 用真二进制、真 socket 跑：注册、规则实时下发、多目标故障转移、RBAC 拒绝、重启恢复、升级幂等 |
+| **性能** | `criterion` 基准（`data_plane`、`udp_data_plane`、`operator_api` 等） | 吞吐和延迟回归，并带 [CI 回归门禁](/zh/docs/overview/performance#criterion-回归) |
+| **功能** | 打 tag 发布前在真实主机上手动过一遍清单 | 整体验收：安装、部署、每个特性，端到端 |
+
+前四层每次改动都会在 CI 里跑。功能这层是发布前在真实 Debian 主机上手动过一遍。比如
+v2.0.0 那次，过了安装、转发、RBAC、配额、存储、Web UI 共 41 项。
+
+## 覆盖率
+
+行覆盖率用 [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) 测量，它基于
+LLVM 源码插桩。一条命令即可复现：
+
+```sh
+make coverage          # 逐文件行覆盖率，排除 e2e crate
+make coverage HTML=1   # 另外在 target/llvm-cov/html 下生成可浏览的逐行报告
+```
+
+**目标：能做单元测试的逻辑文件，行覆盖率不低于 95%。** 统计时包含各 crate 自带的
+`tests/` 集成测试，排除进程级的 `portunus-e2e`。排除 e2e 是因为它靠跑真二进制来验证
+行为，而不是靠覆盖代码行。
+
+### 哪些不算在内，为什么
+
+入口和衔接代码不写单元测试，改由集成和 e2e 两层覆盖，让它以真实进程的方式运行：
+
+- `main.rs`、`serve.rs`，以及各 CLI 分发器
+- gRPC 服务和鉴权拦截器
+- axum HTTP 处理器和 `client/control.rs`
+- socket 运行时和 TUI 事件循环
+
+这类代码只有在真实进程互相连接时才会动起来，所以端到端测试比一个把依赖都换成假对象
+的单元测试覆盖得更到位。
+
+还有几个逻辑文件略低于 95%，我们就让它们停在那里。再往上补需要代码库不允许的做法：
+workspace 禁止新增 `unsafe`，CI 也不收依赖时序的测试。这几个文件是：信号处理（得真的
+触发信号）、enrollment RPC 主体（需要一个真在跑的 TLS gRPC 服务）、resolver 的
+NXDOMAIN 和超时路径（真实网络）、UDP registry 里一个并发竞态分支、store 应对数据库
+损坏的防御分支，以及一小时一轮的审计保留 sleep 循环。
+
+### 当前覆盖率（v3.0.0）
+
+| Crate | 行覆盖率 | 承载什么 |
+| --- | ---: | --- |
+| `portunus-proto` | 100.0% | 生成的 gRPC 类型 |
+| `portunus-auth` | 99.6% | authenticator、token store、RBAC |
+| `portunus-core` | 97.9% | ID、配置、限速计算、日志脱敏 |
+| `portunus-standalone` | 91.5% | TOML 转发器和 stats TUI |
+| `portunus-forwarder` | 89.4% | TCP 和 UDP 数据面、resolver、SNI |
+| `portunus-server` | 87.1% | 控制面、store、operator API |
+| `portunus-client` | 72.9% | 边缘二进制，大部分是控制流衔接代码 |
+| **整个 workspace** | **87.5%** | 排除 `portunus-e2e` |
+
+这一列是整个 crate 的合计，所以把不算在 95% 目标里的衔接代码也算进了分母。纯逻辑的
+crate（`proto`、`core`、`auth`）因此排在前面；同时还带着 CLI、控制流、server 或 socket
+运行时代码的 crate（`client`、`server`）数字会低一些，尽管它们各自的逻辑文件都达到了
+95%。`portunus-client` 最典型：它大部分行是 gRPC 控制循环和进程衔接代码，由 e2e 测试
+覆盖。
+
+## 暂时没有覆盖率门禁
+
+目前没有 CI 覆盖率门禁。`make coverage` 是本地检查，95% 这个目标靠评审维持，而不是
+CI 里的一个阈值。性能也是这样：[基准回归门禁](/zh/docs/overview/performance#criterion-回归)自动发现变慢，但目标本身由人来定。
+
+## 自己跑一遍
+
+```sh
+# 全套：单元 + 集成 + e2e（跳过内嵌 Web UI 构建）
+PORTUNUS_SKIP_WEBUI=1 cargo test --workspace
+
+# 行覆盖率（排除 e2e crate）。
+# 一次性准备：
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+make coverage
+```

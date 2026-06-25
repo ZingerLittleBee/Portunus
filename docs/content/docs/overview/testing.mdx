@@ -1,0 +1,107 @@
+---
+title: Testing & Quality
+description: How Portunus is tested, how line coverage is measured, and the target it aims for.
+icon: ShieldCheck
+---
+
+Portunus runs in your traffic path, so it has to be correct as well as fast.
+This page explains how the project is tested and the coverage target it aims
+for. Every number below comes with the command to reproduce it.
+
+## How Portunus is tested
+
+There are five layers, and each one catches a different kind of bug:
+
+| Layer | What runs | Catches |
+| --- | --- | --- |
+| **Unit** | inline `#[cfg(test)]` modules in every crate (`cargo test`) | Logic branches: parsers, ID and newtype rules, rate-limit math, log redaction, error mapping, state machines |
+| **Integration** | each crate's own `tests/` (the server alone has more than 50 contract files) | Behaviour across modules: operator HTTP, CSRF and auth contracts, SQLite migrations, proto round-trips, config parsing |
+| **End-to-end** | the `portunus-e2e` crate, with more than two dozen process-level scenarios | Real binaries over real sockets: enrollment, live rule push, multi-target failover, RBAC denials, restart recovery, upgrade idempotency |
+| **Performance** | `criterion` benches (`data_plane`, `udp_data_plane`, `operator_api`, and more) | Throughput and latency regressions, with a [CI regression gate](/en/docs/overview/performance#criterion-regression) |
+| **Functional** | a manual checklist on real hosts before a tagged release | Whole-product acceptance: install, deploy, and every feature, end to end |
+
+The first four layers run in CI on every change. The functional checklist is a
+release-time pass on real Debian hosts. The v2.0.0 run, for example, went
+through 41 feature items across install, forwarding, RBAC, quotas, storage, and
+the Web UI.
+
+## Coverage
+
+Line coverage is measured with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov),
+which uses LLVM source-based instrumentation. One command reproduces it:
+
+```sh
+make coverage          # per-file line coverage, excludes the e2e crate
+make coverage HTML=1   # also writes a browsable per-line report under target/llvm-cov/html
+```
+
+**The target: logic files that can be unit-tested aim for at least 95% line
+coverage.** Coverage is measured with each crate's own `tests/` integration
+tests included, and the process-level `portunus-e2e` crate excluded. The e2e
+crate is left out because it proves behaviour by running real binaries, not by
+covering lines.
+
+### What is left out, and why
+
+Entry and wiring code is not unit-tested. The integration and e2e layers cover
+it instead, by running it as real processes:
+
+- `main.rs`, `serve.rs`, and the CLI dispatchers
+- the gRPC service and the auth interceptor
+- the axum HTTP handlers and `client/control.rs`
+- the socket-runtime and TUI event loops
+
+This code only does anything once real processes connect to each other, so an
+end-to-end test covers it better than a unit test with stubbed dependencies
+would.
+
+A few logic files also sit just below 95%, and we leave them there. Closing the
+gap would need things the codebase rules out: the workspace forbids new
+`unsafe`, and CI rejects tests that depend on timing. Those files are signal
+handling (it would have to raise real signals), the enrollment RPC body (it
+needs a live TLS gRPC server), the resolver's NXDOMAIN and timeout paths (real
+network), one concurrency-race branch in the UDP registry, the store's
+defensive branches for a corrupt database, and the one-hour audit-retention
+sleep loop.
+
+### Where it stands (v3.0.0)
+
+| Crate | Line coverage | What it holds |
+| --- | ---: | --- |
+| `portunus-proto` | 100.0% | generated gRPC types |
+| `portunus-auth` | 99.6% | authenticator, token store, RBAC |
+| `portunus-core` | 97.9% | IDs, config, rate-limit math, log redaction |
+| `portunus-standalone` | 91.5% | TOML forwarder and stats TUI |
+| `portunus-forwarder` | 89.4% | TCP and UDP data plane, resolver, SNI |
+| `portunus-server` | 87.1% | control plane, store, operator API |
+| `portunus-client` | 72.9% | edge binary, mostly control-stream wiring |
+| **Workspace** | **87.5%** | excludes `portunus-e2e` |
+
+These are whole-crate totals, so they include the wiring code that the 95%
+target leaves out. That is why the logic-only crates (`proto`, `core`, `auth`)
+sit near the top, while crates that also hold CLI, control-stream, server, or
+socket-runtime code (`client`, `server`) come out lower, even though their own
+logic files meet the target. `portunus-client` is the clearest case: most of
+its lines are the gRPC control loop and process wiring, which the e2e tests
+cover.
+
+## No coverage gate (yet)
+
+There is no CI coverage gate today. `make coverage` is a local check, and the
+95% target is kept up in review rather than by a threshold in a workflow.
+Performance works the same way: the
+[bench regression gate](/en/docs/overview/performance#criterion-regression)
+catches slowdowns automatically, but the target itself is set by people.
+
+## Run the suite yourself
+
+```sh
+# Whole suite: unit + integration + e2e (skip the embedded Web UI build)
+PORTUNUS_SKIP_WEBUI=1 cargo test --workspace
+
+# Line coverage (excludes the e2e crate).
+# One-time setup:
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+make coverage
+```
