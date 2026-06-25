@@ -57,8 +57,8 @@ endif
 
 .DEFAULT_GOAL := help
 .PHONY: help setup webui-install webui-build server-build bootstrap \
-        dev-bootstrap serve serve-docker dev backend ui test test-csrf clean \
-        demo
+        dev-bootstrap serve serve-docker dev backend ui test test-csrf \
+        coverage clean demo
 
 help:
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -225,6 +225,18 @@ test:  ## Run server lib tests + auth contract tests
 # iterating on operator/csrf.rs.
 test-csrf:  ## Run just the CSRF unit tests (fast)
 	PORTUNUS_SKIP_WEBUI=1 cargo test -p portunus-server --lib operator::csrf
+
+# Source-based line coverage for the Rust workspace (cargo-llvm-cov).
+# Measures the agreed basis: every crate's own lib + tests/ integration
+# tests, EXCLUDING the process-level portunus-e2e crate. Logic files
+# (parsers, stores, state machines) target >=95% line coverage; entry /
+# wiring code (main.rs, serve.rs, CLI dispatch, gRPC/HTTP handlers,
+# socket-runtime/TUI loops) is left to integration + e2e coverage.
+# One-time: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview.
+# Append HTML=1 for a browsable per-line report under target/llvm-cov/html.
+coverage:  ## Rust line coverage (cargo-llvm-cov, excludes portunus-e2e)
+	PORTUNUS_SKIP_WEBUI=1 cargo llvm-cov --workspace --exclude portunus-e2e \
+	  --no-fail-fast $(if $(HTML),--html,)
 
 ## --- cleanup ----------------------------------------------------------------
 
