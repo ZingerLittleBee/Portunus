@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useReducer, type Dispatch, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -41,101 +41,107 @@ import { EmptyState } from "@/components/EmptyState";
 import { formatTimestamp, shortId } from "@/lib/format";
 import type { ClientView } from "@/api/types";
 
-export function ClientsList() {
-  const { t } = useTranslation();
-  const { data: identity } = useQuery({
-    queryKey: ME_QUERY_KEY,
-    queryFn: fetchIdentity,
-    staleTime: 60_000,
-  });
-  const clients = useClientsList();
-  const update = useUpdateClient();
-  const rename = useRenameClient();
-  const revoke = useRevokeClient();
-  const remove = useDeleteClient();
-  const canProvision = canProvisionClient(identity);
+interface ClientsListState {
+  showRevoked: boolean;
+  provisionOpen: boolean;
+  pendingEdit: ClientView | null;
+  editName: string;
+  editAddress: string;
+  editError: string | null;
+  pendingRevoke: ClientView | null;
+  pendingDelete: ClientView | null;
+  revokeError: string | null;
+  deleteError: string | null;
+}
 
-  const [showRevoked, setShowRevoked] = useState(false);
-  const [provisionOpen, setProvisionOpen] = useState(false);
-  const [pendingEdit, setPendingEdit] = useState<ClientView | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editAddress, setEditAddress] = useState("");
-  const [editError, setEditError] = useState<string | null>(null);
-  const [pendingRevoke, setPendingRevoke] = useState<ClientView | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<ClientView | null>(null);
-  const [revokeError, setRevokeError] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+type ClientsListAction =
+  | { type: "toggle-revoked" }
+  | { type: "provision-open"; open: boolean }
+  | { type: "edit-open"; client: ClientView }
+  | { type: "edit-close" }
+  | { type: "edit-name"; value: string }
+  | { type: "edit-address"; value: string }
+  | { type: "edit-error"; message: string | null }
+  | { type: "revoke-open"; client: ClientView }
+  | { type: "revoke-close" }
+  | { type: "revoke-error"; message: string | null }
+  | { type: "delete-open"; client: ClientView }
+  | { type: "delete-close" }
+  | { type: "delete-error"; message: string | null };
 
-  const { rows, revokedCount } = useMemo(() => {
-    const all = clients.data ?? [];
-    const revokedCount = all.filter((c) => c.revoked_at).length;
-    const rows = showRevoked ? all : all.filter((c) => !c.revoked_at);
-    return { rows, revokedCount };
-  }, [clients.data, showRevoked]);
+const initialClientsListState: ClientsListState = {
+  showRevoked: false,
+  provisionOpen: false,
+  pendingEdit: null,
+  editName: "",
+  editAddress: "",
+  editError: null,
+  pendingRevoke: null,
+  pendingDelete: null,
+  revokeError: null,
+  deleteError: null,
+};
 
-  function openEdit(client: ClientView) {
-    setPendingEdit(client);
-    setEditName(client.client_name);
-    setEditAddress(client.client_address ?? "");
-    setEditError(null);
+function clientsListReducer(
+  state: ClientsListState,
+  action: ClientsListAction,
+): ClientsListState {
+  switch (action.type) {
+    case "toggle-revoked":
+      return { ...state, showRevoked: !state.showRevoked };
+    case "provision-open":
+      return { ...state, provisionOpen: action.open };
+    case "edit-open":
+      return {
+        ...state,
+        pendingEdit: action.client,
+        editName: action.client.client_name,
+        editAddress: action.client.client_address ?? "",
+        editError: null,
+      };
+    case "edit-close":
+      return {
+        ...state,
+        pendingEdit: null,
+        editName: "",
+        editAddress: "",
+        editError: null,
+      };
+    case "edit-name":
+      return { ...state, editName: action.value };
+    case "edit-address":
+      return { ...state, editAddress: action.value };
+    case "edit-error":
+      return { ...state, editError: action.message };
+    case "revoke-open":
+      return { ...state, pendingRevoke: action.client, revokeError: null };
+    case "revoke-close":
+      return { ...state, pendingRevoke: null, revokeError: null };
+    case "revoke-error":
+      return { ...state, revokeError: action.message };
+    case "delete-open":
+      return { ...state, pendingDelete: action.client, deleteError: null };
+    case "delete-close":
+      return { ...state, pendingDelete: null, deleteError: null };
+    case "delete-error":
+      return { ...state, deleteError: action.message };
   }
+}
 
-  async function confirmEdit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!pendingEdit) return;
-    setEditError(null);
-    try {
-      // Address update is still addressed by the current name; run it
-      // BEFORE the rename so its key is valid.
-      if (editAddress !== (pendingEdit.client_address ?? "")) {
-        await update.mutateAsync({
-          clientId: pendingEdit.client_id,
-          body: { address: editAddress },
-        });
-      }
-      // 015-client-stable-id (US2): identity-safe rename addressed by
-      // the stable client_id. Skipped when the name is unchanged.
-      if (editName !== pendingEdit.client_name) {
-        await rename.mutateAsync({
-          clientId: pendingEdit.client_id,
-          clientName: editName,
-        });
-      }
-      setPendingEdit(null);
-    } catch (err) {
-      setEditError(formatApiError(err));
-    }
-  }
+interface BuildClientColumnsArgs {
+  canProvision: boolean;
+  dispatch: Dispatch<ClientsListAction>;
+  t: ReturnType<typeof useTranslation>["t"];
+}
 
-  async function confirmRevoke() {
-    if (!pendingRevoke) return;
-    setRevokeError(null);
-    try {
-      await revoke.mutateAsync(pendingRevoke.client_id);
-      setPendingRevoke(null);
-    } catch (err) {
-      setRevokeError(formatApiError(err));
-    }
-  }
-
-  async function confirmDelete() {
-    if (!pendingDelete) return;
-    setDeleteError(null);
-    try {
-      await remove.mutateAsync(pendingDelete.client_id);
-      setPendingDelete(null);
-    } catch (err) {
-      setDeleteError(formatApiError(err));
-    }
-  }
-
-  const columns: Column<ClientView>[] = [
+function buildClientColumns({ canProvision, dispatch, t }: BuildClientColumnsArgs): Column<ClientView>[] {
+  return [
     {
       key: "connected",
       header: "",
       width: "40px",
-      render: (c) =>
-        c.connected ? (
+      render: (client) =>
+        client.connected ? (
           <CircleDot className="size-4 text-emerald-500" aria-label={t("clients.connected")} />
         ) : (
           <Circle className="size-4 text-muted-foreground" aria-label={t("clients.disconnected")} />
@@ -144,40 +150,40 @@ export function ClientsList() {
     {
       key: "name",
       header: t("clients.name"),
-      render: (c) => (
+      render: (client) => (
         <div className="flex flex-col">
           <Link
-            to={`/clients/${encodeURIComponent(c.client_id)}`}
+            to={`/clients/${encodeURIComponent(client.client_id)}`}
             className="text-primary hover:underline"
           >
-            {c.client_name}
+            {client.client_name}
           </Link>
           {/* 015-client-stable-id (US3 / FR-013): a short id disambiguates
               duplicate display names, which are now allowed. */}
-          <code className="text-xs text-muted-foreground">{shortId(c.client_id)}</code>
+          <code className="text-xs text-muted-foreground">{shortId(client.client_id)}</code>
         </div>
       ),
       sortable: true,
-      sortValue: (c) => c.client_name,
+      sortValue: (client) => client.client_name,
     },
     {
       key: "address",
       header: t("clients.address"),
-      render: (c) => c.client_address ?? "—",
+      render: (client) => client.client_address ?? "—",
     },
     {
       key: "since",
       header: t("clients.since"),
-      render: (c) => (c.connected_at ? formatTimestamp(c.connected_at) : "—"),
+      render: (client) => (client.connected_at ? formatTimestamp(client.connected_at) : "—"),
     },
     {
       key: "status",
       header: t("clients.status"),
       width: "120px",
-      render: (c) =>
-        c.revoked_at ? (
+      render: (client) =>
+        client.revoked_at ? (
           <Badge variant="destructive">{t("clients.revoked")}</Badge>
-        ) : c.connected ? (
+        ) : client.connected ? (
           <Badge variant="success">{t("clients.connected")}</Badge>
         ) : (
           <Badge variant="secondary">{t("clients.disconnected")}</Badge>
@@ -187,7 +193,7 @@ export function ClientsList() {
       key: "actions",
       header: <span className="sr-only">{t("clients.actions")}</span>,
       width: "64px",
-      render: (c) => {
+      render: (client) => {
         if (!canProvision) return null;
         return (
           <DropdownMenu>
@@ -203,18 +209,15 @@ export function ClientsList() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuGroup>
-                <DropdownMenuItem onSelect={() => openEdit(c)}>
+                <DropdownMenuItem onSelect={() => dispatch({ type: "edit-open", client })}>
                   <Pencil className="size-4" />
                   {t("clients.edit")}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                {c.revoked_at ? (
+                {client.revoked_at ? (
                   <DropdownMenuItem
                     className="text-destructive focus:text-destructive"
-                    onSelect={() => {
-                      setDeleteError(null);
-                      setPendingDelete(c);
-                    }}
+                    onSelect={() => dispatch({ type: "delete-open", client })}
                   >
                     <Trash2 className="size-4" />
                     {t("clients.delete")}
@@ -222,10 +225,7 @@ export function ClientsList() {
                 ) : (
                   <DropdownMenuItem
                     className="text-destructive focus:text-destructive"
-                    onSelect={() => {
-                      setRevokeError(null);
-                      setPendingRevoke(c);
-                    }}
+                    onSelect={() => dispatch({ type: "revoke-open", client })}
                   >
                     <Ban className="size-4" />
                     {t("clients.revoke")}
@@ -238,6 +238,84 @@ export function ClientsList() {
       },
     },
   ];
+}
+
+export function ClientsList() {
+  const { t } = useTranslation();
+  const { data: identity } = useQuery({
+    queryKey: ME_QUERY_KEY,
+    queryFn: fetchIdentity,
+    staleTime: 60_000,
+  });
+  const clients = useClientsList();
+  const update = useUpdateClient();
+  const rename = useRenameClient();
+  const revoke = useRevokeClient();
+  const remove = useDeleteClient();
+  const canProvision = canProvisionClient(identity);
+
+  const [state, dispatch] = useReducer(clientsListReducer, initialClientsListState);
+
+  const { rows, revokedCount } = useMemo(() => {
+    const all = clients.data ?? [];
+    const revokedCount = all.filter((c) => c.revoked_at).length;
+    const rows = state.showRevoked ? all : all.filter((c) => !c.revoked_at);
+    return { rows, revokedCount };
+  }, [clients.data, state.showRevoked]);
+
+  async function confirmEdit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!state.pendingEdit) return;
+    dispatch({ type: "edit-error", message: null });
+    try {
+      // Address update is still addressed by the current name; run it
+      // BEFORE the rename so its key is valid.
+      if (state.editAddress !== (state.pendingEdit.client_address ?? "")) {
+        await update.mutateAsync({
+          clientId: state.pendingEdit.client_id,
+          body: { address: state.editAddress },
+        });
+      }
+      // 015-client-stable-id (US2): identity-safe rename addressed by
+      // the stable client_id. Skipped when the name is unchanged.
+      if (state.editName !== state.pendingEdit.client_name) {
+        await rename.mutateAsync({
+          clientId: state.pendingEdit.client_id,
+          clientName: state.editName,
+        });
+      }
+      dispatch({ type: "edit-close" });
+    } catch (err) {
+      dispatch({ type: "edit-error", message: formatApiError(err) });
+    }
+  }
+
+  async function confirmRevoke() {
+    if (!state.pendingRevoke) return;
+    dispatch({ type: "revoke-error", message: null });
+    try {
+      await revoke.mutateAsync(state.pendingRevoke.client_id);
+      dispatch({ type: "revoke-close" });
+    } catch (err) {
+      dispatch({ type: "revoke-error", message: formatApiError(err) });
+    }
+  }
+
+  async function confirmDelete() {
+    if (!state.pendingDelete) return;
+    dispatch({ type: "delete-error", message: null });
+    try {
+      await remove.mutateAsync(state.pendingDelete.client_id);
+      dispatch({ type: "delete-close" });
+    } catch (err) {
+      dispatch({ type: "delete-error", message: formatApiError(err) });
+    }
+  }
+
+  const columns = useMemo(
+    () => buildClientColumns({ canProvision, dispatch, t }),
+    [canProvision, t],
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -246,15 +324,18 @@ export function ClientsList() {
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           {revokedCount > 0 && (
             <Button
-              variant={showRevoked ? "secondary" : "outline"}
+              variant={state.showRevoked ? "secondary" : "outline"}
               size="sm"
-              onClick={() => setShowRevoked((s) => !s)}
+              onClick={() => dispatch({ type: "toggle-revoked" })}
             >
               {t("clients.showRevoked")} · {t("clients.revokedCount", { count: revokedCount })}
             </Button>
           )}
           {canProvision && (
-            <Dialog open={provisionOpen} onOpenChange={setProvisionOpen}>
+            <Dialog
+              open={state.provisionOpen}
+              onOpenChange={(open) => dispatch({ type: "provision-open", open })}
+            >
               <DialogTrigger asChild>
                 <Button className="w-full sm:w-auto">
                   <Plus className="mr-1 size-4" />
@@ -265,7 +346,7 @@ export function ClientsList() {
                 <DialogHeader>
                   <DialogTitle>{t("clientProvision.title")}</DialogTitle>
                 </DialogHeader>
-                <ClientProvisionForm onDone={() => setProvisionOpen(false)} />
+                <ClientProvisionForm onDone={() => dispatch({ type: "provision-open", open: false })} />
               </DialogContent>
             </Dialog>
           )}
@@ -279,13 +360,10 @@ export function ClientsList() {
         ariaLabel={t("clients.title")}
       />
       <Dialog
-        open={!!pendingEdit}
+        open={!!state.pendingEdit}
         onOpenChange={(open) => {
           if (!open) {
-            setPendingEdit(null);
-            setEditName("");
-            setEditAddress("");
-            setEditError(null);
+            dispatch({ type: "edit-close" });
           }
         }}
       >
@@ -299,8 +377,8 @@ export function ClientsList() {
               <Label htmlFor="client-edit-name">{t("clients.name")}</Label>
               <Input
                 id="client-edit-name"
-                value={editName}
-                onChange={(event) => setEditName(event.target.value)}
+                value={state.editName}
+                onChange={(event) => dispatch({ type: "edit-name", value: event.target.value })}
                 required
               />
               <p className="text-xs text-muted-foreground">{t("clients.renameHint")}</p>
@@ -309,19 +387,19 @@ export function ClientsList() {
               <Label htmlFor="client-edit-address">{t("clientProvision.address")}</Label>
               <Input
                 id="client-edit-address"
-                value={editAddress}
-                onChange={(event) => setEditAddress(event.target.value)}
+                value={state.editAddress}
+                onChange={(event) => dispatch({ type: "edit-address", value: event.target.value })}
                 placeholder="68.77.201.69 or edge.example.com"
                 required
               />
               <p className="text-xs text-muted-foreground">{t("clientProvision.addressHint")}</p>
             </div>
-            {editError && <p className="text-sm text-destructive">{editError}</p>}
+            {state.editError && <p className="text-sm text-destructive">{state.editError}</p>}
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
               <Button type="submit" disabled={update.isPending || rename.isPending}>
                 {update.isPending || rename.isPending ? t("confirm.busy") : t("clients.editSave")}
               </Button>
-              <Button type="button" variant="outline" onClick={() => setPendingEdit(null)}>
+              <Button type="button" variant="outline" onClick={() => dispatch({ type: "edit-close" })}>
                 {t("confirm.cancel")}
               </Button>
             </div>
@@ -329,38 +407,36 @@ export function ClientsList() {
         </DialogContent>
       </Dialog>
       <ConfirmDialog
-        open={!!pendingRevoke}
+        open={!!state.pendingRevoke}
         onOpenChange={(open) => {
           if (!open) {
-            setPendingRevoke(null);
-            setRevokeError(null);
+            dispatch({ type: "revoke-close" });
           }
         }}
-        title={t("clients.revokeConfirmTitle", { name: pendingRevoke?.client_name ?? "" })}
+        title={t("clients.revokeConfirmTitle", { name: state.pendingRevoke?.client_name ?? "" })}
         description={t("clients.revokeConfirmBody")}
         confirmLabel={t("clients.revokeConfirmAction")}
         destructive
         busy={revoke.isPending}
         onConfirm={confirmRevoke}
       >
-        {revokeError && <p className="text-sm text-destructive">{revokeError}</p>}
+        {state.revokeError && <p className="text-sm text-destructive">{state.revokeError}</p>}
       </ConfirmDialog>
       <ConfirmDialog
-        open={!!pendingDelete}
+        open={!!state.pendingDelete}
         onOpenChange={(open) => {
           if (!open) {
-            setPendingDelete(null);
-            setDeleteError(null);
+            dispatch({ type: "delete-close" });
           }
         }}
-        title={t("clients.deleteConfirmTitle", { name: pendingDelete?.client_name ?? "" })}
+        title={t("clients.deleteConfirmTitle", { name: state.pendingDelete?.client_name ?? "" })}
         description={t("clients.deleteConfirmBody")}
         confirmLabel={t("clients.deleteConfirmAction")}
         destructive
         busy={remove.isPending}
         onConfirm={confirmDelete}
       >
-        {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+        {state.deleteError && <p className="text-sm text-destructive">{state.deleteError}</p>}
       </ConfirmDialog>
     </div>
   );
