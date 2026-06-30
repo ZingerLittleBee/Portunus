@@ -3,12 +3,6 @@
 // `/v1/clients/{id}/traffic` (015-client-stable-id: keyed by client_id).
 
 import { useTranslation } from "react-i18next";
-import {
-  Area,
-  AreaChart,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import type { TrafficSample } from "@/api/types";
 import {
@@ -19,6 +13,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { useRecharts } from "@/components/ui/recharts-resource";
 import { formatBytes, formatChartTime, formatChartTimestamp } from "@/lib/format";
 
 interface Props {
@@ -28,6 +23,7 @@ interface Props {
 
 export function TrafficChart({ samples, height = 320 }: Props) {
   const { t } = useTranslation();
+  const { Area, AreaChart, XAxis, YAxis } = useRecharts();
   const data = samples.map((s) => ({
     ts: s.ts,
     bytes_in: s.bytes_in,

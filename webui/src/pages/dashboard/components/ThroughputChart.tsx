@@ -1,11 +1,4 @@
 import { useTranslation } from "react-i18next";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import type { TrafficSample } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -16,6 +9,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { useRecharts } from "@/components/ui/recharts-resource";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes, formatChartTime, formatChartTimestamp } from "@/lib/format";
 
@@ -34,6 +28,7 @@ export interface ThroughputChartProps {
 
 export function ThroughputChart(props: ThroughputChartProps) {
   const { t } = useTranslation();
+  const { CartesianGrid, Line, LineChart, XAxis, YAxis } = useRecharts();
   const data = (props.samples ?? []).map((s) => ({
     ts: s.ts,
     bytes_in: s.bytes_in,
