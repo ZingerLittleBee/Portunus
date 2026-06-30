@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useDashboardGauges, useMetricsText } from "@/api/metrics";
 
@@ -35,21 +35,17 @@ export function useThroughputRate(): number | null {
   const { dataUpdatedAt } = useMetricsText();
   const prev = useRef<ThroughputSample | null>(null);
   const [rate, setRate] = useState<number | null>(null);
+  const totalBytes = useMemo(
+    () => gauges.topRules.reduce((acc, r) => acc + r.bytesIn + r.bytesOut, 0),
+    [gauges.topRules],
+  );
 
-  // We intentionally exclude `gauges.topRules` from the dep array.
-  // It is recomputed from the same source as `dataUpdatedAt` and
-  // would only introduce reference-instability noise.
   useEffect(() => {
     if (!dataUpdatedAt) return;
-    const totalBytes = gauges.topRules.reduce(
-      (acc, r) => acc + r.bytesIn + r.bytesOut,
-      0,
-    );
     const next = { totalBytes, ts: dataUpdatedAt / 1000 };
     setRate(computeRate(prev.current, next));
     prev.current = next;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataUpdatedAt]);
+  }, [dataUpdatedAt, totalBytes]);
 
   return rate;
 }

@@ -62,19 +62,42 @@ function mockFetch(routes: Record<string, { status?: number; body?: unknown }>) 
   });
 }
 
+function stubSessionStorage() {
+  const descriptor = Object.getOwnPropertyDescriptor(window, "sessionStorage");
+  const storage = {
+    getItem: vi.fn(() => null),
+    removeItem: vi.fn(),
+  };
+  Object.defineProperty(window, "sessionStorage", {
+    configurable: true,
+    value: storage,
+  });
+  return {
+    removeItem: storage.removeItem,
+    restore() {
+      if (descriptor) {
+        Object.defineProperty(window, "sessionStorage", descriptor);
+      }
+    },
+  };
+}
+
 describe("local password auth UI", () => {
   it("renders the password login without requiring sessionStorage", async () => {
     mockFetch({
       "/v1/auth/status": { body: { onboarding_required: false } },
     });
-    window.sessionStorage.setItem("portunus.token", "legacy-token");
+    const storage = stubSessionStorage();
+    try {
+      renderApp("/login");
 
-    renderApp("/login");
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("User ID")).toBeDefined();
-    });
-    expect(window.sessionStorage.getItem("portunus.token")).toBeNull();
+      await waitFor(() => {
+        expect(screen.getByLabelText("User ID")).toBeDefined();
+      });
+      expect(storage.removeItem).toHaveBeenCalledWith("portunus.token");
+    } finally {
+      storage.restore();
+    }
   });
 
   it("routes fresh stores to onboarding and clears cached status after onboarding", async () => {

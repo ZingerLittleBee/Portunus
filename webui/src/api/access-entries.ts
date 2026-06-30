@@ -342,6 +342,17 @@ function grantShapeChanged(input: UpdateAccessEntryInput): boolean {
   );
 }
 
+async function deleteGrants(ids: string[]): Promise<void> {
+  await Promise.all(
+    ids.map((id) =>
+      apiFetch<DeleteGrantResponse>(
+        `/v1/grants/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      ),
+    ),
+  );
+}
+
 export function useUpdateAccessEntry(userId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -352,12 +363,7 @@ export function useUpdateAccessEntry(userId: string) {
       if (reshape) {
         // Delete primary + duplicates, then create one merged grant.
         try {
-          for (const id of [input.grant_id, ...duplicates]) {
-            await apiFetch<DeleteGrantResponse>(
-              `/v1/grants/${encodeURIComponent(id)}`,
-              { method: "DELETE" },
-            );
-          }
+          await deleteGrants([input.grant_id, ...duplicates]);
         } catch (err) {
           throw makeError("grant", err, false);
         }
@@ -424,12 +430,7 @@ export function useDeleteAccessEntry(userId: string) {
         }
       }
       try {
-        for (const id of [input.grant_id, ...(input.legacy_duplicate_ids ?? [])]) {
-          await apiFetch<DeleteGrantResponse>(
-            `/v1/grants/${encodeURIComponent(id)}`,
-            { method: "DELETE" },
-          );
-        }
+        await deleteGrants([input.grant_id, ...(input.legacy_duplicate_ids ?? [])]);
       } catch (err) {
         throw makeError("grant", err, false);
       }

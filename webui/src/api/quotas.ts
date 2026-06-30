@@ -24,7 +24,7 @@ import type {
 
 export const userQuotasKey = (userId: string) =>
   ["user-quotas", userId] as const;
-export const clientQuotasKey = (clientId: string) =>
+const clientQuotasKey = (clientId: string) =>
   ["client-quotas", clientId] as const;
 
 export function useUserQuotas(userId: string) {
@@ -49,16 +49,6 @@ export function useClientQuotas(clientId: string) {
   });
 }
 
-function invalidateAfterMutation(
-  qc: ReturnType<typeof useQueryClient>,
-  userId: string,
-  clientId: string,
-): void {
-  qc.invalidateQueries({ queryKey: userQuotasKey(userId) });
-  qc.invalidateQueries({ queryKey: clientQuotasKey(clientId) });
-  qc.invalidateQueries({ queryKey: ["access-entries", userId] });
-}
-
 export interface PatchQuotaArgs {
   client_id: string;
   body: PatchQuotaInput;
@@ -75,6 +65,12 @@ export function usePatchQuota(userId: string) {
           body: JSON.stringify(body),
         },
       ),
-    onSuccess: (_, vars) => invalidateAfterMutation(qc, userId, vars.client_id),
+    onSuccess: async (_, vars) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: userQuotasKey(userId) }),
+        qc.invalidateQueries({ queryKey: clientQuotasKey(vars.client_id) }),
+        qc.invalidateQueries({ queryKey: ["access-entries", userId] }),
+      ]);
+    },
   });
 }

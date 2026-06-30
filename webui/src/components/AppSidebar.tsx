@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -134,9 +134,12 @@ export function AppSidebar() {
           <SidebarGroupLabel>{t("nav.dashboard")}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.filter((it) => it.visible(identity)).map((it) => (
-                <NavItemLink key={it.to} item={it} />
-              ))}
+              {NAV_ITEMS.reduce<ReactNode[]>((items, item) => {
+                if (item.visible(identity)) {
+                  items.push(<NavItemLink key={item.to} item={item} />);
+                }
+                return items;
+              }, [])}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
