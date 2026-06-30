@@ -25,7 +25,8 @@ import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { clearLegacyToken } from "@/auth/token-store";
 import { canSeeAuditLog, canSeeMetrics, canSeeUsersList, type Identity } from "@/lib/permissions";
 import { setLanguage, SUPPORTED_LANGUAGES, type Language } from "@/i18n";
-import { useTheme, type ThemeChoice } from "@/theme/ThemeProvider";
+import type { ThemeChoice } from "@/theme/theme-context";
+import { useTheme } from "@/theme/useTheme";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -52,8 +53,8 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-  useSidebar,
 } from "@/components/ui/sidebar";
+import { useSidebar } from "@/components/ui/sidebar-context";
 
 interface NavItem {
   to: string;

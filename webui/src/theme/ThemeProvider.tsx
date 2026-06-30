@@ -1,17 +1,12 @@
 import * as React from "react";
 
-export type ThemeChoice = "light" | "dark" | "system";
-type EffectiveTheme = "light" | "dark";
+import {
+  ThemeContext,
+  type EffectiveTheme,
+  type ThemeChoice,
+} from "@/theme/theme-context";
 
 const THEME_KEY = "portunus.theme";
-
-interface ThemeContextValue {
-  theme: ThemeChoice;
-  effective: EffectiveTheme;
-  setTheme: (t: ThemeChoice) => void;
-}
-
-const ThemeContext = React.createContext<ThemeContextValue | null>(null);
 
 function readStoredTheme(): ThemeChoice {
   try {
@@ -61,10 +56,4 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-}
-
-export function useTheme(): ThemeContextValue {
-  const ctx = React.use(ThemeContext);
-  if (!ctx) throw new Error("useTheme must be used inside <ThemeProvider>");
-  return ctx;
 }

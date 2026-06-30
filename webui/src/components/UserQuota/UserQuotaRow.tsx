@@ -54,7 +54,6 @@ interface Props {
 interface RowState {
   expanded: boolean;
   editOpen: boolean;
-  editDialogContainer: HTMLDivElement | null;
   confirmDelete: boolean;
   serverError: string | null;
   staleFailure: string | null;
@@ -63,7 +62,6 @@ interface RowState {
 type RowAction =
   | { type: "toggle-expanded" }
   | { type: "edit-open"; open: boolean }
-  | { type: "edit-container"; container: HTMLDivElement | null }
   | { type: "confirm-delete"; open: boolean }
   | { type: "server-error"; message: string | null }
   | { type: "stale-failure"; message: string };
@@ -71,7 +69,6 @@ type RowAction =
 const initialRowState: RowState = {
   expanded: false,
   editOpen: false,
-  editDialogContainer: null,
   confirmDelete: false,
   serverError: null,
   staleFailure: null,
@@ -82,18 +79,22 @@ function rowReducer(state: RowState, action: RowAction): RowState {
     case "toggle-expanded":
       return { ...state, expanded: !state.expanded };
     case "edit-open":
+      if (state.editOpen === action.open && (action.open || state.serverError === null)) {
+        return state;
+      }
       return {
         ...state,
         editOpen: action.open,
         serverError: action.open ? state.serverError : null,
       };
-    case "edit-container":
-      return { ...state, editDialogContainer: action.container };
     case "confirm-delete":
+      if (state.confirmDelete === action.open) return state;
       return { ...state, confirmDelete: action.open };
     case "server-error":
+      if (state.serverError === action.message) return state;
       return { ...state, serverError: action.message };
     case "stale-failure":
+      if (state.staleFailure === action.message) return state;
       return { ...state, staleFailure: action.message };
   }
 }
@@ -295,10 +296,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           dispatch({ type: "edit-open", open });
         }}
       >
-        <DialogContent
-          ref={(container) => dispatch({ type: "edit-container", container })}
-          className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto"
-        >
+        <DialogContent className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t("userQuota.editDialogTitle")}</DialogTitle>
             <DialogDescription>
@@ -327,7 +325,6 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
             onCancel={() => dispatch({ type: "edit-open", open: false })}
             busy={update.isPending}
             framed={false}
-            popoverContainer={state.editDialogContainer}
             serverError={state.serverError}
           />
         </DialogContent>
