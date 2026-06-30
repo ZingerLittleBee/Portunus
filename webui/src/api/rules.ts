@@ -3,9 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import type { PushRuleBody, PushRuleResponse, Rule, RuleStatsSnapshot } from "@/api/types";
 
-export const RULES_KEY = ["rules"] as const;
-export const ruleKey = (id: number) => ["rules", id] as const;
-export const ruleStatsKey = (id: number) => ["rules", id, "stats"] as const;
+const ruleKey = (id: number) => ["rules", id] as const;
+const ruleStatsKey = (id: number) => ["rules", id, "stats"] as const;
 
 interface RulesFilter {
   client?: string;

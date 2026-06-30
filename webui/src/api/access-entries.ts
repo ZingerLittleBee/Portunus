@@ -43,7 +43,7 @@ function rangeWidth(g: GrantView): number {
 /// from the clients list. Display names are non-unique, so the first
 /// match wins for any duplicate; callers that need exactness should hold
 /// an id directly rather than resolving by name.
-export function clientIdByName(
+function clientIdByName(
   clients: ClientView[] | undefined,
 ): Map<string, string> {
   const m = new Map<string, string>();
@@ -111,9 +111,9 @@ export function joinAccessEntries(
 }
 
 
-export const userAccessEntriesKey = (userId: string) =>
+const userAccessEntriesKey = (userId: string) =>
   ["access-entries", userId] as const;
-export const userAccessCapKey = (userId: string, clientName: string) =>
+const userAccessCapKey = (userId: string, clientName: string) =>
   ["access-entries", userId, "cap", clientName] as const;
 
 export interface UseAccessEntriesResult {
@@ -234,7 +234,7 @@ export interface AccessEntryError extends Error {
   recoverable: boolean;
 }
 
-export function makeError(
+function makeError(
   stage: AccessEntryError["stage"],
   cause: unknown,
   recoverable: boolean,

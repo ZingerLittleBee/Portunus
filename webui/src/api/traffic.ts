@@ -31,7 +31,7 @@ function trafficQs(q: TrafficQuery): string {
 
 export const userTrafficKey = (userId: string, q: TrafficQuery) =>
   ["user-traffic", userId, q] as const;
-export const clientTrafficKey = (clientId: string, q: TrafficQuery) =>
+const clientTrafficKey = (clientId: string, q: TrafficQuery) =>
   ["client-traffic", clientId, q] as const;
 
 export function useUserTraffic(userId: string, q: TrafficQuery) {

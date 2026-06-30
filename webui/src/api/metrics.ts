@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { apiFetchText } from "@/api/client";
 
-export const METRICS_KEY = ["metrics"] as const;
+const METRICS_KEY = ["metrics"] as const;
 
 export function useMetricsText() {
   return useQuery({

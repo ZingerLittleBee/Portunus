@@ -22,15 +22,6 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 interface BaseProps<T extends FieldValues> {
@@ -87,58 +78,6 @@ export function FormTextField<T extends FieldValues>({
             disabled={disabled}
             aria-invalid={fieldState.invalid || undefined}
           />
-          {description && <FieldDescription>{description}</FieldDescription>}
-          {fieldState.error && <FieldError errors={[fieldState.error]} />}
-        </Field>
-      )}
-    />
-  );
-}
-
-/// Single-choice dropdown.
-export function FormSelectField<T extends FieldValues>({
-  control,
-  name,
-  label,
-  description,
-  disabled,
-  options,
-  placeholder,
-  "aria-label": ariaLabel,
-}: BaseProps<T> & {
-  options: { value: string; label: ReactNode }[];
-  placeholder?: string;
-  "aria-label"?: string;
-}) {
-  return (
-    <Controller
-      control={control}
-      name={name}
-      render={({ field, fieldState }) => (
-        <Field data-invalid={fieldState.invalid || undefined}>
-          <FieldLabel htmlFor={field.name}>{label}</FieldLabel>
-          <Select
-            value={field.value}
-            onValueChange={field.onChange}
-            disabled={disabled ?? false}
-          >
-            <SelectTrigger
-              id={field.name}
-              aria-label={ariaLabel}
-              aria-invalid={fieldState.invalid || undefined}
-            >
-              <SelectValue placeholder={placeholder} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {options.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
           {description && <FieldDescription>{description}</FieldDescription>}
           {fieldState.error && <FieldError errors={[fieldState.error]} />}
         </Field>
@@ -219,37 +158,6 @@ export function FormCheckboxField<T extends FieldValues>({
             {description && <FieldDescription>{description}</FieldDescription>}
             {fieldState.error && <FieldError errors={[fieldState.error]} />}
           </FieldContent>
-        </Field>
-      )}
-    />
-  );
-}
-
-/// Boolean switch laid out horizontally (label, then control on the right).
-export function FormSwitchField<T extends FieldValues>({
-  control,
-  name,
-  label,
-  description,
-  disabled,
-}: BaseProps<T>) {
-  return (
-    <Controller
-      control={control}
-      name={name}
-      render={({ field, fieldState }) => (
-        <Field orientation="horizontal" data-invalid={fieldState.invalid || undefined}>
-          <FieldContent>
-            <FieldLabel htmlFor={field.name}>{label}</FieldLabel>
-            {description && <FieldDescription>{description}</FieldDescription>}
-          </FieldContent>
-          <Switch
-            id={field.name}
-            checked={field.value}
-            onCheckedChange={field.onChange}
-            disabled={disabled}
-            aria-invalid={fieldState.invalid || undefined}
-          />
         </Field>
       )}
     />

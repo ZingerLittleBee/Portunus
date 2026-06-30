@@ -35,19 +35,6 @@ export function formatBytes(n: number): string {
   return `${(n / TB).toFixed(2)} TiB`;
 }
 
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${ms} ms`;
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s} s`;
-  const m = Math.floor(s / 60);
-  const rs = s % 60;
-  if (m < 60) return `${m}m ${rs}s`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return `${h}h ${rm}m`;
-}
-
 export function formatChartTime(unixSec: number): string {
   const d = new Date(unixSec * 1000);
   if (Number.isNaN(d.getTime())) return "—";

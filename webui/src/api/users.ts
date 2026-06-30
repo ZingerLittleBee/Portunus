@@ -10,8 +10,8 @@ import type {
   UserView,
 } from "@/api/types";
 
-export const USERS_KEY = ["users"] as const;
-export const userKey = (id: string) => ["users", id] as const;
+const USERS_KEY = ["users"] as const;
+const userKey = (id: string) => ["users", id] as const;
 
 const REFETCH_INTERVAL = 5_000;
 
