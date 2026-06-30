@@ -35,33 +35,25 @@ function systemPrefersDark(): boolean {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 }
 
-function resolve(theme: ThemeChoice): EffectiveTheme {
-  if (theme === "system") return systemPrefersDark() ? "dark" : "light";
-  return theme;
-}
-
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = React.useState<ThemeChoice>(() => readStoredTheme());
-  const [effective, setEffective] = React.useState<EffectiveTheme>(() => resolve(readStoredTheme()));
+  const [systemDark, setSystemDark] = React.useState(() => systemPrefersDark());
+  const effective: EffectiveTheme =
+    theme === "system" ? (systemDark ? "dark" : "light") : theme;
 
   React.useEffect(() => {
-    const next = resolve(theme);
-    setEffective(next);
-    document.documentElement.classList.toggle("dark", next === "dark");
+    document.documentElement.classList.toggle("dark", effective === "dark");
     writeStoredTheme(theme);
-  }, [theme]);
+  }, [theme, effective]);
 
   React.useEffect(() => {
-    if (theme !== "system") return;
     const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => {
-      const next = resolve("system");
-      setEffective(next);
-      document.documentElement.classList.toggle("dark", next === "dark");
+    const handler = (event: MediaQueryListEvent) => {
+      setSystemDark(event.matches);
     };
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
-  }, [theme]);
+  }, []);
 
   const value = React.useMemo(
     () => ({ theme, effective, setTheme: setThemeState }),
@@ -72,7 +64,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useTheme(): ThemeContextValue {
-  const ctx = React.useContext(ThemeContext);
+  const ctx = React.use(ThemeContext);
   if (!ctx) throw new Error("useTheme must be used inside <ThemeProvider>");
   return ctx;
 }
