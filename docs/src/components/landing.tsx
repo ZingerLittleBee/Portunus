@@ -161,10 +161,7 @@ const copy = {
       "报告列出了测试机器、执行命令、原始数字和注意事项 —— 照着跑一遍就能复现。",
     ranges: [
       ["100M – 20G", "未限速 TCP 转发端到端跟上内核 iptables。"],
-      [
-        "Standalone / Client",
-        "两种部署共用同一套转发内核，吞吐没有差异。",
-      ],
+      ["Standalone / Client", "两种部署共用同一套转发内核，吞吐没有差异。"],
       ["带限速的规则", "限速规则下，指标、计数器和审计依然准确。"],
     ],
     capabilitiesTitle: "规则、权限、限速、指标、审计。",
@@ -469,7 +466,7 @@ function ProductMock({ t }: { t: (typeof copy)["en"] | (typeof copy)["zh"] }) {
         style={{
           background:
             "linear-gradient(135deg, rgba(200,243,111,0.18), rgba(0,210,255,0.10) 60%, transparent)",
-          filter: "blur(40px)",
+          filter: "blur(8px)",
         }}
       />
       <div className="overflow-hidden rounded-xl border border-white/15 bg-[#0a0a0a]/80 shadow-[0_30px_120px_-20px_rgba(200,243,111,0.18)] backdrop-blur">
