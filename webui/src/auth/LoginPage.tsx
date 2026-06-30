@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import { ApiError } from "@/api/client";
 import { changeOwnPassword, login } from "@/api/auth";
-import { fetchIdentity, ME_QUERY_KEY } from "@/auth/AuthGate";
+import { fetchIdentity, ME_QUERY_KEY } from "@/auth/identity";
 import { clearLegacyToken } from "@/auth/token-store";
 import { zResolver } from "@/lib/zod-resolver";
 import { Button } from "@/components/ui/button";

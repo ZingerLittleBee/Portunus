@@ -11,7 +11,7 @@ import { useUserQuotas, usePatchQuota } from "@/api/quotas";
 import { UserQuotaTable } from "@/components/UserQuota/UserQuotaTable";
 import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
 import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { canSeeUserDetail, type Identity } from "@/lib/permissions";
 import { PermissionDenied } from "@/components/PermissionDenied";
 import { Button } from "@/components/ui/button";

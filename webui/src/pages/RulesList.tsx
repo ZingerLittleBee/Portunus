@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useRulesList, useRemoveRule } from "@/api/rules";
 import { useUsersList } from "@/api/users";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { isSuperadmin } from "@/lib/permissions";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState } from "@/components/EmptyState";
 import { parseRuleState, type Rule } from "@/api/types";
-import { summarizeRateLimit } from "@/components/RateLimitForm";
+import { summarizeRateLimit } from "@/components/RateLimitForm.helpers";
 
 const OWNER_FILTER_ALL = "__all";
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/api/client";
-import { ME_QUERY_KEY, useIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, useIdentity } from "@/auth/identity";
 import { isSuperadmin } from "@/lib/permissions";
 import type {
   CreateUserBody,

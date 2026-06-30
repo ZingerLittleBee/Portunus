@@ -17,7 +17,7 @@ import {
 import { useClientQuotas } from "@/api/quotas";
 import { ExhaustedBanner } from "@/components/Traffic/ExhaustedBanner";
 import { TrafficPanel } from "@/components/Traffic/TrafficPanel";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { canProvisionClient, isSuperadmin } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

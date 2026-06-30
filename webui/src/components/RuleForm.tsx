@@ -31,11 +31,11 @@ import {
   FormTextField,
   FormToggleField,
 } from "@/components/form/fields";
+import { RateLimitForm } from "@/components/RateLimitForm";
 import {
   EMPTY_RATE_LIMIT_FORM,
-  RateLimitForm,
   formStateToRateLimit,
-} from "@/components/RateLimitForm";
+} from "@/components/RateLimitForm.helpers";
 
 const PROXY_PROTOCOL_NONE = "__none";
 

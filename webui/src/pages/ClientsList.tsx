@@ -12,7 +12,7 @@ import {
   useRevokeClient,
   useUpdateClient,
 } from "@/api/clients";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { canProvisionClient } from "@/lib/permissions";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";

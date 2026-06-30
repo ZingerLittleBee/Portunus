@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { useClientsList } from "@/api/clients";
 import { useRulesList } from "@/api/rules";
 import { useUserQuotas } from "@/api/quotas";

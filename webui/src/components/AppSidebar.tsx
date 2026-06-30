@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 
 import { logout } from "@/api/auth";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { clearLegacyToken } from "@/auth/token-store";
 import { canSeeAuditLog, canSeeMetrics, canSeeUsersList, type Identity } from "@/lib/permissions";
 import { setLanguage, SUPPORTED_LANGUAGES, type Language } from "@/i18n";

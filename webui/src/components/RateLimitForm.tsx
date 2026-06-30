@@ -5,85 +5,16 @@
 /// intentionally absent — the server rejects it when non-null.
 ///
 /// Empty inputs map to "uncapped on that dimension"; the parent
-/// component is expected to call [`rateLimitToBody`] before submitting
+/// component is expected to call `formStateToRateLimit` before submitting
 /// to strip empty values into proper `null`/omit shape.
 
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { RateLimit } from "@/api/types";
 import { Input } from "@/components/ui/input";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
-
-export interface RateLimitFormState {
-  bandwidth_in_bps: string;
-  bandwidth_out_bps: string;
-  new_connections_per_sec: string;
-  concurrent_connections: string;
-  bandwidth_in_burst: string;
-  bandwidth_out_burst: string;
-  new_connections_burst: string;
-}
-
-export const EMPTY_RATE_LIMIT_FORM: RateLimitFormState = {
-  bandwidth_in_bps: "",
-  bandwidth_out_bps: "",
-  new_connections_per_sec: "",
-  concurrent_connections: "",
-  bandwidth_in_burst: "",
-  bandwidth_out_burst: "",
-  new_connections_burst: "",
-};
-
-/// Hydrate the form state from a server-returned `RateLimit`. Used
-/// when prefilling an edit form on a rule that already has caps.
-export function rateLimitToFormState(rl: RateLimit | null | undefined): RateLimitFormState {
-  if (!rl) return { ...EMPTY_RATE_LIMIT_FORM };
-  return {
-    bandwidth_in_bps: stringify(rl.bandwidth_in_bps),
-    bandwidth_out_bps: stringify(rl.bandwidth_out_bps),
-    new_connections_per_sec: stringify(rl.new_connections_per_sec),
-    concurrent_connections: stringify(rl.concurrent_connections),
-    bandwidth_in_burst: stringify(rl.bandwidth_in_burst),
-    bandwidth_out_burst: stringify(rl.bandwidth_out_burst),
-    new_connections_burst: stringify(rl.new_connections_burst),
-  };
-}
-
-/// Convert form state into a `RateLimit` body suitable for the
-/// operator API. Returns `undefined` when every cap is empty so the
-/// caller can omit the wire field entirely (preserves SC-004
-/// byte-stability for rules that opted out).
-export function formStateToRateLimit(form: RateLimitFormState): RateLimit | undefined {
-  const numeric = {
-    bandwidth_in_bps: parseOpt(form.bandwidth_in_bps),
-    bandwidth_out_bps: parseOpt(form.bandwidth_out_bps),
-    new_connections_per_sec: parseOpt(form.new_connections_per_sec),
-    concurrent_connections: parseOpt(form.concurrent_connections),
-    bandwidth_in_burst: parseOpt(form.bandwidth_in_burst),
-    bandwidth_out_burst: parseOpt(form.bandwidth_out_burst),
-    new_connections_burst: parseOpt(form.new_connections_burst),
-  };
-  const hasAny = Object.values(numeric).some((v) => v !== undefined);
-  if (!hasAny) return undefined;
-  const out: RateLimit = {};
-  for (const [k, v] of Object.entries(numeric)) {
-    if (v !== undefined) (out as Record<string, number>)[k] = v;
-  }
-  return out;
-}
-
-function stringify(n: number | null | undefined): string {
-  return n == null ? "" : String(n);
-}
-
-function parseOpt(s: string): number | undefined {
-  const trimmed = s.trim();
-  if (!trimmed) return undefined;
-  const n = Number(trimmed);
-  return Number.isFinite(n) ? n : undefined;
-}
+import type { RateLimitFormState } from "@/components/RateLimitForm.helpers";
 
 interface Props {
   state: RateLimitFormState;
@@ -238,23 +169,4 @@ export function RateLimitForm({ state, onChange, disabled, helper }: Props) {
       )}
     </div>
   );
-}
-
-/// Render a compact summary string for the rules-table `Caps` column
-/// (T039). Returns `null` when there are no caps to render so the
-/// caller can render a `—` cell.
-export function summarizeRateLimit(rl: RateLimit | null | undefined): string | null {
-  if (!rl) return null;
-  const parts: string[] = [];
-  if (rl.bandwidth_in_bps != null) parts.push(`↓${formatBps(rl.bandwidth_in_bps)}`);
-  if (rl.bandwidth_out_bps != null) parts.push(`↑${formatBps(rl.bandwidth_out_bps)}`);
-  if (rl.new_connections_per_sec != null) parts.push(`${rl.new_connections_per_sec}/s`);
-  if (rl.concurrent_connections != null) parts.push(`≤${rl.concurrent_connections}`);
-  return parts.length ? parts.join(" · ") : null;
-}
-
-function formatBps(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}M`;
-  if (n >= 1024) return `${(n / 1024).toFixed(0)}K`;
-  return String(n);
 }

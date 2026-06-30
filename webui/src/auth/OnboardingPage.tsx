@@ -9,7 +9,7 @@ import { zResolver } from "@/lib/zod-resolver";
 
 import { ApiError } from "@/api/client";
 import { login, onboard } from "@/api/auth";
-import { fetchIdentity, ME_QUERY_KEY } from "@/auth/AuthGate";
+import { fetchIdentity, ME_QUERY_KEY } from "@/auth/identity";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
