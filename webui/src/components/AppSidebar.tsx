@@ -100,12 +100,12 @@ const THEME_ICON: Record<ThemeChoice, LucideIcon> = {
 export function AppSidebar() {
   const { t } = useTranslation();
   const identity = useIdentity();
-  const location = useLocation();
+  const { pathname } = useLocation();
   const { isMobile, setOpenMobile } = useSidebar();
 
   useEffect(() => {
     if (isMobile) setOpenMobile(false);
-  }, [isMobile, location.pathname, setOpenMobile]);
+  }, [isMobile, pathname, setOpenMobile]);
 
   return (
     <Sidebar collapsible="icon">
@@ -153,10 +153,10 @@ export function AppSidebar() {
 
 function NavItemLink({ item }: { item: NavItem }) {
   const { t } = useTranslation();
-  const location = useLocation();
+  const { pathname } = useLocation();
   const isActive = item.end
-    ? location.pathname === item.to
-    : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+    ? pathname === item.to
+    : pathname === item.to || pathname.startsWith(`${item.to}/`);
   const Icon = item.icon;
   const label = t(item.i18nKey);
   return (

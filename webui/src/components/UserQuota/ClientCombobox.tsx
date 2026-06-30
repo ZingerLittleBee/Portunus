@@ -1,6 +1,6 @@
 // webui/src/components/UserQuota/ClientCombobox.tsx
 import { Check, ChevronsUpDown } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +44,7 @@ export function ClientCombobox({
 }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const popoverId = useId();
 
   const selectedName =
     clients.find((c) => c.client_id === value)?.client_name ?? "";
@@ -61,6 +62,7 @@ export function ClientCombobox({
           variant="outline"
           role="combobox"
           aria-label={t("userQuota.form.client")}
+          aria-controls={popoverId}
           aria-expanded={open}
           disabled={disabled}
           className="w-full justify-between"
@@ -69,7 +71,11 @@ export function ClientCombobox({
           <ChevronsUpDown className="ml-2 size-4 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent container={popoverContainer} className="w-(--radix-popover-trigger-width) p-0">
+      <PopoverContent
+        id={popoverId}
+        container={popoverContainer}
+        className="w-(--radix-popover-trigger-width) p-0"
+      >
         <Command>
           <CommandInput placeholder={t("userQuota.combobox.search")} />
           <CommandList>

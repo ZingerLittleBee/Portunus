@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef } from "react";
 
 import { streamSse } from "@/api/client";
 import type { RuleStatsSnapshot } from "@/api/types";
@@ -24,48 +24,108 @@ interface UseRuleStatsStreamOptions {
   perTarget?: boolean;
 }
 
+const initialLiveStatsState: LiveStatsState = {
+  snapshot: null,
+  source: "sse",
+  lastReceivedAt: null,
+  reconnectAttempts: 0,
+  error: null,
+};
+
+type LiveStatsAction =
+  | { type: "stream-start" }
+  | {
+      type: "stream-snapshot";
+      snapshot: RuleStatsSnapshot;
+      receivedAt: number;
+      reconnectAttempts: number;
+    }
+  | {
+      type: "stream-error";
+      reason: string;
+      reconnectAttempts: number;
+      fallbackToPolling: boolean;
+    }
+  | {
+      type: "poll-snapshot";
+      snapshot: RuleStatsSnapshot;
+      receivedAt: number;
+    };
+
+function liveStatsReducer(
+  state: LiveStatsState,
+  action: LiveStatsAction,
+): LiveStatsState {
+  switch (action.type) {
+    case "stream-start":
+      return {
+        ...state,
+        source: "sse",
+        reconnectAttempts: 0,
+        error: null,
+      };
+    case "stream-snapshot":
+      return {
+        snapshot: action.snapshot,
+        source: "sse",
+        lastReceivedAt: action.receivedAt,
+        reconnectAttempts: action.reconnectAttempts,
+        error: null,
+      };
+    case "stream-error":
+      return {
+        ...state,
+        reconnectAttempts: action.reconnectAttempts,
+        error: action.reason,
+        source: action.fallbackToPolling ? "polling" : "sse",
+      };
+    case "poll-snapshot":
+      return {
+        ...state,
+        snapshot: action.snapshot,
+        lastReceivedAt: action.receivedAt,
+      };
+  }
+}
+
 export function useRuleStatsStream(
   ruleId: number | undefined,
   options: UseRuleStatsStreamOptions = {},
 ): LiveStatsState {
   const maxReconnects = options.maxReconnects ?? 3;
   const perTarget = options.perTarget ?? false;
-  const [state, setState] = useState<LiveStatsState>({
-    snapshot: null,
-    source: "sse",
-    lastReceivedAt: null,
-    reconnectAttempts: 0,
-    error: null,
-  });
+  const [state, dispatch] = useReducer(
+    liveStatsReducer,
+    initialLiveStatsState,
+  );
   const reconnectsRef = useRef(0);
 
   useEffect(() => {
     if (ruleId === undefined) return;
     reconnectsRef.current = 0;
-    setState((s) => ({ ...s, source: "sse", reconnectAttempts: 0, error: null }));
+    dispatch({ type: "stream-start" });
 
     const qs = perTarget ? "?per_target=true" : "";
     const handle = streamSse<RuleStatsSnapshot>(
       `/v1/rules/${ruleId}/stats/stream${qs}`,
       (snap) => {
-        setState({
+        dispatch({
+          type: "stream-snapshot",
           snapshot: snap,
-          source: "sse",
-          lastReceivedAt: Date.now(),
+          receivedAt: Date.now(),
           reconnectAttempts: reconnectsRef.current,
-          error: null,
         });
       },
       {
         onError: (err) => {
           reconnectsRef.current += 1;
           const reason = err instanceof Error ? err.message : String(err);
-          setState((s) => ({
-            ...s,
+          dispatch({
+            type: "stream-error",
             reconnectAttempts: reconnectsRef.current,
-            error: reason,
-            source: reconnectsRef.current >= maxReconnects ? "polling" : "sse",
-          }));
+            reason,
+            fallbackToPolling: reconnectsRef.current >= maxReconnects,
+          });
         },
       },
     );
@@ -84,11 +144,11 @@ export function useRuleStatsStream(
   useEffect(() => {
     if (!pollingActive) return;
     if (polled.data) {
-      setState((s) => ({
-        ...s,
-        snapshot: polled.data ?? s.snapshot,
-        lastReceivedAt: Date.now(),
-      }));
+      dispatch({
+        type: "poll-snapshot",
+        snapshot: polled.data,
+        receivedAt: Date.now(),
+      });
     }
   }, [pollingActive, polled.data]);
 

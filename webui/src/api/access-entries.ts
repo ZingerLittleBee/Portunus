@@ -123,7 +123,11 @@ export interface UseAccessEntriesResult {
 }
 
 export function useAccessEntries(userId: string): UseAccessEntriesResult {
-  const grantsQ = useQuery({
+  const {
+    data: grantsData,
+    error: grantsError,
+    isLoading: grantsLoading,
+  } = useQuery({
     queryKey: userAccessEntriesKey(userId),
     queryFn: () => apiFetch<GrantView[]>(`/v1/grants?user_id=${encodeURIComponent(userId)}`),
     enabled: userId.length > 0,
@@ -133,18 +137,22 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   // by the stable client_id, but grants/quotas only carry the display
   // name. Resolve name → id from the clients list (first match wins on a
   // duplicate name) before building any /v1/clients/{id}/... URL.
-  const clientsQ = useQuery({
+  const {
+    data: clientsData,
+    error: clientsError,
+    isLoading: clientsLoading,
+  } = useQuery({
     queryKey: CLIENTS_KEY,
     queryFn: () => apiFetch<ClientView[]>("/v1/clients"),
     enabled: userId.length > 0,
   });
-  const idByName = clientIdByName(clientsQ.data);
+  const idByName = clientIdByName(clientsData);
 
   // Filter wildcard grants — they cannot be edited via the user-centric
   // flow (no specific client to attach a cap to). The legacy /grants
   // surface is gone, so wildcard grants effectively become invisible
   // here; that is an acceptable v1.3 limitation.
-  const grants = (grantsQ.data ?? []).filter((g) => g.client !== "*");
+  const grants = (grantsData ?? []).filter((g) => g.client !== "*");
   const uniquePairs = Array.from(
     new Set(grants.map((g) => `${g.user_id}::${g.client}`)),
   ).map((k) => {
@@ -177,7 +185,11 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   // 013-traffic-quotas F2: parallel quotas fetch keyed identically to
   // `useUserQuotas` so a quota mutation invalidates this view's cached
   // shape via the shared queryKey.
-  const quotasQ = useQuery({
+  const {
+    data: quotasData,
+    error: quotasError,
+    isLoading: quotasLoading,
+  } = useQuery({
     queryKey: userQuotasKey(userId),
     queryFn: () =>
       apiFetch<MonthlyQuotaView[]>(
@@ -187,20 +199,20 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   });
 
   const error =
-    grantsQ.error ??
-    clientsQ.error ??
+    grantsError ??
+    clientsError ??
     capQueries.find((q) => q.error)?.error ??
-    quotasQ.error;
+    quotasError;
 
   return {
-    data: grantsQ.data
-      ? joinAccessEntries(grants, caps, quotasQ.data ?? [], idByName)
+    data: grantsData
+      ? joinAccessEntries(grants, caps, quotasData ?? [], idByName)
       : undefined,
     isLoading:
-      grantsQ.isLoading ||
-      clientsQ.isLoading ||
+      grantsLoading ||
+      clientsLoading ||
       (grants.length > 0 && capsLoading) ||
-      quotasQ.isLoading,
+      quotasLoading,
     error,
   };
 }

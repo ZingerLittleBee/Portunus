@@ -31,11 +31,11 @@ export function useIdentity(): Identity | undefined {
 
 interface AuthGateProps {
   /** Required role; omit for "any authenticated user". */
-  role?: Role;
+  requiredRole?: Role;
   children: React.ReactNode;
 }
 
-export function AuthGate({ role, children }: AuthGateProps) {
+export function AuthGate({ requiredRole, children }: AuthGateProps) {
   const queryClient = useQueryClient();
   const location = useLocation();
   const [sessionInvalidated, setSessionInvalidated] = useState(false);
@@ -83,7 +83,7 @@ export function AuthGate({ role, children }: AuthGateProps) {
     return <Navigate to={`/login?reason=session_expired&next=${next}`} replace />;
   }
 
-  if (role === "superadmin" && !isSuperadmin(identity)) {
+  if (requiredRole === "superadmin" && !isSuperadmin(identity)) {
     return <PermissionDenied />;
   }
 
