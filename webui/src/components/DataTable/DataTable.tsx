@@ -18,7 +18,6 @@ export interface DataTableProps<Row> {
   rowHeight?: number;
   emptyState?: React.ReactNode;
   toolbar?: React.ReactNode;
-  onRowClick?: (row: Row) => void;
   className?: string;
   ariaLabel?: string;
 }
@@ -32,13 +31,11 @@ export function DataTable<Row>({
   rowHeight = 44,
   emptyState,
   toolbar,
-  onRowClick,
   className,
   ariaLabel,
 }: DataTableProps<Row>) {
   const parentRef = React.useRef<HTMLDivElement>(null);
   const [sort, setSort] = React.useState<SortState>(null);
-  const [focusedIndex, setFocusedIndex] = React.useState(0);
 
   const sorted = React.useMemo(() => {
     if (!sort) return rows;
@@ -71,111 +68,91 @@ export function DataTable<Row>({
     });
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    const last = sorted.length - 1;
-    if (last < 0) return;
-    let next: number;
-    switch (e.key) {
-      case "ArrowDown": next = Math.min(last, focusedIndex + 1); break;
-      case "ArrowUp": next = Math.max(0, focusedIndex - 1); break;
-      case "PageDown": next = Math.min(last, focusedIndex + 10); break;
-      case "PageUp": next = Math.max(0, focusedIndex - 10); break;
-      case "Home": next = 0; break;
-      case "End": next = last; break;
-      case "Enter": {
-        const row = sorted[focusedIndex];
-        if (row && onRowClick) onRowClick(row);
-        return;
-      }
-      default: return;
-    }
-    e.preventDefault();
-    setFocusedIndex(next);
-    virtualizer.scrollToIndex(next, { align: "auto" });
-  }
-
   const grid = gridStyle(columns);
   const tableWidth = tableMinWidth(columns);
+  const rowCountLabel = `${sorted.length} ${sorted.length === 1 ? "row" : "rows"}`;
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-2", className)}>
       {toolbar && <div className="flex flex-col gap-2 sm:flex-row sm:items-center">{toolbar}</div>}
       <div className="overflow-x-auto rounded-lg border">
         <div
-          className="grid border-b bg-muted/40 text-sm font-medium"
-          role="row"
-          style={{ ...grid, minWidth: tableWidth }}
-        >
-          {columns.map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              role="columnheader"
-              onClick={() => toggleSort(c)}
-              className={cn(
-                "flex h-10 items-center gap-1 px-3 text-left",
-                c.sortable && "cursor-pointer hover:bg-muted/70",
-              )}
-              aria-sort={
-                sort?.key === c.key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"
-              }
-            >
-              {c.header}
-              {sort?.key === c.key && <span aria-hidden>{sort.dir === "asc" ? "↑" : "↓"}</span>}
-            </button>
-          ))}
-        </div>
-        <div
           ref={parentRef}
-          tabIndex={0}
-          onKeyDown={onKeyDown}
-          className="h-[480px] overflow-y-auto focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-          role="rowgroup"
-          aria-label={ariaLabel}
+          className="h-[480px] overflow-y-auto"
           style={{ minWidth: tableWidth }}
         >
-          {sorted.length === 0 ? (
-            <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
-              {emptyState ?? "No rows"}
-            </div>
-          ) : (
-            <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-              {virtualizer.getVirtualItems().map((vrow) => {
-                const row = sorted[vrow.index];
-                if (!row) return null;
-                return (
-                  <div
-                    key={rowKey(row)}
-                    role="row"
-                    aria-rowindex={vrow.index + 1}
-                    tabIndex={-1}
-                    data-focused={focusedIndex === vrow.index ? "true" : undefined}
-                    onClick={() => {
-                      setFocusedIndex(vrow.index);
-                      onRowClick?.(row);
-                    }}
-                    className={cn(
-                      "absolute left-0 right-0 grid items-center border-b text-sm hover:bg-muted/30",
-                      onRowClick && "cursor-pointer",
-                      focusedIndex === vrow.index && "bg-muted/40",
-                    )}
-                    style={{ ...grid, height: vrow.size, transform: `translateY(${vrow.start}px)` }}
+          <table className="w-full border-collapse text-sm" aria-label={ariaLabel}>
+            <thead className="sticky top-0 z-10 block border-b bg-muted/40 font-medium">
+              <tr className="grid" style={grid}>
+                {columns.map((c) => (
+                  <th
+                    key={c.key}
+                    scope="col"
+                    className="p-0 text-left font-medium"
+                    aria-sort={
+                      sort?.key === c.key
+                        ? sort.dir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
                   >
-                    {columns.map((c) => (
-                      <div key={c.key} role="cell" className="truncate px-3">
-                        {c.render(row)}
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(c)}
+                      className={cn(
+                        "flex h-10 w-full items-center gap-1 px-3 text-left",
+                        c.sortable && "cursor-pointer hover:bg-muted/70",
+                      )}
+                    >
+                      {c.header}
+                      {sort?.key === c.key && (
+                        <span aria-hidden>{sort.dir === "asc" ? "↑" : "↓"}</span>
+                      )}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            {sorted.length === 0 ? (
+              <tbody>
+                <tr>
+                  <td colSpan={columns.length}>
+                    <div className="flex h-[440px] items-center justify-center p-8 text-sm text-muted-foreground">
+                      {emptyState ?? "No rows"}
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            ) : (
+              <tbody
+                className="block"
+                style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+              >
+                {virtualizer.getVirtualItems().map((vrow) => {
+                  const row = sorted[vrow.index];
+                  if (!row) return null;
+                  return (
+                    <tr
+                      key={rowKey(row)}
+                      aria-rowindex={vrow.index + 2}
+                      className="absolute left-0 right-0 grid items-center border-b text-sm hover:bg-muted/30"
+                      style={{ ...grid, height: vrow.size, transform: `translateY(${vrow.start}px)` }}
+                    >
+                      {columns.map((c) => (
+                        <td key={c.key} className="truncate px-3">
+                          {c.render(row)}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            )}
+          </table>
         </div>
       </div>
-      <div className="text-xs text-muted-foreground">
-        {sorted.length} {sorted.length === 1 ? "row" : "rows"}
-      </div>
+      <div className="text-xs text-muted-foreground">{rowCountLabel}</div>
     </div>
   );
 }
