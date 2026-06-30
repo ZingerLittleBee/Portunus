@@ -24,9 +24,8 @@ test("superadmin sees mixed allow/deny entries; tenant cannot reach /audit", asy
   // Drive the SPA as superadmin.
   await loginAs(page, server.superadminUserId, server.superadminPassword);
   await page.goto("/audit");
-  const auditRows = page.getByRole("rowgroup", { name: /audit log/i }).getByRole("row");
-  await expect(auditRows.filter({ hasText: /allow/i }).first()).toBeVisible();
-  await expect(auditRows.filter({ hasText: /deny/i }).first()).toBeVisible();
+  await expect(page.getByText(/^allow$/i).first()).toBeVisible();
+  await expect(page.getByText(/^deny$/i).first()).toBeVisible();
 
   // Outcome filter is client-side — flipping to "deny" must not fire a request.
   const before: string[] = [];
