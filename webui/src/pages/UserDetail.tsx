@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useReducer } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +46,60 @@ interface InnerProps {
   identity: Identity | null;
 }
 
+interface UserDetailUiState {
+  issuedToken: string | null;
+  confirmDelete: boolean;
+  resetOpen: boolean;
+  newPassword: string;
+  temporaryPassword: boolean;
+  resetError: string | null;
+}
+
+type UserDetailUiAction =
+  | { type: "issued-token"; token: string | null }
+  | { type: "confirm-delete"; open: boolean }
+  | { type: "reset-open"; open: boolean }
+  | { type: "new-password"; value: string }
+  | { type: "temporary-password"; value: boolean }
+  | { type: "reset-error"; message: string | null };
+
+const initialUserDetailUiState: UserDetailUiState = {
+  issuedToken: null,
+  confirmDelete: false,
+  resetOpen: false,
+  newPassword: "",
+  temporaryPassword: true,
+  resetError: null,
+};
+
+function userDetailUiReducer(
+  state: UserDetailUiState,
+  action: UserDetailUiAction,
+): UserDetailUiState {
+  switch (action.type) {
+    case "issued-token":
+      return { ...state, issuedToken: action.token };
+    case "confirm-delete":
+      return { ...state, confirmDelete: action.open };
+    case "reset-open":
+      return action.open
+        ? { ...state, resetOpen: true }
+        : {
+            ...state,
+            resetOpen: false,
+            newPassword: "",
+            temporaryPassword: true,
+            resetError: null,
+          };
+    case "new-password":
+      return { ...state, newPassword: action.value };
+    case "temporary-password":
+      return { ...state, temporaryPassword: action.value };
+    case "reset-error":
+      return { ...state, resetError: action.message };
+  }
+}
+
 function UserDetailInner({ userId, identity }: InnerProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -77,14 +131,7 @@ function UserDetailInner({ userId, identity }: InnerProps) {
   const deleteUser = useDeleteUser();
   const resetPassword = useResetUserPassword(userId);
 
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
-  // The reveal modal is used for the password-reset temporary-password reveal.
-  const [revealKind, setRevealKind] = useState<"token" | "password">("token");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [resetOpen, setResetOpen] = useState(false);
-  const [newPassword, setNewPassword] = useState("");
-  const [temporaryPassword, setTemporaryPassword] = useState(true);
-  const [resetError, setResetError] = useState<string | null>(null);
+  const [ui, dispatchUi] = useReducer(userDetailUiReducer, initialUserDetailUiState);
 
   const isSelf = identity?.user_id === userId;
 
@@ -104,11 +151,11 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         </div>
         {identity?.role === "superadmin" && (
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button variant="outline" onClick={() => setResetOpen(true)}>
+            <Button variant="outline" onClick={() => dispatchUi({ type: "reset-open", open: true })}>
               {t("userDetail.resetPassword")}
             </Button>
             {!isSelf && (
-              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+              <Button variant="destructive" onClick={() => dispatchUi({ type: "confirm-delete", open: true })}>
                 <Trash2 className="mr-1 h-4 w-4" />
                 {t("userDetail.delete")}
               </Button>
@@ -152,8 +199,8 @@ function UserDetailInner({ userId, identity }: InnerProps) {
       <Separator />
 
       <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
+        open={ui.confirmDelete}
+        onOpenChange={(open) => dispatchUi({ type: "confirm-delete", open })}
         destructive
         title={t("userDetail.deleteTitle")}
         description={t("userDetail.deleteBody", { id: userId })}
@@ -163,56 +210,47 @@ function UserDetailInner({ userId, identity }: InnerProps) {
         busy={deleteUser.isPending}
         onConfirm={async () => {
           await deleteUser.mutateAsync(userId);
-          setConfirmDelete(false);
+          dispatchUi({ type: "confirm-delete", open: false });
           navigate("/users");
         }}
       />
 
       <TokenRevealModal
-        open={!!issuedToken}
+        open={!!ui.issuedToken}
         onOpenChange={async (open) => {
           if (!open) {
-            setIssuedToken(null);
+            dispatchUi({ type: "issued-token", token: null });
           }
         }}
-        token={issuedToken ?? ""}
-        {...(revealKind === "password"
-          ? {
-              title: t("tokenReveal.passwordTitle"),
-              description: t("tokenReveal.passwordDescription"),
-            }
-          : {})}
+        token={ui.issuedToken ?? ""}
+        title={t("tokenReveal.passwordTitle")}
+        description={t("tokenReveal.passwordDescription")}
       />
 
       <ConfirmDialog
-        open={resetOpen}
-        onOpenChange={(open) => {
-          setResetOpen(open);
-          if (!open) {
-            setNewPassword("");
-            setTemporaryPassword(true);
-            setResetError(null);
-          }
-        }}
+        open={ui.resetOpen}
+        onOpenChange={(open) => dispatchUi({ type: "reset-open", open })}
         title={t("userDetail.resetPasswordTitle")}
         description={t("userDetail.resetPasswordBody", { id: userId })}
         confirmLabel={t("userDetail.resetPasswordConfirm")}
         busy={resetPassword.isPending}
         onConfirm={async () => {
-          setResetError(null);
-          const explicitPassword = newPassword.length > 0;
+          dispatchUi({ type: "reset-error", message: null });
+          const explicitPassword = ui.newPassword.length > 0;
           try {
             const res = await resetPassword.mutateAsync({
-              ...(explicitPassword ? { new_password: newPassword } : {}),
-              temporary_password: explicitPassword ? temporaryPassword : true,
+              ...(explicitPassword ? { new_password: ui.newPassword } : {}),
+              temporary_password: explicitPassword ? ui.temporaryPassword : true,
             });
-            setResetOpen(false);
+            dispatchUi({ type: "reset-open", open: false });
             if (res.temporary_password) {
-              setRevealKind("password");
-              setIssuedToken(res.temporary_password);
+              dispatchUi({ type: "issued-token", token: res.temporary_password });
             }
           } catch (err) {
-            setResetError(err instanceof Error ? err.message : String(err));
+            dispatchUi({
+              type: "reset-error",
+              message: err instanceof Error ? err.message : String(err),
+            });
           }
         }}
       >
@@ -223,17 +261,17 @@ function UserDetailInner({ userId, identity }: InnerProps) {
               id="reset-password"
               type="password"
               autoComplete="new-password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
+              value={ui.newPassword}
+              onChange={(e) => dispatchUi({ type: "new-password", value: e.target.value })}
               placeholder={t("userDetail.generateTemporary")}
             />
           </Field>
           <Field orientation="horizontal">
             <Checkbox
               id="require-password-change"
-              checked={newPassword.length === 0 || temporaryPassword}
-              disabled={newPassword.length === 0}
-              onCheckedChange={(checked) => setTemporaryPassword(checked === true)}
+              checked={ui.newPassword.length === 0 || ui.temporaryPassword}
+              disabled={ui.newPassword.length === 0}
+              onCheckedChange={(checked) => dispatchUi({ type: "temporary-password", value: checked === true })}
             />
             <FieldContent>
               <FieldLabel htmlFor="require-password-change" className="font-normal">
@@ -241,9 +279,9 @@ function UserDetailInner({ userId, identity }: InnerProps) {
               </FieldLabel>
             </FieldContent>
           </Field>
-          {resetError && (
+          {ui.resetError && (
             <Alert variant="destructive">
-              <AlertDescription>{resetError}</AlertDescription>
+              <AlertDescription>{ui.resetError}</AlertDescription>
             </Alert>
           )}
         </FieldGroup>
