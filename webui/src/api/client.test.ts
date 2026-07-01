@@ -9,7 +9,6 @@ afterEach(() => {
 
 describe("api client auth transport", () => {
   it("sends same-origin credentials and csrf header for JSON writes", async () => {
-    window.sessionStorage.setItem("portunus.token", "legacy-token");
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -49,7 +48,6 @@ describe("api client auth transport", () => {
   });
 
   it("streams SSE with same-origin cookies and no bearer header", () => {
-    window.sessionStorage.setItem("portunus.token", "legacy-token");
     const fetchMock = vi.fn().mockReturnValue(new Promise<Response>(() => undefined));
     vi.stubGlobal("fetch", fetchMock);
 

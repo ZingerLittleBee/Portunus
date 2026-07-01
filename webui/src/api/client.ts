@@ -127,6 +127,50 @@ interface SseOptions {
 const SSE_BACKOFF_INITIAL_MS = 1_000;
 const SSE_BACKOFF_MAX_MS = 30_000;
 
+interface SseFrameSplit {
+  frames: string[];
+  remainder: string;
+}
+
+function splitCompleteSseFrames(buffer: string): SseFrameSplit {
+  const frames: string[] = [];
+  let frameStart = 0;
+
+  for (let cursor = 0; cursor < buffer.length - 1; cursor += 1) {
+    if (buffer[cursor] !== "\n" || buffer[cursor + 1] !== "\n") {
+      continue;
+    }
+    frames.push(buffer.slice(frameStart, cursor));
+    cursor += 1;
+    frameStart = cursor + 1;
+  }
+
+  return { frames, remainder: buffer.slice(frameStart) };
+}
+
+function emitStatsSseFrame<T>(
+  frame: string,
+  onEvent: (data: T) => void,
+  onError: ((err: unknown) => void) | undefined,
+) {
+  let eventType = "message";
+  let data = "";
+  for (const line of frame.split("\n")) {
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) eventType = line.slice(6).trim();
+    else if (line.startsWith("data:")) {
+      data += (data ? "\n" : "") + line.slice(5).trim();
+    }
+  }
+  if (eventType !== "stats" || !data) return;
+
+  try {
+    onEvent(JSON.parse(data) as T);
+  } catch (err) {
+    onError?.(err);
+  }
+}
+
 export function streamSse<T>(
   path: string,
   onEvent: (data: T) => void,
@@ -188,32 +232,21 @@ export function streamSse<T>(
       // Server-Sent-Events frame parsing per WHATWG spec: events are
       // separated by `\n\n`; lines starting with `:` are comments.
       // We only care about `event: stats` + `data: ...` for this use.
-      while (!aborted) {
+      const readNext = async (): Promise<void> => {
+        if (aborted) return;
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done || aborted) return;
         buffer += decoder.decode(value, { stream: true });
-        let sepIdx;
-        while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
-          const frame = buffer.slice(0, sepIdx);
-          buffer = buffer.slice(sepIdx + 2);
-          let eventType = "message";
-          let data = "";
-          for (const line of frame.split("\n")) {
-            if (line.startsWith(":")) continue;
-            if (line.startsWith("event:")) eventType = line.slice(6).trim();
-            else if (line.startsWith("data:")) {
-              data += (data ? "\n" : "") + line.slice(5).trim();
-            }
-          }
-          if (eventType === "stats" && data) {
-            try {
-              onEvent(JSON.parse(data) as T);
-            } catch (err) {
-              options.onError?.(err);
-            }
-          }
+
+        const split = splitCompleteSseFrames(buffer);
+        buffer = split.remainder;
+        for (const frame of split.frames) {
+          emitStatsSseFrame(frame, onEvent, options.onError);
         }
-      }
+        return readNext();
+      };
+
+      await readNext();
     } catch (err) {
       if (!aborted) options.onError?.(err);
     } finally {

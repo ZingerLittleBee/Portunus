@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,11 +21,12 @@ import {
 } from "lucide-react";
 
 import { logout } from "@/api/auth";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { clearLegacyToken } from "@/auth/token-store";
 import { canSeeAuditLog, canSeeMetrics, canSeeUsersList, type Identity } from "@/lib/permissions";
 import { setLanguage, SUPPORTED_LANGUAGES, type Language } from "@/i18n";
-import { useTheme, type ThemeChoice } from "@/theme/ThemeProvider";
+import type { ThemeChoice } from "@/theme/theme-context";
+import { useTheme } from "@/theme/useTheme";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -52,8 +53,8 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-  useSidebar,
 } from "@/components/ui/sidebar";
+import { useSidebar } from "@/components/ui/sidebar-context";
 
 interface NavItem {
   to: string;
@@ -100,12 +101,12 @@ const THEME_ICON: Record<ThemeChoice, LucideIcon> = {
 export function AppSidebar() {
   const { t } = useTranslation();
   const identity = useIdentity();
-  const location = useLocation();
+  const { pathname } = useLocation();
   const { isMobile, setOpenMobile } = useSidebar();
 
   useEffect(() => {
     if (isMobile) setOpenMobile(false);
-  }, [isMobile, location.pathname, setOpenMobile]);
+  }, [isMobile, pathname, setOpenMobile]);
 
   return (
     <Sidebar collapsible="icon">
@@ -134,9 +135,12 @@ export function AppSidebar() {
           <SidebarGroupLabel>{t("nav.dashboard")}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.filter((it) => it.visible(identity)).map((it) => (
-                <NavItemLink key={it.to} item={it} />
-              ))}
+              {NAV_ITEMS.reduce<ReactNode[]>((items, item) => {
+                if (item.visible(identity)) {
+                  items.push(<NavItemLink key={item.to} item={item} />);
+                }
+                return items;
+              }, [])}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -153,10 +157,10 @@ export function AppSidebar() {
 
 function NavItemLink({ item }: { item: NavItem }) {
   const { t } = useTranslation();
-  const location = useLocation();
+  const { pathname } = useLocation();
   const isActive = item.end
-    ? location.pathname === item.to
-    : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+    ? pathname === item.to
+    : pathname === item.to || pathname.startsWith(`${item.to}/`);
   const Icon = item.icon;
   const label = t(item.i18nKey);
   return (

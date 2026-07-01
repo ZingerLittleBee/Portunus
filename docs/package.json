@@ -16,7 +16,6 @@
   "dependencies": {
     "@orama/orama": "^3.1.18",
     "@tanstack/react-router": "1.169.2",
-    "@tanstack/react-router-devtools": "1.166.13",
     "@tanstack/react-start": "1.167.65",
     "@tanstack/start-static-server-functions": "1.166.41",
     "fumadocs-core": "16.8.9",
@@ -39,7 +38,6 @@
     "nitro": "3.0.260429-beta",
     "react-grab": "^0.1.44",
     "serve": "^14.2.6",
-    "srvx": "^0.11.15",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3"
   }

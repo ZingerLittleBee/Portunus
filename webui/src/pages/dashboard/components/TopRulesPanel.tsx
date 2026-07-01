@@ -1,5 +1,4 @@
 import { useTranslation } from "react-i18next";
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
 import type { TopRule } from "@/api/metrics";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +8,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { useRecharts } from "@/components/ui/recharts-resource";
 import { formatBytes } from "@/lib/format";
 
 export interface TopRulesPanelProps {
@@ -17,6 +17,7 @@ export interface TopRulesPanelProps {
 
 export function TopRulesPanel({ rules }: TopRulesPanelProps) {
   const { t } = useTranslation();
+  const { Bar, BarChart, CartesianGrid, XAxis, YAxis } = useRecharts();
   const data = rules.map((rule) => ({
     rule: `#${rule.rule}`,
     bytesIn: rule.bytesIn,

@@ -43,7 +43,7 @@ function rangeWidth(g: GrantView): number {
 /// from the clients list. Display names are non-unique, so the first
 /// match wins for any duplicate; callers that need exactness should hold
 /// an id directly rather than resolving by name.
-export function clientIdByName(
+function clientIdByName(
   clients: ClientView[] | undefined,
 ): Map<string, string> {
   const m = new Map<string, string>();
@@ -111,9 +111,9 @@ export function joinAccessEntries(
 }
 
 
-export const userAccessEntriesKey = (userId: string) =>
+const userAccessEntriesKey = (userId: string) =>
   ["access-entries", userId] as const;
-export const userAccessCapKey = (userId: string, clientName: string) =>
+const userAccessCapKey = (userId: string, clientName: string) =>
   ["access-entries", userId, "cap", clientName] as const;
 
 export interface UseAccessEntriesResult {
@@ -123,7 +123,11 @@ export interface UseAccessEntriesResult {
 }
 
 export function useAccessEntries(userId: string): UseAccessEntriesResult {
-  const grantsQ = useQuery({
+  const {
+    data: grantsData,
+    error: grantsError,
+    isLoading: grantsLoading,
+  } = useQuery({
     queryKey: userAccessEntriesKey(userId),
     queryFn: () => apiFetch<GrantView[]>(`/v1/grants?user_id=${encodeURIComponent(userId)}`),
     enabled: userId.length > 0,
@@ -133,18 +137,22 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   // by the stable client_id, but grants/quotas only carry the display
   // name. Resolve name → id from the clients list (first match wins on a
   // duplicate name) before building any /v1/clients/{id}/... URL.
-  const clientsQ = useQuery({
+  const {
+    data: clientsData,
+    error: clientsError,
+    isLoading: clientsLoading,
+  } = useQuery({
     queryKey: CLIENTS_KEY,
     queryFn: () => apiFetch<ClientView[]>("/v1/clients"),
     enabled: userId.length > 0,
   });
-  const idByName = clientIdByName(clientsQ.data);
+  const idByName = clientIdByName(clientsData);
 
   // Filter wildcard grants — they cannot be edited via the user-centric
   // flow (no specific client to attach a cap to). The legacy /grants
   // surface is gone, so wildcard grants effectively become invisible
   // here; that is an acceptable v1.3 limitation.
-  const grants = (grantsQ.data ?? []).filter((g) => g.client !== "*");
+  const grants = (grantsData ?? []).filter((g) => g.client !== "*");
   const uniquePairs = Array.from(
     new Set(grants.map((g) => `${g.user_id}::${g.client}`)),
   ).map((k) => {
@@ -177,7 +185,11 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   // 013-traffic-quotas F2: parallel quotas fetch keyed identically to
   // `useUserQuotas` so a quota mutation invalidates this view's cached
   // shape via the shared queryKey.
-  const quotasQ = useQuery({
+  const {
+    data: quotasData,
+    error: quotasError,
+    isLoading: quotasLoading,
+  } = useQuery({
     queryKey: userQuotasKey(userId),
     queryFn: () =>
       apiFetch<MonthlyQuotaView[]>(
@@ -187,20 +199,20 @@ export function useAccessEntries(userId: string): UseAccessEntriesResult {
   });
 
   const error =
-    grantsQ.error ??
-    clientsQ.error ??
+    grantsError ??
+    clientsError ??
     capQueries.find((q) => q.error)?.error ??
-    quotasQ.error;
+    quotasError;
 
   return {
-    data: grantsQ.data
-      ? joinAccessEntries(grants, caps, quotasQ.data ?? [], idByName)
+    data: grantsData
+      ? joinAccessEntries(grants, caps, quotasData ?? [], idByName)
       : undefined,
     isLoading:
-      grantsQ.isLoading ||
-      clientsQ.isLoading ||
+      grantsLoading ||
+      clientsLoading ||
       (grants.length > 0 && capsLoading) ||
-      quotasQ.isLoading,
+      quotasLoading,
     error,
   };
 }
@@ -222,7 +234,7 @@ export interface AccessEntryError extends Error {
   recoverable: boolean;
 }
 
-export function makeError(
+function makeError(
   stage: AccessEntryError["stage"],
   cause: unknown,
   recoverable: boolean,
@@ -330,6 +342,17 @@ function grantShapeChanged(input: UpdateAccessEntryInput): boolean {
   );
 }
 
+async function deleteGrants(ids: string[]): Promise<void> {
+  await Promise.all(
+    ids.map((id) =>
+      apiFetch<DeleteGrantResponse>(
+        `/v1/grants/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      ),
+    ),
+  );
+}
+
 export function useUpdateAccessEntry(userId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -340,12 +363,7 @@ export function useUpdateAccessEntry(userId: string) {
       if (reshape) {
         // Delete primary + duplicates, then create one merged grant.
         try {
-          for (const id of [input.grant_id, ...duplicates]) {
-            await apiFetch<DeleteGrantResponse>(
-              `/v1/grants/${encodeURIComponent(id)}`,
-              { method: "DELETE" },
-            );
-          }
+          await deleteGrants([input.grant_id, ...duplicates]);
         } catch (err) {
           throw makeError("grant", err, false);
         }
@@ -412,12 +430,7 @@ export function useDeleteAccessEntry(userId: string) {
         }
       }
       try {
-        for (const id of [input.grant_id, ...(input.legacy_duplicate_ids ?? [])]) {
-          await apiFetch<DeleteGrantResponse>(
-            `/v1/grants/${encodeURIComponent(id)}`,
-            { method: "DELETE" },
-          );
-        }
+        await deleteGrants([input.grant_id, ...(input.legacy_duplicate_ids ?? [])]);
       } catch (err) {
         throw makeError("grant", err, false);
       }

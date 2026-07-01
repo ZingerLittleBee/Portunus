@@ -1,7 +1,7 @@
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
-import { useTheme } from "@/theme/ThemeProvider"
+import { useTheme } from "@/theme/useTheme"
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const { effective } = useTheme()

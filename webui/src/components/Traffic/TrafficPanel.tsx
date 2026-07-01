@@ -55,15 +55,15 @@ export function TrafficPanel({ userId, clientId, defaultRange = "24h", framed = 
   const [range, setRange] = useState<RangeKey>(defaultRange);
   const [bucket, setBucket] = useState<BucketKey>("auto");
 
-  const now = useMemo(() => Math.floor(Date.now() / 1000), [range, bucket]);
   const query = useMemo(() => {
+    const now = Math.floor(Date.now() / 1000);
     const resolved = resolveBucket(range, bucket);
     return {
       from: now - RANGE_SECS[range],
       to: now,
       ...(resolved !== undefined ? { bucket: resolved } : {}),
     };
-  }, [now, range, bucket]);
+  }, [range, bucket]);
 
   const userQ = useUserTraffic(userId ?? "", query);
   const clientQ = useClientTraffic(clientId ?? "", query);

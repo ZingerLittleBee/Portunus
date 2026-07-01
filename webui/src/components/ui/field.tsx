@@ -1,4 +1,3 @@
-import { useMemo } from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/cn"
@@ -74,7 +73,6 @@ function Field({
 }: React.ComponentProps<"div"> & VariantProps<typeof fieldVariants>) {
   return (
     <div
-      role="group"
       data-slot="field"
       data-orientation={orientation}
       className={cn(fieldVariants({ orientation }), className)}
@@ -179,32 +177,7 @@ function FieldError({
 }: React.ComponentProps<"div"> & {
   errors?: Array<{ message?: string } | undefined>
 }) {
-  const content = useMemo(() => {
-    if (children) {
-      return children
-    }
-
-    if (!errors?.length) {
-      return null
-    }
-
-    const uniqueErrors = [
-      ...new Map(errors.map((error) => [error?.message, error])).values(),
-    ]
-
-    if (uniqueErrors?.length == 1) {
-      return uniqueErrors[0]?.message
-    }
-
-    return (
-      <ul className="ml-4 flex list-disc flex-col gap-1">
-        {uniqueErrors.map(
-          (error, index) =>
-            error?.message && <li key={index}>{error.message}</li>
-        )}
-      </ul>
-    )
-  }, [children, errors])
+  const content = children ?? renderFieldErrorMessages(errors)
 
   if (!content) {
     return null
@@ -220,6 +193,39 @@ function FieldError({
       {content}
     </div>
   )
+}
+
+function renderFieldErrorMessages(
+  errors: Array<{ message?: string } | undefined> | undefined
+): React.ReactNode {
+  const messages = uniqueFieldErrorMessages(errors)
+  if (messages.length === 0) {
+    return null
+  }
+
+  if (messages.length === 1) {
+    return messages[0]
+  }
+
+  return (
+    <ul className="ml-4 flex list-disc flex-col gap-1">
+      {messages.map((message) => (
+        <li key={message}>{message}</li>
+      ))}
+    </ul>
+  )
+}
+
+function uniqueFieldErrorMessages(
+  errors: Array<{ message?: string } | undefined> | undefined
+): string[] {
+  const messages = new Set<string>()
+  for (const error of errors ?? []) {
+    if (error?.message) {
+      messages.add(error.message)
+    }
+  }
+  return [...messages]
 }
 
 export {

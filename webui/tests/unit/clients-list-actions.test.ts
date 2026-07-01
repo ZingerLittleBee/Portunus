@@ -15,11 +15,13 @@ describe("ClientsList action column", () => {
     const source = readFileSync(resolve(__dirname, "../../src/pages/ClientsList.tsx"), "utf8");
 
     expect(source).toContain("pendingEdit");
-    expect(source).toContain("openEdit(c)");
+    expect(source).toContain('type: "edit-open"');
     // 015-client-stable-id (US2): the display name is now editable
     // (identity-safe rename addressed by client_id), not a disabled field.
-    expect(source).toContain("value={editName}");
-    expect(source).toContain("value={editAddress}");
+    expect(source).toContain("editName: action.client.client_name");
+    expect(source).toContain("editAddress: action.client.client_address");
+    expect(source).toContain("value={state.editName}");
+    expect(source).toContain("value={state.editAddress}");
     expect(source).toContain("useUpdateClient");
     expect(source).toContain("useRenameClient");
   });

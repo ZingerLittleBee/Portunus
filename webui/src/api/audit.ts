@@ -8,7 +8,7 @@ export interface AuditQuery {
   outcome?: "allow" | "deny";
 }
 
-export const auditKey = (q: AuditQuery) => ["audit", q] as const;
+const auditKey = (q: AuditQuery) => ["audit", q] as const;
 
 export function useAuditLog(query: AuditQuery = {}, options: { enabled?: boolean } = {}) {
   const enabled = options.enabled ?? true;

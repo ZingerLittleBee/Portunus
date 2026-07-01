@@ -1,6 +1,7 @@
 // webui/src/components/UserQuota/UserQuotaTable.test.tsx
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -101,6 +102,7 @@ describe("UserQuotaTable", () => {
   });
 
   it("opens row edit from a three-dot action menu", async () => {
+    const user = userEvent.setup();
     wrap(
       <UserQuotaTable
         userId="alice"
@@ -116,8 +118,8 @@ describe("UserQuotaTable", () => {
     const tokyoRow = screen.getByText("edge-tokyo").closest("tr");
     expect(tokyoRow).toBeTruthy();
     if (!tokyoRow) throw new Error("edge-tokyo row was not rendered");
-    fireEvent.pointerDown(within(tokyoRow).getByRole("button", { name: /row actions/i }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /edit/i }));
+    await user.click(within(tokyoRow).getByRole("button", { name: /row actions/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /edit/i }));
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText(/edit user quota/i)).toBeTruthy();

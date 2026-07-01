@@ -33,11 +33,11 @@ test("quickstart walkthrough end-to-end", async ({ page, request, server }) => {
 
   // § 7 — clients page surfaces the provisioned forwarder.
   await page.goto("/clients");
-  await expect(page.locator('[role="rowgroup"] [role="row"]').first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /^edge-01$/i })).toBeVisible();
 
   // § 8 — audit log lists the API calls made above.
   await page.goto("/audit");
-  await expect(page.locator('[role="rowgroup"] [role="row"]').first()).toBeVisible();
+  await expect(page.getByText(/^allow$/i).first()).toBeVisible();
 
   // § 11 — sign out → login screen. Sign-out lives in the sidebar user
   // menu (shadcn DropdownMenu); open it first, then click the item.

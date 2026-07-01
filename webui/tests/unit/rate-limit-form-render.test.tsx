@@ -10,11 +10,11 @@ import { afterEach, describe, expect, it } from "vitest";
 afterEach(cleanup);
 
 import "@/i18n";
+import { RateLimitForm } from "@/components/RateLimitForm";
 import {
   EMPTY_RATE_LIMIT_FORM,
-  RateLimitForm,
   type RateLimitFormState,
-} from "@/components/RateLimitForm";
+} from "@/components/RateLimitForm.helpers";
 
 function Harness({ initial = EMPTY_RATE_LIMIT_FORM }: { initial?: RateLimitFormState }) {
   // Render-only harness — exercises the visual contract; the parent

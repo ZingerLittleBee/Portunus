@@ -1,14 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, apiFetch } from "@/api/client";
+import { apiFetch } from "@/api/client";
 import type {
   ClientEnrollmentBody,
   ClientReEnrollmentBody,
   ClientEnrollmentResponse,
   ClientView,
   OwnerListEntry,
-  OwnerRateLimitView,
-  RateLimit,
   UpdateClientBody,
 } from "@/api/types";
 
@@ -114,10 +112,8 @@ export function useUpdateClient() {
 // 015-client-stable-id (US3): these owner sub-resources are addressed by
 // the stable client_id, not the mutable display name.
 
-export const CLIENT_OWNERS_KEY = (client: string) =>
+const CLIENT_OWNERS_KEY = (client: string) =>
   ["clients", client, "owners"] as const;
-export const CLIENT_OWNER_RATE_LIMIT_KEY = (client: string, owner: string) =>
-  ["clients", client, "owners", owner, "rate-limit"] as const;
 
 export function useClientOwnersList(clientId: string) {
   return useQuery({
@@ -128,56 +124,5 @@ export function useClientOwnersList(clientId: string) {
       ),
     enabled: clientId.length > 0,
     refetchInterval: 10_000,
-  });
-}
-
-export function useOwnerRateLimit(clientId: string, ownerId: string) {
-  return useQuery({
-    queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientId, ownerId),
-    queryFn: async (): Promise<OwnerRateLimitView | null> => {
-      try {
-        return await apiFetch<OwnerRateLimitView>(
-          `/v1/clients/${encodeURIComponent(clientId)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
-        );
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 404) return null;
-        throw err;
-      }
-    },
-    enabled: clientId.length > 0 && ownerId.length > 0,
-  });
-}
-
-export function usePutOwnerRateLimit(clientId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ ownerId, body }: { ownerId: string; body: RateLimit }) =>
-      apiFetch<OwnerRateLimitView>(
-        `/v1/clients/${encodeURIComponent(clientId)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
-        { method: "PUT", body: JSON.stringify(body) },
-      ),
-    onSuccess: (_data, { ownerId }) => {
-      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientId) });
-      void qc.invalidateQueries({
-        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientId, ownerId),
-      });
-    },
-  });
-}
-
-export function useDeleteOwnerRateLimit(clientId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (ownerId: string) =>
-      apiFetch<void>(
-        `/v1/clients/${encodeURIComponent(clientId)}/owners/${encodeURIComponent(ownerId)}/rate-limit`,
-        { method: "DELETE" },
-      ),
-    onSuccess: (_data, ownerId) => {
-      void qc.invalidateQueries({ queryKey: CLIENT_OWNERS_KEY(clientId) });
-      void qc.invalidateQueries({
-        queryKey: CLIENT_OWNER_RATE_LIMIT_KEY(clientId, ownerId),
-      });
-    },
   });
 }

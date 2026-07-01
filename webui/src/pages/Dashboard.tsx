@@ -1,7 +1,7 @@
 // webui/src/pages/Dashboard.tsx
 import { useQuery } from "@tanstack/react-query";
 
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SuperadminDashboard } from "@/pages/dashboard/SuperadminDashboard";
 import { TenantDashboard } from "@/pages/dashboard/TenantDashboard";

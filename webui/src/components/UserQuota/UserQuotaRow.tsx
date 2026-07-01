@@ -7,7 +7,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useReducer } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -51,20 +51,67 @@ interface Props {
   readOnly: boolean;
 }
 
+interface RowState {
+  expanded: boolean;
+  editOpen: boolean;
+  confirmDelete: boolean;
+  serverError: string | null;
+  staleFailure: string | null;
+}
+
+type RowAction =
+  | { type: "toggle-expanded" }
+  | { type: "edit-open"; open: boolean }
+  | { type: "confirm-delete"; open: boolean }
+  | { type: "server-error"; message: string | null }
+  | { type: "stale-failure"; message: string };
+
+const initialRowState: RowState = {
+  expanded: false,
+  editOpen: false,
+  confirmDelete: false,
+  serverError: null,
+  staleFailure: null,
+};
+
+function rowReducer(state: RowState, action: RowAction): RowState {
+  switch (action.type) {
+    case "toggle-expanded":
+      return { ...state, expanded: !state.expanded };
+    case "edit-open":
+      if (state.editOpen === action.open && (action.open || state.serverError === null)) {
+        return state;
+      }
+      return {
+        ...state,
+        editOpen: action.open,
+        serverError: action.open ? state.serverError : null,
+      };
+    case "confirm-delete":
+      if (state.confirmDelete === action.open) return state;
+      return { ...state, confirmDelete: action.open };
+    case "server-error":
+      if (state.serverError === action.message) return state;
+      return { ...state, serverError: action.message };
+    case "stale-failure":
+      if (state.staleFailure === action.message) return state;
+      return { ...state, staleFailure: action.message };
+  }
+}
+
+function hasStage(err: unknown): err is { stage?: unknown } {
+  return typeof err === "object" && err !== null && "stage" in err;
+}
+
 export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }: Props) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [editDialogContainer, setEditDialogContainer] = useState<HTMLDivElement | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [serverError, setServerError] = useState<string | null>(null);
-  const [staleFailure, setStaleFailure] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(rowReducer, initialRowState);
   const update = useUpdateAccessEntry(userId);
   const del = useDeleteAccessEntry(userId);
-  const hasDetail = readOnly || staleFailure !== null || entry.legacy_duplicates !== undefined;
+  const hasDetail = readOnly || state.staleFailure !== null || entry.legacy_duplicates !== undefined;
 
   async function onSubmit(v: UserQuotaFormSubmitValue) {
-    setServerError(null);
+    dispatch({ type: "server-error", message: null });
     try {
       await update.mutateAsync({
         user_id: userId,
@@ -85,17 +132,17 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           : {}),
       });
       toast.success(t("userQuota.toast.updated", { client: v.client_name }));
-      setEditOpen(false);
+      dispatch({ type: "edit-open", open: false });
     } catch (err) {
-      setServerError(formatApiError(err));
+      dispatch({ type: "server-error", message: formatApiError(err) });
       toast.error(t("userQuota.toast.updateFailed"));
 
       // If the recreate-after-delete leg failed, the user's access is now
       // gone with no automatic recovery. Persist a row-level banner so
       // the operator sees the inconsistency even after the row re-renders.
-      const stage = (err as { stage?: string }).stage;
+      const stage = hasStage(err) ? err.stage : undefined;
       if (stage === "grant_create") {
-        setStaleFailure(t("userQuota.row.staleAfterDeleteHint"));
+        dispatch({ type: "stale-failure", message: t("userQuota.row.staleAfterDeleteHint") });
       }
     }
   }
@@ -111,7 +158,7 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           : {}),
       });
       toast.success(t("userQuota.toast.deleted", { client: entry.client_name }));
-      setConfirmDelete(false);
+      dispatch({ type: "confirm-delete", open: false });
     } catch (err) {
       toast.error(`${t("userQuota.toast.deleteFailed")}: ${formatApiError(err)}`);
     }
@@ -125,10 +172,10 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setExpanded((v) => !v)}
-              aria-label={expanded ? t("userQuota.row.collapse") : t("userQuota.row.expand")}
+              onClick={() => dispatch({ type: "toggle-expanded" })}
+              aria-label={state.expanded ? t("userQuota.row.collapse") : t("userQuota.row.expand")}
             >
-              {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+              {state.expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
             </Button>
           )}
         </TableCell>
@@ -176,8 +223,8 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
               <AlertTriangle className="ml-2 inline size-4 text-amber-500" />
             </span>
           )}
-          {staleFailure && (
-            <span title={staleFailure} className="ml-2 inline-flex">
+          {state.staleFailure && (
+            <span title={state.staleFailure} className="ml-2 inline-flex">
               <AlertTriangle className="size-4 text-destructive" />
             </span>
           )}
@@ -197,14 +244,14 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuGroup>
-                  <DropdownMenuItem onSelect={() => setEditOpen(true)}>
+                  <DropdownMenuItem onSelect={() => dispatch({ type: "edit-open", open: true })}>
                     <Pencil className="size-4" />
                     {t("userQuota.row.edit")}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     className="text-destructive focus:text-destructive"
-                    onSelect={() => setConfirmDelete(true)}
+                    onSelect={() => dispatch({ type: "confirm-delete", open: true })}
                   >
                     <Trash2 className="size-4" />
                     {t("userQuota.row.delete")}
@@ -215,13 +262,13 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
           )}
         </TableCell>
       </TableRow>
-      {expanded && hasDetail && (
+      {state.expanded && hasDetail && (
         <TableRow>
           <TableCell colSpan={12} className="bg-muted/30">
-            {staleFailure && (
+            {state.staleFailure && (
               <Alert variant="destructive" className="mb-3">
                 <AlertTriangle className="size-4" />
-                <AlertDescription>{staleFailure}</AlertDescription>
+                <AlertDescription>{state.staleFailure}</AlertDescription>
               </Alert>
             )}
             {entry.legacy_duplicates && (
@@ -244,16 +291,12 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
       )}
 
       <Dialog
-        open={editOpen}
+        open={state.editOpen}
         onOpenChange={(open) => {
-          setEditOpen(open);
-          if (!open) setServerError(null);
+          dispatch({ type: "edit-open", open });
         }}
       >
-        <DialogContent
-          ref={setEditDialogContainer}
-          className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto"
-        >
+        <DialogContent className="max-h-[calc(100vh-4rem)] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t("userQuota.editDialogTitle")}</DialogTitle>
             <DialogDescription>
@@ -279,18 +322,17 @@ export function UserQuotaRow({ userId, entry, clients, clientOnline, readOnly }:
               new_connections_burst: entry.cap?.new_connections_burst ?? null,
             }}
             onSubmit={onSubmit}
-            onCancel={() => setEditOpen(false)}
+            onCancel={() => dispatch({ type: "edit-open", open: false })}
             busy={update.isPending}
             framed={false}
-            popoverContainer={editDialogContainer}
-            serverError={serverError}
+            serverError={state.serverError}
           />
         </DialogContent>
       </Dialog>
 
       <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
+        open={state.confirmDelete}
+        onOpenChange={(open) => dispatch({ type: "confirm-delete", open })}
         destructive
         title={t("userQuota.deleteTitle")}
         description={t("userQuota.deleteBody", { user: userId, client: entry.client_name })}

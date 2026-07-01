@@ -100,7 +100,6 @@ export function UsersList() {
         rows={filtered}
         columns={columns}
         rowKey={(u) => u.user_id}
-        onRowClick={(u) => navigate(`/users/${u.user_id}`)}
         toolbar={
           <Input
             placeholder={t("users.filterPlaceholder")}

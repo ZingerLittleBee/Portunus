@@ -1,10 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { useRulesList, useRemoveRule } from "@/api/rules";
 import { useUsersList } from "@/api/users";
-import { ME_QUERY_KEY, fetchIdentity } from "@/auth/AuthGate";
+import { ME_QUERY_KEY, fetchIdentity } from "@/auth/identity";
 import { isSuperadmin } from "@/lib/permissions";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
@@ -20,13 +20,12 @@ import {
 } from "@/components/ui/select";
 import { EmptyState } from "@/components/EmptyState";
 import { parseRuleState, type Rule } from "@/api/types";
-import { summarizeRateLimit } from "@/components/RateLimitForm";
+import { summarizeRateLimit } from "@/components/RateLimitForm.helpers";
 
 const OWNER_FILTER_ALL = "__all";
 
 export function RulesList() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const clientFilter = params.get("client") ?? undefined;
   const ownerFilter = params.get("owner") ?? undefined;
@@ -235,7 +234,6 @@ export function RulesList() {
         rows={rules.data ?? []}
         columns={columns}
         rowKey={(r) => String(r.id)}
-        onRowClick={(r) => navigate(`/rules/${r.id}`)}
         emptyState={<EmptyState title={t("rules.emptyTitle")} description={t("rules.emptyBody")} />}
         ariaLabel={t("rules.title")}
       />

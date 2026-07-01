@@ -85,13 +85,16 @@ interface ActiveClient {
 }
 
 function activeClients(clients: ClientView[] | undefined): ActiveClient[] {
-  return (clients ?? [])
-    .filter((client) => !client.revoked_at)
-    .map((client) => ({
-      client_id: client.client_id,
-      client_name: client.client_name,
-    }))
-    .sort((a, b) => a.client_name.localeCompare(b.client_name));
+  const active: ActiveClient[] = [];
+  for (const client of clients ?? []) {
+    if (!client.revoked_at) {
+      active.push({
+        client_id: client.client_id,
+        client_name: client.client_name,
+      });
+    }
+  }
+  return active.sort((a, b) => a.client_name.localeCompare(b.client_name));
 }
 
 function visibleUsers(users: UserView[] | undefined): UserView[] {

@@ -1,5 +1,4 @@
 import { useTranslation } from "react-i18next";
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
 import {
   ChartContainer,
@@ -7,6 +6,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { useRecharts } from "@/components/ui/recharts-resource";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes } from "@/lib/format";
@@ -21,6 +21,7 @@ interface TrafficDirectionChartProps {
 
 export function TrafficDirectionChart({ rows, isLoading, error }: TrafficDirectionChartProps) {
   const { t } = useTranslation();
+  const { Bar, BarChart, CartesianGrid, XAxis, YAxis } = useRecharts();
   const data = rows.map((row) => ({
     label: row.direction === "in" ? t("dashboard.directionIn") : t("dashboard.directionOut"),
     bytes: row.bytes,

@@ -9,7 +9,7 @@ import {
   formStateToRateLimit,
   rateLimitToFormState,
   summarizeRateLimit,
-} from "@/components/RateLimitForm";
+} from "@/components/RateLimitForm.helpers";
 
 describe("formStateToRateLimit", () => {
   it("returns undefined when every field is empty", () => {

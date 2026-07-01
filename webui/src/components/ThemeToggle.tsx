@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Moon, Sun, Monitor } from "lucide-react";
-import { useTheme, type ThemeChoice } from "@/theme/ThemeProvider";
+import type { ThemeChoice } from "@/theme/theme-context";
+import { useTheme } from "@/theme/useTheme";
 import { Button } from "@/components/ui/button";
 
 export function ThemeToggle() {

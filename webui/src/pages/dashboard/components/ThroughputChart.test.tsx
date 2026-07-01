@@ -1,7 +1,9 @@
+import { Suspense } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "@/i18n";
+import { preloadRecharts } from "@/components/ui/recharts-resource";
 import { ThroughputChart } from "./ThroughputChart";
 
 beforeEach(() => {
@@ -19,19 +21,23 @@ const samples = [
 ];
 
 describe("ThroughputChart", () => {
-  it("keeps rendering the chart when a new range is loading over existing samples", () => {
+  it("keeps rendering the chart when a new range is loading over existing samples", async () => {
+    await preloadRecharts();
+
     render(
-      <ThroughputChart
-        samples={samples}
-        isLoading
-        error={null}
-        rangeId="24h"
-        onRangeChange={() => undefined}
-        onRetry={() => undefined}
-      />,
+      <Suspense fallback={null}>
+        <ThroughputChart
+          samples={samples}
+          isLoading
+          error={null}
+          rangeId="24h"
+          onRangeChange={() => undefined}
+          onRetry={() => undefined}
+        />
+      </Suspense>,
     );
 
-    expect(screen.getByTestId("throughput-chart")).toBeDefined();
+    expect(await screen.findByTestId("throughput-chart")).toBeDefined();
     expect(screen.queryByTestId("throughput-chart-skeleton")).toBeNull();
   });
 });

@@ -9,7 +9,7 @@ export interface AdvertisedEndpointView {
   diagnostic: string | null;
 }
 
-export const ADVERTISED_ENDPOINT_KEY = ["settings", "advertised-endpoint"] as const;
+const ADVERTISED_ENDPOINT_KEY = ["settings", "advertised-endpoint"] as const;
 
 export function useAdvertisedEndpoint() {
   return useQuery({

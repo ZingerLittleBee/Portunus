@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 
@@ -31,102 +31,168 @@ const PAGE_SIZE = 100;
 // `until` — it matches every row yet forces the envelope shape.
 const HISTORY_UNTIL_SENTINEL = "2999-01-01T00:00:00Z";
 
+interface AuditLogState {
+  mode: Mode;
+  outcomeFilter: OutcomeFilter;
+  prevStack: (string | undefined)[];
+  historyCursor: string | undefined;
+  pageNumber: number;
+  pageEntries: AuditEntry[];
+  nextCursor: string | null;
+  loading: boolean;
+  loadError: string | null;
+}
+
+type AuditLogAction =
+  | { type: "mode"; mode: Mode }
+  | { type: "outcome"; outcomeFilter: OutcomeFilter }
+  | { type: "older" }
+  | { type: "newer" }
+  | { type: "history-start" }
+  | { type: "history-success"; entries: AuditEntry[]; nextCursor: string | null }
+  | { type: "history-error"; message: string };
+
+const initialAuditLogState: AuditLogState = {
+  mode: "live",
+  outcomeFilter: "all",
+  prevStack: [],
+  historyCursor: undefined,
+  pageNumber: 1,
+  pageEntries: [],
+  nextCursor: null,
+  loading: false,
+  loadError: null,
+};
+
+function resetHistory(state: AuditLogState): AuditLogState {
+  return {
+    ...state,
+    prevStack: [],
+    historyCursor: undefined,
+    pageNumber: 1,
+  };
+}
+
+function auditLogReducer(state: AuditLogState, action: AuditLogAction): AuditLogState {
+  switch (action.type) {
+    case "mode": {
+      const next = { ...state, mode: action.mode };
+      return action.mode === "history" ? resetHistory(next) : next;
+    }
+    case "outcome": {
+      const next = { ...state, outcomeFilter: action.outcomeFilter };
+      return state.mode === "history" ? resetHistory(next) : next;
+    }
+    case "older":
+      if (!state.nextCursor || state.loading) return state;
+      return {
+        ...state,
+        prevStack: [...state.prevStack, state.historyCursor],
+        historyCursor: state.nextCursor,
+        pageNumber: state.pageNumber + 1,
+      };
+    case "newer": {
+      if (state.prevStack.length === 0 || state.loading) return state;
+      return {
+        ...state,
+        prevStack: state.prevStack.slice(0, -1),
+        historyCursor: state.prevStack[state.prevStack.length - 1],
+        pageNumber: Math.max(1, state.pageNumber - 1),
+      };
+    }
+    case "history-start":
+      return { ...state, loading: true, loadError: null };
+    case "history-success":
+      return {
+        ...state,
+        pageEntries: action.entries,
+        nextCursor: action.nextCursor,
+        loading: false,
+      };
+    case "history-error":
+      return { ...state, loadError: action.message, loading: false };
+  }
+}
+
+function isMode(value: string): value is Mode {
+  return value === "live" || value === "history";
+}
+
+function isOutcomeFilter(value: string): value is OutcomeFilter {
+  return value === "all" || value === "allow" || value === "deny";
+}
+
 export function AuditLog() {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<Mode>("live");
-  const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("all");
+  const [state, dispatch] = useReducer(auditLogReducer, initialAuditLogState);
 
   // Live tail: polls every 5s while in live mode, fully disabled in
   // history mode so the view is a frozen, scroll-stable snapshot.
-  const live = useAuditLog({ limit: 100 }, { enabled: mode === "live" });
-
-  // History pagination via the opaque server cursor. `prevStack` holds
-  // the cursors of the pages above the current one so "Newer" can walk
-  // back; `historyCursor` is the cursor for the page on screen (an
-  // `undefined` cursor is page 1, the newest). Pages are server-filtered
-  // by outcome, so changing the filter rebuilds from page 1.
-  const [prevStack, setPrevStack] = useState<(string | undefined)[]>([]);
-  const [historyCursor, setHistoryCursor] = useState<string | undefined>(undefined);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [pageEntries, setPageEntries] = useState<AuditEntry[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  function resetHistory() {
-    setPrevStack([]);
-    setHistoryCursor(undefined);
-    setPageNumber(1);
-  }
+  const live = useAuditLog({ limit: 100 }, { enabled: state.mode === "live" });
 
   function handleModeChange(next: Mode) {
-    setMode(next);
-    if (next === "history") resetHistory();
+    dispatch({ type: "mode", mode: next });
   }
 
-  function handleOutcomeChange(value: OutcomeFilter) {
-    setOutcomeFilter(value);
-    if (mode === "history") resetHistory();
+  function handleOutcomeChange(outcomeFilter: OutcomeFilter) {
+    dispatch({ type: "outcome", outcomeFilter });
   }
 
   function goOlder() {
-    if (!nextCursor || loading) return;
-    setPrevStack((s) => [...s, historyCursor]);
-    setHistoryCursor(nextCursor);
-    setPageNumber((n) => n + 1);
+    dispatch({ type: "older" });
   }
 
   function goNewer() {
-    if (prevStack.length === 0 || loading) return;
-    const target = prevStack[prevStack.length - 1];
-    setPrevStack((s) => s.slice(0, -1));
-    setHistoryCursor(target);
-    setPageNumber((n) => Math.max(1, n - 1));
+    dispatch({ type: "newer" });
   }
 
   // Fetch the active history page. Keyed only on the cursor + outcome,
   // each of which changes exactly once per navigation, so there is no
   // refetch storm.
   useEffect(() => {
-    if (mode !== "history") return;
+    if (state.mode !== "history") return;
     let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
+    dispatch({ type: "history-start" });
     // Build the query without explicit `undefined` keys —
     // `exactOptionalPropertyTypes` forbids them.
     const params: Parameters<typeof fetchAuditEnvelope>[0] = { limit: PAGE_SIZE };
-    if (historyCursor) {
-      params.cursor = historyCursor;
+    if (state.historyCursor) {
+      params.cursor = state.historyCursor;
     } else {
       params.until = HISTORY_UNTIL_SENTINEL;
     }
-    if (outcomeFilter !== "all") params.outcome = outcomeFilter;
+    if (state.outcomeFilter !== "all") params.outcome = state.outcomeFilter;
     fetchAuditEnvelope(params)
       .then((env) => {
         if (cancelled) return;
-        setPageEntries(env.entries);
-        setNextCursor(env.next_cursor ?? null);
+        dispatch({
+          type: "history-success",
+          entries: env.entries,
+          nextCursor: env.next_cursor ?? null,
+        });
       })
       .catch((err) => {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          dispatch({
+            type: "history-error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [mode, historyCursor, outcomeFilter]);
+  }, [state.mode, state.historyCursor, state.outcomeFilter]);
 
   // Live rows are filtered client-side (per spec FR-010); history rows
   // arrive already filtered by the server.
   const rows = useMemo<AuditEntry[]>(() => {
-    if (mode === "live") {
+    if (state.mode === "live") {
       const data = live.data ?? [];
-      return outcomeFilter === "all" ? data : data.filter((r) => r.outcome === outcomeFilter);
+      return state.outcomeFilter === "all" ? data : data.filter((r) => r.outcome === state.outcomeFilter);
     }
-    return pageEntries;
-  }, [mode, live.data, outcomeFilter, pageEntries]);
+    return state.pageEntries;
+  }, [state.mode, live.data, state.outcomeFilter, state.pageEntries]);
 
   function handleDownload() {
     const blob = toNdjsonBlob(rows);
@@ -180,14 +246,19 @@ export function AuditLog() {
         </Button>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={mode} onValueChange={(v) => handleModeChange(v as Mode)}>
+        <Tabs
+          value={state.mode}
+          onValueChange={(value) => {
+            if (isMode(value)) handleModeChange(value);
+          }}
+        >
           <TabsList>
             <TabsTrigger value="live">{t("audit.modeLive")}</TabsTrigger>
             <TabsTrigger value="history">{t("audit.modeHistory")}</TabsTrigger>
           </TabsList>
         </Tabs>
         <span className="text-sm text-muted-foreground">
-          {mode === "live" ? t("audit.liveHint") : t("audit.historyHint")}
+          {state.mode === "live" ? t("audit.liveHint") : t("audit.historyHint")}
         </span>
       </div>
       <DataTable
@@ -195,7 +266,12 @@ export function AuditLog() {
         columns={columns}
         rowKey={(e) => `${e.timestamp}-${e.actor}-${e.path}-${e.outcome}`}
         toolbar={
-          <Select value={outcomeFilter} onValueChange={(value) => handleOutcomeChange(value as OutcomeFilter)}>
+          <Select
+            value={state.outcomeFilter}
+            onValueChange={(value) => {
+              if (isOutcomeFilter(value)) handleOutcomeChange(value);
+            }}
+          >
             <SelectTrigger className="w-40" aria-label={t("audit.outcomeFilterLabel")}>
               <SelectValue />
             </SelectTrigger>
@@ -211,23 +287,23 @@ export function AuditLog() {
         emptyState={<EmptyState title={t("audit.emptyTitle")} description={t("audit.emptyBody")} />}
         ariaLabel={t("audit.title")}
       />
-      {mode === "history" && (
+      {state.mode === "history" && (
         <div className="flex items-center gap-3 pt-2">
-          <Button variant="outline" onClick={goNewer} disabled={prevStack.length === 0 || loading}>
+          <Button variant="outline" onClick={goNewer} disabled={state.prevStack.length === 0 || state.loading}>
             {t("audit.newer")}
           </Button>
           <span className="text-sm text-muted-foreground" aria-live="polite">
-            {loading ? t("audit.loading") : t("audit.page", { n: pageNumber })}
+            {state.loading ? t("audit.loading") : t("audit.page", { n: state.pageNumber })}
           </span>
-          <Button variant="outline" onClick={goOlder} disabled={!nextCursor || loading}>
+          <Button variant="outline" onClick={goOlder} disabled={!state.nextCursor || state.loading}>
             {t("audit.older")}
           </Button>
-          {!nextCursor && !loading && pageEntries.length > 0 && (
+          {!state.nextCursor && !state.loading && state.pageEntries.length > 0 && (
             <span className="text-sm text-muted-foreground">{t("audit.noMoreHistory")}</span>
           )}
-          {loadError && (
+          {state.loadError && (
             <span className="text-sm text-destructive" role="alert">
-              {loadError}
+              {state.loadError}
             </span>
           )}
         </div>

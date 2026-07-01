@@ -3,12 +3,12 @@ import {
   Link,
   notFound,
   redirect,
-} from '@tanstack/react-router';
-import { DocsLayout } from 'fumadocs-ui/layouts/docs';
-import { createServerFn } from '@tanstack/react-start';
-import { OLD_TO_NEW } from '@/lib/redirects';
-import { slugsToMarkdownPath, source } from '@/lib/source';
-import browserCollections from 'collections/browser';
+} from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { staticFunctionMiddleware } from "@tanstack/start-static-server-functions";
+import browserCollections from "collections/browser";
+import { useFumadocsLoader } from "fumadocs-core/source/client";
+import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import {
   DocsBody,
   DocsDescription,
@@ -16,55 +16,55 @@ import {
   DocsTitle,
   MarkdownCopyButton,
   ViewOptionsPopover,
-} from 'fumadocs-ui/layouts/docs/page';
-import { baseOptions } from '@/lib/layout.shared';
-import { gitConfig, siteUrl } from '@/lib/shared';
-import { staticFunctionMiddleware } from '@tanstack/start-static-server-functions';
-import { useFumadocsLoader } from 'fumadocs-core/source/client';
-import { Suspense } from 'react';
-import { useMDXComponents } from '@/components/mdx';
+} from "fumadocs-ui/layouts/docs/page";
+import { Suspense } from "react";
+import { getMDXComponents } from "@/components/mdx";
+import { baseOptions } from "@/lib/layout.shared";
+import { OLD_TO_NEW } from "@/lib/redirects";
+import { gitConfig, siteUrl } from "@/lib/shared";
+import { slugsToMarkdownPath, source } from "@/lib/source";
 
-export const Route = createFileRoute('/$lang/docs/$')({
+export const Route = createFileRoute("/$lang/docs/$")({
   component: Page,
   beforeLoad: ({ params }) => {
-    const oldSlug = params._splat ?? '';
+    const oldSlug = params._splat ?? "";
     // The docs root has no page of its own — land on the Overview section.
-    if (oldSlug === '') {
+    if (oldSlug === "") {
       throw redirect({
-        to: '/$lang/docs/$',
-        params: { lang: params.lang, _splat: 'overview' },
+        to: "/$lang/docs/$",
+        params: { lang: params.lang, _splat: "overview" },
         statusCode: 301,
       });
     }
     if (oldSlug in OLD_TO_NEW) {
       throw redirect({
-        to: '/$lang/docs/$',
+        to: "/$lang/docs/$",
         params: { lang: params.lang, _splat: OLD_TO_NEW[oldSlug] },
         statusCode: 301,
       });
     }
   },
   loader: async ({ params }) => {
-    const slugs = params._splat?.split('/') ?? [];
+    const slugs = params._splat?.split("/") ?? [];
     const data = await loader({ data: { slugs, lang: params.lang } });
-    await clientLoader.preload(data.path);
+    void clientLoader.preload(data.path);
     return data;
   },
   head: ({ loaderData }) => {
     if (!loaderData?.url) return {};
     const canonical = `${siteUrl}${loaderData.url}`;
     return {
-      links: [{ rel: 'canonical', href: canonical }],
-      meta: [{ property: 'og:url', content: canonical }],
+      links: [{ rel: "canonical", href: canonical }],
+      meta: [{ property: "og:url", content: canonical }],
     };
   },
 });
 
 const loader = createServerFn({
-  method: 'GET',
+  method: "GET",
 })
-  .inputValidator((input: { slugs: string[]; lang: string }) => input)
   .middleware([staticFunctionMiddleware])
+  .inputValidator((input: { slugs: string[]; lang: string }) => input)
   .handler(async ({ data: { slugs, lang } }) => {
     const page = source.getPage(slugs, lang);
     if (!page) throw notFound();
@@ -101,7 +101,7 @@ const clientLoader = browserCollections.docs.createClientLoader({
           />
         </div>
         <DocsBody>
-          <MDX components={useMDXComponents()} />
+          <MDX components={getMDXComponents()} />
         </DocsBody>
       </DocsPage>
     );
@@ -115,7 +115,9 @@ function Page() {
   return (
     <DocsLayout {...baseOptions(lang)} tree={pageTree}>
       <Link to={markdownUrl} hidden />
-      <Suspense>{clientLoader.useContent(path, { markdownUrl, path })}</Suspense>
+      <Suspense>
+        {clientLoader.useContent(path, { markdownUrl, path })}
+      </Suspense>
     </DocsLayout>
   );
 }

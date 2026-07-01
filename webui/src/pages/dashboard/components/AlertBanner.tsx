@@ -7,6 +7,19 @@ export interface AlertBannerProps {
 
 export function AlertBanner({ issues }: AlertBannerProps) {
   if (issues.length === 0) return null;
+
+  const keyedIssues: Array<{ key: string; message: string; separator: boolean }> = [];
+  const seen = new Map<string, number>();
+  for (const message of issues) {
+    const occurrence = (seen.get(message) ?? 0) + 1;
+    seen.set(message, occurrence);
+    keyedIssues.push({
+      key: `${message}:${occurrence}`,
+      message,
+      separator: keyedIssues.length > 0,
+    });
+  }
+
   return (
     <div
       role="alert"
@@ -14,14 +27,14 @@ export function AlertBanner({ issues }: AlertBannerProps) {
     >
       <AlertTriangle className="h-4 w-4 shrink-0" />
       <div className="flex flex-wrap gap-x-3 gap-y-1">
-        {issues.map((msg, i) => (
-          <span key={i} className="flex items-center gap-2">
-            {i > 0 && (
+        {keyedIssues.map((issue) => (
+          <span key={issue.key} className="flex items-center gap-2">
+            {issue.separator && (
               <span aria-hidden="true" className="opacity-60">
                 ·
               </span>
             )}
-            {msg}
+            {issue.message}
           </span>
         ))}
       </div>

@@ -150,7 +150,7 @@ export function App() {
       <Route
         path="/users"
         element={
-          <AuthGate role="superadmin">
+          <AuthGate requiredRole="superadmin">
             <Shell>
               <UsersList />
             </Shell>
@@ -160,7 +160,7 @@ export function App() {
       <Route
         path="/users/new"
         element={
-          <AuthGate role="superadmin">
+          <AuthGate requiredRole="superadmin">
             <Shell>
               <UserCreate />
             </Shell>
@@ -222,7 +222,7 @@ export function App() {
       <Route
         path="/clients/new"
         element={
-          <AuthGate role="superadmin">
+          <AuthGate requiredRole="superadmin">
             <Shell>
               <ClientProvision />
             </Shell>
@@ -242,7 +242,7 @@ export function App() {
       <Route
         path="/audit"
         element={
-          <AuthGate role="superadmin">
+          <AuthGate requiredRole="superadmin">
             <Shell>
               <AuditLog />
             </Shell>
@@ -252,7 +252,7 @@ export function App() {
       <Route
         path="/metrics"
         element={
-          <AuthGate role="superadmin">
+          <AuthGate requiredRole="superadmin">
             <Shell>
               <Metrics />
             </Shell>

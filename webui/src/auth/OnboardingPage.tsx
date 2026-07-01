@@ -9,7 +9,7 @@ import { zResolver } from "@/lib/zod-resolver";
 
 import { ApiError } from "@/api/client";
 import { login, onboard } from "@/api/auth";
-import { fetchIdentity, ME_QUERY_KEY } from "@/auth/AuthGate";
+import { fetchIdentity, ME_QUERY_KEY } from "@/auth/identity";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -48,15 +48,16 @@ export function OnboardingPage() {
   async function onSubmit(values: z.infer<typeof schema>) {
     setError(null);
     try {
-      await onboard({
+      const userId = values.userId.trim();
+      const identity = await onboard({
         setup_token: values.setupToken.trim(),
-        user_id: values.userId.trim(),
+        user_id: userId,
         display_name: values.displayName.trim(),
         password: values.password,
         password_confirm: values.passwordConfirm,
-      });
-      await login({ user_id: values.userId.trim(), password: values.password });
-      const identity = await fetchIdentity();
+      })
+        .then(() => login({ user_id: userId, password: values.password }))
+        .then(() => fetchIdentity());
       queryClient.setQueryData(["auth", "status"], { onboarding_required: false });
       queryClient.setQueryData(ME_QUERY_KEY, identity);
       navigate("/", { replace: true });

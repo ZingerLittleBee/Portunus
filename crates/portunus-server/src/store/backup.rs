@@ -453,11 +453,15 @@ mod tests {
 
         run_restore(&snap, target.path(), true).unwrap();
 
-        // Sidecars planted before restore are gone (state.db.lock is
-        // re-created by Store::open during the handshake, so assert on
-        // the WAL/SHM that were explicitly removed and not re-created).
-        assert!(!target.path().join("state.db-wal").exists());
-        assert!(!target.path().join("state.db-shm").exists());
+        // The force path must not preserve stale sidecar contents.
+        // Store::open may create fresh WAL/SHM files during the restore
+        // handshake, so absence is not the portable invariant.
+        for sidecar in ["state.db-wal", "state.db-shm"] {
+            let path = target.path().join(sidecar);
+            if path.exists() {
+                assert_ne!(fs::read(&path).unwrap().as_slice(), b"x");
+            }
+        }
         // The restored DB still has the seeded row.
         let restored = Store::open(target.path()).unwrap();
         let n: i64 = restored
