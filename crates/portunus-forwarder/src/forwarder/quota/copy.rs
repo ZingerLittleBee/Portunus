@@ -1,13 +1,21 @@
 //! 013-traffic-quotas E1: TCP userspace quota-aware bidirectional copy.
 //!
-//! Records bytes only AFTER `write_all` succeeds — mirrors
-//! `rate_limit/copy.rs:213` semantics so a torn IO never lies about
-//! delivery. Each half-direction:
-//!     read(buf) → write_all(buf[..n]) → quota.consume(n)
-//!     if Exhausted → shutdown writer half, return delivered total
+//! #52: PRE-DEBIT ordering. Each half-direction:
+//!     read(buf) → quota.consume(n)
+//!     Granted   → write_all(buf[..n]); total += n
+//!     Exhausted → drop this chunk, shutdown writer half, return total
 //!
-//! The quota is consulted *after* the bytes are on the wire so the
-//! counters and the consume budget agree byte-for-byte.
+//! The budget is claimed *before* the bytes go on the wire (mirroring
+//! the UDP batched precedent `udp/flow.rs::quota_try_consume`). Because
+//! `QuotaHandle::consume` is a saturating CAS, only chunks fully covered
+//! by the budget are ever written, so with N connections sharing one
+//! handle aggregate delivery never exceeds the budget — over-delivery
+//! is bounded to 0 regardless of connection count. The trade-off is a
+//! one-time boundary UNDER-delivery of the straddling chunk (≤ 1 chunk
+//! per handle), the fail-safe direction for a byte quota. A
+//! write-after-debit (or the old write-then-debit) ordering would let
+//! each in-flight connection push a full chunk past the budget
+//! (overshoot ≈ in-flight-chunks × `COPY_BUF_SIZE`).
 
 #![allow(
     dead_code,
@@ -18,31 +26,32 @@ use std::io;
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use super::{ConsumeOutcome, QuotaHandle};
 
 const COPY_BUF_SIZE: usize = 64 * 1024;
 
-/// Run a bidirectional copy with quota enforcement. Returns the
-/// `(bytes_in, bytes_out)` actually delivered to upstream / downstream.
-/// On quota exhaustion the copy returns cleanly with the delivered
-/// totals; the caller closes the sockets.
-pub async fn copy_bidirectional_with_quota<I, O>(
-    inbound: &mut I,
-    outbound: &mut O,
+/// Run a bidirectional copy with quota enforcement over a concrete pair
+/// of `TcpStream`s. Returns the `(bytes_in, bytes_out)` actually
+/// delivered to upstream / downstream. On quota exhaustion the copy
+/// returns cleanly with the delivered totals; the caller closes the
+/// sockets.
+///
+/// Uses `TcpStream::split` (native, lock-free) rather than
+/// `tokio::io::split` (a `BiLock` taken on every half poll) — #51.
+pub async fn copy_bidirectional_with_quota(
+    inbound: &mut TcpStream,
+    outbound: &mut TcpStream,
     quota: Arc<QuotaHandle>,
-) -> io::Result<(u64, u64)>
-where
-    I: AsyncRead + AsyncWrite + Unpin,
-    O: AsyncRead + AsyncWrite + Unpin,
-{
-    let (mut ri, mut wi) = tokio::io::split(inbound);
-    let (mut ro, mut wo) = tokio::io::split(outbound);
+) -> io::Result<(u64, u64)> {
+    let (mut ri, mut wi) = inbound.split();
+    let (mut ro, mut wo) = outbound.split();
     let q_fwd = Arc::clone(&quota);
     let q_rev = quota;
 
-    let fwd = async move { copy_one_dir(&mut ri, &mut wo, &q_fwd).await };
-    let rev = async move { copy_one_dir(&mut ro, &mut wi, &q_rev).await };
+    let fwd = async { copy_one_dir(&mut ri, &mut wo, &q_fwd).await };
+    let rev = async { copy_one_dir(&mut ro, &mut wi, &q_rev).await };
     let (a, b) = tokio::try_join!(fwd, rev)?;
     Ok((a, b))
 }
@@ -64,10 +73,15 @@ where
             let _ = writer.shutdown().await;
             return Ok(total);
         }
-        writer.write_all(&buf[..n]).await?;
-        total = total.saturating_add(u64::try_from(n).unwrap_or(0));
+        // #52: pre-debit BEFORE writing. Only a fully-granted chunk is
+        // forwarded; a straddling draw spends the remaining budget but
+        // the chunk is dropped, so aggregate delivery across all
+        // connections sharing this handle can never exceed the budget.
         match quota.consume(i64::try_from(n).unwrap_or(i64::MAX)) {
-            ConsumeOutcome::Granted => {}
+            ConsumeOutcome::Granted => {
+                writer.write_all(&buf[..n]).await?;
+                total = total.saturating_add(u64::try_from(n).unwrap_or(0));
+            }
             ConsumeOutcome::Exhausted => {
                 let _ = writer.shutdown().await;
                 return Ok(total);
@@ -133,7 +147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_one_dir_exhausts_and_returns_partial() {
+    async fn copy_one_dir_drops_chunk_that_straddles_budget() {
         let (mut writer_a, mut reader_a) = duplex(8 * 1024);
         let (mut reader_b, mut writer_b) = duplex(8 * 1024);
         let quota = handle(64);
@@ -156,12 +170,73 @@ mod tests {
         producer.await.unwrap();
         let total = copier.await.unwrap().unwrap();
         let sink = drainer.await.unwrap();
-        // The first read returns up to 64 KiB (one bufsize). The whole
-        // 200-byte producer push fits in a single read, so we deliver
-        // 200 bytes, write_all succeeds, then `consume(200)` returns
-        // Exhausted (straddled). `total` is the bytes that landed.
-        assert_eq!(total, 200);
-        assert_eq!(sink.len(), 200);
+        // #52 pre-debit: the whole 200-byte push arrives in one read.
+        // `consume(200)` on a 64-byte budget saturates to 0 and returns
+        // Exhausted (the chunk straddles the budget), so the chunk is
+        // DROPPED — never written — and the direction half-closes.
+        // Delivery therefore never exceeds the budget (here 0 of this
+        // straddling chunk landed). The old write-then-debit path would
+        // have forwarded all 200 bytes, over-delivering by 136.
+        assert_eq!(total, 0, "straddling chunk is dropped, not forwarded");
+        assert_eq!(sink.len(), 0);
+        assert!(quota.is_exhausted());
+        assert_eq!(quota.remaining(), 0);
+    }
+
+    /// #52 regression: N connections sharing one `QuotaHandle` must not
+    /// aggregate-overshoot the budget. With the pre-debit ordering every
+    /// forwarded chunk is fully covered by a `Granted` draw, and
+    /// `consume` is a saturating CAS, so the sum of bytes delivered
+    /// across BOTH connections can never exceed the budget — the bound
+    /// is a constant (0 overshoot), independent of connection count.
+    /// Under the old write-then-debit ordering each connection could
+    /// push a full `COPY_BUF_SIZE` chunk past the budget.
+    #[tokio::test]
+    async fn two_connections_sharing_handle_cannot_overshoot_budget() {
+        use tokio::io::AsyncReadExt;
+
+        const BUDGET: i64 = 100_000;
+        // Big enough that neither producer blocks even if its copier
+        // stops reading early (leftover bytes sit in the buffer, dropped
+        // when the reader half is torn down at task end).
+        const PIPE: usize = 512 * 1024;
+        const PUSH: usize = 256 * 1024;
+
+        let quota = handle(BUDGET);
+
+        async fn drive(quota: Arc<QuotaHandle>) -> u64 {
+            let (mut wa, mut ra) = duplex(PIPE);
+            let (mut rb, mut wb) = duplex(PIPE);
+            let producer = tokio::spawn(async move {
+                let _ = wa.write_all(&vec![0x5A_u8; PUSH]).await;
+                drop(wa);
+            });
+            let copier = tokio::spawn(async move { copy_one_dir(&mut ra, &mut wb, &quota).await });
+            let drainer = tokio::spawn(async move {
+                let mut sink = Vec::new();
+                let _ = rb.read_to_end(&mut sink).await;
+                sink.len()
+            });
+            let _ = producer.await;
+            let total = copier.await.unwrap().unwrap();
+            let received = drainer.await.unwrap();
+            assert_eq!(
+                received,
+                usize::try_from(total).unwrap(),
+                "each connection delivers exactly what it forwarded"
+            );
+            total
+        }
+
+        let (total_a, total_b) = tokio::join!(drive(Arc::clone(&quota)), drive(Arc::clone(&quota)));
+
+        let aggregate = total_a + total_b;
+        assert!(
+            aggregate <= u64::try_from(BUDGET).unwrap(),
+            "aggregate delivery {aggregate} must not exceed the {BUDGET}-byte budget \
+             (overshoot bound is a constant 0, independent of connection count)"
+        );
+        assert!(aggregate > 0, "some bytes must have been delivered");
         assert!(quota.is_exhausted());
         assert_eq!(quota.remaining(), 0);
     }
