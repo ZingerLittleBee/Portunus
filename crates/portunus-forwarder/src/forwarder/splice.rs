@@ -159,6 +159,39 @@ pub(crate) struct Transferred {
     pub(crate) bytes_out: u64,
 }
 
+/// How a single splice direction terminated. Distinguishes a clean end
+/// of stream — after which the direction's pipe is guaranteed empty —
+/// from a mid-stream quota cutoff, which half-closes the destination but
+/// may leave undelivered bytes buffered in the pipe.
+///
+/// The distinction gates pipe reuse (issue #43): a pipe drained to EOF
+/// is safe to return to the thread-local pool, but a pipe abandoned on a
+/// quota cutoff must be dropped so its residual bytes can never be
+/// prepended to a later connection's stream on the same worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) enum DirOutcome {
+    /// Source signalled EOF and the pipe was fully drained to the
+    /// destination before the direction returned.
+    Eof,
+    /// A per-rule/per-owner traffic quota was exhausted mid-stream. The
+    /// destination write side was half-closed, but the pipe may still
+    /// hold bytes that were never delivered — it must NOT be pooled.
+    QuotaCutoff,
+}
+
+/// Pooling-decision predicate for a completed bidirectional splice.
+///
+/// A [`PipePair`] may return to the reuse pool only when BOTH directions
+/// ended in a clean [`Eof`](DirOutcome::Eof) drain — the only state in
+/// which both pipes are provably empty. If either direction ended on a
+/// [`QuotaCutoff`](DirOutcome::QuotaCutoff) the pipes may carry residual
+/// bytes and are dropped instead (issue #43).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const fn may_reuse_pipes(dn_to_up: DirOutcome, up_to_dn: DirOutcome) -> bool {
+    matches!(dn_to_up, DirOutcome::Eof) && matches!(up_to_dn, DirOutcome::Eof)
+}
+
 /// Error type of [`copy_bidirectional`].
 ///
 /// The [`Unsupported`](SpliceError::Unsupported) variant is the **only**
@@ -200,15 +233,23 @@ impl From<std::io::Error> for SpliceError {
 /// `contracts/internal-api.md` § 3 is intentionally low-cardinality.
 #[cfg(target_os = "linux")]
 fn emit_splice_selected(ctx: &CopyCtx, pipe_capacity_bytes: usize) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, PoisonError};
+    use dashmap::DashSet;
 
-    static SEEN: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    let first = {
-        let mut guard = seen.lock().unwrap_or_else(PoisonError::into_inner);
-        guard.insert(ctx.rule_id.0)
-    };
+    // Sharded set instead of a process-global `Mutex<HashSet>`: every
+    // splice connection consults this on its way into the fast path, so
+    // the steady state (rule already registered) must not serialise on a
+    // single exclusive lock (#48). The `contains` fast path takes only a
+    // per-shard read lock, so concurrent connections proceed in parallel;
+    // the exclusive `insert` runs at most once per rule.
+    static SEEN: OnceLock<DashSet<u64>> = OnceLock::new();
+    let seen = SEEN.get_or_init(DashSet::new);
+    if seen.contains(&ctx.rule_id.0) {
+        return;
+    }
+    // First observation for this rule (or a race between concurrent
+    // first-timers): `insert` returns `true` for exactly one caller, so
+    // the event stays one-per-rule as the schema requires.
+    let first = seen.insert(ctx.rule_id.0);
     if first {
         tracing::info!(
             event = "proxy.splice_selected",
@@ -238,7 +279,7 @@ mod linux {
     use tokio::io::Interest;
     use tokio::net::TcpStream;
 
-    use super::{CopyCtx, SpliceError, Transferred};
+    use super::{CopyCtx, DirOutcome, SpliceError, Transferred};
 
     /// Target pipe capacity per [research.md § R-003](../../specs/012-tcp-zero-copy-splice/research.md).
     /// 1 MiB matches the bench-host `pipe-max-size` default; failure to
@@ -608,9 +649,13 @@ mod linux {
     }
 
     /// One direction of the bidirectional splice loop:
-    /// `src → pipe → dst`. Returns `Ok(())` on clean EOF (source
-    /// signalled, pipe drained, `dst.shutdown(Write)` called); returns
-    /// `Err(SpliceError)` per the contract.
+    /// `src → pipe → dst`. Returns [`DirOutcome::Eof`] on clean EOF
+    /// (source signalled, pipe drained, `dst.shutdown(Write)` called) or
+    /// [`DirOutcome::QuotaCutoff`] when a traffic quota was exhausted
+    /// mid-stream (dst half-closed, but the pipe may retain undelivered
+    /// bytes); returns `Err(SpliceError)` per the contract. The caller
+    /// uses the outcome to decide whether the pipe is safe to pool
+    /// (issue #43).
     ///
     /// The first time `src → pipe` returns `Ok(n > 0)` flips
     /// `moved_any` to true — after which no `Unsupported` is permitted
@@ -623,7 +668,7 @@ mod linux {
         bytes_out: &AtomicU64,
         quota: Option<&std::sync::Arc<crate::forwarder::quota::QuotaHandle>>,
         live: Option<(&crate::forwarder::stats::LiveBytesSink, bool)>,
-    ) -> Result<(), SpliceError> {
+    ) -> Result<DirOutcome, SpliceError> {
         let pipe_read_fd = pipe.read_fd.as_raw_fd();
         let pipe_write_fd = pipe.write_fd.as_raw_fd();
         let src_fd = src.as_raw_fd();
@@ -638,7 +683,11 @@ mod linux {
                 && q.is_exhausted()
             {
                 let _ = nix_shutdown(dst.as_raw_fd(), NixShutdown::Write);
-                return Ok(());
+                // Pipe is empty at the top of the loop (the prior
+                // iteration fully drained it), but a quota cutoff is
+                // still reported so the caller uniformly refuses to pool
+                // a quota-terminated connection's pipes (issue #43).
+                return Ok(DirOutcome::QuotaCutoff);
             }
 
             // try_io-first: attempt splice immediately; only await
@@ -664,7 +713,7 @@ mod linux {
                     // composes with the `&TcpStream` shared between the
                     // two splice directions.
                     let _ = nix_shutdown(dst.as_raw_fd(), NixShutdown::Write);
-                    return Ok(());
+                    return Ok(DirOutcome::Eof);
                 }
                 Ok(n) => {
                     moved_any.store(true, Ordering::Relaxed);
@@ -690,10 +739,14 @@ mod linux {
                 .await
                 .map_err(SpliceError::Io)?;
             if outcome == DrainOutcome::QuotaExhausted {
-                // Bytes already delivered; half-close `dst` write so the
-                // peer side observes EOF and exits cleanly.
+                // The quota tripped part-way through draining this batch:
+                // some bytes of `n_in` may still sit in the pipe. Bytes
+                // already counted were delivered; half-close `dst` write
+                // so the peer side observes EOF and exits cleanly, and
+                // report the cutoff so the caller drops (never pools)
+                // this pipe (issue #43).
                 let _ = nix_shutdown(dst.as_raw_fd(), NixShutdown::Write);
-                return Ok(());
+                return Ok(DirOutcome::QuotaCutoff);
             }
         }
     }
@@ -752,12 +805,19 @@ mod linux {
         );
 
         match result {
-            Ok(((), ())) => {
-                // Clean shutdown: pipes are drained (both directions hit
-                // EOF + drain_pipe_to flushed remaining bytes). Return
-                // them to the thread-local pool for reuse.
-                pipe_dn_to_up.release();
-                pipe_up_to_dn.release();
+            Ok((dn_outcome, up_outcome)) => {
+                if super::may_reuse_pipes(dn_outcome, up_outcome) {
+                    // Both directions hit EOF and `drain_pipe_to` flushed
+                    // every byte, so both pipes are provably empty —
+                    // return them to the thread-local pool for reuse.
+                    pipe_dn_to_up.release();
+                    pipe_up_to_dn.release();
+                }
+                // Otherwise at least one direction ended on a quota
+                // cutoff and the pipes may still hold undelivered bytes.
+                // Dropping them here (end of scope) closes the fds so a
+                // dirty buffer can never re-enter PIPE_POOL and corrupt
+                // the next connection on this worker (issue #43).
                 Ok(Transferred {
                     bytes_in: bytes_in.load(Ordering::Relaxed),
                     bytes_out: bytes_out.load(Ordering::Relaxed),
@@ -873,6 +933,39 @@ mod eligible_tests {
             ..base_ctx()
         };
         assert!(!eligible(&ctx));
+    }
+}
+
+#[cfg(test)]
+mod pool_decision_tests {
+    //! Truth table for [`may_reuse_pipes`] — the issue #43 guard that
+    //! keeps a quota-terminated (possibly non-empty) pipe out of the
+    //! reuse pool. Pure logic, runs on every platform.
+
+    use super::{DirOutcome, may_reuse_pipes};
+
+    #[test]
+    fn both_eof_may_reuse() {
+        // The only state in which both pipes are provably drained.
+        assert!(may_reuse_pipes(DirOutcome::Eof, DirOutcome::Eof));
+    }
+
+    #[test]
+    fn quota_cutoff_downstream_must_not_reuse() {
+        assert!(!may_reuse_pipes(DirOutcome::QuotaCutoff, DirOutcome::Eof));
+    }
+
+    #[test]
+    fn quota_cutoff_upstream_must_not_reuse() {
+        assert!(!may_reuse_pipes(DirOutcome::Eof, DirOutcome::QuotaCutoff));
+    }
+
+    #[test]
+    fn quota_cutoff_both_must_not_reuse() {
+        assert!(!may_reuse_pipes(
+            DirOutcome::QuotaCutoff,
+            DirOutcome::QuotaCutoff
+        ));
     }
 }
 
