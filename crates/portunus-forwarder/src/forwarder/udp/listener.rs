@@ -53,11 +53,12 @@ use tracing::{debug, info, trace, warn};
 
 use crate::forwarder::quota::QuotaHandle;
 use crate::forwarder::rate_limit::scope::{
-    ActiveGuard, LayeredAcquire, OwnerRateLimitHandle, RuleRateLimitHandle, try_acquire_layered,
+    ActiveGuard, BandwidthDirection, LayeredAcquire, OwnerRateLimitHandle, RuleRateLimitHandle,
+    UdpBandwidthShaper, try_acquire_layered,
 };
 use crate::forwarder::rate_limit::stats::RateLimitStatsAccumulator;
 use crate::forwarder::stats::RuleStats;
-use crate::forwarder::udp::batch::{BatchBufs, recv_batch, send_batch_connected};
+use crate::forwarder::udp::batch::{BATCH_SIZE, BatchBufs, recv_batch, send_batch_connected};
 use crate::forwarder::udp::demux::DemuxCommand;
 use crate::forwarder::udp::error::{UdpAction, classify_udp_error};
 use crate::forwarder::udp::flow::UdpFlow;
@@ -244,8 +245,9 @@ pub async fn run_listener<R: Resolve + 'static>(
 /// Why run-length grouping (not full hashmap-grouping):
 /// * Common workloads cluster temporally — iperf3 UDP is single-flow,
 ///   NAT-style multi-flow tends to interleave in bursts. Run-length
-///   captures both with O(batch) work and zero allocations on the
-///   hot path.
+///   captures both with O(batch) work and zero heap allocations on the
+///   hot path — the pending run stores its indices/sizes in fixed-size
+///   `[_; BATCH_SIZE]` arrays (issue #55), not per-batch `Vec`s.
 /// * Reordering: UDP gives no ordering guarantee in general, but
 ///   sendmmsg preserves the order *within* a single syscall, and the
 ///   per-flow groups we emit match the order packets arrived in. So
@@ -256,6 +258,19 @@ async fn process_batch<R: Resolve + 'static>(
     bufs: &BatchBufs,
     n: usize,
 ) {
+    // #44: snapshot the INBOUND bandwidth limiters ONCE for the whole
+    // batch (mirrors the #51 per-batch snapshot cadence — do NOT
+    // re-snapshot per packet, which would reintroduce the per-chunk
+    // RwLock contention #51 removed). An uncapped rule never snapshots
+    // (the `.as_ref()` short-circuits) and `in_shaper.has_cap()` is one
+    // cached bool, so the uncapped fast path pays ZERO extra atomics per
+    // datagram. Hot-reload is observed on the next batch (sub-ms),
+    // inside FR-011's 1 s budget.
+    let rule_in = cfg.rate_limit.as_ref().and_then(|h| h.snapshot());
+    let owner_in = cfg.owner_rate_limit.as_ref().and_then(|h| h.snapshot());
+    let in_shaper =
+        UdpBandwidthShaper::new(owner_in.as_ref(), rule_in.as_ref(), BandwidthDirection::In);
+
     // Pending run: shared flow + indices of slots queued for a
     // single sendmmsg. Indices are into `bufs`; sizes are pre-cast to
     // u64 so the flush path doesn't redo the conversion.
@@ -292,21 +307,26 @@ async fn process_batch<R: Resolve + 'static>(
             if !flow.quota_try_consume(n_u64) {
                 continue;
             }
+            // #44: a packet must pass BOTH quota and bandwidth to enter
+            // the run. On bandwidth-throttle, refund the quota we just
+            // eagerly debited and DROP the datagram (drop-based UDP
+            // shaping — never sleep). Owner bucket is consulted before
+            // the rule bucket inside the shaper (FR-013).
+            if in_shaper.has_cap() && !in_shaper.admits(n_u64) {
+                flow.quota_restore(n_u64);
+                cfg.stats.errors.inc_bandwidth_dropped_in();
+                continue;
+            }
             match &mut pending {
                 Some(run) if Arc::ptr_eq(&run.flow.upstream_socket, &flow.upstream_socket) => {
-                    run.indices.push(i);
-                    run.sizes.push(n_u64);
+                    run.push(i, n_u64);
                     continue;
                 }
                 _ => {
                     if let Some(run) = pending.take() {
                         flush_run(cfg, bufs, run).await;
                     }
-                    pending = Some(PendingRun {
-                        flow,
-                        indices: vec![i],
-                        sizes: vec![n_u64],
-                    });
+                    pending = Some(PendingRun::new(flow, i, n_u64));
                     continue;
                 }
             }
@@ -327,13 +347,46 @@ async fn process_batch<R: Resolve + 'static>(
 
 /// A run of consecutive datagrams (from `process_batch`) that all
 /// belong to the same live flow. Flushed via `sendmmsg(2)` on Linux.
+///
+/// Issue #55: `indices` / `sizes` are fixed-size `[_; BATCH_SIZE]`
+/// arrays rather than `Vec`s. A run can never exceed one `recvmmsg`
+/// batch (`n ≤ BATCH_SIZE`), so `len` bounds the live prefix and the
+/// hot path pays no per-batch heap allocation.
 struct PendingRun {
     flow: Arc<UdpFlow>,
-    /// Indices into `BatchBufs` for the payloads to send.
-    indices: Vec<usize>,
-    /// Pre-cast byte counts, parallel to `indices`. Saves a re-cast
-    /// in the success path.
-    sizes: Vec<u64>,
+    /// Indices into `BatchBufs` for the payloads to send (`[..len]`).
+    indices: [usize; BATCH_SIZE],
+    /// Pre-cast byte counts, parallel to `indices` (`[..len]`). Saves a
+    /// re-cast in the success path.
+    sizes: [u64; BATCH_SIZE],
+    /// Number of populated entries in `indices` / `sizes`.
+    len: usize,
+}
+
+impl PendingRun {
+    /// Start a run with its first datagram (`bufs` slot `i`, `n` bytes).
+    fn new(flow: Arc<UdpFlow>, i: usize, n: u64) -> Self {
+        let mut indices = [0usize; BATCH_SIZE];
+        let mut sizes = [0u64; BATCH_SIZE];
+        indices[0] = i;
+        sizes[0] = n;
+        Self {
+            flow,
+            indices,
+            sizes,
+            len: 1,
+        }
+    }
+
+    /// Append one more datagram to the run. The caller guarantees the
+    /// run never exceeds a single `recvmmsg` batch, so `len` stays
+    /// within `BATCH_SIZE`.
+    fn push(&mut self, i: usize, n: u64) {
+        debug_assert!(self.len < BATCH_SIZE, "pending run overflowed batch");
+        self.indices[self.len] = i;
+        self.sizes[self.len] = n;
+        self.len += 1;
+    }
 }
 
 /// Send a pending run of packets via batched `sendmmsg` on Linux,
@@ -349,27 +402,38 @@ async fn flush_run<R: Resolve + 'static>(
         flow,
         indices,
         sizes,
+        len,
     } = run;
-    debug_assert_eq!(indices.len(), sizes.len());
-    debug_assert!(!indices.is_empty());
+    debug_assert!(len > 0);
+    debug_assert!(len <= BATCH_SIZE);
 
-    // Build the payload-slice array. All slices borrow from `bufs`,
-    // which lives for the duration of `process_batch` — fine.
-    let payloads: Vec<&[u8]> = indices.iter().map(|&i| bufs.slot(i).0).collect();
+    // Build the payload-slice array on the stack (issue #55: no per-run
+    // `Vec`). Only the live `[..len]` prefix is handed to sendmmsg; the
+    // empty-slice default fills the padding. All slices borrow from
+    // `bufs`, which lives for the duration of `process_batch` — fine.
+    let mut payload_arr: [&[u8]; BATCH_SIZE] = [&[]; BATCH_SIZE];
+    for (slot, &i) in payload_arr.iter_mut().zip(indices[..len].iter()) {
+        *slot = bufs.slot(i).0;
+    }
+    let payloads = &payload_arr[..len];
 
-    match send_batch_connected(&flow.upstream_socket, &payloads) {
+    match send_batch_connected(&flow.upstream_socket, payloads) {
         Ok(sent) => {
-            // Account for the prefix that the kernel accepted. Quota
-            // was eagerly debited in process_batch, so no consume
-            // call here — just stats + last_seen.
-            for s in sizes.iter().take(sent) {
+            // Account for the prefix that the kernel accepted. Quota +
+            // bandwidth were eagerly debited in process_batch, so no
+            // consume call here — just stats + last_seen.
+            for s in sizes[..len].iter().take(sent) {
                 flow.bump_inbound(*s).await;
                 cfg.stats.inc_datagram_in(cfg.listen_port, *s);
             }
-            if sent < indices.len() {
+            if sent < len {
                 // Refund the eagerly-debited quota for the unsent
-                // tail so per-batch over-debit stays at 0.
-                for s in sizes.iter().skip(sent) {
+                // tail so per-batch over-debit stays at 0. (Bandwidth
+                // tokens are not refunded — token buckets have no
+                // restore; a rare SO_SNDBUF partial send slightly
+                // over-counts the shaper, which is the fail-safe
+                // direction for a cap.)
+                for s in sizes[..len].iter().skip(sent) {
                     flow.quota_restore(*s);
                 }
                 // Probe-after-partial: sendmmsg drops the tail with
@@ -417,15 +481,27 @@ async fn flush_run<R: Resolve + 'static>(
                             );
                         }
                         UdpAction::WouldBlock | UdpAction::Transient => {
+                            // Issue #55: the probe datagram is dropped
+                            // with no dedicated classifier counter — count
+                            // it so the drop is observable, not trace-only.
+                            cfg.stats.errors.add_send_dropped(1);
                             trace!(
                                 event = "rule.udp_upstream_wouldblock",
                                 rule_id = %cfg.rule_id,
                                 listen_port = cfg.listen_port,
-                                dropped = indices.len() - sent,
+                                dropped = len - sent,
                             );
                         }
                     },
                 }
+                // Issue #55: the tail beyond the probe (`sent + 1 .. len`)
+                // is silently abandoned by the partial sendmmsg. Count it
+                // for operator visibility (previously trace-only). The
+                // probe packet itself is accounted above (delivered, or
+                // evict / emsgsize / send_dropped-classified).
+                cfg.stats
+                    .errors
+                    .add_send_dropped(u64::try_from(len - sent - 1).unwrap_or(0));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -434,10 +510,10 @@ async fn flush_run<R: Resolve + 'static>(
             // try_send (which re-debits via quota_consume_after_send
             // on success). This preserves the single-packet
             // WouldBlock semantics from v0.4.
-            for s in &sizes {
+            for s in &sizes[..len] {
                 flow.quota_restore(*s);
             }
-            for (idx, n_u64) in indices.iter().zip(sizes.iter()) {
+            for (idx, n_u64) in indices[..len].iter().zip(sizes[..len].iter()) {
                 let (payload, _src) = bufs.slot(*idx);
                 send_single(cfg, &flow, payload, *n_u64).await;
             }
@@ -447,7 +523,7 @@ async fn flush_run<R: Resolve + 'static>(
             // ICMP-class on the FIRST packet — sendmmsg short-
             // circuits before sending anything). Refund the whole
             // run, then classify.
-            for s in &sizes {
+            for s in &sizes[..len] {
                 flow.quota_restore(*s);
             }
             match classify_udp_error(&e) {
@@ -500,7 +576,9 @@ async fn send_single<R: Resolve + 'static>(
         Err(_e) => {
             // Drop; next packet will hit `handle_datagram` and
             // classify properly. We avoid re-classifying here to keep
-            // this helper allocation- and branch-light.
+            // this helper allocation- and branch-light. Issue #55:
+            // count the drop so it is observable rather than swallowed.
+            cfg.stats.errors.add_send_dropped(1);
         }
     }
 }
@@ -520,6 +598,16 @@ async fn handle_datagram<R: Resolve + 'static>(
     let n = payload.len();
     let n_u64 = u64::try_from(n).unwrap_or(u64::MAX);
 
+    // #44: snapshot the INBOUND bandwidth limiters once for this datagram
+    // (`handle_datagram` processes exactly one packet — this is the
+    // natural per-packet granularity, not a per-packet re-snapshot of a
+    // batch). Uncapped rules never snapshot and `in_shaper.has_cap()`
+    // gates the whole branch, so the uncapped path is byte-identical.
+    let rule_in = cfg.rate_limit.as_ref().and_then(|h| h.snapshot());
+    let owner_in = cfg.owner_rate_limit.as_ref().and_then(|h| h.snapshot());
+    let in_shaper =
+        UdpBandwidthShaper::new(owner_in.as_ref(), rule_in.as_ref(), BandwidthDirection::In);
+
     // ---- Fast path (FR-004 step 1): existing Live flow ----
     if let Some(flow) = cfg.registry.get(key) {
         if flow.cancel.is_cancelled() {
@@ -530,6 +618,13 @@ async fn handle_datagram<R: Resolve + 'static>(
             // re-check on every existing-flow datagram because the
             // budget may have drained mid-flow.
             if !flow.quota_allows() {
+                return;
+            }
+            // #44: drop-based inbound bandwidth shaping (owner then
+            // rule). Over-budget → drop silently without touching the
+            // socket. `has_cap()` keeps the uncapped path atomic-free.
+            if in_shaper.has_cap() && !in_shaper.admits(n_u64) {
+                cfg.stats.errors.inc_bandwidth_dropped_in();
                 return;
             }
             match flow.upstream_socket.try_send(payload) {
@@ -607,7 +702,15 @@ async fn handle_datagram<R: Resolve + 'static>(
             // racing cold path may not yet have issued its own first send,
             // so the socket can still be pre-reactor-writability (same race
             // as cold-path step 9).
-            if flow.quota_allows() && flow.upstream_socket.send(payload).await.is_ok() {
+            if !flow.quota_allows() {
+                return;
+            }
+            // #44: drop-based inbound shaping on the race path too.
+            if in_shaper.has_cap() && !in_shaper.admits(n_u64) {
+                cfg.stats.errors.inc_bandwidth_dropped_in();
+                return;
+            }
+            if flow.upstream_socket.send(payload).await.is_ok() {
                 flow.bump_inbound(n_u64).await;
                 cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);
                 let _ = flow.quota_consume_after_send(n_u64);
@@ -878,6 +981,29 @@ async fn complete_cold_flow<R: Resolve + 'static>(
     //     `datagram_in`; EMSGSIZE / Transient drop this datagram but
     //     keep the flow — demux ReadWait is armed, next packet hits the
     //     fast path.
+    //
+    // #44: drop-based inbound shaping on the cold-path first packet. If
+    // the byte budget is already drained, DROP this datagram but keep the
+    // freshly-built flow (the demux ReadWait is armed; the next packet
+    // from this source hits the fast path). Snapshot once — there is
+    // exactly one first packet per new flow.
+    {
+        let rule_in = ctx.rate_limit.as_ref().and_then(|h| h.snapshot());
+        let owner_in = ctx.owner_rate_limit.as_ref().and_then(|h| h.snapshot());
+        let in_shaper =
+            UdpBandwidthShaper::new(owner_in.as_ref(), rule_in.as_ref(), BandwidthDirection::In);
+        if in_shaper.has_cap() && !in_shaper.admits(n_u64) {
+            ctx.stats.errors.inc_bandwidth_dropped_in();
+            info!(
+                event = "rule.udp_flow_opened",
+                rule_id = %ctx.rule_id,
+                listen_port = ctx.listen_port,
+                source = %src,
+                target = %chosen_target,
+            );
+            return;
+        }
+    }
     match upstream_socket.send(&payload).await {
         Ok(_) => {
             flow.bump_inbound(n_u64).await;
@@ -1011,7 +1137,10 @@ fn acquire_first_packet<R: Resolve + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forwarder::rate_limit::scope::{RateLimitScopeManager, RuleRateLimitHandle};
+    use crate::forwarder::rate_limit::scope::{
+        OwnerId, OwnerRateLimitHandle, OwnerRateLimitScopeManager, RateLimitScopeManager,
+        RuleRateLimitHandle,
+    };
     use crate::forwarder::stats::RuleStats;
     use crate::resolver::{LiveResolver, ResolveAnswer, ResolverConfig, ResolverError};
     use async_trait::async_trait;
@@ -1402,5 +1531,220 @@ mod tests {
                 "over-cap source {src} must not have a flow",
             );
         }
+    }
+
+    /// #44: build a Live flow in `registry` whose upstream socket is
+    /// connected to `target_addr`, returning the flow key + the shared
+    /// `Arc<UdpFlow>`. Used by the inbound bandwidth tests to exercise
+    /// `handle_datagram`'s fast (existing-flow) path deterministically.
+    async fn commit_live_flow(
+        registry: &Arc<UdpFlowRegistry>,
+        listen_port: u16,
+        src: SocketAddr,
+        target_addr: SocketAddr,
+    ) -> Arc<UdpSocket> {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+        let key = FlowKey::new(listen_port, src);
+        let TryGetOrReserve::Reserved(reservation) = registry.try_get_or_reserve(key) else {
+            panic!("fresh key must reserve");
+        };
+        let flow = UdpFlow::new(src, Arc::clone(&upstream), vec![target_addr]);
+        registry.commit(reservation, flow);
+        upstream
+    }
+
+    fn bandwidth_rule_handle(rule_id: RuleId, bps: u64) -> Arc<RuleRateLimitHandle> {
+        let scope = Arc::new(RateLimitScopeManager::new());
+        scope.install(
+            rule_id,
+            Some(&RateLimit {
+                bandwidth_in_bps: Some(bps),
+                ..Default::default()
+            }),
+        );
+        Arc::new(RuleRateLimitHandle::new(rule_id, scope))
+    }
+
+    /// #44: a low `bandwidth_in_bps` cap shapes the fast-path datagram
+    /// stream by DROPPING — once the token bucket drains, further
+    /// datagrams are dropped (not delayed) and counted, so delivered <
+    /// offered. Time is paused so the bucket never refills mid-test →
+    /// no flakiness.
+    #[tokio::test(start_paused = true)]
+    async fn bandwidth_in_cap_drops_fast_path_datagrams_once_drained() {
+        let (listener_sock, listen_addr) = bind_loopback().await;
+        let (_target_sock, target_addr) = bind_loopback().await;
+
+        let rule_id = RuleId(11);
+        // 1500 B/s in, default burst = 1500 B.
+        let rate_limit = bandwidth_rule_handle(rule_id, 1_500);
+
+        let registry = UdpFlowRegistry::new(4);
+        let src: SocketAddr = "127.0.0.1:52000".parse().unwrap();
+        let upstream = commit_live_flow(&registry, listen_addr.port(), src, target_addr).await;
+
+        let (demux_tx, _demux_rx) = mpsc::channel::<DemuxCommand>(8);
+        let stats = rule_stats_for(listen_addr.port());
+        let cfg = ListenerConfig {
+            rule_id,
+            listen_port: listen_addr.port(),
+            target: Target::Ip(target_addr.ip()),
+            target_port: target_addr.port(),
+            prefer_ipv6: false,
+            idle_window: Duration::from_secs(30),
+            registry: Arc::clone(&registry),
+            demux_tx,
+            stats: Arc::clone(&stats),
+            resolver: make_resolver(),
+            rate_limit: Some(rate_limit),
+            rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
+            quota: None,
+            cancel: CancellationToken::new(),
+        };
+
+        // Make the connected upstream writable so the ADMITTED datagram's
+        // `try_send` lands deterministically (fresh sockets can spuriously
+        // report WouldBlock before the reactor observes writability).
+        upstream.writable().await.unwrap();
+
+        // Offer three 1000-byte datagrams. The burst covers the first
+        // (1000 ≤ 1500); the pool then holds 500 B, so the second and
+        // third (1000 B each) are throttled → dropped.
+        let payload = vec![0u8; 1000];
+        for _ in 0..3 {
+            handle_datagram(&cfg, &listener_sock, &payload, src).await;
+        }
+
+        assert_eq!(
+            stats.snapshot_datagrams_in(),
+            1,
+            "only the first datagram fits the burst; the rest are dropped",
+        );
+        assert_eq!(
+            stats.errors.snapshot().bandwidth_dropped_in,
+            2,
+            "the two over-budget datagrams are dropped and counted",
+        );
+    }
+
+    /// #44: an uncapped rule delivers EVERY fast-path datagram and never
+    /// touches the bandwidth-drop counter — the enforcement code is a
+    /// byte-identical no-op when no bandwidth cap is installed.
+    #[tokio::test(start_paused = true)]
+    async fn uncapped_fast_path_delivers_every_datagram_zero_drops() {
+        let (listener_sock, listen_addr) = bind_loopback().await;
+        let (_target_sock, target_addr) = bind_loopback().await;
+
+        let registry = UdpFlowRegistry::new(4);
+        let src: SocketAddr = "127.0.0.1:52001".parse().unwrap();
+        let upstream = commit_live_flow(&registry, listen_addr.port(), src, target_addr).await;
+
+        let (demux_tx, _demux_rx) = mpsc::channel::<DemuxCommand>(8);
+        let stats = rule_stats_for(listen_addr.port());
+        let cfg = ListenerConfig {
+            rule_id: RuleId(12),
+            listen_port: listen_addr.port(),
+            target: Target::Ip(target_addr.ip()),
+            target_port: target_addr.port(),
+            prefer_ipv6: false,
+            idle_window: Duration::from_secs(30),
+            registry: Arc::clone(&registry),
+            demux_tx,
+            stats: Arc::clone(&stats),
+            resolver: make_resolver(),
+            rate_limit: None,
+            rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
+            quota: None,
+            cancel: CancellationToken::new(),
+        };
+
+        upstream.writable().await.unwrap();
+        let payload = vec![0u8; 1000];
+        for _ in 0..5 {
+            handle_datagram(&cfg, &listener_sock, &payload, src).await;
+        }
+
+        assert_eq!(
+            stats.snapshot_datagrams_in(),
+            5,
+            "uncapped rule delivers every datagram",
+        );
+        assert_eq!(
+            stats.errors.snapshot().bandwidth_dropped_in,
+            0,
+            "uncapped path never counts a bandwidth drop",
+        );
+    }
+
+    /// #44: the per-owner bandwidth cap binds BEFORE the per-rule cap
+    /// (FR-013). With a tight owner cap and a generous rule cap, the
+    /// owner bucket is what drops the over-budget datagrams.
+    #[tokio::test(start_paused = true)]
+    async fn owner_bandwidth_cap_binds_before_rule_on_fast_path() {
+        let (listener_sock, listen_addr) = bind_loopback().await;
+        let (_target_sock, target_addr) = bind_loopback().await;
+
+        let rule_id = RuleId(13);
+        // Generous rule cap (1 MiB/s) — never the binding constraint here.
+        let rate_limit = bandwidth_rule_handle(rule_id, 1_000_000);
+        // Tight owner cap (1500 B/s, default burst 1500 B).
+        let owner_scope = Arc::new(OwnerRateLimitScopeManager::new());
+        let owner_id = OwnerId::new("tenant-a");
+        owner_scope.install(
+            &owner_id,
+            Some(&RateLimit {
+                bandwidth_in_bps: Some(1_500),
+                ..Default::default()
+            }),
+        );
+        let owner_rate_limit = Arc::new(OwnerRateLimitHandle::new(owner_id, owner_scope));
+
+        let registry = UdpFlowRegistry::new(4);
+        let src: SocketAddr = "127.0.0.1:52002".parse().unwrap();
+        let upstream = commit_live_flow(&registry, listen_addr.port(), src, target_addr).await;
+
+        let (demux_tx, _demux_rx) = mpsc::channel::<DemuxCommand>(8);
+        let stats = rule_stats_for(listen_addr.port());
+        let cfg = ListenerConfig {
+            rule_id,
+            listen_port: listen_addr.port(),
+            target: Target::Ip(target_addr.ip()),
+            target_port: target_addr.port(),
+            prefer_ipv6: false,
+            idle_window: Duration::from_secs(30),
+            registry: Arc::clone(&registry),
+            demux_tx,
+            stats: Arc::clone(&stats),
+            resolver: make_resolver(),
+            rate_limit: Some(rate_limit),
+            rate_limit_stats: None,
+            owner_rate_limit: Some(owner_rate_limit),
+            owner_rate_limit_stats: None,
+            quota: None,
+            cancel: CancellationToken::new(),
+        };
+
+        upstream.writable().await.unwrap();
+        let payload = vec![0u8; 1000];
+        for _ in 0..3 {
+            handle_datagram(&cfg, &listener_sock, &payload, src).await;
+        }
+
+        assert_eq!(
+            stats.snapshot_datagrams_in(),
+            1,
+            "owner burst covers the first datagram only",
+        );
+        assert_eq!(
+            stats.errors.snapshot().bandwidth_dropped_in,
+            2,
+            "the owner cap (bound before the rule cap) drops the surplus",
+        );
     }
 }

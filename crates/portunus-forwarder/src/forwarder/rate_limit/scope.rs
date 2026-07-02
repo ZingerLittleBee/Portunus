@@ -386,6 +386,96 @@ pub fn try_acquire_layered(
     }
 }
 
+/// Drop-based UDP bandwidth shaper (issue #44).
+///
+/// UDP cannot block like the TCP copy loop (there is no read half to
+/// park), so bandwidth enforcement is **drop-based**: each datagram
+/// debits `n` bytes from the applicable bucket(s) before it is sent,
+/// and a `Throttled` outcome drops the datagram instead of sleeping.
+///
+/// The two limiter snapshots are taken ONCE per batch / drain by the
+/// caller (mirroring the #51 per-batch cadence on the TCP path) and
+/// handed to [`new`](Self::new); the per-datagram [`admits`](Self::admits)
+/// call then debits against those cached `Arc`s without re-reading the
+/// process-wide `RwLock` registry. A hot-reload observed only on the
+/// NEXT batch/drain (sub-millisecond staleness) is well inside FR-011's
+/// 1 s budget.
+///
+/// The [`has_cap`](Self::has_cap) flag is computed once at construction
+/// so an uncapped rule/owner pays a single branch per datagram and ZERO
+/// extra atomics — byte-identical to the pre-#44 fast path.
+pub struct UdpBandwidthShaper<'a> {
+    owner: Option<&'a RuleRateLimiter>,
+    rule: Option<&'a RuleRateLimiter>,
+    direction: BandwidthDirection,
+    has_cap: bool,
+}
+
+impl<'a> UdpBandwidthShaper<'a> {
+    /// Build a shaper from the per-batch/-drain limiter snapshots. Pass
+    /// `None` for a scope with no limiter installed; the direction
+    /// selects the inbound (`In` — client→upstream listener send) or
+    /// outbound (`Out` — upstream→client demux reply send) bucket.
+    #[must_use]
+    pub fn new(
+        owner: Option<&'a Arc<OwnerRateLimiter>>,
+        rule: Option<&'a Arc<RuleRateLimiter>>,
+        direction: BandwidthDirection,
+    ) -> Self {
+        let owner = owner.map(AsRef::as_ref);
+        let rule = rule.map(AsRef::as_ref);
+        // Direction-specific: a rule that caps only the OTHER direction
+        // is a no-op for this shaper, so it must report `has_cap == false`
+        // and stay on the zero-cost fast path here.
+        let has_cap = owner.is_some_and(|o| o.bandwidth_rate_per_sec(direction).is_some())
+            || rule.is_some_and(|r| r.bandwidth_rate_per_sec(direction).is_some());
+        Self {
+            owner,
+            rule,
+            direction,
+            has_cap,
+        }
+    }
+
+    /// True when at least one of the two snapshots carries a bandwidth
+    /// bucket in this direction. Hot-path callers gate the whole
+    /// bandwidth branch on this once per datagram so an uncapped rule
+    /// never touches a token bucket.
+    #[must_use]
+    pub fn has_cap(&self) -> bool {
+        self.has_cap
+    }
+
+    /// Try to admit `n` bytes: debit the owner bucket first (FR-013),
+    /// then the rule bucket. Returns `true` when both layers grant (or
+    /// are uncapped); `false` (drop the datagram) as soon as either
+    /// throttles. Short-circuits to `true` with zero atomics when no
+    /// bandwidth cap applies.
+    #[must_use]
+    pub fn admits(&self, n: u64) -> bool {
+        if !self.has_cap {
+            return true;
+        }
+        if let Some(o) = self.owner
+            && matches!(
+                o.acquire_bandwidth(self.direction, n),
+                BandwidthAcquire::Throttled { .. }
+            )
+        {
+            return false;
+        }
+        if let Some(r) = self.rule
+            && matches!(
+                r.acquire_bandwidth(self.direction, n),
+                BandwidthAcquire::Throttled { .. }
+            )
+        {
+            return false;
+        }
+        true
+    }
+}
+
 /// Centralised reject-reason mapping for the connection-rate /
 /// flow-rate token bucket exhaustion path.
 fn rate_reject_reason(scope: CapScope, is_udp_first_packet: bool) -> RejectReason {
@@ -1947,5 +2037,83 @@ mod tests {
         assert_eq!(l.active_connections(), 1);
         drop(g2);
         assert_eq!(l.active_connections(), 0);
+    }
+
+    // ---- #44 UdpBandwidthShaper -------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn shaper_uncapped_always_admits_and_reports_no_cap() {
+        // No limiter at all → has_cap false, every datagram admits.
+        let shaper = UdpBandwidthShaper::new(None, None, BandwidthDirection::In);
+        assert!(!shaper.has_cap());
+        assert!(shaper.admits(1_000_000));
+
+        // A limiter with only a concurrent cap (no bandwidth bucket)
+        // still reports has_cap == false and never touches a bucket.
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            concurrent_connections: Some(4),
+            ..Default::default()
+        }));
+        let shaper = UdpBandwidthShaper::new(None, Some(&rule), BandwidthDirection::In);
+        assert!(!shaper.has_cap());
+        assert!(shaper.admits(1_000_000));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shaper_drops_once_rule_bucket_drains() {
+        // 1 KiB/s in, default burst = 1 KiB. First 1000 bytes admit,
+        // the pool is then empty so the next datagram is dropped.
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(1_000),
+            ..Default::default()
+        }));
+        let shaper = UdpBandwidthShaper::new(None, Some(&rule), BandwidthDirection::In);
+        assert!(shaper.has_cap());
+        assert!(shaper.admits(1_000), "first datagram fits the burst");
+        assert!(!shaper.admits(1), "bucket drained → drop");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shaper_direction_is_respected() {
+        // Only the OUT direction is capped; an In shaper never throttles.
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            bandwidth_out_bps: Some(1_000),
+            ..Default::default()
+        }));
+        let in_shaper = UdpBandwidthShaper::new(None, Some(&rule), BandwidthDirection::In);
+        assert!(!in_shaper.has_cap(), "no inbound bucket");
+        assert!(in_shaper.admits(10_000_000));
+
+        let out_shaper = UdpBandwidthShaper::new(None, Some(&rule), BandwidthDirection::Out);
+        assert!(out_shaper.has_cap());
+        assert!(out_shaper.admits(1_000));
+        assert!(!out_shaper.admits(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shaper_debits_owner_before_rule() {
+        // Owner bucket is the tight one (500 B); rule is generous (1 MiB).
+        // The owner throttle must short-circuit BEFORE the rule bucket is
+        // touched, so the rule bucket keeps its full pool.
+        let owner: Arc<OwnerRateLimiter> = Arc::new(OwnerRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(500),
+            ..Default::default()
+        }));
+        let rule = Arc::new(RuleRateLimiter::from_envelope(&RateLimit {
+            bandwidth_in_bps: Some(1_000_000),
+            ..Default::default()
+        }));
+        let shaper = UdpBandwidthShaper::new(Some(&owner), Some(&rule), BandwidthDirection::In);
+        // Drain the owner burst (500 B), then a further datagram is
+        // dropped by the OWNER layer.
+        assert!(shaper.admits(500));
+        assert!(!shaper.admits(1), "owner bucket drained → drop");
+        // The rule bucket was never debited on the dropped datagram: it
+        // still grants a large draw directly.
+        assert_eq!(
+            rule.acquire_bandwidth(BandwidthDirection::In, 900_000),
+            BandwidthAcquire::Granted,
+            "rule bucket must be untouched when owner throttles first",
+        );
     }
 }

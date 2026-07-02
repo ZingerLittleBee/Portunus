@@ -33,6 +33,9 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
+use crate::forwarder::rate_limit::scope::{
+    BandwidthDirection, OwnerRateLimitHandle, RuleRateLimitHandle, UdpBandwidthShaper,
+};
 use crate::forwarder::stats::RuleStats;
 use crate::forwarder::udp::batch::{BATCH_SIZE, BatchBufs, recv_batch_connected, send_batch_to};
 use crate::forwarder::udp::error::{UdpAction, classify_udp_error};
@@ -77,6 +80,13 @@ pub struct DemuxConfig {
     pub registry: Arc<UdpFlowRegistry>,
     pub listener_sockets: Arc<HashMap<u16, Arc<UdpSocket>>>,
     pub stats: Arc<RuleStats>,
+    /// 011-rate-limiting-qos handles, threaded through by the runtime so
+    /// the reply path can enforce the OUTBOUND bandwidth cap
+    /// (`bandwidth_out_bps`, rule + owner) via drop-based shaping (#44).
+    /// `None` when the rule / owner carries no rate-limit handle at all
+    /// — then the reply path stays byte-identical to pre-#44.
+    pub rate_limit: Option<Arc<RuleRateLimitHandle>>,
+    pub owner_rate_limit: Option<Arc<OwnerRateLimitHandle>>,
 }
 
 /// Run the reply-demux loop. Exits cleanly on `DemuxCommand::Shutdown`
@@ -101,12 +111,25 @@ pub async fn run_demux(cfg: DemuxConfig, mut rx: mpsc::Receiver<DemuxCommand>) {
             },
             Some(outcome) = readables.next(), if !readables.is_empty() => match outcome {
                 ReadOutcome::Ready { key, flow } => {
+                    // #44: snapshot the OUTBOUND bandwidth limiters ONCE
+                    // per Ready drain (mirrors the #51 per-batch cadence)
+                    // and share the snapshot between the batched drain and
+                    // the per-packet fallback. An uncapped rule/owner never
+                    // snapshots — the `.as_ref()` short-circuits — so the
+                    // reply path stays byte-identical for uncapped rules.
+                    let rule_out = cfg.rate_limit.as_ref().and_then(|h| h.snapshot());
+                    let owner_out = cfg.owner_rate_limit.as_ref().and_then(|h| h.snapshot());
+                    let shaper = UdpBandwidthShaper::new(
+                        owner_out.as_ref(),
+                        rule_out.as_ref(),
+                        BandwidthDirection::Out,
+                    );
                     // Batched drain first (Linux recvmmsg/sendmmsg);
                     // falls back to the per-packet loop when the
                     // platform (or a spurious wake) reports WouldBlock
                     // before anything was read.
-                    if !drain_one_flow_batched(&cfg, key, &flow, &mut bufs).await {
-                        drain_one_flow(&cfg, key, &flow, &mut buf).await;
+                    if !drain_one_flow_batched(&cfg, key, &flow, &mut bufs, &shaper).await {
+                        drain_one_flow(&cfg, key, &flow, &mut buf, &shaper).await;
                     }
                     // Re-arm unless this flow was cancelled during drain
                     // (terminal Evict path).
@@ -146,6 +169,7 @@ async fn drain_one_flow_batched(
     key: FlowKey,
     flow: &Arc<UdpFlow>,
     bufs: &mut BatchBufs,
+    shaper: &UdpBandwidthShaper<'_>,
 ) -> bool {
     let Some(listener) = cfg.listener_sockets.get(&key.listen_port).cloned() else {
         // Listener gone — shouldn't happen during normal operation.
@@ -161,7 +185,7 @@ async fn drain_one_flow_batched(
         // Spurious wakeup with an empty queue — nothing to forward.
         Ok(0) => true,
         Ok(n) => {
-            forward_reply_batch(cfg, key, flow, &listener, bufs, n).await;
+            forward_reply_batch(cfg, key, flow, &listener, bufs, n, shaper).await;
             true
         }
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -209,14 +233,39 @@ async fn forward_reply_batch(
     listener: &UdpSocket,
     bufs: &BatchBufs,
     n: usize,
+    shaper: &UdpBandwidthShaper<'_>,
 ) {
-    let payloads: Vec<&[u8]> = (0..n).map(|i| bufs.payload(i)).collect();
+    // #44 drop-based outbound shaping: when a `bandwidth_out_bps` cap
+    // applies, debit each reply before it enters the sendmmsg batch;
+    // a throttled datagram is dropped (counted) and excluded. The
+    // snapshot was taken once per drain by the caller, so this is a
+    // per-packet token-bucket debit with no extra registry read. The
+    // uncapped path keeps the byte-identical `collect()` fast path.
+    let payloads: Vec<&[u8]> = if shaper.has_cap() {
+        let mut kept = Vec::with_capacity(n);
+        for i in 0..n {
+            let p = bufs.payload(i);
+            if shaper.admits(p.len() as u64) {
+                kept.push(p);
+            } else {
+                cfg.stats.errors.inc_bandwidth_dropped_out();
+            }
+        }
+        kept
+    } else {
+        (0..n).map(|i| bufs.payload(i)).collect()
+    };
+    // Every reply this drain shaped out — nothing left to send.
+    if payloads.is_empty() {
+        return;
+    }
+    let admitted = payloads.len();
     // All packets in one drain belong to one flow, so every message
     // goes to the same client address. SocketAddr is Copy — a stack
     // array avoids a per-drain heap allocation.
     let dests = [key.src; BATCH_SIZE];
 
-    match send_batch_to(listener, &payloads, &dests[..n]) {
+    match send_batch_to(listener, &payloads, &dests[..admitted]) {
         Ok(sent) => {
             // Book the delivered prefix exactly like the per-packet
             // path: stats + last_seen + post-send quota consume per
@@ -227,7 +276,7 @@ async fn forward_reply_batch(
                 cfg.stats.inc_datagram_out(key.listen_port, bytes);
                 let _ = flow.quota_consume_after_send(bytes);
             }
-            if sent < n {
+            if sent < admitted {
                 // Partial sendmmsg: the kernel accepted a prefix and
                 // hit SO_SNDBUF pressure on the rest. Drop the tail —
                 // same semantics as the per-packet WouldBlock drop
@@ -237,7 +286,7 @@ async fn forward_reply_batch(
                     event = "rule.udp_reply_wouldblock",
                     rule_id = %cfg.rule_id,
                     listen_port = key.listen_port,
-                    dropped = n - sent,
+                    dropped = admitted - sent,
                 );
             }
         }
@@ -247,7 +296,7 @@ async fn forward_reply_batch(
                 event = "rule.udp_reply_wouldblock",
                 rule_id = %cfg.rule_id,
                 listen_port = key.listen_port,
-                dropped = n,
+                dropped = admitted,
             );
             // Drop replies; flow continues. No stats / last_seen
             // bump (FR-008 step e).
@@ -264,7 +313,13 @@ async fn forward_reply_batch(
     }
 }
 
-async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, buf: &mut [u8]) {
+async fn drain_one_flow(
+    cfg: &DemuxConfig,
+    key: FlowKey,
+    flow: &Arc<UdpFlow>,
+    buf: &mut [u8],
+    shaper: &UdpBandwidthShaper<'_>,
+) {
     let Some(listener) = cfg.listener_sockets.get(&key.listen_port).cloned() else {
         // Listener gone — shouldn't happen during normal operation.
         warn!(
@@ -278,6 +333,15 @@ async fn drain_one_flow(cfg: &DemuxConfig, key: FlowKey, flow: &Arc<UdpFlow>, bu
         match flow.upstream_socket.try_recv(buf) {
             Ok(n) => {
                 let bytes = n as u64;
+                // #44: drop-based OUTBOUND shaping. Debit the reply's
+                // bytes before forwarding; on throttle drop it (no stats /
+                // last_seen bump, like the WouldBlock drop below) and move
+                // to the next datagram. The `has_cap()` gate keeps the
+                // uncapped path a single branch per datagram, no atomics.
+                if shaper.has_cap() && !shaper.admits(bytes) {
+                    cfg.stats.errors.inc_bandwidth_dropped_out();
+                    continue;
+                }
                 match listener.try_send_to(&buf[..n], key.src) {
                     Ok(_) => {
                         flow.bump_outbound(bytes).await;
@@ -358,8 +422,9 @@ fn read_wait(key: FlowKey, flow: Arc<UdpFlow>) -> ReadWaitFut {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarder::rate_limit::scope::RateLimitScopeManager;
     use crate::forwarder::stats::RuleStats;
-    use portunus_core::PortRange;
+    use portunus_core::{PortRange, RateLimit};
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
@@ -400,6 +465,8 @@ mod tests {
             registry: Arc::clone(&registry),
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
         };
         let (tx, rx) = mpsc::channel(8);
         let h = tokio::spawn(run_demux(cfg, rx));
@@ -455,6 +522,8 @@ mod tests {
                 registry,
                 listener_sockets: Arc::new(listener_map),
                 stats,
+                rate_limit: None,
+                owner_rate_limit: None,
             },
             rx,
         ));
@@ -518,6 +587,8 @@ mod tests {
                 registry,
                 listener_sockets: Arc::new(listener_map),
                 stats,
+                rate_limit: None,
+                owner_rate_limit: None,
             },
             rx,
         ));
@@ -570,6 +641,8 @@ mod tests {
             registry,
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
         };
 
         // Queue a reply so a *present* listener would have forwarded it;
@@ -577,7 +650,14 @@ mod tests {
         target_sock.send_to(b"x", upstream_local).await.unwrap();
 
         let mut buf = vec![0u8; RECV_BUFFER_BYTES];
-        drain_one_flow(&cfg, key, &flow, &mut buf).await;
+        drain_one_flow(
+            &cfg,
+            key,
+            &flow,
+            &mut buf,
+            &UdpBandwidthShaper::new(None, None, BandwidthDirection::Out),
+        )
+        .await;
 
         // No outbound datagram was forwarded; the flow stays live.
         assert_eq!(stats.snapshot_datagrams_out(), 0);
@@ -614,6 +694,8 @@ mod tests {
             registry,
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
         };
 
         // Queue exactly one reply so the recv succeeds and the failing
@@ -627,7 +709,14 @@ mod tests {
             .unwrap();
 
         let mut buf = vec![0u8; RECV_BUFFER_BYTES];
-        drain_one_flow(&cfg, key, &flow, &mut buf).await;
+        drain_one_flow(
+            &cfg,
+            key,
+            &flow,
+            &mut buf,
+            &UdpBandwidthShaper::new(None, None, BandwidthDirection::Out),
+        )
+        .await;
 
         // The send failed, so no outbound bytes/datagrams were booked and
         // the flow was NOT evicted (listener-side error is rule-level).
@@ -676,6 +765,8 @@ mod tests {
                 registry,
                 listener_sockets: Arc::new(listener_map),
                 stats,
+                rate_limit: None,
+                owner_rate_limit: None,
             },
             rx,
         ));
@@ -726,11 +817,20 @@ mod tests {
             registry,
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
         };
 
         let mut bufs = BatchBufs::new();
         assert!(
-            drain_one_flow_batched(&cfg, key, &flow, &mut bufs).await,
+            drain_one_flow_batched(
+                &cfg,
+                key,
+                &flow,
+                &mut bufs,
+                &UdpBandwidthShaper::new(None, None, BandwidthDirection::Out),
+            )
+            .await,
             "missing listener is handled by the batched drain"
         );
         assert_eq!(stats.snapshot_datagrams_out(), 0);
@@ -768,6 +868,8 @@ mod tests {
             registry,
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
         };
 
         // Queue one reply so a Linux batched drain WOULD have consumed
@@ -780,14 +882,28 @@ mod tests {
 
         let mut bufs = BatchBufs::new();
         assert!(
-            !drain_one_flow_batched(&cfg, key, &flow, &mut bufs).await,
+            !drain_one_flow_batched(
+                &cfg,
+                key,
+                &flow,
+                &mut bufs,
+                &UdpBandwidthShaper::new(None, None, BandwidthDirection::Out),
+            )
+            .await,
             "non-Linux batched drain must defer to the per-packet loop"
         );
         assert_eq!(stats.snapshot_datagrams_out(), 0);
 
         // The per-packet fallback still finds the datagram queued.
         let mut buf = vec![0u8; RECV_BUFFER_BYTES];
-        drain_one_flow(&cfg, key, &flow, &mut buf).await;
+        drain_one_flow(
+            &cfg,
+            key,
+            &flow,
+            &mut buf,
+            &UdpBandwidthShaper::new(None, None, BandwidthDirection::Out),
+        )
+        .await;
         let mut out = [0u8; 16];
         let (n, src) =
             tokio::time::timeout(Duration::from_secs(2), client_sock.recv_from(&mut out))
@@ -826,6 +942,8 @@ mod tests {
             registry,
             listener_sockets: Arc::new(listener_map),
             stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
         };
 
         // Queue several replies, then wait until at least one is
@@ -840,7 +958,14 @@ mod tests {
 
         let mut bufs = BatchBufs::new();
         assert!(
-            drain_one_flow_batched(&cfg, key, &flow, &mut bufs).await,
+            drain_one_flow_batched(
+                &cfg,
+                key,
+                &flow,
+                &mut bufs,
+                &UdpBandwidthShaper::new(None, None, BandwidthDirection::Out),
+            )
+            .await,
             "Linux batched drain handles the Ready"
         );
 
@@ -860,5 +985,82 @@ mod tests {
             assert_eq!(src, listener_addr);
         }
         assert!(!flow.cancel.is_cancelled());
+    }
+
+    /// #44: a low `bandwidth_out_bps` cap drops reply datagrams on the
+    /// demux SEND path. A 1000-byte reply against a 100 B/s bucket
+    /// (burst 100 B) cannot fit even the full burst, so it is dropped
+    /// and counted; nothing is forwarded and the flow stays live
+    /// (drop-based shaping never evicts). Uses the per-packet
+    /// `drain_one_flow` path so the assertion holds on every platform.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bandwidth_out_cap_drops_reply_datagram() {
+        let (listener_sock, listener_addr) = bind_loopback_udp().await;
+        let mut listener_map = HashMap::new();
+        listener_map.insert(listener_addr.port(), Arc::clone(&listener_sock));
+
+        let (_client_sock, client_addr) = bind_loopback_udp().await;
+        let (target_sock, target_addr) = bind_loopback_udp().await;
+
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        upstream.connect(target_addr).await.unwrap();
+        let upstream = Arc::new(upstream);
+        let upstream_local = upstream.local_addr().unwrap();
+
+        let flow = UdpFlow::for_test_with_socket(client_addr, Arc::clone(&upstream)).await;
+        let key = FlowKey::new(listener_addr.port(), client_addr);
+
+        let registry = UdpFlowRegistry::new(4);
+        let stats = single_port_stats(listener_addr.port());
+        let cfg = DemuxConfig {
+            rule_id: RuleId(1),
+            registry,
+            listener_sockets: Arc::new(listener_map),
+            stats: Arc::clone(&stats),
+            rate_limit: None,
+            owner_rate_limit: None,
+        };
+
+        // OUT bucket: 100 B/s, burst 100 B — a 1000-byte reply cannot fit.
+        let rule_id = RuleId(1);
+        let scope = Arc::new(RateLimitScopeManager::new());
+        scope.install(
+            rule_id,
+            Some(&RateLimit {
+                bandwidth_out_bps: Some(100),
+                ..Default::default()
+            }),
+        );
+        let snap = scope.get(rule_id);
+        let shaper = UdpBandwidthShaper::new(None, snap.as_ref(), BandwidthDirection::Out);
+
+        // Queue exactly one reply and wait until it is readable so the
+        // drain observes it deterministically.
+        target_sock
+            .send_to(&[0u8; 1000], upstream_local)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), upstream.readable())
+            .await
+            .expect("upstream should become readable")
+            .unwrap();
+
+        let mut buf = vec![0u8; RECV_BUFFER_BYTES];
+        drain_one_flow(&cfg, key, &flow, &mut buf, &shaper).await;
+
+        assert_eq!(
+            stats.snapshot_datagrams_out(),
+            0,
+            "the reply is dropped by the outbound bandwidth cap",
+        );
+        assert_eq!(
+            stats.errors.snapshot().bandwidth_dropped_out,
+            1,
+            "the dropped reply is counted",
+        );
+        assert!(
+            !flow.cancel.is_cancelled(),
+            "drop-based shaping must never evict the flow",
+        );
     }
 }

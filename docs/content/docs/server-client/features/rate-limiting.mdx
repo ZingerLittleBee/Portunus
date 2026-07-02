@@ -60,12 +60,27 @@ Important consequences:
   connections. Existing connections keep their original path until
   they close.
 - splice is TCP-only and Linux-only. UDP rules and non-Linux hosts
-  always use the userspace path; caps apply identically.
+  always use the userspace path; the same caps apply, but UDP bandwidth
+  shaping is **drop-based** (see the callout below) rather than the TCP
+  read-half park.
 - All cap metrics, audit fields, throttle counters, and reject behavior
   are unchanged by splice. See [Metrics](#metrics).
 
 Enabling splice never disables a QoS feature: capped rules skip the
 speedup, uncapped rules get it.
+
+<Callout type="warn">
+  **UDP bandwidth caps drop, they do not park.** A UDP datagram has no
+  read half to stall, so `bandwidth_in_bps` / `bandwidth_out_bps` on a
+  UDP rule (or its owner) debit the token bucket per datagram and
+  **drop** any datagram that would exceed the bucket — the connection
+  concept doesn't apply. `bandwidth_in_bps` gates the client→upstream
+  (inbound) send; `bandwidth_out_bps` gates the upstream→client (reply)
+  send, and the per-owner cap is consulted before the per-rule cap.
+  Drops are counted per direction (`bandwidth_dropped_in` /
+  `bandwidth_dropped_out` in the standalone stats surface). An uncapped
+  UDP rule pays no extra per-datagram cost.
+</Callout>
 
 ## Per-rule caps
 
