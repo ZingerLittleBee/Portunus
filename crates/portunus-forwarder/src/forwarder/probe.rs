@@ -13,10 +13,18 @@
 //! Healthy↔Failed transitions and `target_failovers_total` increments
 //! stay unified across passive + active signals.
 //!
-//! Probe-overlap policy (R-008): per-target lock. We hold the per-
-//! target `Mutex<HealthState>` for the full probe duration so a slow
-//! probe can NEVER overlap itself; the round-robin walk just skips
-//! ahead to the next target.
+//! Probe-overlap policy (R-008): probes never overlap per target
+//! *structurally*. There is exactly one prober task per rule and it
+//! walks the rule's targets round-robin, `await`ing each `probe_one`
+//! sequentially — so a given target is never probed concurrently with
+//! itself. We therefore do NOT need to hold the per-target
+//! `Mutex<HealthState>` across the (up to `PROBE_CONNECT_TIMEOUT`) dial
+//! to serialise probes; the lock is taken only briefly, after the dial,
+//! to record the outcome (#47). Holding it across the dial would stall
+//! every new inbound connection's health snapshot — the data path locks
+//! each target's `HealthState` to compute its dial-order preference
+//! (`failover_path`) — for the full 5 s whenever a target SYN-blackholes,
+//! even when other targets are healthy.
 
 #![allow(clippy::similar_names)]
 
@@ -127,19 +135,24 @@ async fn probe_one<R: Resolve>(
     prefer_ipv6: bool,
     resolver: &LiveResolver<R>,
 ) {
-    // R-008: hold the per-target lock for the full probe so we can
-    // never overlap. A slow probe just blocks the next round on this
-    // target; other targets are free to probe in their own ticks.
-    let mut guard = state.lock().await;
-
+    // Dial FIRST with no lock held (#47). Per-target probe overlap is
+    // prevented structurally (one prober task per rule, sequential
+    // round-robin — see the module docs / R-008), so we don't hold the
+    // `HealthState` lock across the dial. Holding it would block the
+    // data path's dial-order snapshot for the full connect timeout when
+    // a target SYN-blackholes.
     let dial = time::timeout(
         PROBE_CONNECT_TIMEOUT,
         connect_via_resolver(rule_id, target, resolver, prefer_ipv6),
     )
     .await;
 
+    // Capture the outcome instant/wall-clock after the dial completes
+    // (unchanged from before #47), then take the lock only to record
+    // the result — failure-detection semantics are identical.
     let now = Instant::now();
     let wall = SystemTime::now();
+    let mut guard = state.lock().await;
     match dial {
         Ok(Ok(_stream)) => {
             // Probe success — feed the recovery counter.
@@ -280,6 +293,73 @@ mod tests {
         // Failed → Healthy is the second counter bump.
         assert_eq!(counter.load(Ordering::Relaxed), 2);
         cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn probe_dial_does_not_hold_health_lock() {
+        // #47 regression: while a probe dial is in flight, the per-target
+        // `HealthState` lock MUST stay free so the data path's dial-order
+        // snapshot (failover_path) is not stalled for the full connect
+        // timeout. We hang the dial with a resolver that never returns —
+        // the cache does not time-box `resolve`, so `connect_via_resolver`
+        // parks inside `probe_one`'s `time::timeout(PROBE_CONNECT_TIMEOUT)`.
+        // Under the pre-fix code (lock held across the dial) the lock
+        // acquisition below times out; under the fix it is immediate.
+        #[derive(Debug)]
+        struct HangingResolver;
+
+        #[async_trait::async_trait]
+        impl Resolve for HangingResolver {
+            async fn resolve(&self, _name: &Hostname) -> Result<ResolveAnswer, ResolverError> {
+                std::future::pending().await
+            }
+        }
+
+        let resolver = Arc::new(LiveResolver::new(
+            Arc::new(HangingResolver),
+            ResolverConfig::default(),
+        ));
+        let counter = Arc::new(AtomicU64::new(0));
+        let state = Arc::new(Mutex::new(HealthState::new()));
+        let targets = Arc::new(vec![MultiTarget {
+            spec: portunus_core::RuleTarget {
+                host: "hang.example".to_string(),
+                port: 443,
+                priority: 0,
+                proxy_protocol: None,
+            },
+            target: Target::Dns(Hostname::new("hang.example").unwrap()),
+        }]);
+
+        let probe_state = Arc::clone(&state);
+        let probe_targets = Arc::clone(&targets);
+        let probe_counter = Arc::clone(&counter);
+        let probe_resolver = Arc::clone(&resolver);
+        let handle = tokio::spawn(async move {
+            probe_one(
+                RuleId(7),
+                0,
+                &probe_targets[0],
+                probe_state.as_ref(),
+                &probe_counter,
+                false,
+                probe_resolver.as_ref(),
+            )
+            .await;
+        });
+
+        // Let the probe task enter the (hanging) dial.
+        time::sleep(Duration::from_millis(50)).await;
+
+        // The lock must be immediately acquirable: the probe takes it only
+        // to record an outcome, which cannot happen while the dial hangs.
+        let _guard = time::timeout(Duration::from_millis(500), state.lock())
+            .await
+            .expect("health lock must stay free while the probe dial is in flight");
+        // No outcome recorded yet — the dial never completed.
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        handle.abort();
     }
 
     #[tokio::test]
