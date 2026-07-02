@@ -324,15 +324,13 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
             result
         }
     };
-    // #55(3) DEFERRED: on the shutdown-cancel path `result` is the
-    // synthetic `proxy_cancelled` Err and the userspace copy future is
-    // dropped mid-flight, so no partial byte total is recoverable here —
-    // `record_remaining` is (correctly) skipped and pre-cancel userspace
-    // bytes are lost. Splice already flushes per-chunk via `live_sink`, so
-    // it is unaffected. Reaching userspace parity would require replacing
-    // tokio's `copy_bidirectional_with_sizes` on the byte-identical
-    // uncapped hot path with a sink-aware custom copy loop (Constitution
-    // Principle II perf risk) — out of scope for this low-severity polish.
+    // #55(3): both the splice fast path and the userspace fallback
+    // (`copy_bidirectional_userspace`) flush bytes into `live_sink` per
+    // chunk, so a shutdown-cancel that returns the synthetic
+    // `proxy_cancelled` Err — which skips the `record_remaining` below —
+    // still keeps every pre-cancel byte already booked live. On a clean
+    // `Ok`, `record_remaining` books only the unflushed remainder (the
+    // SNI preread), never double-counting what the sink already pushed.
     if let (Some(sink), Ok((bin, bout))) = (live_sink.as_ref(), result.as_ref()) {
         // Book whatever the live sink did not already flush per-chunk.
         // The preread (replayed ClientHello) is folded into the inbound
