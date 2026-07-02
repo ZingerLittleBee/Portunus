@@ -1,6 +1,7 @@
 //! SNI-mode TCP listener. Spec 009-tls-sni-routing data-model.md §2.3.
 //!
-//! Owns the bound `TcpListener`, the `watch::Receiver<Arc<SniRoutingTable>>`,
+//! Owns the bound `TcpListener`, the `watch::Receiver<Arc<SniDispatchState>>`
+//! (routing table + resolver slots as one atomic payload — #55(6)),
 //! the cancellation token, and an `Arc<SniListenerCounters>`. On each
 //! accept it peeks the ClientHello, looks up the SNI in a snapshot of
 //! the routing table, and dispatches into `proxy::proxy_with_preread`
@@ -232,15 +233,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let counters = Arc::new(SniListenerCounters::default());
-        let (_table_tx, table_rx) = watch::channel(Arc::new(SniRoutingTable::default()));
-        let (_resolver_tx, resolver_rx) = watch::channel(Arc::new(SniRouteResolver { slots }));
+        let (_state_tx, state_rx) = watch::channel(Arc::new(SniDispatchState {
+            table: Arc::new(SniRoutingTable::default()),
+            resolver: Arc::new(SniRouteResolver { slots }),
+        }));
         let cancel = CancellationToken::new();
 
         let sni = SniListener {
             listen_port: addr.port(),
             counters: Arc::clone(&counters),
-            table_rx,
-            resolver_rx,
+            state_rx,
             cancel: cancel.clone(),
         };
         let live_resolver = Arc::new(LiveResolver::new(
@@ -324,14 +326,29 @@ pub struct SniRouteResolver {
     pub slots: std::collections::HashMap<RuleId, SniRuleSlot>,
 }
 
+/// #55(6): the routing table and the per-rule resolver slots published
+/// as ONE atomic `watch` payload. A connection landing mid-reconfig
+/// takes a single `borrow()` snapshot, so it can never observe a table
+/// carrying a `rule_id` whose resolver slot has not yet been installed
+/// (or vice versa) — the pair is always mutually consistent. The
+/// publisher (`PortGroupManager::rebuild_watches`) builds both halves
+/// and sends them together on every update.
+#[derive(Clone, Default)]
+pub struct SniDispatchState {
+    pub table: Arc<SniRoutingTable>,
+    pub resolver: Arc<SniRouteResolver>,
+}
+
 /// Configuration for one SNI-mode listener. Owned by the
 /// `PortGroupManager` (T042); the listener task reads through the
 /// shared `Arc`s.
 pub struct SniListener {
     pub listen_port: u16,
     pub counters: Arc<SniListenerCounters>,
-    pub table_rx: watch::Receiver<Arc<SniRoutingTable>>,
-    pub resolver_rx: watch::Receiver<Arc<SniRouteResolver>>,
+    /// #55(6): one channel carrying the table + resolver pair so a
+    /// mid-reconfig accept snapshots a consistent state in a single
+    /// `borrow()`.
+    pub state_rx: watch::Receiver<Arc<SniDispatchState>>,
     pub cancel: CancellationToken,
 }
 
@@ -360,8 +377,7 @@ impl SniListener {
         let SniListener {
             listen_port,
             counters,
-            table_rx,
-            resolver_rx,
+            state_rx,
             cancel,
         } = self;
         // #50: bound concurrent ClientHello peeks. A permit is acquired
@@ -408,22 +424,15 @@ impl SniListener {
                                 continue;
                             };
                             let counters = Arc::clone(&counters);
-                            // #55(6) DEFERRED: `table_rx` and `resolver_rx`
-                            // are two independent `watch` channels read
-                            // non-atomically, so a connection landing
-                            // mid-reconfig can see a table carrying a
-                            // rule_id whose resolver slot is not yet
-                            // present (the `routes.slots.get(&rule_id)`
-                            // miss below drops it as `rule_id_unknown`).
-                            // The fix is to fold both into ONE `watch`
-                            // payload, but the publisher is
-                            // `PortGroupManager` in
-                            // `portunus-client/src/port_groups.rs` — a
-                            // different crate — so the change ripples
-                            // outside `forwarder/sni/` and is left to a
-                            // dedicated follow-up.
-                            let table = table_rx.borrow().clone();
-                            let routes = resolver_rx.borrow().clone();
+                            // #55(6): the table + resolver pair is one
+                            // `watch` payload, so a single `borrow()`
+                            // snapshot is always mutually consistent — a
+                            // connection landing mid-reconfig sees either
+                            // the fully-old or fully-new state, never a
+                            // table entry whose resolver slot is missing.
+                            let state = state_rx.borrow().clone();
+                            let table = Arc::clone(&state.table);
+                            let routes = Arc::clone(&state.resolver);
                             let resolver = Arc::clone(&live_resolver);
                             let cancel = cancel.clone();
                             tokio::spawn(async move {

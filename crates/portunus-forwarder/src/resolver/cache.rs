@@ -75,21 +75,34 @@ pub(super) enum CacheEntry {
         started_at: Instant,
     },
     /// Successful resolver answer. `expiry` already incorporates the
-    /// `[cache_floor, cache_ceiling]` clamp.
-    Resolved { addrs: Vec<IpAddr>, expiry: Instant },
+    /// `[cache_floor, cache_ceiling]` clamp. `last_access` is set at
+    /// insertion and bumped on every cache hit so `evict_locked` can
+    /// pick the least-recently-used victim (#55(7)).
+    Resolved {
+        addrs: Vec<IpAddr>,
+        expiry: Instant,
+        last_access: Instant,
+    },
     /// Past TTL, fresh refresh just failed; we keep serving the last
     /// successful `stale_addrs` until `fail_grace_until` (FR-005).
+    /// `last_access` bumps on each stale serve so a still-used stale
+    /// entry outranks an idle one under eviction (#55(7)).
     StaleAfterFailedRefresh {
         stale_addrs: Vec<IpAddr>,
         fail_grace_until: Instant,
+        last_access: Instant,
     },
     /// Negative-cache window: most recent attempt failed and the
     /// stale grace (if any) is exhausted. New lookups before
     /// `retry_after` short-circuit with `last_reason`; lookups
     /// after fall through and trigger another resolver attempt.
+    /// `last_access` is the creation instant (a negative-cache serve
+    /// returns an error, not a hit, so it is never bumped) — this keeps
+    /// the eviction victim key uniform across every evictable variant.
     Failed {
         retry_after: Instant,
         last_reason: ResolverError,
+        last_access: Instant,
     },
 }
 
@@ -176,9 +189,17 @@ impl Cache {
             let (stale_addrs, permit): (Option<Vec<IpAddr>>, OwnedSemaphorePermit) = {
                 let mut guard = self.inner.lock().await;
                 let now = self.clock.now();
-                match guard.get(name) {
-                    Some(CacheEntry::Resolved { addrs, expiry }) => {
+                match guard.get_mut(name) {
+                    Some(CacheEntry::Resolved {
+                        addrs,
+                        expiry,
+                        last_access,
+                    }) => {
                         if now < *expiry {
+                            // #55(7): a cache hit refreshes the LRU stamp
+                            // so a hot short-TTL name is not evicted ahead
+                            // of an idle one under high-cardinality churn.
+                            *last_access = now;
                             return Ok(CacheResult {
                                 addrs: addrs.clone(),
                                 source: AnswerSource::Cached,
@@ -232,8 +253,13 @@ impl Cache {
                     Some(CacheEntry::StaleAfterFailedRefresh {
                         stale_addrs,
                         fail_grace_until,
+                        last_access,
                     }) => {
                         if now < *fail_grace_until {
+                            // #55(7): a stale serve is still a use — bump
+                            // the LRU stamp so a name being actively served
+                            // stale is not evicted ahead of an idle one.
+                            *last_access = now;
                             return Ok(CacheResult {
                                 addrs: stale_addrs.clone(),
                                 source: AnswerSource::Stale,
@@ -249,6 +275,7 @@ impl Cache {
                     Some(CacheEntry::Failed {
                         retry_after,
                         last_reason,
+                        ..
                     }) => {
                         if now < *retry_after {
                             return Err(last_reason.clone());
@@ -307,6 +334,7 @@ impl Cache {
                 let entry = CacheEntry::Resolved {
                     addrs: answer.addrs.clone(),
                     expiry: now + clamped,
+                    last_access: now,
                 };
                 let mut guard = self.inner.lock().await;
                 let prev = guard.insert(name.clone(), entry);
@@ -339,11 +367,13 @@ impl Cache {
             CacheEntry::StaleAfterFailedRefresh {
                 stale_addrs: stale,
                 fail_grace_until: now + config.stale_while_error_grace,
+                last_access: now,
             }
         } else {
             CacheEntry::Failed {
                 retry_after: now + config.negative_cache_retry,
                 last_reason: err.clone(),
+                last_access: now,
             }
         };
 
@@ -399,6 +429,20 @@ fn entry_deadline(entry: &CacheEntry) -> Option<Instant> {
     }
 }
 
+/// The last-access instant of an evictable entry, used as the LRU
+/// victim key in `evict_locked` (#55(7)). `Pending` has no last-access
+/// stamp — it is mid-flight and owns a `Notify` that single-flight
+/// waiters block on, so it is never a forced-eviction candidate
+/// (abandoned ones are reaped separately in the first pass).
+fn entry_last_access(entry: &CacheEntry) -> Option<Instant> {
+    match entry {
+        CacheEntry::Pending { .. } => None,
+        CacheEntry::Resolved { last_access, .. }
+        | CacheEntry::StaleAfterFailedRefresh { last_access, .. }
+        | CacheEntry::Failed { last_access, .. } => Some(*last_access),
+    }
+}
+
 /// Keep the cache map bounded (memory-leak guard). Called under the
 /// lock immediately before a brand-new key is inserted. Two passes:
 ///
@@ -408,8 +452,12 @@ fn entry_deadline(entry: &CacheEntry) -> Option<Instant> {
 ///    i.e. whose owning resolve task was dropped), firing
 ///    `notify_waiters()` first so any stuck waiters re-loop.
 /// 2. If still at/over `max_entries` (all remaining live), evict the
-///    entries closest to their deadline (least remaining value) until
-///    under the cap.
+///    least-recently-accessed entries until under the cap (#55(7)).
+///    `last_access` is set at insertion and bumped on every cache hit
+///    (and stale serve), so hot short-TTL names survive while idle
+///    entries are dropped — LRU, not closest-to-expiry, which used to
+///    thrash a frequently-hit name whose short TTL kept it near its
+///    deadline.
 ///
 /// *Live* `Pending` entries are never evicted: removing one would
 /// strand the single-flight waiters blocked on its `Notify`, leaking
@@ -441,8 +489,8 @@ fn evict_locked(
     while map.len() >= max_entries {
         let victim = map
             .iter()
-            .filter_map(|(k, e)| entry_deadline(e).map(|d| (k.clone(), d)))
-            .min_by_key(|(_, d)| *d)
+            .filter_map(|(k, e)| entry_last_access(e).map(|a| (k.clone(), a)))
+            .min_by_key(|(_, a)| *a)
             .map(|(k, _)| k);
         match victim {
             Some(k) => {
@@ -681,6 +729,7 @@ mod tests {
             CacheEntry::Resolved {
                 addrs: vec![ip("10.0.0.1")],
                 expiry: now + Duration::from_secs(300),
+                last_access: now,
             },
         );
         guard.insert(
@@ -688,6 +737,7 @@ mod tests {
             CacheEntry::Resolved {
                 addrs: vec![ip("10.0.0.2")],
                 expiry: now + Duration::from_secs(300),
+                last_access: now,
             },
         );
         // One in-flight resolution.
@@ -703,6 +753,57 @@ mod tests {
         assert!(
             guard.contains_key(&host("pending.example")),
             "live Pending entry must never be evicted"
+        );
+    }
+
+    /// #55(7): eviction is LRU, not closest-to-expiry. Two long-TTL
+    /// entries share a cap; touching one (a cache hit) makes it the most
+    /// recently used, so when a third distinct name forces an eviction
+    /// the *idle* entry is dropped and the recently-accessed one — though
+    /// not expired — survives. The old closest-to-expiry victim rule
+    /// would thrash a hot short-TTL name.
+    #[tokio::test]
+    async fn eviction_prefers_least_recently_accessed() {
+        let (cache, clock) = fresh_cache();
+        let resolver = MockResolver::ok(vec![ip("10.0.0.1")], Duration::from_secs(300));
+        let cfg = ResolverConfig {
+            max_cache_entries: 2,
+            ..ResolverConfig::default()
+        };
+
+        let hot = host("hot.example");
+        let cold = host("cold.example");
+        cache.get_or_resolve(&hot, &resolver, &cfg).await.unwrap();
+        cache.get_or_resolve(&cold, &resolver, &cfg).await.unwrap();
+
+        // Advance and touch `hot` so its last_access outranks `cold`'s.
+        clock.advance(Duration::from_secs(10));
+        let r = cache.get_or_resolve(&hot, &resolver, &cfg).await.unwrap();
+        assert_eq!(
+            r.source,
+            AnswerSource::Cached,
+            "hot must be a live cache hit"
+        );
+
+        // A third distinct name trips eviction (cap 2). Both existing
+        // entries are still live, so pass 1 keeps them; pass 2 evicts the
+        // LRU victim — `cold`, never the just-touched `hot`.
+        clock.advance(Duration::from_secs(1));
+        let new = host("new.example");
+        cache.get_or_resolve(&new, &resolver, &cfg).await.unwrap();
+
+        let guard = cache.inner.lock().await;
+        assert!(
+            guard.contains_key(&hot),
+            "recently-accessed entry must survive eviction"
+        );
+        assert!(
+            !guard.contains_key(&cold),
+            "least-recently-accessed (but not expired) entry must be evicted"
+        );
+        assert!(
+            guard.contains_key(&new),
+            "the newly-resolved name must be present"
         );
     }
 

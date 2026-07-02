@@ -21,7 +21,9 @@ pub use forwarder::stats::{
 };
 
 // SNI data-plane entry points (client port_groups consumes)
-pub use forwarder::sni::{SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot};
+pub use forwarder::sni::{
+    SniDispatchState, SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
+};
 
 // Rate limit control-plane handles (client constructs)
 pub use forwarder::rate_limit::{

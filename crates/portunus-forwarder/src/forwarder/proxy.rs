@@ -408,7 +408,6 @@ pub(crate) async fn copy_uncapped(
             owner_rate_limit,
             has_sni_replay_done,
             has_proxy_out,
-            live,
         );
     }
     // 013-traffic-quotas E3: when splice is unavailable (non-Linux,
@@ -420,13 +419,80 @@ pub(crate) async fn copy_uncapped(
         return super::quota::copy::copy_bidirectional_with_quota(inbound, outbound, Arc::clone(q))
             .await;
     }
-    tokio::io::copy_bidirectional_with_sizes(
-        inbound,
-        outbound,
-        PROXY_COPY_BUF_SIZE,
-        PROXY_COPY_BUF_SIZE,
-    )
-    .await
+    copy_bidirectional_userspace(inbound, outbound, live).await
+}
+
+/// Uncapped userspace bidirectional copy that books each chunk into the
+/// live sink as it moves. Replaces `tokio::io::copy_bidirectional_with_sizes`
+/// on the fallback path (#55(3)): that combinator returns nothing when its
+/// future is dropped, so the shutdown-cancel `select!` in
+/// `proxy_with_preread_and_prelude` lost every pre-cancel byte (the batch
+/// `record_remaining` only runs on `Ok`). Feeding the sink per chunk means
+/// bytes are booked the instant they transfer, so a mid-transfer cancel
+/// keeps the count. On clean completion the returned totals equal what the
+/// sink already flushed, so the caller's `record_remaining` books only the
+/// unflushed remainder (the SNI preread) — byte-identical to the old path.
+///
+/// Only the userspace fallback routes here; the Linux splice fast path
+/// (`splice.rs`) is untouched and already flushes per chunk via the same
+/// sink. The 64 KiB per-direction buffer and half-close semantics match
+/// `copy_bidirectional_with_sizes`. `TcpStream::split` is native and
+/// lock-free (mirrors `quota/copy.rs`).
+async fn copy_bidirectional_userspace(
+    inbound: &mut TcpStream,
+    outbound: &mut TcpStream,
+    live: Option<&super::stats::LiveBytesSink>,
+) -> io::Result<(u64, u64)> {
+    let (mut ri, mut wi) = inbound.split();
+    let (mut ro, mut wo) = outbound.split();
+    // Inbound→outbound is the `bytes_in` direction; outbound→inbound the
+    // `bytes_out` direction. Each half-copy records into the matching
+    // sink counter.
+    let fwd = copy_one_dir_live(&mut ri, &mut wo, live, LiveDir::In);
+    let rev = copy_one_dir_live(&mut ro, &mut wi, live, LiveDir::Out);
+    tokio::try_join!(fwd, rev)
+}
+
+#[derive(Clone, Copy)]
+enum LiveDir {
+    In,
+    Out,
+}
+
+/// One direction of the userspace fallback copy. Reads a chunk, writes it
+/// in full, then books it into the live sink BEFORE the next read, so a
+/// dropped future (shutdown-cancel) leaves every already-transferred byte
+/// counted. On reader EOF the writer half is shut down and the direction
+/// ends — matching `copy_bidirectional_with_sizes`'s half-close.
+async fn copy_one_dir_live<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    live: Option<&super::stats::LiveBytesSink>,
+    dir: LiveDir,
+) -> io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; PROXY_COPY_BUF_SIZE];
+    let mut total: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            let _ = writer.shutdown().await;
+            return Ok(total);
+        }
+        writer.write_all(&buf[..n]).await?;
+        let n64 = u64::try_from(n).unwrap_or(0);
+        total = total.saturating_add(n64);
+        if let Some(sink) = live {
+            match dir {
+                LiveDir::In => sink.record_in(n64),
+                LiveDir::Out => sink.record_out(n64),
+            }
+        }
+    }
 }
 
 /// #55(2): process-wide no-cap rule limiter used when ONLY the per-owner
@@ -695,6 +761,67 @@ mod tests {
             err.to_string().contains("proxy_cancelled"),
             "expected proxy_cancelled, got {err}"
         );
+    }
+
+    /// #55(3): the userspace copy path must book pre-cancel bytes into
+    /// the live sink as they move. A shutdown-cancel returns
+    /// `Err(proxy_cancelled)` and skips the post-copy batch record, so
+    /// before the fix the uncapped userspace fallback lost every byte an
+    /// active connection had already transferred. Drive a full round-trip
+    /// (both directions move 16 bytes), then cancel the idle proxy and
+    /// assert the counts survived. On Linux the eligible connection takes
+    /// the splice fast path, which already flushes per chunk, so this
+    /// asserts the same behaviour on both paths.
+    #[tokio::test]
+    async fn userspace_copy_counts_pre_cancel_bytes() {
+        let echo = spawn_echo().await;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let stats = RuleStats::new();
+
+        let cancel_proxy = cancel.clone();
+        let resolver = Arc::new(ip_resolver());
+        let s = Arc::clone(&stats);
+        let proxy_task = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            proxy(
+                sock,
+                resolver.as_ref(),
+                RuleId(0),
+                &Target::Ip(echo.ip()),
+                echo.port(),
+                false,
+                cancel_proxy,
+                Some(s),
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        client.write_all(b"pre-cancel-bytes").await.unwrap();
+        // Reading the 16 echoed bytes guarantees both directions have moved
+        // (and, post-fix, recorded) their 16 bytes before we cancel.
+        let mut buf = [0u8; 16];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pre-cancel-bytes");
+
+        cancel.cancel();
+        let err = proxy_task.await.unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("proxy_cancelled"),
+            "expected proxy_cancelled, got {err}"
+        );
+
+        let (bin, bout, _) = stats.snapshot();
+        assert_eq!(bin, 16, "inbound pre-cancel bytes must be booked live");
+        assert_eq!(bout, 16, "outbound pre-cancel bytes must be booked live");
     }
 
     #[tokio::test]
