@@ -7,7 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-07-02
+
+Data-plane hardening and performance pass on `portunus-forwarder`
+(issues #43–#55): correctness fixes on the TCP splice, DNS resolver,
+health-probe, and UDP cold paths, plus UDP bandwidth-cap enforcement and
+batched UDP reply syscalls. No wire/schema change; the operator surface
+is unchanged.
+
+### Added
+- **UDP bandwidth caps are now enforced.** UDP rules carrying
+  `bandwidth_in_bps` / `bandwidth_out_bps` previously accepted and
+  documented the caps but never applied them; both directions are now
+  enforced (per-rule and per-owner) via drop-based shaping — an
+  over-budget datagram is dropped and counted rather than delayed. (#44)
+- **New data-plane drop counters:** `flows_pending_drops`,
+  `bandwidth_dropped_in`, `bandwidth_dropped_out`, and `send_dropped`,
+  distinguishing pending-slot collisions, bandwidth drops, and silent
+  send failures from generic overflow. (#44, #54, #55)
+
+### Changed
+- **Batched UDP reply path.** The demux reply path now uses
+  `recvmmsg` / `sendmmsg` on Linux, cutting per-datagram syscall overhead
+  on high-throughput flows (a partial send accounts only the delivered
+  prefix). (#46)
+- **Cheaper rate-limited TCP copy.** Limiter snapshots are cached
+  (~100 ms) and the copy loop uses a lock-free `TcpStream::split`,
+  removing per-chunk contention on the process-wide limiter registry.
+  (#51)
+- **SNI dispatch hardening.** ClientHello peeks are bounded by a
+  per-listener in-flight cap (slowloris exposure), and the routing table
+  and resolver now publish as one atomic `watch` payload so a snapshot
+  taken mid-reload is always internally consistent. (#50, #55)
+- Assorted hot-path allocation and log-noise reductions on the
+  TCP / SNI / resolver paths. (#55)
+
 ### Fixed
+- **splice: a quota cutoff mid-drain no longer returns a dirty pipe to
+  the reuse pool** — on Linux this could bleed buffered bytes into an
+  unrelated connection. Pipes are now pooled only after a clean EOF in
+  both directions. (#43)
+- **resolver: closed a missed-wakeup race and an orphaned-`Pending`
+  leak** that could hang connection setup indefinitely, and added a
+  `max_concurrent_resolves` ceiling that fast-fails instead of queueing
+  unboundedly. (#45)
+- **failover: the health probe no longer holds the `HealthState` lock
+  across the full dial**, so a slow or stalled probe target can't block
+  new-connection dispatch. (#47)
+- **UDP: `flows_dropped_overflow` is no longer inflated by pending-slot
+  collisions** (now counted separately), and per-port recv arenas are
+  allocated lazily instead of `O(listen ports)` up front. (#49, #53, #54)
+- **splice: removed the process-global `Mutex<HashSet>`** behind the
+  splice-selected trace event, which serialized every new connection.
+  (#48)
 - **Traffic quota is now enforced on the rate-limited and multi-target
   failover TCP paths.** A TCP rule carrying both a monthly quota and a
   bandwidth cap, or any multi-target (failover) TCP rule, previously
