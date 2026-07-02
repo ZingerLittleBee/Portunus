@@ -118,8 +118,13 @@ impl UdpFlowRegistry {
     ///  - `TryGetOrReserve::Existing(existing)` if a Live flow already exists.
     ///  - `TryGetOrReserve::Reserved(Reservation)` if a new Pending slot
     ///    was created.
-    ///  - `TryGetOrReserve::CapExhausted` if cap is exhausted (caller MUST
-    ///    silent-drop and bump `dropped_overflow`).
+    ///  - `TryGetOrReserve::CapExhausted` if the rule-wide cap is exhausted
+    ///    (caller MUST silent-drop and count `flows_dropped_overflow`).
+    ///  - `TryGetOrReserve::Pending` if a concurrent cold path already holds
+    ///    the `Slot::Pending` for this exact key. The rule is NOT at cap —
+    ///    this is a same-key collision, not overflow (issue #54). The caller
+    ///    silent-drops and counts `flows_pending_drops`, keeping
+    ///    `flows_dropped_overflow` accurate for true cap exhaustion only.
     ///
     /// Cap enforcement uses an `fetch_add` + roll-back pattern so the
     /// rule-wide counter is never over-shot even when concurrent inserts
@@ -130,10 +135,11 @@ impl UdpFlowRegistry {
             match slot.value() {
                 Slot::Live(arc) => return TryGetOrReserve::Existing(Arc::clone(arc)),
                 Slot::Pending => {
-                    // Another cold path is mid-flight for this key. Treat
-                    // as "no slot available" to avoid double-reserving.
-                    self.dropped_overflow.fetch_add(1, Ordering::Relaxed);
-                    return TryGetOrReserve::CapExhausted;
+                    // Another cold path is mid-flight for this exact key.
+                    // Not a cap event — report a distinct Pending collision
+                    // so the listener counts it under `flows_pending_drops`
+                    // instead of inflating `flows_dropped_overflow` (#54).
+                    return TryGetOrReserve::Pending;
                 }
             }
         }
@@ -163,10 +169,8 @@ impl UdpFlowRegistry {
                 self.occupancy.fetch_sub(1, Ordering::Relaxed);
                 match occ.get() {
                     Slot::Live(arc) => TryGetOrReserve::Existing(Arc::clone(arc)),
-                    Slot::Pending => {
-                        self.dropped_overflow.fetch_add(1, Ordering::Relaxed);
-                        TryGetOrReserve::CapExhausted
-                    }
+                    // Same-key Pending collision, not overflow (#54).
+                    Slot::Pending => TryGetOrReserve::Pending,
                 }
             }
         }
@@ -240,7 +244,13 @@ impl UdpFlowRegistry {
 pub enum TryGetOrReserve {
     Existing(Arc<UdpFlow>),
     Reserved(Reservation),
+    /// True per-rule cap exhaustion: occupancy is already at `cap`. The
+    /// caller silent-drops and counts `flows_dropped_overflow`.
     CapExhausted,
+    /// A concurrent cold path holds the `Slot::Pending` for this exact
+    /// key. NOT a cap event — the caller silent-drops and counts
+    /// `flows_pending_drops` (issue #54).
+    Pending,
 }
 
 impl Reservation {
@@ -332,9 +342,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_reserve_same_key_second_caller_sees_cap_exhausted() {
+    async fn concurrent_reserve_same_key_second_caller_sees_pending() {
         // Listener loop is logically single-threaded per port, but the
-        // registry API must remain sound under concurrent calls.
+        // registry API must remain sound under concurrent calls. A
+        // same-key collision reports `Pending` (issue #54), NOT a cap
+        // event, and must not bump `dropped_overflow`.
         let reg = UdpFlowRegistry::new(4);
         let k = key(8000, 1, 50000);
         let reg1 = Arc::clone(&reg);
@@ -346,9 +358,49 @@ mod tests {
         let r1 = h1.await.unwrap();
         let r2 = h2.await.unwrap();
         match (r1, r2) {
-            (TryGetOrReserve::Reserved(_), TryGetOrReserve::CapExhausted) => {}
-            _ => panic!("expected first Reserved, second CapExhausted"),
+            (TryGetOrReserve::Reserved(_), TryGetOrReserve::Pending) => {}
+            _ => panic!("expected first Reserved, second Pending"),
         }
+        assert_eq!(
+            reg.dropped_overflow(),
+            0,
+            "a Pending collision must NOT count as cap overflow",
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_collision_returns_pending_without_bumping_overflow() {
+        // A second reservation for a key whose slot is still Pending must
+        // return `Pending` (not `CapExhausted`) and leave `dropped_overflow`
+        // untouched — the rule is nowhere near its cap.
+        let reg = UdpFlowRegistry::new(8);
+        let k = key(8000, 1, 50000);
+        let TryGetOrReserve::Reserved(_held) = reg.try_get_or_reserve(k) else {
+            panic!("expected first reservation")
+        };
+        assert!(matches!(
+            reg.try_get_or_reserve(k),
+            TryGetOrReserve::Pending
+        ));
+        assert_eq!(reg.dropped_overflow(), 0);
+        assert_eq!(reg.len(), 1, "collision must not add a slot");
+    }
+
+    #[tokio::test]
+    async fn cap_exhaustion_still_returns_cap_exhausted_distinct_from_pending() {
+        // True cap exhaustion (a NEW key with occupancy already at cap)
+        // returns `CapExhausted` and bumps `dropped_overflow` — distinct
+        // from the same-key `Pending` collision path.
+        let reg = UdpFlowRegistry::new(1);
+        let TryGetOrReserve::Reserved(_r1) = reg.try_get_or_reserve(key(8000, 1, 1)) else {
+            panic!("expected reservation")
+        };
+        // A different key with the single cap slot taken → overflow.
+        assert!(matches!(
+            reg.try_get_or_reserve(key(8000, 2, 1)),
+            TryGetOrReserve::CapExhausted
+        ));
+        assert_eq!(reg.dropped_overflow(), 1);
     }
 
     #[tokio::test]

@@ -119,6 +119,11 @@ pub struct ErrorCounters {
     /// `rule.udp_addflow_dropped` — new-flow datagram dropped
     /// because the per-rule flow table is at capacity.
     pub addflow_dropped: AtomicU64,
+    /// `rule.udp_flow_pending_drop` — a cold-path datagram raced a
+    /// concurrent cold path for the same `(listen_port, src)` and hit
+    /// its `Slot::Pending` reservation. The rule is NOT at cap, so this
+    /// is counted separately from `flows_dropped_overflow` (issue #54).
+    pub flows_pending_drops: AtomicU64,
 }
 
 impl ErrorCounters {
@@ -140,8 +145,11 @@ impl ErrorCounters {
     pub fn inc_addflow_dropped(&self) {
         self.addflow_dropped.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn inc_flows_pending_drops(&self) {
+        self.flows_pending_drops.fetch_add(1, Ordering::Relaxed);
+    }
 
-    /// Snapshot all six counters at once.
+    /// Snapshot all counters at once.
     #[must_use]
     pub fn snapshot(&self) -> ErrorSnapshot {
         ErrorSnapshot {
@@ -151,6 +159,7 @@ impl ErrorCounters {
             emsgsize: self.emsgsize.load(Ordering::Relaxed),
             wouldblock: self.wouldblock.load(Ordering::Relaxed),
             addflow_dropped: self.addflow_dropped.load(Ordering::Relaxed),
+            flows_pending_drops: self.flows_pending_drops.load(Ordering::Relaxed),
         }
     }
 }
@@ -163,6 +172,7 @@ pub struct ErrorSnapshot {
     pub emsgsize: u64,
     pub wouldblock: u64,
     pub addflow_dropped: u64,
+    pub flows_pending_drops: u64,
 }
 
 #[derive(Debug, Default)]
@@ -764,11 +774,14 @@ mod tests {
         s.errors.inc_wouldblock();
         s.errors.inc_wouldblock();
         s.errors.inc_addflow_dropped();
+        s.errors.inc_flows_pending_drops();
+        s.errors.inc_flows_pending_drops();
 
         assert_eq!(s.errors.icmp_evict.load(Ordering::Relaxed), 2);
         assert_eq!(s.errors.emsgsize.load(Ordering::Relaxed), 1);
         assert_eq!(s.errors.wouldblock.load(Ordering::Relaxed), 3);
         assert_eq!(s.errors.addflow_dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(s.errors.flows_pending_drops.load(Ordering::Relaxed), 2);
 
         let snap = s.errors.snapshot();
         assert_eq!(
@@ -780,6 +793,7 @@ mod tests {
                 emsgsize: 1,
                 wouldblock: 3,
                 addflow_dropped: 1,
+                flows_pending_drops: 2,
             }
         );
     }

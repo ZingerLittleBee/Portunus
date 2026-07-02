@@ -77,6 +77,7 @@ pub struct ErrorSnap {
     pub emsgsize: u64,
     pub wouldblock: u64,
     pub addflow_dropped: u64,
+    pub flows_pending_drops: u64,
     pub dns_failures: u64,
     pub flows_dropped_overflow: u64,
 }
@@ -87,7 +88,7 @@ impl ErrorSnap {
     /// counter only has to be wired through here once instead of in every
     /// renderer.
     #[must_use]
-    pub fn labeled(&self) -> [(&'static str, u64); 8] {
+    pub fn labeled(&self) -> [(&'static str, u64); 9] {
         [
             ("port_in_use", self.port_in_use),
             ("upstream_connect_failed", self.upstream_connect_failed),
@@ -95,6 +96,7 @@ impl ErrorSnap {
             ("emsgsize", self.emsgsize),
             ("wouldblock", self.wouldblock),
             ("addflow_dropped", self.addflow_dropped),
+            ("flows_pending_drops", self.flows_pending_drops),
             ("dns_failures", self.dns_failures),
             ("flows_dropped_overflow", self.flows_dropped_overflow),
         ]

@@ -1,11 +1,25 @@
 //! Per-listener UDP recv loop for the 014-udp-centralized-demux
 //! runtime. Owns the listen socket's `recv_from` loop and, on each
-//! datagram, applies the FR-004 cold-path admission order:
+//! datagram, applies the FR-004 cold-path admission order. The order is
+//! preserved, but the *split* between synchronous and deferred work
+//! changed in the #53/#54 hardening pass:
 //!
+//! Synchronous, in the recv loop (`handle_datagram`), so a spoofed-source
+//! flood is bounded by cheap admission BEFORE any allocation or task
+//! spawn:
 //!   1. existing-flow fast path (registry `get` → quota check →
 //!      `try_send` → classify);
 //!   2. quota exhaustion short-circuit;
-//!   3. per-rule cap reservation (`registry.try_get_or_reserve`);
+//!   3. per-rule cap reservation (`registry.try_get_or_reserve`) —
+//!      `Reserved` proceeds, `CapExhausted` counts `flows_dropped_overflow`,
+//!      `Pending` (same-key race) counts `flows_pending_drops` (#54),
+//!      `Existing` (Live race) forwards inline.
+//!
+//! Deferred to a detached task (`complete_cold_flow`) for BOTH IP and DNS
+//! targets, so a new-flow burst never head-of-line blocks same-batch
+//! datagrams of already-established flows (#53 — see the dispatcher note
+//! in `handle_datagram`; only after a `Reserved` outcome do we pay the
+//! `payload.to_vec()` + spawn):
 //!   4. layered owner+rule rate-limit gate (`try_acquire_layered`);
 //!   5. resolver lookup;
 //!   6. multi-A walk: bind+connect; first success wins;
@@ -16,6 +30,11 @@
 //!      `try_send` until the reactor observes writability; the cold
 //!      path awaits writability once so the first datagram is durable.
 //!      Subsequent fast-path sends keep `try_send` semantics.)
+//!
+//! The `Reservation` (RAII) is minted synchronously in `handle_datagram`
+//! and moved into the task; it releases the `Slot::Pending` on every
+//! early return until `commit`, so a task that is dropped before running
+//! (e.g. runtime shutdown) still frees the slot.
 //!
 //! Listener does NOT bind the socket — the runtime (Phase 7) probes
 //! all ports up-front and shares the resulting `Arc<UdpSocket>` with
@@ -42,7 +61,7 @@ use crate::forwarder::udp::batch::{BatchBufs, recv_batch, send_batch_connected};
 use crate::forwarder::udp::demux::DemuxCommand;
 use crate::forwarder::udp::error::{UdpAction, classify_udp_error};
 use crate::forwarder::udp::flow::UdpFlow;
-use crate::forwarder::udp::registry::{FlowKey, TryGetOrReserve, UdpFlowRegistry};
+use crate::forwarder::udp::registry::{FlowKey, Reservation, TryGetOrReserve, UdpFlowRegistry};
 use crate::resolver::{LiveResolver, Resolve};
 
 /// IP-layer UDP payload ceiling (FR-013). One static heap buffer per
@@ -104,8 +123,15 @@ pub async fn run_listener<R: Resolve + 'static>(
     cfg: ListenerConfig<R>,
     listener_socket: Arc<UdpSocket>,
 ) {
-    let mut bufs = BatchBufs::new();
-    let mut fallback_buf = vec![0u8; UDP_BUFFER_BYTES];
+    // Issue #49: allocate the ~2 MiB batch arena and the 64 KiB
+    // single-packet fallback buffer lazily, on this port's first
+    // readiness/traffic — NOT at spawn. A large range rule (e.g. 1000
+    // listen ports) otherwise pays ~2 GiB up front for ports that may
+    // never see a datagram. Idle ports now cost nothing. The
+    // steady-state hot path adds one `Option` check (branch-predicted
+    // taken after the first wake) per readiness wake.
+    let mut bufs: Option<BatchBufs> = None;
+    let mut fallback_buf: Option<Vec<u8>> = None;
     loop {
         tokio::select! {
             () = cfg.cancel.cancelled() => {
@@ -125,13 +151,16 @@ pub async fn run_listener<R: Resolve + 'static>(
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 }
+                // Lazily materialize the batch arena on first readiness
+                // for this port (issue #49).
+                let bufs = bufs.get_or_insert_with(BatchBufs::new);
                 // Try the batched path first. On Linux this calls
                 // recvmmsg; on other platforms (or on any error) we
                 // fall back to single-packet recv_from below.
-                match recv_batch(&listener_socket, &mut bufs) {
+                match recv_batch(&listener_socket, bufs) {
                     Ok(0) => {} // spurious wakeup → just re-loop
                     Ok(n) => {
-                        process_batch(&cfg, &listener_socket, &bufs, n).await;
+                        process_batch(&cfg, &listener_socket, bufs, n).await;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // Either the readiness event was spurious or
@@ -144,9 +173,12 @@ pub async fn run_listener<R: Resolve + 'static>(
                         // per packet on non-Linux platforms. The cap
                         // mirrors the Linux batch size so a sustained
                         // flood can't starve the `cancel` branch.
+                        // Lazily materialize the fallback buffer too (#49).
+                        let fallback_buf =
+                            fallback_buf.get_or_insert_with(|| vec![0u8; UDP_BUFFER_BYTES]);
                         let mut drained = 0usize;
                         loop {
-                            match listener_socket.try_recv_from(&mut fallback_buf) {
+                            match listener_socket.try_recv_from(fallback_buf) {
                                 Ok((n, src)) => {
                                     handle_datagram(
                                         &cfg,
@@ -545,27 +577,100 @@ async fn handle_datagram<R: Resolve + 'static>(
         }
     }
 
-    // ---- Cold path ----
+    // ---- Cold path admission (synchronous, cheap — run BEFORE any
+    //      allocation or task spawn) ----
     //
-    // Building a new flow means a resolver lookup, an upstream
-    // bind+connect, and a first-packet send. For DNS targets the
-    // resolver step can block on a network round-trip; running it inline
-    // here would head-of-line block the listener's recv loop, stalling
-    // datagrams for every *other* (already-established) flow behind one
-    // brand-new flow. So for DNS targets we hand the full FR-004
-    // cold-path sequence to a detached task and return immediately. The
-    // registry's `Pending` slot keeps concurrent datagrams for the same
-    // source safe (they observe `CapExhausted` and are dropped until the
-    // flow goes Live). IP targets resolve synchronously and UDP-connect
-    // without a network round-trip, so they run inline — no HOL, and
-    // behaviour stays byte-identical to the pre-fix path.
+    // Issue #53/#54: the pre-fix path copied the payload (`to_vec`, up to
+    // 64 KiB) and either spawned a task (DNS) or ran the whole setup
+    // inline (IP) BEFORE the flow-cap reservation and rate-limit gate. A
+    // spoofed-source flood therefore bought one alloc + one spawn per
+    // packet, uncapped. We now hoist the two cheap synchronous admission
+    // steps (quota short-circuit, cap reservation — both sync; the
+    // reservation is a DashMap op) here, so an over-cap / over-budget
+    // datagram is dropped without paying for the copy or the task.
+
+    // (FR-004 step 2) Quota exhaustion short-circuit.
+    if let Some(q) = cfg.quota.as_ref()
+        && q.is_exhausted()
+    {
+        return;
+    }
+
+    // (FR-004 step 3) Reserve a per-rule cap slot. RAII: dropping the
+    // reservation without `commit` releases the slot.
+    let reservation = match cfg.registry.try_get_or_reserve(key) {
+        TryGetOrReserve::Existing(flow) => {
+            // Rare: another cold path committed a Live flow for this exact
+            // (port, src) between our fast-path `get` above and here.
+            // Forward this datagram through it, same as observing the Live
+            // flow on the fast path. `send().await` (not `try_send`): the
+            // racing cold path may not yet have issued its own first send,
+            // so the socket can still be pre-reactor-writability (same race
+            // as cold-path step 9).
+            if flow.quota_allows() && flow.upstream_socket.send(payload).await.is_ok() {
+                flow.bump_inbound(n_u64).await;
+                cfg.stats.inc_datagram_in(cfg.listen_port, n_u64);
+                let _ = flow.quota_consume_after_send(n_u64);
+            }
+            // On error / exhausted quota: drop this datagram; the next one
+            // hits the fast path and classifies the error there.
+            return;
+        }
+        TryGetOrReserve::Reserved(r) => r,
+        TryGetOrReserve::CapExhausted => {
+            cfg.stats.inc_flow_dropped_overflow();
+            warn!(
+                event = "rule.udp_flow_dropped_overflow",
+                rule_id = %cfg.rule_id,
+                listen_port = cfg.listen_port,
+                source = %src,
+            );
+            return;
+        }
+        TryGetOrReserve::Pending => {
+            // A concurrent cold path already holds the Pending slot for
+            // this exact (port, src). The rule is NOT at cap — count this
+            // separately from overflow (issue #54) and drop the datagram;
+            // the next one from this source hits the now-Live fast path.
+            cfg.stats.errors.inc_flows_pending_drops();
+            debug!(
+                event = "rule.udp_flow_pending_drop",
+                rule_id = %cfg.rule_id,
+                listen_port = cfg.listen_port,
+                source = %src,
+            );
+            return;
+        }
+    };
+
+    // ---- Cold path (deferred) ----
+    //
+    // Only now — after a successful reservation — do we pay for the
+    // payload copy and the task spawn. Building a new flow means a
+    // resolver lookup, an upstream bind+connect, and a first-packet
+    // `send().await` (a reactor writability round-trip on a fresh
+    // socket). Running any of that inline in the recv loop would
+    // head-of-line block same-batch datagrams of every *other*
+    // already-established flow behind one brand-new flow.
+    //
+    // NOTE (behaviour change from v1.5.x): IP targets used to run this
+    // setup inline (they resolve synchronously and UDP-`connect` without
+    // a network round-trip). They now ALSO defer to a task — the inline
+    // first-packet `send().await` still cost a fresh-socket writability
+    // round-trip, which HOL-blocked the loop under new-flow bursts. Both
+    // target kinds now spawn; the reservation was already taken above so
+    // the admission ORDER (FR-004) is preserved. The reservation is moved
+    // into the task and released via Drop on any early return before
+    // `commit`.
     let ctx = ColdPathCtx::from_listener(cfg);
     let payload_owned = payload.to_vec();
-    if matches!(cfg.target, Target::Dns(_)) {
-        tokio::spawn(complete_cold_flow(ctx, key, src, payload_owned));
-    } else {
-        complete_cold_flow(ctx, key, src, payload_owned).await;
-    }
+    tokio::spawn(complete_cold_flow(
+        ctx,
+        reservation,
+        key,
+        src,
+        payload_owned,
+    ));
 
     // `listener_socket` is held by the runtime, but we reference it via
     // the parameter to keep the signature stable for unit tests that
@@ -616,66 +721,26 @@ impl<R: Resolve + 'static> ColdPathCtx<R> {
     }
 }
 
-/// FR-004 cold-path flow setup (steps 2–9), factored out of
-/// `handle_datagram` so it can run either inline (IP targets) or in a
-/// detached task (DNS targets — see the dispatcher in
-/// `handle_datagram`). Identical sequence and semantics to the former
-/// inline path; the only change is that it operates on an owned
-/// [`ColdPathCtx`] instead of borrowing `ListenerConfig`, and the
-/// payload is owned so it can cross the `tokio::spawn` boundary.
+/// FR-004 cold-path flow setup (steps 4–9), factored out of
+/// `handle_datagram` and always run in a detached task (see the
+/// dispatcher in `handle_datagram`). Steps 2 (quota short-circuit) and 3
+/// (cap reservation) now run synchronously in `handle_datagram` BEFORE
+/// the spawn (#53/#54); this function receives the already-held
+/// [`Reservation`]. It operates on an owned [`ColdPathCtx`] instead of
+/// borrowing `ListenerConfig`, and the payload is owned so both cross the
+/// `tokio::spawn` boundary.
+///
+/// The `reservation` is RAII: every early return below drops it, which
+/// releases the `Slot::Pending`. `commit` (step 7) marks it committed so
+/// its Drop becomes a no-op.
 async fn complete_cold_flow<R: Resolve + 'static>(
     ctx: ColdPathCtx<R>,
+    reservation: Reservation,
     key: FlowKey,
     src: SocketAddr,
     payload: Vec<u8>,
 ) {
     let n_u64 = u64::try_from(payload.len()).unwrap_or(u64::MAX);
-
-    // (2) Quota exhaustion short-circuit — don't burn resolver / bind /
-    //     rate-limit work on a budget that can't deliver bytes.
-    if let Some(q) = ctx.quota.as_ref()
-        && q.is_exhausted()
-    {
-        return;
-    }
-
-    // (3) Reserve a slot in the per-rule registry. Cap exhaustion is
-    //     accounted for by `try_get_or_reserve` itself (it bumps
-    //     `dropped_overflow`). Reservation is RAII — early returns
-    //     below release it via Drop.
-    let reservation = match ctx.registry.try_get_or_reserve(key) {
-        TryGetOrReserve::Existing(flow) => {
-            // Rare: another cold path committed for the same (port, src)
-            // between our `get` and this `try_get_or_reserve`. Treat as
-            // if we'd seen the Live flow on the fast path — forward the
-            // current datagram through it. Use `send().await` (not
-            // `try_send`): the racing cold path may not yet have issued
-            // its own first send, so the socket can still be
-            // pre-reactor-writability — same race as cold-path step 9.
-            if !flow.quota_allows() {
-                return;
-            }
-            if flow.upstream_socket.send(&payload).await.is_ok() {
-                flow.bump_inbound(n_u64).await;
-                ctx.stats.inc_datagram_in(ctx.listen_port, n_u64);
-                let _ = flow.quota_consume_after_send(n_u64);
-            }
-            // On error: drop this datagram; the next one hits the
-            // fast path and classifies the error there.
-            return;
-        }
-        TryGetOrReserve::Reserved(r) => r,
-        TryGetOrReserve::CapExhausted => {
-            ctx.stats.inc_flow_dropped_overflow();
-            warn!(
-                event = "rule.udp_flow_dropped_overflow",
-                rule_id = %ctx.rule_id,
-                listen_port = ctx.listen_port,
-                source = %src,
-            );
-            return;
-        }
-    };
 
     // (4) Layered owner+rule rate-limit gate. Owner first per FR-013.
     //     Reject → silent drop, RAII releases the reservation. On
@@ -984,6 +1049,23 @@ mod tests {
         ))
     }
 
+    /// Poll `cond` every 10 ms until it returns true or `budget` elapses.
+    /// The cold path now completes flow setup (and any rollback) in a
+    /// detached task, so tests that drive `handle_datagram` directly must
+    /// wait for that task rather than assert synchronously. The generous
+    /// budget keeps this non-flaky under CI scheduling jitter — it only
+    /// ever lengthens the wait, never shortens the settle window.
+    async fn wait_until(budget: Duration, mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
+        }
+    }
+
     /// Phase 6 minimum: cancelling the listener token must let the
     /// loop exit promptly. The 100ms budget is generous —
     /// `recv_from` is selected against `cancel.cancelled()`, so the
@@ -1062,6 +1144,13 @@ mod tests {
 
         let src: SocketAddr = "127.0.0.1:50001".parse().unwrap();
         handle_datagram(&cfg, &listener_sock, b"first", src).await;
+
+        // The cold-path flow setup now runs in a detached task (both IP
+        // and DNS targets defer — #53). `handle_datagram` returns after
+        // taking the reservation synchronously; the AddFlow attempt (and
+        // its rollback) happen in the spawned task. Poll until the slot
+        // is released (generous budget → no flakiness under CI load).
+        wait_until(Duration::from_secs(2), || registry.is_empty()).await;
 
         // The Pending reservation should have been committed (Live)
         // and then `remove`d on the AddFlow failure. Either way, no
@@ -1143,14 +1232,26 @@ mod tests {
 
         handle_datagram(&cfg, &listener_sock, b"d1", src1).await;
         handle_datagram(&cfg, &listener_sock, b"d2", src2).await;
-        // Third should reject at the rate-limit gate; no flow commits.
+        // One of the three must reject at the rate-limit gate; no flow
+        // commits for it.
         handle_datagram(&cfg, &listener_sock, b"d3", src3).await;
-        // `Reservation::Drop` defers slot removal to a spawned task
-        // (it can't await inline). Give that task time to run before
-        // we inspect the registry. Two short sleeps + yields
-        // suffice — the cleanup is a single mutex-lock + remove.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        tokio::task::yield_now().await;
+        // Flow setup and the rejected flow's reservation-Drop now run in
+        // detached tasks (#53), so cross-flow admission is scheduling-
+        // ordered, not arrival-ordered — WHICH of the three is rejected
+        // is nondeterministic (only the reservation, not the rate-limit
+        // grant, is arrival-ordered). Assert the invariant that holds
+        // regardless: exactly two flows go live and the guard count caps
+        // at 2. Wait for both admitted flows to reach the Live state
+        // (`get` skips Pending) and the guard count to settle at 2.
+        let keys: Vec<FlowKey> = [src1, src2, src3]
+            .iter()
+            .map(|s| FlowKey::new(listen_addr.port(), *s))
+            .collect();
+        let live_count = || keys.iter().filter(|k| registry.get(**k).is_some()).count();
+        wait_until(Duration::from_secs(2), || {
+            live_count() == 2 && rate_limit.active_connections() == 2
+        })
+        .await;
 
         assert_eq!(
             registry.len(),
@@ -1163,26 +1264,32 @@ mod tests {
             2,
             "active_connections must reflect 2 live guards",
         );
-        let k3 = FlowKey::new(listen_addr.port(), src3);
-        assert!(
-            registry.get(k3).is_none(),
-            "rejected flow must NOT appear in registry",
+        // Exactly two of the three sources went live; one was rejected.
+        let live_keys: Vec<FlowKey> = keys
+            .iter()
+            .copied()
+            .filter(|k| registry.get(*k).is_some())
+            .collect();
+        assert_eq!(
+            live_keys.len(),
+            2,
+            "exactly two of the three sources must be admitted",
         );
 
         // Drain pending AddFlow envelopes BEFORE removing the flow.
         // In production the demux task consumes these instantly; the
         // test must do the same so the only Arc<UdpFlow> ref count
-        // for src1 left in play is the registry's.
+        // for the removed flow left in play is the registry's.
         while let Ok(cmd) = demux_rx.try_recv() {
             drop(cmd);
         }
 
-        // Drop one flow → the guard inside `UdpFlow.admit_guards`
-        // drops with the Arc, decrementing `active_connections`.
-        let k1 = FlowKey::new(listen_addr.port(), src1);
+        // Drop one of the live flows → the guard inside
+        // `UdpFlow.admit_guards` drops with the Arc, decrementing
+        // `active_connections`.
         let removed = registry
-            .remove(k1)
-            .expect("flow should exist before remove");
+            .remove(live_keys[0])
+            .expect("a live flow should exist before remove");
         drop(removed);
 
         // Small yield to let any deferred Drop side effects settle.
@@ -1194,10 +1301,12 @@ mod tests {
             "dropping a flow must release one ActiveGuard",
         );
 
-        // 4th source must now be admitted.
+        // 4th source must now be admitted. Its flow is built in a
+        // detached task, so wait for it to go Live.
         handle_datagram(&cfg, &listener_sock, b"d4", src4).await;
 
         let k4 = FlowKey::new(listen_addr.port(), src4);
+        wait_until(Duration::from_secs(2), || registry.get(k4).is_some()).await;
         assert!(
             registry.get(k4).is_some(),
             "4th source must be admitted after a slot frees up",
@@ -1207,5 +1316,91 @@ mod tests {
             2,
             "active_connections must be back at the 2-cap ceiling",
         );
+    }
+
+    /// Issue #53/#54: the cold-path flow-cap reservation happens
+    /// SYNCHRONOUSLY in `handle_datagram`, BEFORE the payload copy and
+    /// the task spawn. Flood N distinct sources at `rule_cap = 1`: the
+    /// first reserves the sole slot; the other N-1 must be rejected
+    /// immediately (`CapExhausted` → `flows_dropped_overflow`) with NO
+    /// flow built and NO task spawned for them. Because admission is
+    /// synchronous, the drop counters are already settled the instant the
+    /// (sequential) recv loop finishes — a task-side reservation could not
+    /// guarantee that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cold_path_reserves_before_spawn_under_flood() {
+        let (listener_sock, listen_addr) = bind_loopback().await;
+        let (_target_sock, target_addr) = bind_loopback().await;
+
+        // rule_cap = 1: exactly one flow may be admitted rule-wide.
+        let registry = UdpFlowRegistry::new(1);
+        // Deep channel + live receiver so the ONE admitted flow's AddFlow
+        // never fails (keeps the settled slot Live rather than rolled back).
+        let (demux_tx, _demux_rx) = mpsc::channel::<DemuxCommand>(64);
+
+        let stats = rule_stats_for(listen_addr.port());
+        let cfg = ListenerConfig {
+            rule_id: RuleId(9),
+            listen_port: listen_addr.port(),
+            target: Target::Ip(target_addr.ip()),
+            target_port: target_addr.port(),
+            prefer_ipv6: false,
+            idle_window: Duration::from_secs(30),
+            registry: Arc::clone(&registry),
+            demux_tx,
+            stats: Arc::clone(&stats),
+            resolver: make_resolver(),
+            rate_limit: None,
+            rate_limit_stats: None,
+            owner_rate_limit: None,
+            owner_rate_limit_stats: None,
+            quota: None,
+            cancel: CancellationToken::new(),
+        };
+
+        const N: u16 = 6;
+        let srcs: Vec<SocketAddr> = (0..N)
+            .map(|i| SocketAddr::from(([127, 0, 0, 1], 61000 + i)))
+            .collect();
+
+        // Drive the recv loop sequentially (single task) so admission for
+        // every source completes before we inspect the counters.
+        for src in &srcs {
+            handle_datagram(&cfg, &listener_sock, b"x", *src).await;
+        }
+
+        // Synchronous admission: exactly one slot reserved, N-1 dropped as
+        // true cap overflow — counters are already settled, no await.
+        assert_eq!(
+            registry.len(),
+            1,
+            "exactly one flow may be reserved at rule_cap=1; got {}",
+            registry.len()
+        );
+        assert_eq!(
+            stats.snapshot_flows_dropped_overflow(),
+            u64::from(N - 1),
+            "the over-cap sources must count as cap overflow, not pending",
+        );
+        assert_eq!(
+            registry.dropped_overflow(),
+            u64::from(N - 1),
+            "registry overflow counter must match the synchronous drops",
+        );
+        // No pending-collision drops here: distinct sources at a full cap
+        // are overflow, not same-key races.
+        assert_eq!(
+            stats.errors.snapshot().flows_pending_drops,
+            0,
+            "distinct-source cap drops must NOT count as pending collisions",
+        );
+        // None of the over-cap sources built a flow.
+        for src in srcs.iter().skip(1) {
+            let k = FlowKey::new(listen_addr.port(), *src);
+            assert!(
+                registry.get(k).is_none(),
+                "over-cap source {src} must not have a flow",
+            );
+        }
     }
 }

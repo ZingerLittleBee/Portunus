@@ -307,6 +307,7 @@ fn build_snapshot(
                     emsgsize: err.emsgsize,
                     wouldblock: err.wouldblock,
                     addflow_dropped: err.addflow_dropped,
+                    flows_pending_drops: err.flows_pending_drops,
                     dns_failures: s.dns_failures.load(Ordering::Relaxed),
                     flows_dropped_overflow: s.flows_dropped_overflow.load(Ordering::Relaxed),
                 },
