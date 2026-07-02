@@ -61,11 +61,13 @@ pub struct ResolverConfig {
     /// Consumed by the `Failed { retry_after }` cache state in US2.
     #[allow(dead_code)]
     pub negative_cache_retry: Duration,
-    /// Cap on `Pending` entries to bound resolver-side load when
-    /// many unique names go bad simultaneously (US2 enforces; in
-    /// US1 the field is unused but reserved on the public surface
-    /// so US2 doesn't need a breaking API change).
-    #[allow(dead_code)]
+    /// Cap on concurrent in-flight resolver calls. The cache holds a
+    /// `Semaphore` of this size; the task that performs the actual
+    /// `resolver.resolve()` for a hostname must hold a permit, while
+    /// single-flight *waiters* (blocked on an existing `Pending`) do
+    /// not. When the gate is saturated a new distinct-hostname lookup
+    /// fails fast with `ResolverError::Overloaded` rather than queueing
+    /// unboundedly behind an already-struggling resolver.
     pub max_concurrent_resolves: usize,
     /// Hard cap on total cache entries (across all states). The cache
     /// is keyed by `Hostname`, so without a bound a deployment that
@@ -125,6 +127,14 @@ pub enum ResolverError {
 
     #[error("dns_resolution_failed: attempt timeout after {0:?}")]
     AttemptTimeout(Duration),
+
+    /// The single-flight `max_concurrent_resolves` gate is saturated —
+    /// too many distinct hostnames are resolving at once. We fail fast
+    /// rather than queue unboundedly (a queued dial would just pin a
+    /// proxy task / fd behind an already-overloaded resolver). Carries
+    /// the configured concurrency cap for the operator log.
+    #[error("dns_resolution_failed: resolver overloaded ({0} concurrent resolves in flight)")]
+    Overloaded(usize),
 }
 
 /// Coarse classification of a DNS-side failure used by the
@@ -137,6 +147,9 @@ pub enum ResolveFailReason {
     ServFail,
     AttemptTimeout,
     AllAddrsUnreachable,
+    /// The `max_concurrent_resolves` single-flight gate was saturated
+    /// and the lookup was shed rather than queued.
+    ResolverOverloaded,
     Other,
 }
 
@@ -148,6 +161,7 @@ impl ResolveFailReason {
             Self::ServFail => "servfail",
             Self::AttemptTimeout => "attempt_timeout",
             Self::AllAddrsUnreachable => "all_addrs_unreachable",
+            Self::ResolverOverloaded => "resolver_overloaded",
             Self::Other => "other",
         }
     }
@@ -163,6 +177,7 @@ impl ResolveFailReason {
         match err {
             ResolverError::EmptyAnswer => Self::AllAddrsUnreachable,
             ResolverError::AttemptTimeout(_) => Self::AttemptTimeout,
+            ResolverError::Overloaded(_) => Self::ResolverOverloaded,
             ResolverError::Lookup(msg) => {
                 let lower = msg.to_ascii_lowercase();
                 if lower.contains("nxdomain") || lower.contains("no records") {
@@ -241,7 +256,7 @@ impl<R: Resolve> LiveResolver<R> {
     pub fn new(inner: Arc<R>, config: ResolverConfig) -> Self {
         Self {
             inner,
-            cache: Cache::new(),
+            cache: Cache::new(config.max_concurrent_resolves),
             config,
         }
     }
@@ -916,6 +931,10 @@ mod tests {
             ResolveFailReason::AllAddrsUnreachable.as_str(),
             "all_addrs_unreachable"
         );
+        assert_eq!(
+            ResolveFailReason::ResolverOverloaded.as_str(),
+            "resolver_overloaded"
+        );
         assert_eq!(ResolveFailReason::Other.as_str(), "other");
     }
 
@@ -933,6 +952,10 @@ mod tests {
         assert_eq!(
             ResolveFailReason::classify(&ResolverError::AttemptTimeout(Duration::from_secs(3))),
             ResolveFailReason::AttemptTimeout,
+        );
+        assert_eq!(
+            ResolveFailReason::classify(&ResolverError::Overloaded(64)),
+            ResolveFailReason::ResolverOverloaded,
         );
         // nxdomain substring, mixed case → NxDomain.
         assert_eq!(
