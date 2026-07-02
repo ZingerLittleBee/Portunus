@@ -408,6 +408,20 @@ impl SniListener {
                                 continue;
                             };
                             let counters = Arc::clone(&counters);
+                            // #55(6) DEFERRED: `table_rx` and `resolver_rx`
+                            // are two independent `watch` channels read
+                            // non-atomically, so a connection landing
+                            // mid-reconfig can see a table carrying a
+                            // rule_id whose resolver slot is not yet
+                            // present (the `routes.slots.get(&rule_id)`
+                            // miss below drops it as `rule_id_unknown`).
+                            // The fix is to fold both into ONE `watch`
+                            // payload, but the publisher is
+                            // `PortGroupManager` in
+                            // `portunus-client/src/port_groups.rs` — a
+                            // different crate — so the change ripples
+                            // outside `forwarder/sni/` and is left to a
+                            // dedicated follow-up.
                             let table = table_rx.borrow().clone();
                             let routes = resolver_rx.borrow().clone();
                             let resolver = Arc::clone(&live_resolver);

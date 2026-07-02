@@ -90,6 +90,10 @@ where
 {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut buf: Vec<u8> = Vec::with_capacity(CHUNK);
+    // #55(5): one reusable read scratch buffer for the whole peek instead
+    // of a fresh `vec![0u8; CHUNK]` (zero-filling 4 KiB) per iteration.
+    // Each read slices `chunk[..want]`; only `..n` is appended to `buf`.
+    let mut chunk = [0u8; CHUNK];
 
     loop {
         // First try parse — works the moment the buffer holds a
@@ -116,9 +120,10 @@ where
             });
         }
         let remaining = deadline - now;
-        let mut chunk = vec![0u8; CHUNK.min(cap - buf.len())];
+        // Cap the read so `buf` never exceeds the 64 KiB size cap.
+        let want = CHUNK.min(cap - buf.len());
 
-        let read_fut = stream.read(&mut chunk);
+        let read_fut = stream.read(&mut chunk[..want]);
         let n = match tokio::time::timeout(remaining, read_fut).await {
             Ok(Ok(0)) => {
                 // Peer closed — treat as I/O error so the listener
@@ -137,8 +142,7 @@ where
                 });
             }
         };
-        chunk.truncate(n);
-        buf.extend_from_slice(&chunk);
+        buf.extend_from_slice(&chunk[..n]);
     }
 }
 

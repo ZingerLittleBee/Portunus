@@ -284,17 +284,15 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
             if rule_has_bw || owner_has_bw {
                 // The throttling loop expects a non-None rule limiter
                 // (it's the canonical per-chunk gate). When only the
-                // owner has a bandwidth cap we still pass a fresh
-                // no-cap RuleRateLimiter so the inner loop can call
+                // owner has a bandwidth cap we still pass a no-cap
+                // RuleRateLimiter so the inner loop can call
                 // `acquire_bandwidth` on it as a no-op short-circuit.
-                let rule_for_copy = rate_limit.clone().unwrap_or_else(|| {
-                    let scope = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
-                    scope.install(
-                        portunus_core::RuleId(0),
-                        Some(&portunus_core::RateLimit::default()),
-                    );
-                    Arc::new(RuleRateLimitHandle::new(portunus_core::RuleId(0), scope))
-                });
+                // #55(2): reuse a single process-wide handle instead of
+                // synthesising a fresh RateLimitScopeManager (HashMap +
+                // RwLock + 2 Arcs) per connection.
+                let rule_for_copy = rate_limit
+                    .clone()
+                    .unwrap_or_else(|| Arc::clone(shared_nocap_rule_handle()));
                 super::rate_limit::copy::copy_bidirectional_with_rate_limit(
                     &mut inbound,
                     &mut outbound,
@@ -326,6 +324,15 @@ pub async fn proxy_with_preread_and_prelude<R: Resolve>(
             result
         }
     };
+    // #55(3) DEFERRED: on the shutdown-cancel path `result` is the
+    // synthetic `proxy_cancelled` Err and the userspace copy future is
+    // dropped mid-flight, so no partial byte total is recoverable here —
+    // `record_remaining` is (correctly) skipped and pre-cancel userspace
+    // bytes are lost. Splice already flushes per-chunk via `live_sink`, so
+    // it is unaffected. Reaching userspace parity would require replacing
+    // tokio's `copy_bidirectional_with_sizes` on the byte-identical
+    // uncapped hot path with a sink-aware custom copy loop (Constitution
+    // Principle II perf risk) — out of scope for this low-severity polish.
     if let (Some(sink), Ok((bin, bout))) = (live_sink.as_ref(), result.as_ref()) {
         // Book whatever the live sink did not already flush per-chunk.
         // The preread (replayed ClientHello) is folded into the inbound
@@ -420,6 +427,25 @@ pub(crate) async fn copy_uncapped(
         PROXY_COPY_BUF_SIZE,
     )
     .await
+}
+
+/// #55(2): process-wide no-cap rule limiter used when ONLY the per-owner
+/// bandwidth cap is set. The throttling copy loop requires a non-None
+/// rule limiter as its canonical per-chunk gate; building a fresh
+/// `RateLimitScopeManager` per connection just to hand the loop a no-op
+/// gate is wasteful. A single shared handle installed with a default
+/// (empty) `RateLimit` is behaviour-identical: `has_bandwidth_cap()`
+/// stays `false` and `acquire_bandwidth` short-circuits as a no-op.
+fn shared_nocap_rule_handle() -> &'static Arc<RuleRateLimitHandle> {
+    static HANDLE: std::sync::OnceLock<Arc<RuleRateLimitHandle>> = std::sync::OnceLock::new();
+    HANDLE.get_or_init(|| {
+        let scope = Arc::new(crate::forwarder::rate_limit::scope::RateLimitScopeManager::new());
+        scope.install(
+            portunus_core::RuleId(0),
+            Some(&portunus_core::RateLimit::default()),
+        );
+        Arc::new(RuleRateLimitHandle::new(portunus_core::RuleId(0), scope))
+    })
 }
 
 struct ActiveGuard {

@@ -39,7 +39,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::forwarder::range::BindFailure;
 use crate::forwarder::stats::RuleStats;
@@ -476,7 +476,12 @@ async fn accept_loop<R: Resolve + 'static>(
                             conn_quota,
                         ).await {
                             Ok((bin, bout)) => {
-                                info!(
+                                // #55(1): success-path close fires on every
+                                // connection; at high conn/s the info! flood
+                                // (and its formatting cost) is pure noise.
+                                // Demoted to debug!; rule.conn_error below
+                                // stays warn! (errors still matter).
+                                debug!(
                                     event = "rule.conn_closed",
                                     rule_id = %rule_id,
                                     listen_port = listen_port,
