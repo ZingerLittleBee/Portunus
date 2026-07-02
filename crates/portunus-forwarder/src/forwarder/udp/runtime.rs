@@ -198,6 +198,11 @@ impl UdpRuleRuntime {
             registry: Arc::clone(&registry),
             listener_sockets: Arc::clone(&listener_sockets),
             stats: Arc::clone(&cfg.stats),
+            // #44: give the reply demux the same rate-limit handles the
+            // listeners carry so `bandwidth_out_bps` is enforced on the
+            // upstream→client half via drop-based shaping.
+            rate_limit: cfg.rate_limit.clone(),
+            owner_rate_limit: cfg.owner_rate_limit.clone(),
         };
         joinset.spawn(async move {
             run_demux(demux_cfg, demux_rx).await;

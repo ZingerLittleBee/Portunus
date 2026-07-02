@@ -1,6 +1,7 @@
 //! SNI-mode TCP listener. Spec 009-tls-sni-routing data-model.md §2.3.
 //!
-//! Owns the bound `TcpListener`, the `watch::Receiver<Arc<SniRoutingTable>>`,
+//! Owns the bound `TcpListener`, the `watch::Receiver<Arc<SniDispatchState>>`
+//! (routing table + resolver slots as one atomic payload — #55(6)),
 //! the cancellation token, and an `Arc<SniListenerCounters>`. On each
 //! accept it peeks the ClientHello, looks up the SNI in a snapshot of
 //! the routing table, and dispatches into `proxy::proxy_with_preread`
@@ -38,12 +39,38 @@ use crate::resolver::{LiveResolver, Resolve};
 use super::peek::{self, PeekError};
 use super::route_table::{SniMatch, SniMatchKind, SniRoutingTable};
 
+/// Upper bound on ClientHello peeks in flight per SNI listener (#50).
+///
+/// Every accepted connection may sit in the ClientHello peek for up to
+/// `peek::PEEK_TIMEOUT` (3 s) while accumulating up to
+/// `peek::PEEK_BYTE_CAP` (64 KiB), and no rule-level rate limit can
+/// apply until *after* the SNI is parsed — the rule is unknown before
+/// then, so the limiter cannot gate the peek (structural). Without a
+/// cap, a flood of silent/slow ("slowloris") connections would pin
+/// unbounded task + peek-buffer memory. This semaphore bounds the number
+/// of concurrent peeks; excess connections are dropped (RST) at accept
+/// and counted. The permit is released the instant the peek finishes, so
+/// the cap composes with the per-connection 3 s / 64 KiB bound to give a
+/// worst case of ~`MAX_INFLIGHT_PEEKS` × 64 KiB ≈ 64 MiB of transient
+/// peek buffers — generous for legitimate connection bursts while still
+/// bounded. It does NOT limit established proxy connections (those run
+/// after the permit is dropped and are governed by the rule/owner rate
+/// limiter).
+const MAX_INFLIGHT_PEEKS: usize = 1024;
+
 /// Per-listener counters surfaced via `proto::SniListenerStats`
 /// (T078). Bumped from the accept loop's miss / parse-failure paths.
 #[derive(Default, Debug)]
 pub struct SniListenerCounters {
     pub miss: AtomicU64,
     pub parse_failures: AtomicU64,
+    /// #50: connections dropped at accept because the in-flight
+    /// ClientHello peek cap (`MAX_INFLIGHT_PEEKS`) was saturated. A
+    /// non-zero value flags either a legitimate connection burst beyond
+    /// the cap or a slowloris-style peek-exhaustion attempt. Kept out of
+    /// the `proto::SniListenerStats` wire snapshot for now to avoid a
+    /// schema change; observable via this in-process counter.
+    pub peek_capacity_rejections: AtomicU64,
     pub peek_histogram: PeekDurationHistogram,
 }
 
@@ -152,6 +179,105 @@ mod tests {
         assert_eq!(sum_micros, 4_001_000);
         assert_eq!(count, 2);
     }
+
+    #[tokio::test]
+    async fn peek_cap_refuses_connections_beyond_the_in_flight_limit() {
+        // #50 regression: with N peek permits and N silent connections
+        // parked in the ClientHello peek, the (N+1)th connection must be
+        // refused at accept (dropped/RST) and counted, NOT queued into
+        // another 3 s peek. We use a small injected cap (like
+        // `read_client_hello_with` injects a short timeout) so the test is
+        // deterministic and finishes well inside PEEK_TIMEOUT (3 s).
+        use crate::resolver::{ResolveAnswer, ResolverConfig, ResolverError};
+        use portunus_core::Hostname;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        #[derive(Debug)]
+        struct StubResolver;
+
+        #[async_trait::async_trait]
+        impl Resolve for StubResolver {
+            async fn resolve(&self, _name: &Hostname) -> Result<ResolveAnswer, ResolverError> {
+                Ok(ResolveAnswer {
+                    addrs: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+                    ttl: Duration::from_secs(60),
+                })
+            }
+        }
+
+        // One rule slot so `handle_accept`'s non-empty-slots debug_assert
+        // holds for the parked connections.
+        let mut slots = std::collections::HashMap::new();
+        slots.insert(
+            RuleId(1),
+            SniRuleSlot {
+                rule_id: RuleId(1),
+                target: Target::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                target_port: 443,
+                proxy_protocol: None,
+                prefer_ipv6: false,
+                listen_port: 0,
+                stats: RuleStats::new(),
+                sni_route_exact_total: Arc::new(AtomicU64::new(0)),
+                sni_route_wildcard_total: Arc::new(AtomicU64::new(0)),
+                sni_route_fallback_total: Arc::new(AtomicU64::new(0)),
+                rate_limit: None,
+                rate_limit_stats: None,
+                owner_rate_limit: None,
+                owner_rate_limit_stats: None,
+                quota: None,
+            },
+        );
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let counters = Arc::new(SniListenerCounters::default());
+        let (_state_tx, state_rx) = watch::channel(Arc::new(SniDispatchState {
+            table: Arc::new(SniRoutingTable::default()),
+            resolver: Arc::new(SniRouteResolver { slots }),
+        }));
+        let cancel = CancellationToken::new();
+
+        let sni = SniListener {
+            listen_port: addr.port(),
+            counters: Arc::clone(&counters),
+            state_rx,
+            cancel: cancel.clone(),
+        };
+        let live_resolver = Arc::new(LiveResolver::new(
+            Arc::new(StubResolver),
+            ResolverConfig::default(),
+        ));
+
+        // Cap of 2 in-flight peeks.
+        let server = tokio::spawn(sni.run_with_peek_cap(listener, live_resolver, 2));
+
+        // Two silent connections (never send a ClientHello) each park in
+        // the peek, holding a permit for up to PEEK_TIMEOUT.
+        let mut parked = Vec::new();
+        for _ in 0..2 {
+            parked.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        // The third silent connection must be refused at accept.
+        let _third = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        // Poll the rejection counter within the window the two peeks stay
+        // parked. Robust: permits are held for ~3 s, far beyond this poll.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+        while counters.peek_capacity_rejections.load(Ordering::Relaxed) == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the third connection was not refused within the peek window",
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(counters.peek_capacity_rejections.load(Ordering::Relaxed), 1);
+
+        cancel.cancel();
+        drop(parked);
+        let _ = server.await;
+    }
 }
 
 /// Per-rule resolution + dispatch context. The listener resolves a
@@ -200,14 +326,29 @@ pub struct SniRouteResolver {
     pub slots: std::collections::HashMap<RuleId, SniRuleSlot>,
 }
 
+/// #55(6): the routing table and the per-rule resolver slots published
+/// as ONE atomic `watch` payload. A connection landing mid-reconfig
+/// takes a single `borrow()` snapshot, so it can never observe a table
+/// carrying a `rule_id` whose resolver slot has not yet been installed
+/// (or vice versa) — the pair is always mutually consistent. The
+/// publisher (`PortGroupManager::rebuild_watches`) builds both halves
+/// and sends them together on every update.
+#[derive(Clone, Default)]
+pub struct SniDispatchState {
+    pub table: Arc<SniRoutingTable>,
+    pub resolver: Arc<SniRouteResolver>,
+}
+
 /// Configuration for one SNI-mode listener. Owned by the
 /// `PortGroupManager` (T042); the listener task reads through the
 /// shared `Arc`s.
 pub struct SniListener {
     pub listen_port: u16,
     pub counters: Arc<SniListenerCounters>,
-    pub table_rx: watch::Receiver<Arc<SniRoutingTable>>,
-    pub resolver_rx: watch::Receiver<Arc<SniRouteResolver>>,
+    /// #55(6): one channel carrying the table + resolver pair so a
+    /// mid-reconfig accept snapshots a consistent state in a single
+    /// `borrow()`.
+    pub state_rx: watch::Receiver<Arc<SniDispatchState>>,
     pub cancel: CancellationToken,
 }
 
@@ -218,13 +359,31 @@ impl SniListener {
         listener: TcpListener,
         live_resolver: Arc<LiveResolver<R>>,
     ) {
+        self.run_with_peek_cap(listener, live_resolver, MAX_INFLIGHT_PEEKS)
+            .await;
+    }
+
+    /// Accept loop with an injectable in-flight peek cap. The public
+    /// [`run`](Self::run) wires in `MAX_INFLIGHT_PEEKS`; tests pass a
+    /// small cap to exercise the slowloris guard (#50) deterministically,
+    /// mirroring how `peek::read_client_hello_with` injects a short
+    /// timeout.
+    async fn run_with_peek_cap<R: Resolve + 'static>(
+        self,
+        listener: TcpListener,
+        live_resolver: Arc<LiveResolver<R>>,
+        max_inflight_peeks: usize,
+    ) {
         let SniListener {
             listen_port,
             counters,
-            table_rx,
-            resolver_rx,
+            state_rx,
             cancel,
         } = self;
+        // #50: bound concurrent ClientHello peeks. A permit is acquired
+        // at accept and released the moment the peek finishes (see
+        // `handle_accept`), so this caps peeks — not live proxy sessions.
+        let peek_semaphore = Arc::new(tokio::sync::Semaphore::new(max_inflight_peeks));
         info!(
             target = "tls_sni",
             event = "tls.sni_listener.started",
@@ -243,9 +402,37 @@ impl SniListener {
                 accept = listener.accept() => {
                     match accept {
                         Ok((stream, peer)) => {
+                            // #50: grab a peek permit before spawning. On
+                            // saturation, drop the socket immediately (the
+                            // OS sends RST) rather than queueing another
+                            // 3 s / 64 KiB peek — this is the slowloris
+                            // backpressure.
+                            let Ok(peek_permit) =
+                                Arc::clone(&peek_semaphore).try_acquire_owned()
+                            else {
+                                counters
+                                    .peek_capacity_rejections
+                                    .fetch_add(1, Ordering::Relaxed);
+                                warn!(
+                                    target = "tls_sni",
+                                    event = "tls.sni_peek_capacity",
+                                    listen_port,
+                                    peer = %peer,
+                                    max_inflight_peeks,
+                                );
+                                drop(stream);
+                                continue;
+                            };
                             let counters = Arc::clone(&counters);
-                            let table = table_rx.borrow().clone();
-                            let routes = resolver_rx.borrow().clone();
+                            // #55(6): the table + resolver pair is one
+                            // `watch` payload, so a single `borrow()`
+                            // snapshot is always mutually consistent — a
+                            // connection landing mid-reconfig sees either
+                            // the fully-old or fully-new state, never a
+                            // table entry whose resolver slot is missing.
+                            let state = state_rx.borrow().clone();
+                            let table = Arc::clone(&state.table);
+                            let routes = Arc::clone(&state.resolver);
                             let resolver = Arc::clone(&live_resolver);
                             let cancel = cancel.clone();
                             tokio::spawn(async move {
@@ -258,6 +445,7 @@ impl SniListener {
                                     counters,
                                     resolver,
                                     cancel,
+                                    peek_permit,
                                 )
                                 .await;
                             });
@@ -290,6 +478,11 @@ async fn handle_accept<R: Resolve + 'static>(
     counters: Arc<SniListenerCounters>,
     resolver: Arc<LiveResolver<R>>,
     cancel: CancellationToken,
+    // #50: held only for the ClientHello peek phase. Dropped (explicitly
+    // on success, implicitly on every early `return`) before the
+    // long-lived proxy phase so the in-flight cap bounds peeks, not
+    // established connections.
+    peek_permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let peek_started = Instant::now();
     // 009-tls-sni-routing T068: structural mode-lock guard. The
@@ -333,6 +526,10 @@ async fn handle_accept<R: Resolve + 'static>(
             return;
         }
     };
+    // #50: the ClientHello peek is complete — release the permit now,
+    // BEFORE the (potentially long-lived) proxy phase, so the cap bounds
+    // concurrent peeks rather than total connections.
+    drop(peek_permit);
 
     let sni_str = sni.as_deref();
     let m = table.lookup(sni_str);

@@ -50,7 +50,7 @@ use tracing::{info, warn};
 
 use portunus_forwarder::forwarder::ClientRule;
 use portunus_forwarder::forwarder::sni::listener::{
-    SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
+    SniDispatchState, SniListener, SniListenerCounters, SniRouteResolver, SniRuleSlot,
 };
 use portunus_forwarder::forwarder::sni::route_table::SniRoutingTable;
 use portunus_forwarder::forwarder::stats::RuleStats;
@@ -115,8 +115,9 @@ pub(crate) struct GroupMember {
 struct GroupState {
     listen_port: u16,
     members: HashMap<RuleId, GroupMember>,
-    table_tx: watch::Sender<Arc<SniRoutingTable>>,
-    resolver_tx: watch::Sender<Arc<SniRouteResolver>>,
+    /// #55(6): the routing table + resolver slots publish through one
+    /// channel so each listener `borrow()` snapshots a consistent pair.
+    state_tx: watch::Sender<Arc<SniDispatchState>>,
     counters: Arc<SniListenerCounters>,
     cancel: CancellationToken,
     /// Listener join handle. Dropped (and cancelled) when the group
@@ -227,16 +228,13 @@ impl PortGroupManager {
                         })?;
                 let counters = Arc::new(SniListenerCounters::default());
                 let cancel = CancellationToken::new();
-                let (table_tx, table_rx) = watch::channel(Arc::new(SniRoutingTable::default()));
-                let (resolver_tx, resolver_rx) =
-                    watch::channel(Arc::new(SniRouteResolver::default()));
+                let (state_tx, state_rx) = watch::channel(Arc::new(SniDispatchState::default()));
                 let mut joins = Vec::with_capacity(listeners.len());
                 for (_port, listener) in listeners {
                     let listener_task = SniListener {
                         listen_port,
                         counters: Arc::clone(&counters),
-                        table_rx: table_rx.clone(),
-                        resolver_rx: resolver_rx.clone(),
+                        state_rx: state_rx.clone(),
                         cancel: cancel.clone(),
                     };
                     let live_resolver = Arc::clone(&resolver);
@@ -248,8 +246,7 @@ impl PortGroupManager {
                 let mut state = GroupState {
                     listen_port,
                     members: HashMap::new(),
-                    table_tx,
-                    resolver_tx,
+                    state_tx,
                     counters,
                     cancel,
                     _joins: joins,
@@ -418,12 +415,17 @@ fn rebuild_watches(group: &mut GroupState) -> Result<(), PortGroupError> {
     }
     let routes = Arc::new(SniRouteResolver { slots });
 
-    // Atomic-ish swap: `send_replace` keeps in-flight `borrow()` snapshots
-    // valid until they drop, so a connection that just snapshotted the
-    // old table will continue to dispatch into the old per-rule slot
-    // (R-004 / hot-reload preserves in-flight per-spec).
-    group.table_tx.send_replace(table);
-    group.resolver_tx.send_replace(routes);
+    // #55(6): publish the table + resolver as ONE payload so a listener
+    // that snapshots mid-rebuild can never see a table entry whose
+    // resolver slot is absent (or vice versa). `send_replace` keeps
+    // in-flight `borrow()` snapshots valid until they drop, so a
+    // connection that snapshotted the old state keeps dispatching into
+    // the old per-rule slot (R-004 / hot-reload preserves in-flight
+    // per-spec).
+    group.state_tx.send_replace(Arc::new(SniDispatchState {
+        table,
+        resolver: routes,
+    }));
     Ok(())
 }
 
@@ -511,8 +513,8 @@ mod tests {
             if mgr.apply_push(rule, live_resolver()).is_ok() {
                 {
                     let group = mgr.groups.get(&port).expect("group");
-                    let routes = group.resolver_tx.borrow();
-                    let slot = routes.slots.get(&RuleId(1)).expect("slot");
+                    let state = group.state_tx.borrow();
+                    let slot = state.resolver.slots.get(&RuleId(1)).expect("slot");
                     assert_eq!(
                         slot.proxy_protocol,
                         Some(portunus_core::ProxyProtocolVersion::V2)
@@ -773,9 +775,9 @@ mod tests {
             assert_eq!(group.members.len(), 1);
             assert!(group.members.contains_key(&RuleId(2)));
             // The rebuilt resolver still routes the survivor's pattern.
-            let routes = group.resolver_tx.borrow();
-            assert!(routes.slots.contains_key(&RuleId(2)));
-            assert!(!routes.slots.contains_key(&RuleId(1)));
+            let state = group.state_tx.borrow();
+            assert!(state.resolver.slots.contains_key(&RuleId(2)));
+            assert!(!state.resolver.slots.contains_key(&RuleId(1)));
         }
         // The reverse index dropped rule 1 but kept rule 2.
         assert!(mgr.stats_for(RuleId(1)).is_none());
@@ -938,6 +940,64 @@ mod tests {
             }
         }
         panic!("could not bind a free port in 50200..50300");
+    }
+
+    /// #55(6): the routing table and resolver slots publish as ONE
+    /// `watch` payload, so any single `borrow()` yields a mutually
+    /// consistent pair — every rule_id the table can dispatch to has a
+    /// resolver slot. This is the invariant the old two-channel design
+    /// could momentarily violate mid-rebuild (a table entry whose
+    /// resolver slot had not yet been sent, spuriously dropping a
+    /// connection with a valid route). A rebuild (member removal) keeps
+    /// the pair consistent: the removed rule vanishes from BOTH halves
+    /// at once.
+    #[tokio::test]
+    async fn dispatch_state_borrow_is_internally_consistent() {
+        use portunus_forwarder::forwarder::sni::route_table::SniMatch;
+
+        let port = pick_port().await;
+        let mut mgr = PortGroupManager::new();
+        mgr.apply_push(
+            rule(1, port, 9001, Some("api.example.com")),
+            live_resolver(),
+        )
+        .expect("push 1");
+        mgr.apply_push(
+            rule(2, port, 9002, Some("web.example.com")),
+            live_resolver(),
+        )
+        .expect("push 2");
+
+        let assert_consistent = |mgr: &PortGroupManager| {
+            let group = mgr.groups.get(&port).expect("group");
+            let state = group.state_tx.borrow();
+            for host in ["api.example.com", "web.example.com"] {
+                if let SniMatch::Hit { rule_id, .. } = state.table.lookup(Some(host)) {
+                    assert!(
+                        state.resolver.slots.contains_key(&rule_id),
+                        "table routed {host} to {rule_id:?} but resolver has no slot — torn pair"
+                    );
+                }
+            }
+        };
+        assert_consistent(&mgr);
+
+        mgr.apply_remove(RuleId(1)).expect("remove 1");
+        {
+            let group = mgr.groups.get(&port).expect("group");
+            let state = group.state_tx.borrow();
+            assert!(
+                matches!(state.table.lookup(Some("api.example.com")), SniMatch::Miss),
+                "removed rule must drop from the table"
+            );
+            assert!(
+                !state.resolver.slots.contains_key(&RuleId(1)),
+                "removed rule must drop from the resolver in the same payload"
+            );
+            assert!(state.resolver.slots.contains_key(&RuleId(2)));
+        }
+        assert_consistent(&mgr);
+        mgr.shutdown();
     }
 }
 

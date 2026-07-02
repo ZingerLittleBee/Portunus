@@ -86,6 +86,7 @@ mod tests {
             TryGetOrReserve::Reserved(r) => r,
             TryGetOrReserve::Existing(_) => panic!("expected Reserved, got Existing"),
             TryGetOrReserve::CapExhausted => panic!("expected Reserved, got CapExhausted"),
+            TryGetOrReserve::Pending => panic!("expected Reserved, got Pending"),
         };
         let flow = UdpFlow::for_test(src).await;
         // Backdate last_seen far enough that it's idle against a 100ms
@@ -131,6 +132,7 @@ mod tests {
             TryGetOrReserve::Reserved(r) => r,
             TryGetOrReserve::Existing(_) => panic!("expected Reserved, got Existing"),
             TryGetOrReserve::CapExhausted => panic!("expected Reserved, got CapExhausted"),
+            TryGetOrReserve::Pending => panic!("expected Reserved, got Pending"),
         };
         let flow = UdpFlow::for_test(src).await;
         reg.commit(reservation, Arc::clone(&flow));
@@ -160,6 +162,7 @@ mod tests {
             TryGetOrReserve::Reserved(r) => r,
             TryGetOrReserve::Existing(_) => panic!("expected Reserved, got Existing"),
             TryGetOrReserve::CapExhausted => panic!("expected Reserved, got CapExhausted"),
+            TryGetOrReserve::Pending => panic!("expected Reserved, got Pending"),
         };
         let flow = UdpFlow::for_test(src).await;
         // `for_test` seeds `last_seen` to "now"; a generous window keeps

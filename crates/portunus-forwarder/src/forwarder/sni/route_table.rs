@@ -17,6 +17,7 @@
 //! current implementation already populates all three slots so US2
 //! and US3 only have to add the lookup arms.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -54,7 +55,10 @@ pub enum BuildError {
 pub struct SniRoutingTable {
     /// Exact hostname → rule_id. O(1) lookup.
     pub(crate) exact: HashMap<String, RuleId>,
-    /// Wildcard suffixes (the part *after* `*.`), sorted longest-first.
+    /// Wildcard match needles, sorted longest-first. #55(4): the needle
+    /// is the precomputed `".<suffix>"` string (the part *after* `*.`
+    /// with a leading dot) so the hot-path lookup no longer allocates a
+    /// `format!(".{suffix}")` per wildcard per connection.
     /// Populated in T052 (Phase 4 / US2).
     pub(crate) wildcards: Vec<(String, RuleId)>,
     /// At most one fallback (sni_pattern = NULL).
@@ -89,10 +93,13 @@ impl SniRoutingTable {
                 Some(p) => {
                     let lowered = p.to_ascii_lowercase();
                     if let Some(suffix) = lowered.strip_prefix("*.") {
-                        if wildcards.iter().any(|(s, _)| s.as_str() == suffix) {
+                        // #55(4): precompute the `".<suffix>"` match needle
+                        // once at build time instead of per lookup.
+                        let needle = format!(".{suffix}");
+                        if wildcards.iter().any(|(n, _)| n.as_str() == needle) {
                             return Err(BuildError::DuplicateWildcard(suffix.to_string()));
                         }
-                        wildcards.push((suffix.to_string(), *id));
+                        wildcards.push((needle, *id));
                     } else {
                         match exact.entry(lowered) {
                             std::collections::hash_map::Entry::Occupied(e) => {
@@ -130,12 +137,19 @@ impl SniRoutingTable {
     #[must_use]
     pub fn lookup(&self, sni: Option<&str>) -> SniMatch {
         if let Some(host) = sni {
-            // Lowercased + dot-stripped by `client_hello::parse`,
-            // but we re-lowercase here defensively in case a future
-            // caller hands us a raw host. This stays cheap: the
-            // typical hostname is ≤ 64 chars.
-            let host_lc = host.to_ascii_lowercase();
-            if let Some(&rule_id) = self.exact.get(&host_lc) {
+            // Lowercased + dot-stripped by `client_hello::parse`, but we
+            // re-lowercase here defensively in case a future caller hands
+            // us a raw host. #55(4): the common path (already-lowercased
+            // by the parser) borrows without allocating; we only pay the
+            // `to_ascii_lowercase` alloc when the host actually carries an
+            // ASCII uppercase byte.
+            let host_lc: Cow<'_, str> = if host.bytes().any(|b| b.is_ascii_uppercase()) {
+                Cow::Owned(host.to_ascii_lowercase())
+            } else {
+                Cow::Borrowed(host)
+            };
+            let host_lc = host_lc.as_ref();
+            if let Some(&rule_id) = self.exact.get(host_lc) {
                 return SniMatch::Hit {
                     rule_id,
                     kind: SniMatchKind::Exact,
@@ -145,8 +159,8 @@ impl SniRoutingTable {
             // here in Phase 3 already; the walk is added in T053 so
             // the unit test `exact_beats_fallback` (T034) passes
             // without depending on US2 work.
-            for (suffix, rule_id) in &self.wildcards {
-                if wildcard_matches(&host_lc, suffix) {
+            for (needle, rule_id) in &self.wildcards {
+                if wildcard_matches(host_lc, needle) {
                     return SniMatch::Hit {
                         rule_id: *rule_id,
                         kind: SniMatchKind::Wildcard,
@@ -169,11 +183,11 @@ impl SniRoutingTable {
 /// `*.example.com` matches `foo.example.com` but not `example.com`
 /// (no left label) and not `a.b.example.com` (extra label).
 ///
-/// `host_lc` is assumed lowercased; `suffix` is the part after `*.`
-/// (e.g. `"example.com"`).
-fn wildcard_matches(host_lc: &str, suffix: &str) -> bool {
-    let needle = format!(".{suffix}");
-    let Some(prefix) = host_lc.strip_suffix(&needle) else {
+/// `host_lc` is assumed lowercased; `needle` is the precomputed
+/// `".<suffix>"` string (e.g. `".example.com"`), built once at
+/// route-table construction — #55(4).
+fn wildcard_matches(host_lc: &str, needle: &str) -> bool {
+    let Some(prefix) = host_lc.strip_suffix(needle) else {
         return false;
     };
     if prefix.is_empty() {
@@ -351,6 +365,34 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn uppercase_host_matches_wildcard_via_precomputed_needle() {
+        // #55(4): the wildcard walk uses precomputed `".suffix"` needles
+        // and the lookup only allocates a lowercased copy when the host
+        // carries ASCII uppercase. Both an uppercase and a mixed-case
+        // host must still land on the wildcard rule, and the single-label
+        // / extra-label rules must survive the needle refactor.
+        let table =
+            SniRoutingTable::from_members(&[(Some("*.example.com"), rid(9))]).expect("build");
+        assert_eq!(
+            table.lookup(Some("FOO.EXAMPLE.COM")),
+            SniMatch::Hit {
+                rule_id: rid(9),
+                kind: SniMatchKind::Wildcard,
+            }
+        );
+        assert_eq!(
+            table.lookup(Some("Foo.Example.Com")),
+            SniMatch::Hit {
+                rule_id: rid(9),
+                kind: SniMatchKind::Wildcard,
+            }
+        );
+        // No left label / extra label still miss after the refactor.
+        assert_eq!(table.lookup(Some("EXAMPLE.COM")), SniMatch::Miss);
+        assert_eq!(table.lookup(Some("A.B.EXAMPLE.COM")), SniMatch::Miss);
     }
 
     #[test]

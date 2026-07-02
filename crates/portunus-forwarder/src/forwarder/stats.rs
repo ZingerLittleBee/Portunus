@@ -119,6 +119,26 @@ pub struct ErrorCounters {
     /// `rule.udp_addflow_dropped` — new-flow datagram dropped
     /// because the per-rule flow table is at capacity.
     pub addflow_dropped: AtomicU64,
+    /// `rule.udp_flow_pending_drop` — a cold-path datagram raced a
+    /// concurrent cold path for the same `(listen_port, src)` and hit
+    /// its `Slot::Pending` reservation. The rule is NOT at cap, so this
+    /// is counted separately from `flows_dropped_overflow` (issue #54).
+    pub flows_pending_drops: AtomicU64,
+    /// `rule.udp_bandwidth_throttled` (inbound) — a datagram dropped on
+    /// the listener SEND path because the inbound bandwidth bucket
+    /// (`bandwidth_in_bps`, rule or owner) was drained. Drop-based UDP
+    /// shaping (issue #44): UDP can't park like TCP, so an over-budget
+    /// datagram is dropped rather than delayed.
+    pub bandwidth_dropped_in: AtomicU64,
+    /// `rule.udp_bandwidth_throttled` (outbound) — a reply datagram
+    /// dropped on the demux SEND path because the outbound bandwidth
+    /// bucket (`bandwidth_out_bps`, rule or owner) was drained (#44).
+    pub bandwidth_dropped_out: AtomicU64,
+    /// `rule.udp_send_dropped` — an inbound datagram silently dropped on
+    /// the upstream SEND path by a non-classified socket error
+    /// (`send_single`) or the abandoned tail of a partial `sendmmsg`.
+    /// Previously these were swallowed / trace-only (issue #55).
+    pub send_dropped: AtomicU64,
 }
 
 impl ErrorCounters {
@@ -140,8 +160,23 @@ impl ErrorCounters {
     pub fn inc_addflow_dropped(&self) {
         self.addflow_dropped.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn inc_flows_pending_drops(&self) {
+        self.flows_pending_drops.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Issue #44: bump the inbound bandwidth-drop counter.
+    pub fn inc_bandwidth_dropped_in(&self) {
+        self.bandwidth_dropped_in.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Issue #44: bump the outbound bandwidth-drop counter.
+    pub fn inc_bandwidth_dropped_out(&self) {
+        self.bandwidth_dropped_out.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Issue #55: bump the silent-send-drop counter by `n` datagrams.
+    pub fn add_send_dropped(&self, n: u64) {
+        self.send_dropped.fetch_add(n, Ordering::Relaxed);
+    }
 
-    /// Snapshot all six counters at once.
+    /// Snapshot all counters at once.
     #[must_use]
     pub fn snapshot(&self) -> ErrorSnapshot {
         ErrorSnapshot {
@@ -151,6 +186,10 @@ impl ErrorCounters {
             emsgsize: self.emsgsize.load(Ordering::Relaxed),
             wouldblock: self.wouldblock.load(Ordering::Relaxed),
             addflow_dropped: self.addflow_dropped.load(Ordering::Relaxed),
+            flows_pending_drops: self.flows_pending_drops.load(Ordering::Relaxed),
+            bandwidth_dropped_in: self.bandwidth_dropped_in.load(Ordering::Relaxed),
+            bandwidth_dropped_out: self.bandwidth_dropped_out.load(Ordering::Relaxed),
+            send_dropped: self.send_dropped.load(Ordering::Relaxed),
         }
     }
 }
@@ -163,6 +202,10 @@ pub struct ErrorSnapshot {
     pub emsgsize: u64,
     pub wouldblock: u64,
     pub addflow_dropped: u64,
+    pub flows_pending_drops: u64,
+    pub bandwidth_dropped_in: u64,
+    pub bandwidth_dropped_out: u64,
+    pub send_dropped: u64,
 }
 
 #[derive(Debug, Default)]
@@ -764,11 +807,21 @@ mod tests {
         s.errors.inc_wouldblock();
         s.errors.inc_wouldblock();
         s.errors.inc_addflow_dropped();
+        s.errors.inc_flows_pending_drops();
+        s.errors.inc_flows_pending_drops();
+        s.errors.inc_bandwidth_dropped_in();
+        s.errors.inc_bandwidth_dropped_out();
+        s.errors.inc_bandwidth_dropped_out();
+        s.errors.add_send_dropped(4);
 
         assert_eq!(s.errors.icmp_evict.load(Ordering::Relaxed), 2);
         assert_eq!(s.errors.emsgsize.load(Ordering::Relaxed), 1);
         assert_eq!(s.errors.wouldblock.load(Ordering::Relaxed), 3);
         assert_eq!(s.errors.addflow_dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(s.errors.flows_pending_drops.load(Ordering::Relaxed), 2);
+        assert_eq!(s.errors.bandwidth_dropped_in.load(Ordering::Relaxed), 1);
+        assert_eq!(s.errors.bandwidth_dropped_out.load(Ordering::Relaxed), 2);
+        assert_eq!(s.errors.send_dropped.load(Ordering::Relaxed), 4);
 
         let snap = s.errors.snapshot();
         assert_eq!(
@@ -780,6 +833,10 @@ mod tests {
                 emsgsize: 1,
                 wouldblock: 3,
                 addflow_dropped: 1,
+                flows_pending_drops: 2,
+                bandwidth_dropped_in: 1,
+                bandwidth_dropped_out: 2,
+                send_dropped: 4,
             }
         );
     }

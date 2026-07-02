@@ -20,11 +20,14 @@
 
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use super::scope::{
     BandwidthAcquire, BandwidthDirection, OwnerRateLimitHandle, RuleRateLimitHandle,
+    RuleRateLimiter,
 };
 use super::stats::RateLimitStatsAccumulator;
 use crate::forwarder::quota::{ConsumeOutcome, QuotaHandle};
@@ -46,6 +49,19 @@ const MIN_CHUNK: usize = 8 * 1024;
 /// followed by a multi-second sleep.
 const PACING_TARGET_MS: u64 = 100;
 
+/// How long a cached limiter snapshot may be reused before the copy
+/// loop re-snapshots from the process-wide registry (#51). Each
+/// snapshot is an `RwLock::read` + `HashMap::get` + `Arc::clone`
+/// against ONE registry shared by every capped connection on every
+/// rule; re-taking up to four of them per ≤64 KiB chunk serialised
+/// all hot connections on the same two lock words. Caching the
+/// snapshotted `Arc`s and refreshing on this interval collapses that
+/// to (amortised) one read per interval per direction. A hot-reload
+/// that swaps a rule/owner cap therefore takes effect within this
+/// bound — well inside the ≤1 s budget FR-011 allows for cap changes,
+/// so the ≤100 ms refresh lag is compliant.
+const SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Compute the per-iteration chunk size for the throttling copy
 /// loop. The tightest active bandwidth cap across `(rule_in_bps,
 /// rule_out_bps, owner_in_bps, owner_out_bps)` for the given
@@ -57,12 +73,17 @@ const PACING_TARGET_MS: u64 = 100;
 ///   1000, MIN_CHUNK, MAX_CHUNK)`. For a 1 MiB/s cap this lands
 ///   at the 64 KiB ceiling; for 100 KiB/s caps it drops to ~10
 ///   KiB; for very low caps it floors at 8 KiB.
+///
+/// Operates on the cached limiter snapshots (`RuleRateLimiter` /
+/// `OwnerRateLimiter`, the latter being the same type) rather than
+/// re-snapshotting through the handles, so it adds no registry read
+/// on the per-chunk path.
 fn chunk_for_direction(
     direction: BandwidthDirection,
-    rule: &RuleRateLimitHandle,
-    owner: Option<&OwnerRateLimitHandle>,
+    rule: Option<&RuleRateLimiter>,
+    owner: Option<&RuleRateLimiter>,
 ) -> usize {
-    let rule_bps = rule.bandwidth_rate_per_sec(direction);
+    let rule_bps = rule.and_then(|r| r.bandwidth_rate_per_sec(direction));
     let owner_bps = owner.and_then(|o| o.bandwidth_rate_per_sec(direction));
     let tightest_bps = match (rule_bps, owner_bps) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -76,27 +97,68 @@ fn chunk_for_direction(
     target.clamp(MIN_CHUNK, MAX_CHUNK)
 }
 
-/// Bidirectional copy with per-direction bandwidth throttling.
+/// Bidirectional copy with per-direction bandwidth throttling over a
+/// concrete pair of `TcpStream`s.
 ///
 /// Returns `(bytes_in, bytes_out)` on success. `bytes_in` is the count
 /// flowing inbound→outbound (peer to target); `bytes_out` is the
 /// reverse — same convention as `tokio::io::copy_bidirectional`.
 ///
+/// Uses `TcpStream::split` (a native, lock-free borrow split) rather
+/// than `tokio::io::split` (a `BiLock` that takes a lock on every poll
+/// of all four halves) — #51. All production callers hold a
+/// `&mut TcpStream`, so they get the lock-free path; the generic
+/// duplex-based variant below is retained for unit tests.
+///
 /// Errors propagate from either half — first error returned wins, and
 /// the still-running half is cancelled by drop.
 #[allow(clippy::too_many_arguments)]
-pub async fn copy_bidirectional_with_rate_limit<A, B>(
-    inbound: &mut A,
-    outbound: &mut B,
+pub async fn copy_bidirectional_with_rate_limit(
+    inbound: &mut TcpStream,
+    outbound: &mut TcpStream,
     limiter: Arc<RuleRateLimitHandle>,
     stats: Option<Arc<RateLimitStatsAccumulator>>,
     owner_limiter: Option<Arc<OwnerRateLimitHandle>>,
     owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
     // 013-traffic-quotas: per-(user, client) byte budget. `Some` when
     // the rule carries BOTH a bandwidth cap and a quota — the budget is
-    // debited after each chunk is on the wire so the rate-limited path
+    // pre-debited before each chunk is written so the rate-limited path
     // is no longer a quota-bypass branch. Both directions share one
     // handle (atomic saturating consume), mirroring `quota/copy.rs`.
+    quota: Option<Arc<QuotaHandle>>,
+) -> io::Result<(u64, u64)> {
+    // Native split: `ReadHalf` / `WriteHalf` borrow the socket without a
+    // `BiLock`, so the two copy directions poll concurrently with no
+    // per-poll lock.
+    let (mut in_read, mut in_write) = inbound.split();
+    let (mut out_read, mut out_write) = outbound.split();
+    run_rate_limited_copy(
+        &mut in_read,
+        &mut in_write,
+        &mut out_read,
+        &mut out_write,
+        limiter,
+        stats,
+        owner_limiter,
+        owner_stats,
+        quota,
+    )
+    .await
+}
+
+/// Generic (duplex-capable) bidirectional throttled copy. Kept for the
+/// unit tests, which drive `tokio::io::duplex` pipes rather than real
+/// sockets. Production code uses the lock-free `TcpStream` entry point
+/// above.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn copy_bidirectional_with_rate_limit_generic<A, B>(
+    inbound: &mut A,
+    outbound: &mut B,
+    limiter: Arc<RuleRateLimitHandle>,
+    stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_limiter: Option<Arc<OwnerRateLimitHandle>>,
+    owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
     quota: Option<Arc<QuotaHandle>>,
 ) -> io::Result<(u64, u64)>
 where
@@ -105,7 +167,40 @@ where
 {
     let (mut in_read, mut in_write) = tokio::io::split(inbound);
     let (mut out_read, mut out_write) = tokio::io::split(outbound);
+    run_rate_limited_copy(
+        &mut in_read,
+        &mut in_write,
+        &mut out_read,
+        &mut out_write,
+        limiter,
+        stats,
+        owner_limiter,
+        owner_stats,
+        quota,
+    )
+    .await
+}
 
+/// Shared orchestration for both entry points: fork the two directional
+/// [`copy_with_cap`] loops over the four pre-split halves and join them.
+#[allow(clippy::too_many_arguments)]
+async fn run_rate_limited_copy<RI, WI, RO, WO>(
+    in_read: &mut RI,
+    in_write: &mut WI,
+    out_read: &mut RO,
+    out_write: &mut WO,
+    limiter: Arc<RuleRateLimitHandle>,
+    stats: Option<Arc<RateLimitStatsAccumulator>>,
+    owner_limiter: Option<Arc<OwnerRateLimitHandle>>,
+    owner_stats: Option<Arc<RateLimitStatsAccumulator>>,
+    quota: Option<Arc<QuotaHandle>>,
+) -> io::Result<(u64, u64)>
+where
+    RI: AsyncRead + Unpin,
+    WI: AsyncWrite + Unpin,
+    RO: AsyncRead + Unpin,
+    WO: AsyncWrite + Unpin,
+{
     let limiter_in = Arc::clone(&limiter);
     let stats_in = stats.clone();
     let owner_in = owner_limiter.clone();
@@ -113,8 +208,8 @@ where
     let quota_in = quota.clone();
     let in_to_out = async {
         copy_with_cap(
-            &mut in_read,
-            &mut out_write,
+            in_read,
+            out_write,
             BandwidthDirection::In,
             &limiter_in,
             stats_in.as_deref(),
@@ -131,8 +226,8 @@ where
     let quota_out = quota;
     let out_to_in = async {
         copy_with_cap(
-            &mut out_read,
-            &mut in_write,
+            out_read,
+            in_write,
             BandwidthDirection::Out,
             &limiter_out,
             stats_out.as_deref(),
@@ -158,11 +253,11 @@ async fn copy_with_cap<R, W>(
     // accumulates into `owner_stats`; rule-direction into `stats`.
     owner_limiter: Option<&OwnerRateLimitHandle>,
     owner_stats: Option<&RateLimitStatsAccumulator>,
-    // 013-traffic-quotas: per-(user, client) byte budget. `None` keeps
-    // the byte-identical bandwidth-only path. `Some` debits the budget
-    // after each chunk is delivered and half-closes the writer once the
-    // budget straddles zero — same `read → write_all → consume(n)`
-    // ordering as `quota/copy.rs` so counters and budget agree.
+    // 013-traffic-quotas / #52: per-(user, client) byte budget. `None`
+    // keeps the byte-identical bandwidth-only path. `Some` PRE-DEBITS
+    // the budget before each chunk is written (see the loop body) so
+    // aggregate over-delivery is bounded by a constant, not by the
+    // number of connections sharing the handle.
     quota: Option<&Arc<QuotaHandle>>,
 ) -> io::Result<u64>
 where
@@ -176,6 +271,16 @@ where
     // small chunks under low caps.
     let mut buf = vec![0u8; MAX_CHUNK];
     let mut total: u64 = 0;
+    // #51: cache the snapshotted limiter `Arc`s instead of re-taking up
+    // to four registry reads (`RwLock::read` + `HashMap::get` +
+    // `Arc::clone`) per chunk. Every capped connection on every rule
+    // shares the same two process-wide registries, so per-chunk
+    // snapshots serialised all hot connections on the same two lock
+    // words. Refresh on `SNAPSHOT_REFRESH_INTERVAL` so a hot-reload
+    // swap is still observed within FR-011's ≤1 s budget.
+    let mut cached_rule = limiter.snapshot();
+    let mut cached_owner = owner_limiter.and_then(OwnerRateLimitHandle::snapshot);
+    let mut last_snapshot = tokio::time::Instant::now();
     loop {
         // 013-traffic-quotas: stop before reading more once the budget
         // is gone — mirrors `quota/copy.rs`'s loop-top short-circuit so
@@ -186,21 +291,44 @@ where
             let _ = writer.shutdown().await;
             return Ok(total);
         }
-        // Recompute on every iteration so a hot-reload that swaps
-        // the per-rule or per-owner limiter (changing the effective
-        // cap) is observed without restarting the connection. The
-        // snapshot calls inside `chunk_for_direction` are the same
-        // ones already issued by `acquire_bandwidth` below, so the
-        // extra cost is two reads against an `Arc<RwLock>` per
-        // chunk — negligible vs. the syscall + bucket acquire that
-        // already happen on every iteration.
-        let chunk = chunk_for_direction(direction, limiter, owner_limiter);
+        // Refresh the cached snapshots once the interval elapses. On a
+        // fully uncapped direction under paused-time tests no timer ever
+        // fires so `elapsed()` stays 0 and we never refresh — harmless,
+        // since such directions carry no cap to hot-reload.
+        if last_snapshot.elapsed() >= SNAPSHOT_REFRESH_INTERVAL {
+            cached_rule = limiter.snapshot();
+            cached_owner = owner_limiter.and_then(OwnerRateLimitHandle::snapshot);
+            last_snapshot = tokio::time::Instant::now();
+        }
+        let chunk = chunk_for_direction(direction, cached_rule.as_deref(), cached_owner.as_deref());
         let n = reader.read(&mut buf[..chunk]).await?;
         if n == 0 {
             // Half-close: shutdown the writer half so peer sees FIN.
             // Errors here are non-fatal — the peer may have already
             // closed; we still report the bytes we successfully
             // forwarded.
+            let _ = writer.shutdown().await;
+            return Ok(total);
+        }
+        // #52: PRE-DEBIT the byte budget BEFORE spending bandwidth
+        // tokens or writing. The saturating `consume` claims the budget
+        // up-front, so N connections sharing one handle can no longer
+        // each push a full chunk past the budget between a stale
+        // loop-top `is_exhausted` check and a post-write debit. On a
+        // straddling draw (`Exhausted`) the remaining budget is spent
+        // but this chunk is not fully covered, so we drop it and
+        // half-close rather than forward bytes we couldn't account —
+        // delivery never exceeds the granted budget (aggregate
+        // over-delivery bounded to 0; boundary under-delivery ≤ 1 chunk
+        // per handle, the fail-safe direction for a quota). This
+        // mirrors the UDP batched pre-debit precedent
+        // (`udp/flow.rs::quota_try_consume`).
+        if let Some(q) = quota
+            && matches!(
+                q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
+                ConsumeOutcome::Exhausted
+            )
+        {
             let _ = writer.shutdown().await;
             return Ok(total);
         }
@@ -211,11 +339,11 @@ where
         // by re-looping). Owner first (FR-013): if owner is the
         // tighter bucket, the chunk parks on owner and the rule
         // bucket isn't consulted until owner releases tokens.
-        if let Some(o) = owner_limiter {
+        if let Some(o) = cached_owner.as_deref() {
             loop {
                 match o.acquire_bandwidth(direction, n as u64) {
-                    Some(BandwidthAcquire::Granted) | None => break,
-                    Some(BandwidthAcquire::Throttled { deficit }) => {
+                    BandwidthAcquire::Granted => break,
+                    BandwidthAcquire::Throttled { deficit } => {
                         if let Some(s) = owner_stats {
                             let micros = u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
                             s.record_throttle(direction, micros);
@@ -225,33 +353,22 @@ where
                 }
             }
         }
-        loop {
-            match limiter.acquire_bandwidth(direction, n as u64) {
-                Some(BandwidthAcquire::Granted) | None => break,
-                Some(BandwidthAcquire::Throttled { deficit }) => {
-                    if let Some(s) = stats {
-                        let micros = u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
-                        s.record_throttle(direction, micros);
+        if let Some(r) = cached_rule.as_deref() {
+            loop {
+                match r.acquire_bandwidth(direction, n as u64) {
+                    BandwidthAcquire::Granted => break,
+                    BandwidthAcquire::Throttled { deficit } => {
+                        if let Some(s) = stats {
+                            let micros = u64::try_from(deficit.as_micros()).unwrap_or(u64::MAX);
+                            s.record_throttle(direction, micros);
+                        }
+                        tokio::time::sleep(deficit).await;
                     }
-                    tokio::time::sleep(deficit).await;
                 }
             }
         }
         writer.write_all(&buf[..n]).await?;
         total += n as u64;
-        // 013-traffic-quotas: debit the budget AFTER the chunk is on the
-        // wire (same ordering as `quota/copy.rs`) so the byte counters
-        // and the budget agree. A straddling draw (Exhausted) half-closes
-        // the writer and ends this direction at the budget boundary.
-        if let Some(q) = quota
-            && matches!(
-                q.consume(i64::try_from(n).unwrap_or(i64::MAX)),
-                ConsumeOutcome::Exhausted
-            )
-        {
-            let _ = writer.shutdown().await;
-            return Ok(total);
-        }
     }
 }
 
@@ -394,7 +511,7 @@ mod tests {
             let limiter_task = Arc::clone(&limiter);
             let acc_task = Arc::clone(&acc);
             let proxy = tokio::spawn(async move {
-                copy_bidirectional_with_rate_limit(
+                copy_bidirectional_with_rate_limit_generic(
                     &mut inbound,
                     &mut outbound,
                     limiter_task,
@@ -479,7 +596,7 @@ mod tests {
         let limiter_clone = Arc::clone(&limiter);
         let acc_clone = Arc::clone(&acc);
         let proxy = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound,
                 &mut outbound,
                 limiter_clone,
@@ -549,7 +666,7 @@ mod tests {
         let limiter_clone = Arc::clone(&limiter);
         let acc_clone = Arc::clone(&acc);
         let proxy = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound,
                 &mut outbound,
                 limiter_clone,
@@ -630,7 +747,7 @@ mod tests {
         let task_owner = Arc::clone(&owner_limiter);
         let task_owner_stats = Arc::clone(&owner_acc);
         let proxy = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound,
                 &mut outbound,
                 task_rule,
@@ -725,7 +842,7 @@ mod tests {
         let task_owner = Arc::clone(&owner_limiter);
         let task_owner_stats = Arc::clone(&owner_acc);
         let proxy = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound,
                 &mut outbound,
                 task_rule,
@@ -806,7 +923,7 @@ mod tests {
         let task_owner = Arc::clone(&owner_handle);
         let task_owner_stats = Arc::clone(&owner_acc);
         let proxy = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound,
                 &mut outbound,
                 task_rule,
@@ -905,7 +1022,7 @@ mod tests {
         let bw_owner_a = Arc::clone(&owner_a);
         let bw_owner_a_stats = Arc::clone(&owner_a_acc);
         let proxy_a = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound_a,
                 &mut outbound_a,
                 rule_a,
@@ -919,7 +1036,7 @@ mod tests {
         let bw_owner_b = Arc::clone(&owner_b);
         let bw_owner_b_stats = Arc::clone(&owner_b_stats_acc);
         let proxy_b = tokio::spawn(async move {
-            copy_bidirectional_with_rate_limit(
+            copy_bidirectional_with_rate_limit_generic(
                 &mut inbound_b,
                 &mut outbound_b,
                 rule_b,
